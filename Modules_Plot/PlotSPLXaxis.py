@@ -1,6 +1,5 @@
 # "Grafische Ausgabe fuer SPL Plot X-Axis"
 
-import numpy as np
 from matplotlib.ticker import MultipleLocator
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase  # Importieren der Modulebase mit enthaltenem MihiAssi
 
@@ -13,6 +12,7 @@ class DrawSPLPlot_Xaxis(ModuleBase):
         self.im = None
         self.settings = settings
         self.main_window = main_window  # Referenz zum Main Window
+        self._y_locator_step = None
         
         # Initialisiere leere Plot-Darstellung
         self.initialize_empty_plots()
@@ -44,7 +44,7 @@ class DrawSPLPlot_Xaxis(ModuleBase):
             step = 5   # Kleinere Bereiche
         else:
             step = 5   # Sehr kleine Bereiche
-        x_ticks = np.arange(int(x_min), int(x_max) + step, step)
+        x_ticks = list(range(int(x_min), int(x_max) + step, step))
         self.ax.set_xticks(x_ticks)
         
         # Adaptive Y-Ticks (SPL dB) - 3, 6 oder 10 dB Schritte
@@ -56,7 +56,7 @@ class DrawSPLPlot_Xaxis(ModuleBase):
             step = 6   # z.B. -24 bis 0 (24 dB) → 5 Ticks
         else:
             step = 3   # z.B. -12 bis 0 (12 dB) → 5 Ticks
-        self.ax.yaxis.set_major_locator(MultipleLocator(step))
+        self._set_y_locator(step)
         
         self.ax.grid(color='k', linestyle='-', linewidth=0.4)
         self.ax.tick_params(axis='both', labelsize=6)  # Konsistent mit Polar
@@ -123,7 +123,7 @@ class DrawSPLPlot_Xaxis(ModuleBase):
         else:
             step = 5   # Sehr kleine Bereiche
             
-        x_ticks = np.arange(x_min_data, x_max_data + step, step)
+        x_ticks = list(range(x_min_data, x_max_data + step, step))
         
         self.ax.tick_params(axis='x', labelsize=6)  # Konsistent mit Polar
         self.ax.set_xticks(x_ticks)
@@ -141,7 +141,7 @@ class DrawSPLPlot_Xaxis(ModuleBase):
             step = 6   # z.B. -24 bis 0 (24 dB) → 5 Ticks
         else:
             step = 3   # z.B. -12 bis 0 (12 dB) → 5 Ticks
-        self.ax.yaxis.set_major_locator(MultipleLocator(step))
+        self._set_y_locator(step)
             
         self.ax.tick_params(axis='y', labelsize=6)  # Konsistent mit Polar
         self.ax.set_ylabel("SPL [dB]", fontsize=6)  # Konsistent mit Polar
@@ -165,4 +165,9 @@ class DrawSPLPlot_Xaxis(ModuleBase):
                 pass
             # Zeichne nur wenn Canvas vorhanden
             if hasattr(self.ax.figure, 'canvas'):
-                self.ax.figure.canvas.draw()
+                self.ax.figure.canvas.draw_idle()
+
+    def _set_y_locator(self, step):
+        if step != self._y_locator_step:
+            self.ax.yaxis.set_major_locator(MultipleLocator(step))
+            self._y_locator_step = step

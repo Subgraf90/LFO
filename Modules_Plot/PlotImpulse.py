@@ -306,7 +306,6 @@ class DrawImpulsePlots(QWidget):
         # Layout aktualisieren (wie in PlotDataImporter.py)
         if 'main' in self.canvases:
             canvas = self.canvases['main']['canvas']
-            canvas.figure.tight_layout()
             canvas.draw_idle()
         
         self._schedule_scroll_update()
@@ -331,7 +330,7 @@ class DrawImpulsePlots(QWidget):
                 ax = self.canvases['main'][ax_type]
                 ax.set_xlim(auto=True)
                 ax.set_ylim(auto=True)
-            canvas.draw()
+            canvas.draw_idle()
 
     def auto_scale_all(self):
         """Automatische Skalierung für alle Plots"""
@@ -339,7 +338,7 @@ class DrawImpulsePlots(QWidget):
             for ax_type in ['impulse_ax', 'phase_ax', 'magnitude_ax']:
                 ax = self.canvases['main'][ax_type]
                 ax.autoscale_view()
-            self.canvases['main']['canvas'].draw()
+            self.canvases['main']['canvas'].draw_idle()
 
     def plot_impulse_response(self, key, data, selected_key=None):
         """Plottet die Impulsantworten"""
@@ -411,7 +410,7 @@ class DrawImpulsePlots(QWidget):
             ax.set_xlabel('Time [ms]', fontsize=8)
             ax.set_ylabel('Impulse response [%]', fontsize=8)
 
-        canvas.draw()
+        canvas.draw_idle()
 
     def _schedule_scroll_update(self):
         """Aktualisiert Scroll-Layout entkoppelt vom aktuellen Event-Loop-Zugriff."""
@@ -520,7 +519,7 @@ class DrawImpulsePlots(QWidget):
             ax.set_xlabel('Time [ms]', fontsize=8)
             ax.set_ylabel('Relative SPL [dB]', fontsize=8)
         
-        canvas.draw()
+        canvas.draw_idle()
 
     def plot_phase(self, key, data, selected_key=None):
         """Plottet die Phasenbeziehungen"""
@@ -529,10 +528,8 @@ class DrawImpulsePlots(QWidget):
         
         canvas = self.canvases[key]['canvas']
         ax = self.canvases[key]['phase_ax']  # Phase im mittleren Plot
-        # Clear ohne Log-Scale Warnung
-        ax.set_xscale('linear')  # Temporär linear setzen
-        ax.clear()
-        ax.set_xscale('log')  # Zurück zu log-scale
+        self._clear_semilog_axes(ax)
+        ax.set_xscale('log')
         
         # Bestimme die Frequenzgrenzen
         freq_min = float('inf')
@@ -571,9 +568,7 @@ class DrawImpulsePlots(QWidget):
                 freq_max = max(freq_max, max(freq))
             
                 # Verbesserte Phasenumwandlung mit exakten Grenzen
-                phase_deg = np.rad2deg(np.array(phase))
-                # Garantiere exakte ±180° Grenzen
-                phase_deg = np.clip(((phase_deg + 180) % 360) - 180, -180, 180)
+                phase_deg = self._wrap_phase(np.rad2deg(phase))
                 
                 ax.semilogx(freq, phase_deg, color=color, linewidth=0.8, alpha=0.4, linestyle='--', zorder=1)
         
@@ -586,8 +581,7 @@ class DrawImpulsePlots(QWidget):
                 phase_key = f"phase_{selected_key}"
                 
                 if phase_key in snapshot_data:
-                    phase_deg = np.rad2deg(np.array(snapshot_data[phase_key]['phase']))
-                    phase_deg = np.clip(((phase_deg + 180) % 360) - 180, -180, 180)
+                    phase_deg = self._wrap_phase(np.rad2deg(snapshot_data[phase_key]['phase']))
                     line_width = self._get_snapshot_linewidth(
                         snapshot_key,
                         selected_snapshot_key,
@@ -603,16 +597,13 @@ class DrawImpulsePlots(QWidget):
         
         # Plot-Konfiguration mit angepasster Schriftgröße
         # Stelle sicher, dass freq_max positiv ist für log-scale
-        if freq_max > 0 and freq_max != float('inf'):
-            ax.set_xlim(15, freq_max)
-        else:
-            ax.set_xlim(15, 400)  # Fallback-Wert (400 Hz für Impulse)
+        upper_limit = freq_max if freq_max > 0 and freq_max != float('inf') else 400
+        ax.set_xlim(15, upper_limit)
         
         # Frequenz-Ticks definieren
         freq_ticks = [20, 40, 60, 80, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-        visible_ticks = [t for t in freq_ticks if t <= (freq_max if freq_max > 0 and freq_max != float('inf') else 400)]
-        ax.set_xticks(visible_ticks)
-        ax.set_xticklabels([str(x) for x in visible_ticks])  # Zeige X-Tick-Labels für Phase
+        visible_ticks = [t for t in freq_ticks if t <= upper_limit]
+        ax.set_xticks(visible_ticks, [str(x) for x in visible_ticks])
         
         ax.set_ylim(-180, 180)
         ax.set_yticks([-180, -135, -90, -45, 0, 45, 90, 135, 180])
@@ -624,7 +615,23 @@ class DrawImpulsePlots(QWidget):
             ax.set_ylabel('Phase [deg]', fontsize=8)
             ax.set_xlabel('Frequency [Hz]', fontsize=8)  # X-Achsenbeschriftung für Phase
 
-        canvas.draw()
+        canvas.draw_idle()
+
+    @staticmethod
+    def _clear_semilog_axes(ax):
+        current_xlim = ax.get_xlim()
+        if current_xlim[0] <= 0:
+            current_xlim = (1.0, max(current_xlim[1], 10.0))
+        ax.set_xscale('linear')
+        ax.set_xlim(*current_xlim)
+        ax.clear()
+
+    @staticmethod
+    def _wrap_phase(values):
+        if not isinstance(values, np.ndarray):
+            values = np.asarray(values, dtype=float)
+        wrapped = ((values + 180.0) % 360.0) - 180.0
+        return np.clip(wrapped, -180.0, 180.0)
 
     def plot_magnitude(self, key, data, selected_key=None):
         if key not in self.canvases:
@@ -746,7 +753,7 @@ class DrawImpulsePlots(QWidget):
             ax.set_xlabel('Frequency [Hz]', fontsize=8)
             ax.set_ylabel('Magnitude [dB]', fontsize=8)
         
-        canvas.draw()
+        canvas.draw_idle()
 
     def toggle_view(self, view_type):
         """Wird aufgerufen, wenn ein Toggle-Button geklickt wird"""

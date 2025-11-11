@@ -16,6 +16,7 @@ class WindowingPlot(QWidget):
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111)
         self.container = container
+        self.figure.tight_layout()
         
         layout = QVBoxLayout()
         layout.addWidget(self.canvas)
@@ -96,10 +97,8 @@ class WindowingPlot(QWidget):
         self.ax.set_ylabel("Windowfunction [dB]", fontsize=6)
         self.ax.tick_params(axis='both', which='both', labelsize=6)
 
-        self.figure.tight_layout()
-        
         # Aktualisieren Sie die Darstellung
-        self.canvas.draw()
+        self.canvas.draw_idle()
         
 
     def plot_windowing(self, windowing, speaker_array):
@@ -119,7 +118,7 @@ class WindowingPlot(QWidget):
             gain = speaker_array.source_lp_zero[i]
             self.ax.plot([y_data, y_data], [x_data, gain], linestyle='dotted', color='red')
             
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
 
     def plot_Stacks2Windowing(self, speaker_array_id):
