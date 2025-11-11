@@ -1,3 +1,7 @@
+import logging
+import os
+from time import perf_counter
+
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from scipy import interpolate
@@ -18,105 +22,123 @@ class ImpulseCalculator(ModuleBase):
         self._frequency_cache = {}
         self._balloon_angle_cache = {}
         self._speaker_array_cache = None
+        self._perf_enabled = bool(int(os.environ.get("LFO_DEBUG_PERF", "1")))
+        self._perf_logger = logging.getLogger("LFO.Performance")
+
+    def _perf_scope(self, label: str):
+        return _PerfScope(self, label)
+
+    def _log_perf(self, label: str, duration: float) -> None:
+        if self._perf_enabled:
+            self._perf_logger.info("[PERF] %s: %.3f s", label, duration)
 
 
     def calculate_impulse(self):
         """Berechnet alle Daten für die verschiedenen Plots"""
-        # Caches pro Lauf leeren, damit aktuelle Einstellungen berücksichtigt werden
-        self._frequency_cache.clear()
-        self._balloon_angle_cache.clear()
+        with self._perf_scope("ImpulseCalculator total"):
+            # Caches pro Lauf leeren, damit aktuelle Einstellungen berücksichtigt werden
+            self._frequency_cache.clear()
+            self._balloon_angle_cache.clear()
 
-        # Berechne zuerst die Impulsantworten
-        self._speaker_array_cache = None
-        impulse_responses = self.calculate_impulse_responses()
-        if not impulse_responses:  # Frühe Prüfung auf None
-            self.calculation = {}  # Leere Berechnung zurücksetzen
-            return
+            # Berechne zuerst die Impulsantworten
+            self._speaker_array_cache = None
+            with self._perf_scope("ImpulseCalculator impulse_responses"):
+                impulse_responses = self.calculate_impulse_responses()
+            if not impulse_responses:  # Frühe Prüfung auf None
+                self.calculation = {}  # Leere Berechnung zurücksetzen
+                return
 
-        # 🚀 PERFORMANCE: Lade alle Balloondaten vorab
-        balloon_cache = self._preload_balloon_data(impulse_responses)
+            # 🚀 PERFORMANCE: Lade alle Balloondaten vorab
+            with self._perf_scope("ImpulseCalculator preload_balloon"):
+                balloon_cache = self._preload_balloon_data(impulse_responses)
 
-        # Berechne Individual Impulse Responses
-        individual_impulse_data = self.calculate_individual_impulse_responses(impulse_responses, balloon_cache)
-        phase_data = self.calculate_phase_response(impulse_responses, balloon_cache)
-        magnitude_data = self.calculate_magnitude_response(impulse_responses, balloon_cache)
-        arrival_times_data = self.calculate_arrival_times(impulse_responses, balloon_cache)
-        combined_impulse_data = self.calculate_combined_impulse_response(impulse_responses, phase_data, balloon_cache)
-        
-        # Initialisiere base_data für jeden Punkt
-        for point_key in self.settings.impulse_points:
-            key = point_key['key']
+            # Berechne Individual Impulse Responses
+            with self._perf_scope("ImpulseCalculator individual_impulse"):
+                individual_impulse_data = self.calculate_individual_impulse_responses(impulse_responses, balloon_cache)
+            with self._perf_scope("ImpulseCalculator phase"):
+                phase_data = self.calculate_phase_response(impulse_responses, balloon_cache)
+            with self._perf_scope("ImpulseCalculator magnitude"):
+                magnitude_data = self.calculate_magnitude_response(impulse_responses, balloon_cache)
+            with self._perf_scope("ImpulseCalculator arrival_times"):
+                arrival_times_data = self.calculate_arrival_times(impulse_responses, balloon_cache)
+            with self._perf_scope("ImpulseCalculator combined_impulse"):
+                combined_impulse_data = self.calculate_combined_impulse_response(impulse_responses, phase_data, balloon_cache)
             
-            base_data = {
-                "impulse_response": {
-                    "spl": [],         
-                    "time": [],        
-                    "color": [],
-                    "combined_impulse": None
-                },
-                "phase_response": {
-                    "freq": [],        
-                    "phase": [],       
-                    "color": [],
-                    "combined_phase": None
-                },
-                "magnitude_data": {
-                    "frequency": None,
-                    "magnitude": None,
-                    "individual_magnitudes": {}
-                },
-                "arrival_times": {
-                    "time": [],        
-                    "spl_max": [],     
-                    "spl_min": [],     
-                    "color": []        
-                },
-                "show_in_plot": True
-            }
-            
-            if key in impulse_responses:
-                # Setze Individual Impulse Responses
-                if individual_impulse_data and key in individual_impulse_data:
-                    base_data["impulse_response"].update({
-                        "spl": individual_impulse_data[key]["spl"],
-                        "time": individual_impulse_data[key]["time"],
-                        "color": individual_impulse_data[key]["color"]
-                    })
-
-                # Setze Phase Response
-                if phase_data and key in phase_data:
-                    base_data["phase_response"].update({
-                        "freq": phase_data[key]["freq"],
-                        "phase": phase_data[key]["phase"],
-                        "color": phase_data[key]["color"],
-                        "combined_phase": phase_data[key]["combined_phase"]
-                    })
-
-                # Setze Magnitude Response
-                if magnitude_data and key in magnitude_data:
-                    base_data["magnitude_data"].update({
-                        "frequency": magnitude_data[key]["frequency"],
-                        "magnitude": magnitude_data[key]["magnitude"],
-                        "individual_magnitudes": magnitude_data[key]["individual_magnitudes"]
-                    })
-                
-                # Setze Arrival Times
-                if arrival_times_data and key in arrival_times_data:
-                    base_data["arrival_times"].update({
-                        "time": arrival_times_data[key]["time"],
-                        "spl_max": arrival_times_data[key]["spl_max"],
-                        "spl_min": arrival_times_data[key]["spl_min"],
-                        "color": arrival_times_data[key]["color"]
-                    })
-                
-                # Setze Combined Impulse Response
-                if combined_impulse_data and key in combined_impulse_data:
-                    base_data["impulse_response"]["combined_impulse"] = {
-                        "spl": combined_impulse_data[key]["impulse"].tolist(),
-                        "time": combined_impulse_data[key]["time"].tolist()
+            # Initialisiere base_data für jeden Punkt
+            with self._perf_scope("ImpulseCalculator assemble_results"):
+                for point_key in self.settings.impulse_points:
+                    key = point_key['key']
+                    
+                    base_data = {
+                        "impulse_response": {
+                            "spl": [],         
+                            "time": [],        
+                            "color": [],
+                            "combined_impulse": None
+                        },
+                        "phase_response": {
+                            "freq": [],        
+                            "phase": [],       
+                            "color": [],
+                            "combined_phase": None
+                        },
+                        "magnitude_data": {
+                            "frequency": None,
+                            "magnitude": None,
+                            "individual_magnitudes": {}
+                        },
+                        "arrival_times": {
+                            "time": [],        
+                            "spl_max": [],     
+                            "spl_min": [],     
+                            "color": []        
+                        },
+                        "show_in_plot": True
                     }
+                    
+                    if key in impulse_responses:
+                        # Setze Individual Impulse Responses
+                        if individual_impulse_data and key in individual_impulse_data:
+                            base_data["impulse_response"].update({
+                                "spl": individual_impulse_data[key]["spl"],
+                                "time": individual_impulse_data[key]["time"],
+                                "color": individual_impulse_data[key]["color"]
+                            })
 
-            self.calculation[key] = base_data
+                        # Setze Phase Response
+                        if phase_data and key in phase_data:
+                            base_data["phase_response"].update({
+                                "freq": phase_data[key]["freq"],
+                                "phase": phase_data[key]["phase"],
+                                "color": phase_data[key]["color"],
+                                "combined_phase": phase_data[key]["combined_phase"]
+                            })
+
+                        # Setze Magnitude Response
+                        if magnitude_data and key in magnitude_data:
+                            base_data["magnitude_data"].update({
+                                "frequency": magnitude_data[key]["frequency"],
+                                "magnitude": magnitude_data[key]["magnitude"],
+                                "individual_magnitudes": magnitude_data[key]["individual_magnitudes"]
+                            })
+                        
+                        # Setze Arrival Times
+                        if arrival_times_data and key in arrival_times_data:
+                            base_data["arrival_times"].update({
+                                "time": arrival_times_data[key]["time"],
+                                "spl_max": arrival_times_data[key]["spl_max"],
+                                "spl_min": arrival_times_data[key]["spl_min"],
+                                "color": arrival_times_data[key]["color"]
+                            })
+                        
+                        # Setze Combined Impulse Response
+                        if combined_impulse_data and key in combined_impulse_data:
+                            base_data["impulse_response"]["combined_impulse"] = {
+                                "spl": combined_impulse_data[key]["impulse"].tolist(),
+                                "time": combined_impulse_data[key]["time"].tolist()
+                            }
+
+                    self.calculation[key] = base_data
 
 
     def get_balloon_data_at_angle(self, speaker_name, azimuth, elevation=0):
@@ -248,164 +270,165 @@ class ImpulseCalculator(ModuleBase):
 
     def calculate_impulse_responses(self):
         """Berechnet die Impulsantworten für jeden Lautsprecher pro Array"""
-        if not self.settings.impulse_points:  # Prüfe ob Impulspunkte existieren
-            return None
+        with self._perf_scope("ImpulseCalculator calculate_impulse_responses"):
+            if not self.settings.impulse_points:  # Prüfe ob Impulspunkte existieren
+                return None
 
-        impulse_responses = {}
-        speaker_names = self._get_speaker_names_list()
-        speaker_index_map = self._get_speaker_name_index()
-        
-        # Sample-Rate aus Balloon-Daten des ersten Lautsprechers
-        first_speaker_name = speaker_names[0] if speaker_names else None
-        if first_speaker_name:
-            # 🚀 OPTIMIERT: Verwende neuen DataContainer
-            balloon_data = self._data_container.get_balloon_data(first_speaker_name)
-            if balloon_data is not None and 'freqs' in balloon_data:
-                freqs = balloon_data['freqs']
-                max_freq = max(freqs)
-                sample_rate = max_freq * 2  # Nyquist
-                fft_size = len(freqs) * 2 - 2
+            impulse_responses = {}
+            speaker_names = self._get_speaker_names_list()
+            speaker_index_map = self._get_speaker_name_index()
+            
+            # Sample-Rate aus Balloon-Daten des ersten Lautsprechers
+            first_speaker_name = speaker_names[0] if speaker_names else None
+            if first_speaker_name:
+                # 🚀 OPTIMIERT: Verwende neuen DataContainer
+                balloon_data = self._data_container.get_balloon_data(first_speaker_name)
+                if balloon_data is not None and 'freqs' in balloon_data:
+                    freqs = balloon_data['freqs']
+                    max_freq = max(freqs)
+                    sample_rate = max_freq * 2  # Nyquist
+                    fft_size = len(freqs) * 2 - 2
+                else:
+                    sample_rate = 44100
+                    fft_size = 2048
             else:
                 sample_rate = 44100
                 fft_size = 2048
-        else:
-            sample_rate = 44100
-            fft_size = 2048
-
-        for point_key in self.settings.impulse_points:
-            point_x, point_y = point_key['data']
-            speaker_responses = {}
-            max_amplitude = 0  # Für gemeinsame Normalisierung
-            
-            # Erste Schleife: Berechne alle Impulsantworten und finde maximale Amplitude
-            temp_responses = {}
-            for speaker_array in self.settings.speaker_arrays.values():
-                if speaker_array.mute or speaker_array.hide:
-                    continue
-                                    
-                for i, speaker_name in enumerate(speaker_array.source_polar_pattern):
-                    speaker_idx = speaker_index_map.get(speaker_name)
-                    if speaker_idx is None:
+    
+            for point_key in self.settings.impulse_points:
+                point_x, point_y = point_key['data']
+                speaker_responses = {}
+                max_amplitude = 0  # Für gemeinsame Normalisierung
+                
+                # Erste Schleife: Berechne alle Impulsantworten und finde maximale Amplitude
+                temp_responses = {}
+                for speaker_array in self.settings.speaker_arrays.values():
+                    if speaker_array.mute or speaker_array.hide:
                         continue
-                    
-                    time_offset = point_key['time_offset']
-
-                    # Geometrie-Berechnung
-                    source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
-
-                    source_position_x = getattr(
-                        speaker_array,
-                        'source_position_x',
-                        speaker_array.source_position_x,
-                    )
-                    x_distance = point_x - source_position_x[i]
-                    source_position_y = getattr(
-                        speaker_array,
-                        'source_position_calc_y',
-                        speaker_array.source_position_y,
-                    )
-                    y_distance = point_y - source_position_y[i]
-                    z_distance = source_position_z[i]
-                    
-                    # Horizontale und 3D-Distanz berechnen
-                    horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
-                    distance = np.sqrt(horizontal_dist**2 + z_distance**2)
-                    # Laufzeit in ms berechnen
-                    delay_ms = (distance / self.settings.speed_of_sound) * 1000
-                    
-                    # Winkel berechnen
-                    source_to_point_angle = np.arctan2(y_distance, x_distance)
-                    azimuth = (np.degrees(source_to_point_angle) + speaker_array.source_azimuth[i]) % 360
-                    
-                    # Winkeltransformation für Balloon-Daten
-                    # Invertiere die Richtung (im Uhrzeigersinn statt gegen den Uhrzeigersinn)
-                    azimuth = (360 - azimuth) % 360
-                    
-                    # Drehe um 90° im Uhrzeigersinn
-                    azimuth = (azimuth + 90) % 360
-                    
-                    # Elevationswinkel berechnen
-                    elevation = np.degrees(np.arctan2(z_distance, horizontal_dist))
-                    
-                    try:
-                        # Verwende get_balloon_data_at_angle für bereits unwrapped Phase
-                        freq_data = self.get_balloon_data_at_angle(speaker_name, azimuth, elevation)
-                        if freq_data is None:
-                            print(f"❌ Keine Balloon-Daten für {speaker_name}")
+                                        
+                    for i, speaker_name in enumerate(speaker_array.source_polar_pattern):
+                        speaker_idx = speaker_index_map.get(speaker_name)
+                        if speaker_idx is None:
                             continue
                         
-                        freq = freq_data['freq']
-                        mag = freq_data['mag']  # Bereits in dB
-                        phase = freq_data['phase']  # Bereits unwrapped in GRAD
+                        time_offset = point_key['time_offset']
+
+                        # Geometrie-Berechnung
+                        source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
+
+                        source_position_x = getattr(
+                            speaker_array,
+                            'source_position_x',
+                            speaker_array.source_position_x,
+                        )
+                        x_distance = point_x - source_position_x[i]
+                        source_position_y = getattr(
+                            speaker_array,
+                            'source_position_calc_y',
+                            speaker_array.source_position_y,
+                        )
+                        y_distance = point_y - source_position_y[i]
+                        z_distance = source_position_z[i]
                         
-                        # Konvertiere dB zu linearer Magnitude
-                        mag_linear = 10 ** (mag / 20)
+                        # Horizontale und 3D-Distanz berechnen
+                        horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
+                        distance = np.sqrt(horizontal_dist**2 + z_distance**2)
+                        # Laufzeit in ms berechnen
+                        delay_ms = (distance / self.settings.speed_of_sound) * 1000
                         
-                        # Interpolation zu linearem Frequenzabstand für korrekte IFFT
-                        n_interp = fft_size // 2 + 1
-                        target_freq = np.linspace(freq[0], freq[-1], n_interp)
-                        mag_interp = interpolate.interp1d(freq, mag_linear, kind='linear')(target_freq)
-                        phase_interp = interpolate.interp1d(freq, phase, kind='linear')(target_freq)
+                        # Winkel berechnen
+                        source_to_point_angle = np.arctan2(y_distance, x_distance)
+                        azimuth = (np.degrees(source_to_point_angle) + speaker_array.source_azimuth[i]) % 360
                         
-                        # Konvertiere Phase von Grad zu Radiant für np.exp()
-                        phase_interp_rad = np.radians(phase_interp)
+                        # Winkeltransformation für Balloon-Daten
+                        # Invertiere die Richtung (im Uhrzeigersinn statt gegen den Uhrzeigersinn)
+                        azimuth = (360 - azimuth) % 360
                         
-                        # Komplexes Spektrum und IFFT
-                        H = mag_interp * np.exp(1j * phase_interp_rad)
-                        impulse = np.fft.irfft(H, n=fft_size)
+                        # Drehe um 90° im Uhrzeigersinn
+                        azimuth = (azimuth + 90) % 360
                         
-                        # Zeitachse mit korrekter Laufzeit
-                        dt = 1/sample_rate * 1000  # Zeitschritt in ms
-                        time = np.arange(0, fft_size) * dt + delay_ms - time_offset
+                        # Elevationswinkel berechnen
+                        elevation = np.degrees(np.arctan2(z_distance, horizontal_dist))
                         
-                        # Delays addieren
-                        if hasattr(speaker_array, 'delay'):
-                            time = time + speaker_array.delay
-                        if hasattr(speaker_array, 'source_time'):
-                            time = time + speaker_array.source_time[i]
-                        
-                        # Amplitudenskalierung
-                        impulse = impulse / (distance + 1e-6)  # Pegelabnahme mit Entfernung
-                        array_gain_factor = 10 ** (speaker_array.gain / 20)
-                        source_level_factor = 10 ** (speaker_array.source_level[i] / 20)
-                        impulse = impulse * array_gain_factor * source_level_factor
-                        
-                        # Polaritätsinvertierung
-                        if hasattr(speaker_array, 'source_polarity') and speaker_array.source_polarity[i]:
-                            impulse = -impulse
-                        
-                        # Finde maximale Amplitude
-                        current_max = np.max(np.abs(impulse))
-                        max_amplitude = max(max_amplitude, current_max)
-                        
-                        # Speichere temporär
-                        key = f"{speaker_array.name}_Speaker_{i+1}"
-                        temp_responses[key] = {
-                            'impulse': impulse,
-                            'time': time,
-                            'color': speaker_array.color[i] if isinstance(speaker_array.color, list) else speaker_array.color,
-                            'speaker_idx': speaker_idx,
-                            'angle_idx': int(round(azimuth)) % 360,  # Verwende azimuth als angle_idx
-                            'elevation': elevation,
-                            'distance': distance
-                        }
-                    except Exception as e:
-                        print(f"Fehler bei der Berechnung der Impulsantwort für {speaker_name}: {e}")
-                        continue
-            
-            # Zweite Schleife: Normalisiere alle Impulsantworten gemeinsam
-            if temp_responses:  # Prüfe ob Responses vorhanden sind
-                for key, response in temp_responses.items():
-                    if max_amplitude > 0:
-                        response['impulse'] = response['impulse'] / max_amplitude
-                    speaker_responses[key] = response
+                        try:
+                            # Verwende get_balloon_data_at_angle für bereits unwrapped Phase
+                            freq_data = self.get_balloon_data_at_angle(speaker_name, azimuth, elevation)
+                            if freq_data is None:
+                                print(f"❌ Keine Balloon-Daten für {speaker_name}")
+                                continue
+                            
+                            freq = freq_data['freq']
+                            mag = freq_data['mag']  # Bereits in dB
+                            phase = freq_data['phase']  # Bereits unwrapped in GRAD
+                            
+                            # Konvertiere dB zu linearer Magnitude
+                            mag_linear = 10 ** (mag / 20)
+                            
+                            # Interpolation zu linearem Frequenzabstand für korrekte IFFT
+                            n_interp = fft_size // 2 + 1
+                            target_freq = np.linspace(freq[0], freq[-1], n_interp)
+                            mag_interp = interpolate.interp1d(freq, mag_linear, kind='linear')(target_freq)
+                            phase_interp = interpolate.interp1d(freq, phase, kind='linear')(target_freq)
+                            
+                            # Konvertiere Phase von Grad zu Radiant für np.exp()
+                            phase_interp_rad = np.radians(phase_interp)
+                            
+                            # Komplexes Spektrum und IFFT
+                            H = mag_interp * np.exp(1j * phase_interp_rad)
+                            impulse = np.fft.irfft(H, n=fft_size)
+                            
+                            # Zeitachse mit korrekter Laufzeit
+                            dt = 1/sample_rate * 1000  # Zeitschritt in ms
+                            time = np.arange(0, fft_size) * dt + delay_ms - time_offset
+                            
+                            # Delays addieren
+                            if hasattr(speaker_array, 'delay'):
+                                time = time + speaker_array.delay
+                            if hasattr(speaker_array, 'source_time'):
+                                time = time + speaker_array.source_time[i]
+                            
+                            # Amplitudenskalierung
+                            impulse = impulse / (distance + 1e-6)  # Pegelabnahme mit Entfernung
+                            array_gain_factor = 10 ** (speaker_array.gain / 20)
+                            source_level_factor = 10 ** (speaker_array.source_level[i] / 20)
+                            impulse = impulse * array_gain_factor * source_level_factor
+                            
+                            # Polaritätsinvertierung
+                            if hasattr(speaker_array, 'source_polarity') and speaker_array.source_polarity[i]:
+                                impulse = -impulse
+                            
+                            # Finde maximale Amplitude
+                            current_max = np.max(np.abs(impulse))
+                            max_amplitude = max(max_amplitude, current_max)
+                            
+                            # Speichere temporär
+                            key = f"{speaker_array.name}_Speaker_{i+1}"
+                            temp_responses[key] = {
+                                'impulse': impulse,
+                                'time': time,
+                                'color': speaker_array.color[i] if isinstance(speaker_array.color, list) else speaker_array.color,
+                                'speaker_idx': speaker_idx,
+                                'angle_idx': int(round(azimuth)) % 360,  # Verwende azimuth als angle_idx
+                                'elevation': elevation,
+                                'distance': distance
+                            }
+                        except Exception as e:
+                            print(f"Fehler bei der Berechnung der Impulsantwort für {speaker_name}: {e}")
+                            continue
                 
-                impulse_responses[point_key['key']] = {
-                    'speaker_responses': speaker_responses,
-                    'position': (point_x, point_y)
-                }
-        
-        return impulse_responses if impulse_responses else None
+                # Zweite Schleife: Normalisiere alle Impulsantworten gemeinsam
+                if temp_responses:  # Prüfe ob Responses vorhanden sind
+                    for key, response in temp_responses.items():
+                        if max_amplitude > 0:
+                            response['impulse'] = response['impulse'] / max_amplitude
+                        speaker_responses[key] = response
+                    
+                    impulse_responses[point_key['key']] = {
+                        'speaker_responses': speaker_responses,
+                        'position': (point_x, point_y)
+                    }
+            
+            return impulse_responses if impulse_responses else None
 
 
     def calculate_individual_impulse_responses(self, impulse_responses, balloon_cache=None):
@@ -1108,3 +1131,20 @@ class ImpulseCalculator(ModuleBase):
             arrays = self.settings.get_all_speaker_arrays()
             self._speaker_array_cache = {array.name: array for array in arrays.values()}
         return self._speaker_array_cache
+
+
+class _PerfScope:
+    def __init__(self, owner: "ImpulseCalculator", label: str):
+        self._owner = owner
+        self._label = label
+        self._start = 0.0
+
+    def __enter__(self):
+        if getattr(self._owner, "_perf_enabled", False):
+            self._start = perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if getattr(self._owner, "_perf_enabled", False):
+            duration = perf_counter() - self._start
+            self._owner._log_perf(self._label, duration)

@@ -187,6 +187,20 @@ class Settings:
             'polar_colors': ['red', 'yellow', 'green', 'cyan'],
             'polar_min_db': -30,
             'polar_max_db': 0,
+            'spl_plot_superposition': True,
+            'spl_plot_fem': False,
+            'xaxis_plot_superposition': True,
+            'xaxis_plot_fem': False,
+            'yaxis_plot_superposition': True,
+            'yaxis_plot_fem': False,
+            'polar_plot_superposition': True,
+            'polar_plot_fem': False,
+            'impulse_plot_superposition': True,
+            'impulse_plot_bem': False,
+            'update_pressure_soundfield': True,
+            'update_pressure_axisplot': True,
+            'update_pressure_polarplot': True,
+            'update_pressure_impulse': True,
         }
         for key, value in defaults.items():
             setattr(self, key, value)
@@ -223,6 +237,20 @@ class Settings:
             'length': getattr(self, 'length', 0.0),
             'surface_definitions': self.surface_definitions,
             'active_surface_id': self.active_surface_id,
+            'spl_plot_superposition': self.spl_plot_superposition,
+            'spl_plot_fem': self.spl_plot_fem,
+            'xaxis_plot_superposition': self.xaxis_plot_superposition,
+            'xaxis_plot_fem': self.xaxis_plot_fem,
+            'yaxis_plot_superposition': self.yaxis_plot_superposition,
+            'yaxis_plot_fem': self.yaxis_plot_fem,
+            'polar_plot_superposition': self.polar_plot_superposition,
+            'polar_plot_fem': self.polar_plot_fem,
+            'impulse_plot_superposition': self.impulse_plot_superposition,
+            'impulse_plot_bem': self.impulse_plot_bem,
+            'update_pressure_soundfield': self.update_pressure_soundfield,
+            'update_pressure_axisplot': self.update_pressure_axisplot,
+            'update_pressure_polarplot': self.update_pressure_polarplot,
+            'update_pressure_impulse': self.update_pressure_impulse,
         }
 
     def set_active_surface(self, surface_id):

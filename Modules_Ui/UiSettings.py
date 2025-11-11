@@ -27,7 +27,12 @@ class UiSettings(QtWidgets.QWidget):
         self.setup_tab_settings()
         self.tab_widget.addTab(self.tab_settings, "Settings")
 
-        # Tab 2: Mapping
+        # Tab 2: Calculation
+        self.tab_calculation = QtWidgets.QWidget()
+        self.setup_tab_calculation()
+        self.tab_widget.addTab(self.tab_calculation, "Calculation")
+
+        # Tab 3: Mapping
         self.tab_mapping = QtWidgets.QWidget()
         self.setup_tab_mapping()
         self.tab_widget.addTab(self.tab_mapping, "Mapping")
@@ -138,75 +143,7 @@ class UiSettings(QtWidgets.QWidget):
         colorization_layout.addWidget(self.colorization_mode)
         self.mapping_layout.addLayout(colorization_layout)
 
-        # Upper und Lower Frequency bandwidth
-        freq_bandwidth_upper_layout = QtWidgets.QHBoxLayout()
-        freq_bandwidth_lower_layout = QtWidgets.QHBoxLayout()
-        
-        # Standardisierte 1/12 Oktavband-Mittenfrequenzen (umgekehrte Reihenfolge)
-        available_frequencies = [
-            400, 375, 355, 335, 315,
-            300, 280, 265, 250, 236, 224, 212, 200, 190, 180, 170, 160,
-            150, 140, 132, 125, 118, 112, 106, 100, 95, 90, 85, 80,
-            75, 71, 67, 63, 60, 56, 53, 50, 47, 45, 42, 40,
-            37, 35, 33, 31, 30, 28, 26, 25, 24, 22, 21, 20, 15
-        ]
-        
-        frequency_strings = [f"{freq} Hz" for freq in available_frequencies]
-        
-        # 1. ComboBoxen erstellen
-        self.freq_bandwidth_lower = QtWidgets.QComboBox()
-        self.freq_bandwidth_upper = QtWidgets.QComboBox()
-
-        # 2. Signale temporär blockieren
-        self.freq_bandwidth_lower.blockSignals(True)
-        self.freq_bandwidth_upper.blockSignals(True)
-
-        # 3. Items hinzufügen
-        self.freq_bandwidth_lower.addItems(frequency_strings)
-        self.freq_bandwidth_upper.addItems(frequency_strings)
-
-        # 4. Initiale Werte setzen
-        self.freq_bandwidth_lower.setCurrentText(f"{self.settings.lower_calculate_frequency} Hz")
-        self.freq_bandwidth_upper.setCurrentText(f"{self.settings.upper_calculate_frequency} Hz")
-
-        # 5. Signale wieder freigeben
-        self.freq_bandwidth_lower.blockSignals(False)
-        self.freq_bandwidth_upper.blockSignals(False)
-
-        # 6. Erst jetzt die Signale verbinden
-        self.freq_bandwidth_upper.currentIndexChanged.connect(self.validate_frequency_range)
-        self.freq_bandwidth_lower.currentIndexChanged.connect(self.validate_frequency_range)
-
-        # Upper Frequency Bandwidth
-        freq_bandwidth_upper_label = QtWidgets.QLabel("Upper frequency bandwidth")
-        self.freq_bandwidth_upper.setFixedWidth(INPUT_WIDTH)
-        freq_bandwidth_upper_layout.addWidget(freq_bandwidth_upper_label)
-        freq_bandwidth_upper_layout.addStretch()
-        freq_bandwidth_upper_layout.addWidget(self.freq_bandwidth_upper)
-        
-        # Lower Frequency Bandwidth
-        freq_bandwidth_lower_label = QtWidgets.QLabel("Lower frequency bandwidth")
-        self.freq_bandwidth_lower.setFixedWidth(INPUT_WIDTH)
-        freq_bandwidth_lower_layout.addWidget(freq_bandwidth_lower_label)
-        freq_bandwidth_lower_layout.addStretch()
-        freq_bandwidth_lower_layout.addWidget(self.freq_bandwidth_lower)
-        
-        # Füge die Layouts hinzu
-        self.mapping_layout.addLayout(freq_bandwidth_upper_layout)
-        self.mapping_layout.addLayout(freq_bandwidth_lower_layout)
-        self.mapping_layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
-
-        # Resolution
-        resolution_layout = QtWidgets.QHBoxLayout()
-        resolution_label = QtWidgets.QLabel("Resolution")
-        self.resolution = QLineEdit()
-        self.resolution.setValidator(QDoubleValidator(0.1, 3.0, 2))
-        self.resolution.setFixedWidth(INPUT_WIDTH)
-        resolution_layout.addWidget(resolution_label)
-        resolution_layout.addStretch()
-        resolution_layout.addWidget(self.resolution)
-        self.mapping_layout.addLayout(resolution_layout)
-
+        # Trennlinie
         self.mapping_layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
 
         # Position Plot Length
@@ -278,6 +215,191 @@ class UiSettings(QtWidgets.QWidget):
         # Zum Schluss
         self.mapping_layout.addStretch()
 
+    def setup_tab_calculation(self):
+        layout = QtWidgets.QVBoxLayout(self.tab_calculation)
+        layout.setSpacing(10)
+
+        INPUT_WIDTH = 120
+
+        # Upper und Lower Frequency bandwidth
+        freq_bandwidth_upper_layout = QtWidgets.QHBoxLayout()
+        freq_bandwidth_lower_layout = QtWidgets.QHBoxLayout()
+
+        available_frequencies = [
+            400, 375, 355, 335, 315,
+            300, 280, 265, 250, 236, 224, 212, 200, 190, 180, 170, 160,
+            150, 140, 132, 125, 118, 112, 106, 100, 95, 90, 85, 80,
+            75, 71, 67, 63, 60, 56, 53, 50, 47, 45, 42, 40,
+            37, 35, 33, 31, 30, 28, 26, 25, 24, 22, 21, 20, 15
+        ]
+        frequency_strings = [f"{freq} Hz" for freq in available_frequencies]
+
+        self.freq_bandwidth_lower = QtWidgets.QComboBox()
+        self.freq_bandwidth_upper = QtWidgets.QComboBox()
+
+        self.freq_bandwidth_lower.blockSignals(True)
+        self.freq_bandwidth_upper.blockSignals(True)
+
+        self.freq_bandwidth_lower.addItems(frequency_strings)
+        self.freq_bandwidth_upper.addItems(frequency_strings)
+
+        self.freq_bandwidth_lower.setCurrentText(f"{self.settings.lower_calculate_frequency} Hz")
+        self.freq_bandwidth_upper.setCurrentText(f"{self.settings.upper_calculate_frequency} Hz")
+
+        self.freq_bandwidth_lower.blockSignals(False)
+        self.freq_bandwidth_upper.blockSignals(False)
+
+        self.freq_bandwidth_upper.currentIndexChanged.connect(self.validate_frequency_range)
+        self.freq_bandwidth_lower.currentIndexChanged.connect(self.validate_frequency_range)
+
+        freq_bandwidth_upper_label = QtWidgets.QLabel("Upper frequency bandwidth")
+        self.freq_bandwidth_upper.setFixedWidth(INPUT_WIDTH)
+        freq_bandwidth_upper_layout.addWidget(freq_bandwidth_upper_label)
+        freq_bandwidth_upper_layout.addStretch()
+        freq_bandwidth_upper_layout.addWidget(self.freq_bandwidth_upper)
+
+        freq_bandwidth_lower_label = QtWidgets.QLabel("Lower frequency bandwidth")
+        self.freq_bandwidth_lower.setFixedWidth(INPUT_WIDTH)
+        freq_bandwidth_lower_layout.addWidget(freq_bandwidth_lower_label)
+        freq_bandwidth_lower_layout.addStretch()
+        freq_bandwidth_lower_layout.addWidget(self.freq_bandwidth_lower)
+
+        title_style = "font-size: 11px; font-weight: bold;"
+
+        freq_range_title = QtWidgets.QLabel("Frequency range: Axis & Soundfield")
+        freq_range_title.setStyleSheet(title_style)
+        layout.addWidget(freq_range_title)
+        freq_range_title.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
+        layout.addLayout(freq_bandwidth_upper_layout)
+        layout.addLayout(freq_bandwidth_lower_layout)
+
+        layout.addSpacing(18)
+
+        resolution_title = QtWidgets.QLabel("Resolution Soundfield")
+        resolution_title.setStyleSheet(title_style)
+        resolution_title.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(resolution_title)
+        layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
+
+        # Resolution
+        resolution_layout = QtWidgets.QHBoxLayout()
+        resolution_label = QtWidgets.QLabel("Resolution")
+        self.resolution = QLineEdit()
+        self.resolution.setValidator(QDoubleValidator(0.1, 3.0, 2))
+        self.resolution.setFixedWidth(INPUT_WIDTH)
+        resolution_layout.addWidget(resolution_label)
+        resolution_layout.addStretch()
+        resolution_layout.addWidget(self.resolution)
+        layout.addLayout(resolution_layout)
+
+        layout.addSpacing(18)
+
+        update_pressure_title = QtWidgets.QLabel("Update automatically pressure")
+        update_pressure_title.setStyleSheet(title_style)
+        update_pressure_title.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(update_pressure_title)
+        layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
+
+        update_pressure_checks_layout = QtWidgets.QVBoxLayout()
+        update_pressure_checks_layout.setSpacing(4)
+        self.update_pressure_soundfield = QtWidgets.QCheckBox("Soundfield")
+        self.update_pressure_axisplot = QtWidgets.QCheckBox("Axis Plot")
+        self.update_pressure_polarplot = QtWidgets.QCheckBox("Polar Plot")
+        self.update_pressure_impulse = QtWidgets.QCheckBox("Impulse Plot")
+        update_pressure_checks_layout.addWidget(self.update_pressure_soundfield)
+        update_pressure_checks_layout.addWidget(self.update_pressure_axisplot)
+        update_pressure_checks_layout.addWidget(self.update_pressure_polarplot)
+        update_pressure_checks_layout.addWidget(self.update_pressure_impulse)
+        layout.addLayout(update_pressure_checks_layout)
+
+        layout.addSpacing(18)
+
+        calculation_method_title = QtWidgets.QLabel("Calculation method")
+        calculation_method_title.setStyleSheet(title_style)
+        calculation_method_title.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(calculation_method_title)
+        layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
+
+        # Plot Optionen Hauptbereich
+        plot_option_layout = QtWidgets.QGridLayout()
+        plot_option_layout.setHorizontalSpacing(20)
+        plot_option_layout.setVerticalSpacing(8)
+
+        plot_option_layout.addWidget(QtWidgets.QLabel(""), 0, 0)
+        plot_option_layout.addWidget(QtWidgets.QLabel("Superposition"), 0, 1, alignment=QtCore.Qt.AlignCenter)
+        plot_option_layout.addWidget(QtWidgets.QLabel("FEM Analyse"), 0, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self.spl_plot_superposition = QtWidgets.QCheckBox()
+        self.spl_plot_fem = QtWidgets.QCheckBox()
+        plot_option_layout.addWidget(QtWidgets.QLabel("SPL Plot"), 1, 0)
+        plot_option_layout.addWidget(self.spl_plot_superposition, 1, 1, alignment=QtCore.Qt.AlignCenter)
+        plot_option_layout.addWidget(self.spl_plot_fem, 1, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self.xaxis_plot_superposition = QtWidgets.QCheckBox()
+        self.xaxis_plot_fem = QtWidgets.QCheckBox()
+        plot_option_layout.addWidget(QtWidgets.QLabel("X-Axis Plot"), 2, 0)
+        plot_option_layout.addWidget(self.xaxis_plot_superposition, 2, 1, alignment=QtCore.Qt.AlignCenter)
+        plot_option_layout.addWidget(self.xaxis_plot_fem, 2, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self.yaxis_plot_superposition = QtWidgets.QCheckBox()
+        self.yaxis_plot_fem = QtWidgets.QCheckBox()
+        plot_option_layout.addWidget(QtWidgets.QLabel("Y-Axis Plot"), 3, 0)
+        plot_option_layout.addWidget(self.yaxis_plot_superposition, 3, 1, alignment=QtCore.Qt.AlignCenter)
+        plot_option_layout.addWidget(self.yaxis_plot_fem, 3, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self.polar_plot_superposition = QtWidgets.QCheckBox()
+        self.polar_plot_fem = QtWidgets.QCheckBox()
+        plot_option_layout.addWidget(QtWidgets.QLabel("Polar Plot"), 4, 0)
+        plot_option_layout.addWidget(self.polar_plot_superposition, 4, 1, alignment=QtCore.Qt.AlignCenter)
+        plot_option_layout.addWidget(self.polar_plot_fem, 4, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self._spl_calc_group = QtWidgets.QButtonGroup(self)
+        self._spl_calc_group.setExclusive(True)
+        self._spl_calc_group.addButton(self.spl_plot_superposition)
+        self._spl_calc_group.addButton(self.spl_plot_fem)
+
+        self._xaxis_calc_group = QtWidgets.QButtonGroup(self)
+        self._xaxis_calc_group.setExclusive(True)
+        self._xaxis_calc_group.addButton(self.xaxis_plot_superposition)
+        self._xaxis_calc_group.addButton(self.xaxis_plot_fem)
+
+        self._yaxis_calc_group = QtWidgets.QButtonGroup(self)
+        self._yaxis_calc_group.setExclusive(True)
+        self._yaxis_calc_group.addButton(self.yaxis_plot_superposition)
+        self._yaxis_calc_group.addButton(self.yaxis_plot_fem)
+
+        self._polar_calc_group = QtWidgets.QButtonGroup(self)
+        self._polar_calc_group.setExclusive(True)
+        self._polar_calc_group.addButton(self.polar_plot_superposition)
+        self._polar_calc_group.addButton(self.polar_plot_fem)
+
+        layout.addLayout(plot_option_layout)
+        layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
+
+        # Plot Optionen Impulsbereich
+        impulse_option_layout = QtWidgets.QGridLayout()
+        impulse_option_layout.setHorizontalSpacing(20)
+        impulse_option_layout.setVerticalSpacing(8)
+
+        impulse_option_layout.addWidget(QtWidgets.QLabel(""), 0, 0)
+        impulse_option_layout.addWidget(QtWidgets.QLabel("Superposition"), 0, 1, alignment=QtCore.Qt.AlignCenter)
+        impulse_option_layout.addWidget(QtWidgets.QLabel("BEM Analyse"), 0, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self.impulse_plot_superposition = QtWidgets.QCheckBox()
+        self.impulse_plot_bem = QtWidgets.QCheckBox()
+        impulse_option_layout.addWidget(QtWidgets.QLabel("Impulse Plot"), 1, 0)
+        impulse_option_layout.addWidget(self.impulse_plot_superposition, 1, 1, alignment=QtCore.Qt.AlignCenter)
+        impulse_option_layout.addWidget(self.impulse_plot_bem, 1, 2, alignment=QtCore.Qt.AlignCenter)
+
+        self._impulse_calc_group = QtWidgets.QButtonGroup(self)
+        self._impulse_calc_group.setExclusive(True)
+        self._impulse_calc_group.addButton(self.impulse_plot_superposition)
+        self._impulse_calc_group.addButton(self.impulse_plot_bem)
+
+        layout.addLayout(impulse_option_layout)
+        layout.addStretch()
+
     def setup_connections(self):
         self.impulse_plot_height.editingFinished.connect(self.on_ImpulsePlotHeight_changed)
         self.impulse_min_spl.editingFinished.connect(self.on_ImpulseMinSPL_changed)
@@ -288,6 +410,26 @@ class UiSettings(QtWidgets.QWidget):
         self.resolution.editingFinished.connect(self.on_Resolution_changed)
         self.position_plot_length.editingFinished.connect(self.on_PositionLength_changed)
         self.position_plot_width.editingFinished.connect(self.on_PositionWidth_changed)
+
+        checkbox_mapping = {
+            self.spl_plot_superposition: "spl_plot_superposition",
+            self.spl_plot_fem: "spl_plot_fem",
+            self.xaxis_plot_superposition: "xaxis_plot_superposition",
+            self.xaxis_plot_fem: "xaxis_plot_fem",
+            self.yaxis_plot_superposition: "yaxis_plot_superposition",
+            self.yaxis_plot_fem: "yaxis_plot_fem",
+            self.polar_plot_superposition: "polar_plot_superposition",
+            self.polar_plot_fem: "polar_plot_fem",
+            self.impulse_plot_superposition: "impulse_plot_superposition",
+            self.impulse_plot_bem: "impulse_plot_bem",
+            self.update_pressure_soundfield: "update_pressure_soundfield",
+            self.update_pressure_axisplot: "update_pressure_axisplot",
+            self.update_pressure_polarplot: "update_pressure_polarplot",
+            self.update_pressure_impulse: "update_pressure_impulse",
+        }
+
+        for checkbox, attribute in checkbox_mapping.items():
+            checkbox.stateChanged.connect(lambda state, attr=attribute: self.on_calculation_option_changed(attr, state))
 
         # Verbindungen für die Polar-Frequenzen
         for i, color in enumerate(['red', 'yellow', 'green', 'cyan']):
@@ -309,6 +451,21 @@ class UiSettings(QtWidgets.QWidget):
         self.resolution.setText(f"{self.settings.resolution:.2f}")
         self.position_plot_length.setText(str(self.settings.position_x_axis))
         self.position_plot_width.setText(str(self.settings.position_y_axis))
+
+        self.spl_plot_superposition.setChecked(self.settings.spl_plot_superposition)
+        self.spl_plot_fem.setChecked(self.settings.spl_plot_fem)
+        self.xaxis_plot_superposition.setChecked(self.settings.xaxis_plot_superposition)
+        self.xaxis_plot_fem.setChecked(self.settings.xaxis_plot_fem)
+        self.yaxis_plot_superposition.setChecked(self.settings.yaxis_plot_superposition)
+        self.yaxis_plot_fem.setChecked(self.settings.yaxis_plot_fem)
+        self.polar_plot_superposition.setChecked(self.settings.polar_plot_superposition)
+        self.polar_plot_fem.setChecked(self.settings.polar_plot_fem)
+        self.impulse_plot_superposition.setChecked(self.settings.impulse_plot_superposition)
+        self.impulse_plot_bem.setChecked(self.settings.impulse_plot_bem)
+        self.update_pressure_soundfield.setChecked(self.settings.update_pressure_soundfield)
+        self.update_pressure_axisplot.setChecked(self.settings.update_pressure_axisplot)
+        self.update_pressure_polarplot.setChecked(self.settings.update_pressure_polarplot)
+        self.update_pressure_impulse.setChecked(self.settings.update_pressure_impulse)
 
         # Update SPL Plot settings
         self.max_spl.setText(str(self.settings.colorbar_range['max']))
@@ -452,6 +609,13 @@ class UiSettings(QtWidgets.QWidget):
         else:
             print("[WARN] plot_spl() nicht aufgerufen, da sources_instance nicht existiert.")
 
+    def on_calculation_option_changed(self, attribute_name, state):
+        new_value = bool(state)
+        if getattr(self.settings, attribute_name, False) != new_value:
+            setattr(self.settings, attribute_name, new_value)
+            if hasattr(self.main_window, "update_speaker_array_calculations"):
+                self.main_window.update_speaker_array_calculations()
+
     def on_Resolution_changed(self):
         try:
             value = round(float(self.resolution.text()), 2)
@@ -562,5 +726,8 @@ class UiSettings(QtWidgets.QWidget):
     def open_settings_window(self):
         self.update_ui_from_settings()
         self.show()
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
 
 

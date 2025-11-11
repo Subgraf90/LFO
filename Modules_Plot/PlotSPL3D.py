@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import types
 from typing import Iterable, List, Optional, Tuple
+from time import perf_counter
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -88,6 +90,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._configure_plotter()
         self.initialize_empty_scene(preserve_camera=False)
         self._setup_view_controls()
+        self._perf_enabled = bool(int(os.environ.get("LFO_DEBUG_PERF", "1")))
+        self._perf_logger = logging.getLogger("LFO.Performance")
 
     def eventFilter(self, obj, event):  # noqa: PLR0911
         if obj is self.widget:
@@ -195,131 +199,141 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.initialize_empty_scene(preserve_camera=True)
             return
 
-        x = np.asarray(sound_field_x, dtype=float)
-        y = np.asarray(sound_field_y, dtype=float)
+        with self._perf_scope("SPL3D preprocess data"):
+            x = np.asarray(sound_field_x, dtype=float)
+            y = np.asarray(sound_field_y, dtype=float)
 
-        try:
-            pressure = np.asarray(sound_field_pressure, dtype=float)
-        except Exception:  # noqa: BLE001
-            self.initialize_empty_scene(preserve_camera=True)
-            return
-
-        self._debug_dump_soundfield(x, y, pressure)
-
-        if pressure.ndim != 2:
-            # Erwartet wird ein (len(y), len(x))-Raster. Bei flachen Arrays
-            # versuchen wir genau einmal ein Reshape mit der Zielgröße; gelingt
-            # das nicht, brechen wir frühzeitig ab und zeigen eine leere Szene.
-            if pressure.size == (len(y) * len(x)):
-                try:
-                    pressure = pressure.reshape(len(y), len(x))
-                except Exception:  # noqa: BLE001
-                    self.initialize_empty_scene(preserve_camera=True)
-                    return
-            else:
+            try:
+                pressure = np.asarray(sound_field_pressure, dtype=float)
+            except Exception:  # noqa: BLE001
                 self.initialize_empty_scene(preserve_camera=True)
                 return
 
-        if pressure.shape != (len(y), len(x)):
-            self.initialize_empty_scene(preserve_camera=True)
-            return
+            self._debug_dump_soundfield(x, y, pressure)
 
-        pressure_2d = np.nan_to_num(np.abs(pressure), nan=0.0, posinf=0.0, neginf=0.0)
-        pressure_2d = np.clip(pressure_2d, 1e-12, None)
-        spl_db = self.functions.mag2db(pressure_2d)
+            if pressure.ndim != 2:
+                # Erwartet wird ein (len(y), len(x))-Raster. Bei flachen Arrays
+                # versuchen wir genau einmal ein Reshape mit der Zielgröße; gelingt
+                # das nicht, brechen wir frühzeitig ab und zeigen eine leere Szene.
+                if pressure.size == (len(y) * len(x)):
+                    try:
+                        pressure = pressure.reshape(len(y), len(x))
+                    except Exception:  # noqa: BLE001
+                        self.initialize_empty_scene(preserve_camera=True)
+                        return
+                else:
+                    self.initialize_empty_scene(preserve_camera=True)
+                    return
 
-        finite_mask = np.isfinite(spl_db)
-        if not np.any(finite_mask):
-            self.initialize_empty_scene(preserve_camera=True)
-            return
+            if pressure.shape != (len(y), len(x)):
+                self.initialize_empty_scene(preserve_camera=True)
+                return
 
-        cbar_min = self.settings.colorbar_range['min']
-        cbar_max = self.settings.colorbar_range['max']
-        cbar_step = self.settings.colorbar_range['step']
+            pressure_2d = np.nan_to_num(np.abs(pressure), nan=0.0, posinf=0.0, neginf=0.0)
+            pressure_2d = np.clip(pressure_2d, 1e-12, None)
+            spl_db = self.functions.mag2db(pressure_2d)
 
-        spl_db = np.clip(spl_db, cbar_min - 20, cbar_max + 20)
+            finite_mask = np.isfinite(spl_db)
+            if not np.any(finite_mask):
+                self.initialize_empty_scene(preserve_camera=True)
+                return
 
-        plot_x = x
-        plot_y = y
-        plot_values = spl_db
+            cbar_min = self.settings.colorbar_range['min']
+            cbar_max = self.settings.colorbar_range['max']
+            cbar_step = self.settings.colorbar_range['step']
 
-        requested_upscale = getattr(self.settings, 'plot_upscale_factor', None)
-        if requested_upscale is None:
-            requested_upscale = self.UPSCALE_FACTOR
-        try:
-            upscale_factor = int(requested_upscale)
-        except (TypeError, ValueError):
-            upscale_factor = self.UPSCALE_FACTOR
-        upscale_factor = max(1, upscale_factor)
+            spl_db = np.clip(spl_db, cbar_min - 20, cbar_max + 20)
 
-        if (
-            upscale_factor > 1
-            and plot_x.size > 1
-            and plot_y.size > 1
-        ):
-            base_resolution = float(getattr(self.settings, 'resolution', 0.0) or 0.0)
-            orig_plot_x = plot_x.copy()
-            orig_plot_y = plot_y.copy()
-            plot_x = self._expand_axis_for_plot(plot_x, base_resolution, upscale_factor)
-            plot_y = self._expand_axis_for_plot(plot_y, base_resolution, upscale_factor)
-            plot_values = self._resample_values_to_grid(plot_values, orig_plot_x, orig_plot_y, plot_x, plot_y)
+            plot_x = x
+            plot_y = y
+            plot_values = spl_db
 
-        if colorization_mode == 'Color step':
-            scalars = self._quantize_to_steps(plot_values, cbar_step)
-        else:
-            scalars = plot_values
+        with self._perf_scope("SPL3D upscale grid"):
+            requested_upscale = getattr(self.settings, 'plot_upscale_factor', None)
+            if requested_upscale is None:
+                requested_upscale = self.UPSCALE_FACTOR
+            try:
+                upscale_factor = int(requested_upscale)
+            except (TypeError, ValueError):
+                upscale_factor = self.UPSCALE_FACTOR
+            upscale_factor = max(1, upscale_factor)
 
-        mesh = self._build_surface_mesh(plot_x, plot_y, scalars)
-        actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
-        if actor is None or self.surface_mesh is None:
-            self.surface_mesh = mesh.copy(deep=True)
-            actor = self.plotter.add_mesh(
-                self.surface_mesh,
-                name=self.SURFACE_NAME,
-                scalars='plot_scalars',
-                cmap='jet',
-                clim=(cbar_min, cbar_max),
-                smooth_shading=False,
-                show_scalar_bar=False,
-                reset_camera=False,
-                interpolate_before_map=False,
-            )
-            if hasattr(actor, 'prop') and actor.prop is not None:
-                try:
-                    actor.prop.interpolation = 'flat'
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            self.surface_mesh.deep_copy(mesh)
-            mapper = actor.mapper
-            if mapper is not None:
-                mapper.array_name = 'plot_scalars'
-                mapper.scalar_range = (cbar_min, cbar_max)
-                mapper.lookup_table = self.plotter._cmap_to_lut('jet')
-                mapper.interpolate_before_map = False
+            if (
+                upscale_factor > 1
+                and plot_x.size > 1
+                and plot_y.size > 1
+            ):
+                base_resolution = float(getattr(self.settings, 'resolution', 0.0) or 0.0)
+                orig_plot_x = plot_x.copy()
+                orig_plot_y = plot_y.copy()
+                plot_x = self._expand_axis_for_plot(plot_x, base_resolution, upscale_factor)
+                plot_y = self._expand_axis_for_plot(plot_y, base_resolution, upscale_factor)
+                plot_values = self._resample_values_to_grid(plot_values, orig_plot_x, orig_plot_y, plot_x, plot_y)
 
-        self._update_colorbar(colorization_mode)
+        with self._perf_scope("SPL3D scalars prep"):
+            if colorization_mode == 'Color step':
+                scalars = self._quantize_to_steps(plot_values, cbar_step)
+            else:
+                scalars = plot_values
+
+        with self._perf_scope("SPL3D build mesh"):
+            mesh = self._build_surface_mesh(plot_x, plot_y, scalars)
+
+        with self._perf_scope("SPL3D update actor"):
+            actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
+            if actor is None or self.surface_mesh is None:
+                self.surface_mesh = mesh.copy(deep=True)
+                actor = self.plotter.add_mesh(
+                    self.surface_mesh,
+                    name=self.SURFACE_NAME,
+                    scalars='plot_scalars',
+                    cmap='jet',
+                    clim=(cbar_min, cbar_max),
+                    smooth_shading=False,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    interpolate_before_map=False,
+                )
+                if hasattr(actor, 'prop') and actor.prop is not None:
+                    try:
+                        actor.prop.interpolation = 'flat'
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                self.surface_mesh.deep_copy(mesh)
+                mapper = actor.mapper
+                if mapper is not None:
+                    mapper.array_name = 'plot_scalars'
+                    mapper.scalar_range = (cbar_min, cbar_max)
+                    mapper.lookup_table = self.plotter._cmap_to_lut('jet')
+                    mapper.interpolate_before_map = False
+
+        with self._perf_scope("SPL3D update colorbar"):
+            self._update_colorbar(colorization_mode)
         self.has_data = True
 
-        if camera_state is not None:
-            self._restore_camera(camera_state)
-        self._maximize_camera_view(add_padding=True)
-        self.render()
-        self._save_camera_state()
+        with self._perf_scope("SPL3D camera & render"):
+            if camera_state is not None:
+                self._restore_camera(camera_state)
+            self._maximize_camera_view(add_padding=True)
+            with self._perf_scope("SPL3D render call"):
+                self.render()
+            self._save_camera_state()
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
-        # Wir vergleichen Hash-Signaturen pro Kategorie und zeichnen nur dort neu,
-        # wo sich Parameter geändert haben. Das verhindert unnötiges Entfernen
-        # und erneutes Hinzufügen zahlreicher PyVista-Actor.
-        signatures = self._compute_overlay_signatures(settings, container)
-        previous = self._last_overlay_signatures or {}
-        if not previous:
-            categories_to_refresh = set(signatures.keys())
-        else:
-            categories_to_refresh = {
-                key for key, value in signatures.items() if value != previous.get(key)
-            }
+        with self._perf_scope("SPL3D overlays signatures"):
+            # Wir vergleichen Hash-Signaturen pro Kategorie und zeichnen nur dort neu,
+            # wo sich Parameter geändert haben. Das verhindert unnötiges Entfernen
+            # und erneutes Hinzufügen zahlreicher PyVista-Actor.
+            signatures = self._compute_overlay_signatures(settings, container)
+            previous = self._last_overlay_signatures or {}
+            if not previous:
+                categories_to_refresh = set(signatures.keys())
+            else:
+                categories_to_refresh = {
+                    key for key, value in signatures.items() if value != previous.get(key)
+                }
         if not categories_to_refresh:
             self._last_overlay_signatures = signatures
             if not self._rotate_active and not self._pan_active:
@@ -330,22 +344,27 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         try:
             self.overlay_helper.DEBUG_ON_TOP = True
             if 'axis' in categories_to_refresh:
-                self.overlay_helper.clear_category('axis')
-                self.overlay_helper.draw_axis_lines(settings)
+                with self._perf_scope("SPL3D overlays axis"):
+                    self.overlay_helper.clear_category('axis')
+                    self.overlay_helper.draw_axis_lines(settings)
             if 'walls' in categories_to_refresh:
-                self.overlay_helper.clear_category('walls')
-                self.overlay_helper.draw_walls(settings)
+                with self._perf_scope("SPL3D overlays walls"):
+                    self.overlay_helper.clear_category('walls')
+                    self.overlay_helper.draw_walls(settings)
             if 'speakers' in categories_to_refresh:
-                self.overlay_helper.clear_category('speakers')
-                cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
-                self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
+                with self._perf_scope("SPL3D overlays speakers"):
+                    self.overlay_helper.clear_category('speakers')
+                    cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
+                    self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
             if 'impulse' in categories_to_refresh:
-                self.overlay_helper.clear_category('impulse')
-                self.overlay_helper.draw_impulse_points(settings)
+                with self._perf_scope("SPL3D overlays impulse"):
+                    self.overlay_helper.clear_category('impulse')
+                    self.overlay_helper.draw_impulse_points(settings)
         finally:
             self.overlay_helper.DEBUG_ON_TOP = prev_debug_state
         self._last_overlay_signatures = signatures
-        self.render()
+        with self._perf_scope("SPL3D overlays render"):
+            self.render()
         if not self._rotate_active and not self._pan_active:
             self._save_camera_state()
 
@@ -369,6 +388,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 )
         except Exception:
             print("DEBUG SPL dump failed")
+
+    def _perf_scope(self, label: str):
+        return _PerfScope(self, label)
+
+    def _log_perf(self, label: str, duration: float) -> None:
+        if self._perf_enabled:
+            self._perf_logger.info("[PERF] %s: %.3f s", label, duration)
 
     def render(self):
         """Erzwingt ein Rendering der Szene."""
@@ -1238,6 +1264,23 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             'speakers': speakers_signature_tuple,
             'impulse': impulse_signature_tuple,
         }
+
+
+class _PerfScope:
+    def __init__(self, owner: "DrawSPLPlot3D", label: str):
+        self._owner = owner
+        self._label = label
+        self._start = 0.0
+
+    def __enter__(self):
+        if getattr(self._owner, "_perf_enabled", False):
+            self._start = perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if getattr(self._owner, "_perf_enabled", False):
+            duration = perf_counter() - self._start
+            self._owner._log_perf(self._label, duration)
 
 
 __all__ = ['DrawSPLPlot3D']

@@ -1,11 +1,31 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QHBoxLayout, QPushButton, QSpacerItem, QSizePolicy, QToolBar, QAction
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt5.QtGui import QIcon
+import logging
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from matplotlib.figure import Figure
+from time import perf_counter
+import os
 import sys
+
+
+class _PerfScope:
+    def __init__(self, owner, label: str):
+        self._owner = owner
+        self._label = label
+        self._start = 0.0
+
+    def __enter__(self):
+        if getattr(self._owner, "_perf_enabled", False):
+            self._start = perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if getattr(self._owner, "_perf_enabled", False):
+            duration = perf_counter() - self._start
+            self._owner._log_perf(self._label, duration)
 class DrawImpulsePlots(QWidget):
     view_changed = pyqtSignal(str)  # Signal für Ansichtsänderungen
 
@@ -28,6 +48,8 @@ class DrawImpulsePlots(QWidget):
         self.toolbar = None
         
         self.init_ui()
+        self._perf_enabled = bool(int(os.environ.get("LFO_DEBUG_PERF", "1")))
+        self._perf_logger = logging.getLogger("LFO.Performance")
 
     def _current_view_type(self):
         if self.at_button and self.at_button.isChecked():
@@ -232,83 +254,77 @@ class DrawImpulsePlots(QWidget):
         pass
 
     def update_plot_impulse(self):
-        """Aktualisiert die Plots basierend auf dem aktiven View-Type und dem ausgewählten Messpunkt"""        
-        # Hole die aktuellen Daten aus dem Container
-        calculation_impulse = self.container.get_calculation_impulse().get("aktuelle_simulation", {})
-        
-        # Hole den ausgewählten Messpunkt
-        selected_key = self.get_selected_measurement_point()
-        
-        # Prüfe ob Snapshots mit Impulse-Daten vorhanden sind
-        has_snapshot_data = False
-        if selected_key:
-            for snapshot_key, snapshot_data in self.container.calculation_axes.items():
-                if (snapshot_key != "aktuelle_simulation" and 
-                    snapshot_data.get("show_in_plot", False)):
-                    # Prüfe ob Impulse-Daten für diesen Messpunkt existieren
-                    if (f"impulse_{selected_key}" in snapshot_data or 
-                        f"magnitude_{selected_key}" in snapshot_data or
-                        f"phase_{selected_key}" in snapshot_data):
+        """Aktualisiert die Plots basierend auf dem aktiven View-Type und dem ausgewählten Messpunkt"""
+        with self._perf_scope("Impulse update total"):
+            calculation_impulse = self.container.get_calculation_impulse().get("aktuelle_simulation", {})
+            selected_key = self.get_selected_measurement_point()
+            has_snapshot_data = False
+            if selected_key:
+                for snapshot_key, snapshot_data in self.container.calculation_axes.items():
+                    if (
+                        snapshot_key != "aktuelle_simulation"
+                        and snapshot_data.get("show_in_plot", False)
+                        and (
+                            f"impulse_{selected_key}" in snapshot_data
+                            or f"magnitude_{selected_key}" in snapshot_data
+                            or f"phase_{selected_key}" in snapshot_data
+                        )
+                    ):
                         has_snapshot_data = True
                         break
-        
-        # Zeige Empty Plot nur wenn KEINE Daten vorhanden sind (weder aktuelle noch Snapshots)
-        if not selected_key:
-            # Kein Messpunkt ausgewählt
-            self.initialize_empty_plots()
-            return
-        
-        if not calculation_impulse and not has_snapshot_data:
-            # Keine Daten vorhanden - zeige leere Plot-Darstellung
-            self.initialize_empty_plots()
-            return
-        
-        # Bestimme View-Type (nur IR oder AT)
-        view_type = 'IR'
-        if self.at_button.isChecked():
-            view_type = 'AT'
-        
-        # Aktualisiere die Höhe der Haupt-Canvas
-        if 'main' in self.canvases:
-            self.canvases['main']['canvas'].setFixedHeight(self.settings.impulse_plot_height * 3)
-        
-        # Plotte den ausgewählten Messpunkt (falls vorhanden in calculation_impulse)
-        data = calculation_impulse.get(selected_key, None) if calculation_impulse else None
 
-        if data and data.get('show_in_plot', True):
-            try:
-                # Oberer Plot: IR oder AT (Toggle)
-                if view_type == 'IR':
-                    self.plot_impulse_response('main', data, selected_key)
-                else:  # AT
-                    self.plot_arrival_times('main', data, selected_key)
-                
-                # Mittlerer Plot: Phase (immer sichtbar)
-                self.plot_phase('main', data, selected_key)
-                
-                # Unterer Plot: Magnitude (immer sichtbar, gelinkt mit Phase)
-                self.plot_magnitude('main', data, selected_key)
-            except Exception as e:
-                print(f"Fehler beim Plotten für Key {selected_key}: {str(e)}")
-        elif has_snapshot_data:
-            # Nur Snapshots vorhanden - plotte nur Snapshots (leere Basis-Plots)
-            try:
-                # Erstelle leere Basis-Plots und lasse Snapshot-Logik in den Plot-Methoden die Snapshots zeichnen
-                if view_type == 'IR':
-                    self.plot_impulse_response('main', None, selected_key)
-                else:
-                    self.plot_arrival_times('main', None, selected_key)
-                self.plot_phase('main', None, selected_key)
-                self.plot_magnitude('main', None, selected_key)
-            except Exception as e:
-                print(f"Fehler beim Plotten von Snapshots für Key {selected_key}: {str(e)}")
+            if not selected_key:
+                self.initialize_empty_plots()
+                return
 
-        # Layout aktualisieren (wie in PlotDataImporter.py)
-        if 'main' in self.canvases:
-            canvas = self.canvases['main']['canvas']
-            canvas.draw_idle()
-        
-        self._schedule_scroll_update()
+            if not calculation_impulse and not has_snapshot_data:
+                self.initialize_empty_plots()
+                return
+
+            view_type = 'IR' if not self.at_button.isChecked() else 'AT'
+
+            if 'main' in self.canvases:
+                self.canvases['main']['canvas'].setFixedHeight(self.settings.impulse_plot_height * 3)
+
+            data = calculation_impulse.get(selected_key, None) if calculation_impulse else None
+
+            with self._perf_scope("Impulse render plots"):
+                phase_fn = getattr(self, "plot_phase", None)
+                impulse_fn = getattr(self, "plot_impulse_response", None)
+                arrival_fn = getattr(self, "plot_arrival_times", None)
+                magnitude_fn = getattr(self, "plot_magnitude", None)
+
+                def _call_plot(fn, scope_label, *args):
+                    if callable(fn):
+                        with self._perf_scope(scope_label):
+                            fn(*args)
+                    else:
+                        self._log_missing_plot(scope_label)
+
+                try:
+                    if data and data.get('show_in_plot', True):
+                        if view_type == 'IR':
+                            _call_plot(impulse_fn, "Impulse plot impulse_response", 'main', data, selected_key)
+                        else:
+                            _call_plot(arrival_fn, "Impulse plot arrival_times", 'main', data, selected_key)
+                        _call_plot(phase_fn, "Impulse plot phase", 'main', data, selected_key)
+                        _call_plot(magnitude_fn, "Impulse plot magnitude", 'main', data, selected_key)
+                    elif has_snapshot_data:
+                        if view_type == 'IR':
+                            _call_plot(impulse_fn, "Impulse plot impulse_response", 'main', None, selected_key)
+                        else:
+                            _call_plot(arrival_fn, "Impulse plot arrival_times", 'main', None, selected_key)
+                        _call_plot(phase_fn, "Impulse plot phase", 'main', None, selected_key)
+                        _call_plot(magnitude_fn, "Impulse plot magnitude", 'main', None, selected_key)
+                except Exception as e:
+                    print(f"Fehler beim Plotten für Key {selected_key}: {str(e)}")
+
+            if 'main' in self.canvases:
+                canvas = self.canvases['main']['canvas']
+                canvas.draw_idle()
+
+            self._schedule_scroll_update()
+        self._log_async("Impulse manager update")
 
     def get_selected_measurement_point(self):
         """Ermittelt den ausgewählten Messpunkt aus dem TreeWidget"""
@@ -428,6 +444,23 @@ class DrawImpulsePlots(QWidget):
                 self.scroll_layout_graphics.update()
 
         QTimer.singleShot(0, _refresh)
+
+    def _perf_scope(self, label: str):
+        return _PerfScope(self, label)
+
+    def _log_perf(self, label: str, duration: float) -> None:
+        if self._perf_enabled:
+            self._perf_logger.info("[PERF] %s: %.3f s", label, duration)
+
+    def _log_async(self, label: str) -> None:
+        if not self._perf_enabled:
+            return
+        start = perf_counter()
+        QTimer.singleShot(0, lambda: self._log_perf(f"{label} UI idle", perf_counter() - start))
+
+    def _log_missing_plot(self, target: str) -> None:
+        if self._perf_enabled:
+            self._perf_logger.warning("Plotfunktion '%s' nicht verfügbar", target)
 
     def plot_arrival_times(self, key, data, selected_key=None):
         """Plottet die Ankunftszeiten"""

@@ -470,7 +470,6 @@ class DataContainer:
     def set_calculation_SPL(self, calculation_spl):
         self.calculation_spl = calculation_spl
 
- 
     def set_calculation_axes(self, calculation_axes):
         neue_daten = calculation_axes.get("aktuelle_simulation", {})
     
@@ -494,7 +493,6 @@ class DataContainer:
         # Aktualisierte Daten in self.calculation_axes speichern
         self.calculation_axes["aktuelle_simulation"] = aktuelle_simulation
 
-       
     def set_calculation_windowing(self, calculation_windowing):
         self.calculation_windowing = calculation_windowing
 
@@ -517,7 +515,6 @@ class DataContainer:
 
     def set_measurement_point(self, key, data):
         self.impulse_points[key] = data
-
 
     def set_polar_data(self, polar_data):
         """

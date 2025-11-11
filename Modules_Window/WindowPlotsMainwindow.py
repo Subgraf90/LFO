@@ -2,6 +2,9 @@ from PyQt5 import QtCore, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
+import logging
+import os
+from time import perf_counter
 from typing import Optional
 
 from Module_LFO.Modules_Plot.PlotMPLCanvas import MplCanvas
@@ -15,6 +18,22 @@ from Module_LFO.Modules_Plot.PlotSPLXaxis import DrawSPLPlot_Xaxis
 from Module_LFO.Modules_Plot.PlotSPLYaxis import DrawSPLPlot_Yaxis
 from Module_LFO.Modules_Plot.PlotPolarPattern import DrawPolarPattern
 
+
+class _PerfScope:
+    def __init__(self, owner, label: str):
+        self._owner = owner
+        self._label = label
+        self._start = 0.0
+
+    def __enter__(self):
+        if getattr(self._owner, "_perf_enabled", False):
+            self._start = perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if getattr(self._owner, "_perf_enabled", False):
+            duration = perf_counter() - self._start
+            self._owner._log_perf(self._label, duration)
 
 
 class DrawPlotsMainwindow(ModuleBase):
@@ -46,6 +65,8 @@ class DrawPlotsMainwindow(ModuleBase):
         # Colorbar-Canvas erstellen
         self.colorbar_canvas = FigureCanvas(Figure(figsize=(0.8, 4)))
         self.colorbar_ax = self.colorbar_canvas.figure.add_subplot(111)
+        self._perf_enabled = bool(int(os.environ.get("LFO_DEBUG_PERF", "1")))
+        self._perf_logger = logging.getLogger("LFO.Performance")
 
         # Maximale Ausnutzung des verfügbaren Platzes
         self.colorbar_canvas.figure.subplots_adjust(
@@ -253,21 +274,26 @@ class DrawPlotsMainwindow(ModuleBase):
         sound_field_pressure = self.container.calculation_spl['sound_field_p']
 
         # 3D-Plot aktualisieren
-        draw_spl_plotter.update_spl_plot(
-            sound_field_x,
-            sound_field_y,
-            sound_field_pressure,
-            self.settings.colorization_mode,
-        )
-        draw_spl_plotter.update_overlays(self.settings, self.container)
-        self.colorbar_canvas.draw()
+        with self._perf_scope("Plot3D update_spl_plot"):
+            draw_spl_plotter.update_spl_plot(
+                sound_field_x,
+                sound_field_y,
+                sound_field_pressure,
+                self.settings.colorization_mode,
+            )
+        with self._perf_scope("Plot3D overlays"):
+            draw_spl_plotter.update_overlays(self.settings, self.container)
+        with self._perf_scope("Plot3D colorbar draw"):
+            self.colorbar_canvas.draw()
         if reset_camera:
             self.reset_zoom()
 
         if update_axes:
-            self.plot_xaxis()
-            self.plot_yaxis()
-            self.plot_polar_pattern()
+            with self._perf_scope("Plot axes update"):
+                self.plot_xaxis()
+                self.plot_yaxis()
+                self.plot_polar_pattern()
+        self._log_async("Plot SPL")
    
     def _is_empty_data(self, sound_field_p):
         """Prüft ob sound_field_p nur NaN oder Nullen enthält"""
@@ -299,26 +325,33 @@ class DrawPlotsMainwindow(ModuleBase):
 
     def plot_xaxis(self):
         # Aufrufen der plot_xaxis Methode von DrawSPLPlot_Xaxis
-        self.draw_spl_plot_xaxis.plot_xaxis(self.container.calculation_axes)
-        
+        with self._perf_scope("Plot x-axis data"):
+            self.draw_spl_plot_xaxis.plot_xaxis(self.container.calculation_axes)
+
         # Aktualisieren des Plots
-        self.matplotlib_canvas_xaxis.draw()
+        with self._perf_scope("Plot x-axis draw"):
+            self.matplotlib_canvas_xaxis.draw()
 
     def plot_yaxis(self):
         # Aufrufen der plot_yaxis Methode von DrawSPLPlot_Yaxis
-        self.draw_spl_plot_yaxis.plot_yaxis(self.container.calculation_axes)
-        
+        with self._perf_scope("Plot y-axis data"):
+            self.draw_spl_plot_yaxis.plot_yaxis(self.container.calculation_axes)
+
         # Aktualisieren des Plots
-        self.matplotlib_canvas_yaxis.draw()
+        with self._perf_scope("Plot y-axis draw"):
+            self.matplotlib_canvas_yaxis.draw()
 
     def plot_polar_pattern(self):
         polar_data = self.container.get_polar_data()
-        
+
         # Update Polar-Plot (zeigt Empty Plot wenn keine Daten vorhanden)
-        self.draw_polar_pattern.update_polar_pattern(polar_data)
-        
+        with self._perf_scope("Plot polar data"):
+            self.draw_polar_pattern.update_polar_pattern(polar_data)
+
         # Aktualisieren des Plots
-        self.matplotlib_canvas_polar_pattern.draw()
+        with self._perf_scope("Plot polar draw"):
+            self.matplotlib_canvas_polar_pattern.draw()
+        self._log_async("Plot polar")
 
     def update_plot_Stacks2SPL(self):
         """Kompatibilitätsmethode – aktualisiert die 3D-Overlays."""
@@ -335,7 +368,8 @@ class DrawPlotsMainwindow(ModuleBase):
     def _update_overlays(self):
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
-            plotter.update_overlays(self.settings, self.container)
+            with self._perf_scope("Plot3D overlays only"):
+                plotter.update_overlays(self.settings, self.container)
 
     def set_view_isometric(self):
         plotter = self._get_current_spl_plotter()
@@ -441,6 +475,19 @@ class DrawPlotsMainwindow(ModuleBase):
             plotter.render()
         except Exception:
             pass
+
+    def _perf_scope(self, label: str) -> _PerfScope:
+        return _PerfScope(self, label)
+
+    def _log_perf(self, label: str, duration: float) -> None:
+        if self._perf_enabled:
+            self._perf_logger.info("[PERF] %s: %.3f s", label, duration)
+
+    def _log_async(self, label: str) -> None:
+        if not self._perf_enabled:
+            return
+        start = perf_counter()
+        QtCore.QTimer.singleShot(0, lambda: self._log_perf(f"{label} UI idle", perf_counter() - start))
 
     def set_splitter_positions(self):
         # Hole die Referenzen zu den Splittern

@@ -23,6 +23,7 @@ class SPL3DOverlayRenderer:
         # Kleinster Z-Offset, um Z-Fighting mit Boden/Surface zu vermeiden
         # (insbesondere bei Draufsicht sollen Linien klar sichtbar bleiben).
         self._planar_z_offset = 0.02
+        self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
 
 
     def clear(self) -> None:
@@ -34,6 +35,7 @@ class SPL3DOverlayRenderer:
         self.overlay_actor_names.clear()
         self.overlay_counter = 0
         self._category_actors.clear()
+        self._speaker_actor_cache.clear()
 
     def clear_category(self, category: str) -> None:
         """Entfernt alle Actor einer Kategorie, ohne andere Overlays anzutasten."""
@@ -46,6 +48,10 @@ class SPL3DOverlayRenderer:
             else:
                 if name in self.overlay_actor_names:
                     self.overlay_actor_names.remove(name)
+        if category == 'speakers':
+            keys_to_remove = [key for key, info in self._speaker_actor_cache.items() if info['actor'] in actor_names]
+            for key in keys_to_remove:
+                self._speaker_actor_cache.pop(key, None)
 
     # ------------------------------------------------------------------
     # Öffentliche API zum Zeichnen der Overlays
@@ -72,15 +78,19 @@ class SPL3DOverlayRenderer:
         self.clear_category('walls')
 
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
-        self.clear_category('speakers')
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
         if not isinstance(speaker_arrays, dict):
+            self.clear_category('speakers')
             return
 
         body_color = '#b0b0b0'
         exit_color = '#4d4d4d'
 
-        for speaker_array in speaker_arrays.values():
+        old_cache = self._speaker_actor_cache
+        new_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
+        new_actor_names: List[str] = []
+
+        for array_name, speaker_array in speaker_arrays.items():
             if getattr(speaker_array, 'hide', False):
                 continue
 
@@ -107,6 +117,7 @@ class SPL3DOverlayRenderer:
 
             valid_mask = np.isfinite(xs[:min_len]) & np.isfinite(ys[:min_len]) & np.isfinite(zs[:min_len])
             valid_indices = np.nonzero(valid_mask)[0]
+            array_identifier = str(getattr(speaker_array, 'name', array_name))
 
             for idx in valid_indices:
                 x = xs[idx]
@@ -125,15 +136,46 @@ class SPL3DOverlayRenderer:
 
                 if not geometries:
                     sphere = self.pv.Sphere(radius=0.6, center=(float(x), float(y), float(z)), theta_resolution=32, phi_resolution=32)
-                    self._add_overlay_mesh(sphere, color=body_color, opacity=1.0, edge_color='black', category='speakers')
+                    key = (array_identifier, int(idx), 'fallback')
+                    existing = old_cache.get(key)
+                    if existing:
+                        existing_mesh = existing['mesh']
+                        existing_mesh.deep_copy(sphere)
+                        self._update_speaker_actor(existing['actor'], existing_mesh, None, body_color, exit_color)
+                        new_cache[key] = existing
+                        if existing['actor'] not in new_actor_names:
+                            new_actor_names.append(existing['actor'])
+                    else:
+                        mesh_to_add = sphere.copy(deep=True)
+                        actor_name = self._add_overlay_mesh(
+                            mesh_to_add,
+                            color=body_color,
+                            opacity=1.0,
+                            edge_color='black',
+                            category='speakers',
+                        )
+                        new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name}
+                        if actor_name not in new_actor_names:
+                            new_actor_names.append(actor_name)
                 else:
-                    for body_mesh, exit_face_index in geometries:
+                    for geom_idx, (body_mesh, exit_face_index) in enumerate(geometries):
+                        key = (array_identifier, int(idx), geom_idx)
+                        existing = old_cache.get(key)
+                        if existing:
+                            existing_mesh = existing['mesh']
+                            existing_mesh.deep_copy(body_mesh)
+                            self._update_speaker_actor(existing['actor'], existing_mesh, exit_face_index, body_color, exit_color)
+                            new_cache[key] = existing
+                            if existing['actor'] not in new_actor_names:
+                                new_actor_names.append(existing['actor'])
+                            continue
+
                         mesh_to_add = body_mesh.copy(deep=True)
                         if exit_face_index is not None and mesh_to_add.n_cells > 0:
                             scalars = np.zeros(mesh_to_add.n_cells, dtype=int)
                             scalars[int(exit_face_index)] = 1
                             mesh_to_add.cell_data['speaker_face'] = scalars
-                            self._add_overlay_mesh(
+                            actor_name = self._add_overlay_mesh(
                                 mesh_to_add,
                                 scalars='speaker_face',
                                 cmap=[body_color, exit_color],
@@ -143,7 +185,24 @@ class SPL3DOverlayRenderer:
                                 category='speakers',
                             )
                         else:
-                            self._add_overlay_mesh(mesh_to_add, color=body_color, opacity=1.0, edge_color='black', line_width=1.5, category='speakers')
+                            actor_name = self._add_overlay_mesh(
+                                mesh_to_add,
+                                color=body_color,
+                                opacity=1.0,
+                                edge_color='black',
+                                line_width=1.5,
+                                category='speakers',
+                            )
+                        new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name}
+                        if actor_name not in new_actor_names:
+                            new_actor_names.append(actor_name)
+
+        for key, info in old_cache.items():
+            if key not in new_cache:
+                self._remove_actor(info['actor'])
+
+        self._speaker_actor_cache = new_cache
+        self._category_actors['speakers'] = new_actor_names
 
     def draw_impulse_points(self, settings) -> None:
         self.clear_category('impulse')
@@ -710,6 +769,7 @@ class SPL3DOverlayRenderer:
                 pass
         self.overlay_actor_names.append(name)
         self._category_actors.setdefault(category, []).append(name)
+        return name
 
     @staticmethod
     def _to_float_array(values) -> np.ndarray:
@@ -722,6 +782,47 @@ class SPL3DOverlayRenderer:
         if array.ndim > 1:
             array = array.reshape(-1)
         return array.astype(float)
+
+    def _remove_actor(self, name: str) -> None:
+        try:
+            self.plotter.remove_actor(name)
+        except KeyError:
+            pass
+        if name in self.overlay_actor_names:
+            self.overlay_actor_names.remove(name)
+        for actors in self._category_actors.values():
+            if name in actors:
+                actors.remove(name)
+
+    def _update_speaker_actor(
+        self,
+        actor_name: str,
+        mesh: Any,
+        exit_face_index: Optional[int],
+        body_color: str,
+        exit_color: str,
+    ) -> None:
+        actor = self.plotter.renderer.actors.get(actor_name)
+        if actor is None:
+            return
+        mapper = getattr(actor, 'mapper', None)
+        if exit_face_index is not None and mesh.n_cells > 0:
+            scalars = np.zeros(mesh.n_cells, dtype=int)
+            clamped_index = int(np.clip(exit_face_index, 0, mesh.n_cells - 1))
+            scalars[clamped_index] = 1
+            mesh.cell_data['speaker_face'] = scalars
+            if mapper is not None:
+                mapper.array_name = 'speaker_face'
+                mapper.scalar_range = (0, 1)
+                mapper.lookup_table = self.plotter._cmap_to_lut([body_color, exit_color])
+                mapper.scalar_visibility = True
+        else:
+            if 'speaker_face' in mesh.cell_data:
+                del mesh.cell_data['speaker_face']
+            if mapper is not None:
+                mapper.scalar_visibility = False
+            if hasattr(actor, 'prop') and actor.prop is not None:
+                actor.prop.color = body_color
 
     def _resolve_cabinet_entries(self, cabinet_raw, configuration) -> List[dict]:
         config_lower = (configuration or '').lower()

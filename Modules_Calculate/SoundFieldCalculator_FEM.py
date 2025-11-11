@@ -75,7 +75,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         Ablauf:
             1. Sicherstellen, dass alle FEM-Abhängigkeiten verfügbar sind.
-            2. Frequenzliste normalisieren (Einzelwert → Liste).
+            2. Frequenzliste anhand der Bandbreite bestimmen (Einzelwert → Liste).
             3. Geometrie-/Materialparameter in ein FEM-Mesh übersetzen.
             4. Für jede Frequenz das Helmholtz-Problem lösen und in das
                gemeinsame Ergebnis-Dictionary schreiben.
@@ -87,7 +87,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         self._ensure_fenics_available()
 
-        frequencies = self._normalize_frequencies(self.settings.calculate_frequency)
+        frequencies = self._determine_frequencies()
         if not frequencies:
             raise ValueError("Es sind keine Frequenzen zur Berechnung definiert.")
 
@@ -139,6 +139,67 @@ class SoundFieldCalculatorFEM(ModuleBase):
         raise TypeError(
             "calculate_frequency muss Zahl oder Iterable von Zahlen sein."
         )
+
+    def _determine_frequencies(self) -> list[float]:
+        """Ermittelt die zu berechnenden Frequenzen aus den Settings."""
+
+        base = self._normalize_frequencies(
+            getattr(self.settings, "calculate_frequency", None)
+        )
+
+        lower = getattr(self.settings, "lower_calculate_frequency", None)
+        upper = getattr(self.settings, "upper_calculate_frequency", None)
+
+        if lower is None or upper is None:
+            return base
+
+        try:
+            lower_val = float(lower)
+            upper_val = float(upper)
+        except (TypeError, ValueError):
+            return base
+
+        if upper_val < lower_val:
+            lower_val, upper_val = upper_val, lower_val
+
+        band_frequencies: list[float] = []
+
+        if self._data_container is not None:
+            for speaker_name in self._iter_active_speaker_names():
+                balloon = self._data_container.get_balloon_data(
+                    speaker_name, use_averaged=False
+                )
+                if not balloon or "freqs" not in balloon:
+                    continue
+
+                freqs = np.asarray(balloon["freqs"], dtype=float).flatten()
+                mask = (freqs >= lower_val) & (freqs <= upper_val)
+                if not np.any(mask):
+                    continue
+
+                band_frequencies = np.unique(np.round(freqs[mask], decimals=6)).tolist()
+                if band_frequencies:
+                    break
+
+        if band_frequencies:
+            return band_frequencies
+
+        base_in_band = [f for f in base if lower_val <= f <= upper_val]
+        if base_in_band:
+            return base_in_band
+
+        return base
+
+    def _iter_active_speaker_names(self) -> Iterable[str]:
+        if not hasattr(self.settings, "speaker_arrays"):
+            return []
+
+        for speaker_array in self.settings.speaker_arrays.values():
+            if getattr(speaker_array, "mute", False) or getattr(speaker_array, "hide", False):
+                continue
+            for speaker_name in getattr(speaker_array, "source_polar_pattern", []) or []:
+                if speaker_name:
+                    yield speaker_name
 
     def _build_domain(self):
         """Erzeugt das FEM-Mesh auf Basis der Settings.
@@ -362,5 +423,82 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         velocity = kinematic_factor * grad_p.x.array
         return velocity.copy()
+
+    # ------------------------------------------------------------------
+    # Daten-Export
+    # ------------------------------------------------------------------
+    def export_pressure_transposed(
+        self, frequency: float, decimals: int = 6
+    ) -> np.ndarray:
+        """Erzeugt ein transponiertes Druckfeld-Array für eine Frequenz.
+
+        Die Methode fasst die FEM-Ausgabe zu einem 2D-Gitter zusammen und
+        liefert nur den Schalldruckbetrag pro Punkt zurück. Die Achsen werden
+        intern sortiert und das Ergebnis transponiert, sodass die Form dem
+        klassischen SoundField (`[nx, ny]`) entspricht.
+
+        Parameters
+        ----------
+        frequency : float
+            Frequenz, für die das Ergebnis extrahiert werden soll.
+        decimals : int, optional
+            Anzahl der Nachkommastellen für die Koordinatenrundung, um
+            numerische Artefakte beim Gruppieren zu vermeiden (Standard: 6).
+
+        Returns
+        -------
+        np.ndarray
+            Transponiertes 2D-Array des Schalldruckbetrags (Pa).
+
+        Raises
+        ------
+        KeyError
+            Wenn keine Ergebnisse für die gewünschte Frequenz vorliegen.
+        RuntimeError
+            Wenn noch keine FEM-Ergebnisse berechnet wurden.
+        ValueError
+            Wenn die Punktdaten nicht mindestens zweidimensional sind.
+        """
+
+        fem_results = self.calculation_spl.get("fem_simulation")
+        if not fem_results:
+            raise RuntimeError(
+                "Es liegen keine FEM-Ergebnisse vor. Bitte zuerst die Berechnung ausführen."
+            )
+
+        freq_key = float(frequency)
+        freq_data = fem_results.get(freq_key)
+        if freq_data is None and frequency in fem_results:
+            freq_data = fem_results[frequency]
+        if freq_data is None:
+            raise KeyError(
+                f"Für die Frequenz {frequency} Hz wurden keine FEM-Ergebnisse gefunden."
+            )
+
+        points = freq_data["points"]
+        pressure = freq_data["pressure"]
+
+        if points.ndim != 2 or points.shape[1] < 2:
+            raise ValueError("Punktkoordinaten besitzen nicht genügend Dimensionen.")
+
+        coords_xy = points[:, :2]
+        rounded_x = np.round(coords_xy[:, 0], decimals=decimals)
+        rounded_y = np.round(coords_xy[:, 1], decimals=decimals)
+
+        x_unique = np.unique(rounded_x)
+        y_unique = np.unique(rounded_y)
+
+        pressure_grid = np.full(
+            (y_unique.size, x_unique.size),
+            np.nan,
+            dtype=pressure.dtype,
+        )
+
+        x_indices = np.searchsorted(x_unique, rounded_x)
+        y_indices = np.searchsorted(y_unique, rounded_y)
+
+        pressure_grid[y_indices, x_indices] = pressure
+
+        return pressure_grid.T
 
 
