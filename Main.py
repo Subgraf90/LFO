@@ -6,18 +6,19 @@ import os
 from time import perf_counter
 from typing import Optional
 
+# FEM-spezifische Fehlertypen für Fallback-Handling
+from subprocess import CalledProcessError as _CalledProcessError
+
 try:
     from cffi import VerificationError as _CffiVerificationError
 except ImportError:
     _CffiVerificationError = None
+
 try:
+    # distutils ist deprecated (entfernt in Python 3.12+)
     from distutils.errors import CompileError as _DistutilsCompileError
-except Exception:
+except (ImportError, ModuleNotFoundError):
     _DistutilsCompileError = None
-try:
-    from subprocess import CalledProcessError as _CalledProcessError
-except Exception:
-    _CalledProcessError = None
 
 import numpy as np
 from qtpy import QtWidgets, QtCore
