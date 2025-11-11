@@ -1,0 +1,24 @@
+Git-Alltagsbefehle
+===================
+
+1. git status                     # Überblick über Änderungen
+2. git add <datei>                # Einzelne Datei stagen
+3. git add .                      # Alle Änderungen stagen
+4. git commit -m "Nachricht"       # Snapshot erstellen
+5. git log --oneline --graph --decorate -n 10   # Kompakte Historie
+6. git diff                       # Ungestagte Änderungen ansehen
+7. git diff --staged              # Gestagte Änderungen ansehen
+8. git pull                       # Remote-Stand holen und mergen
+9. git push                       # Lokale Commits hochladen
+10. git branch                    # Branches anzeigen
+11. git checkout <branch>         # Branch wechseln
+12. git checkout -b <branch>      # Neuen Branch erstellen + wechseln
+13. git merge <branch>            # Branch in aktuellen integrieren
+14. git stash                     # Änderungen temporär sichern
+15. git stash pop                 # Gesicherte Änderungen zurückholen
+16. git remote -v                 # Remotes anzeigen
+17. git fetch                     # Remote-Updates ohne Merge holen
+
+git checkout origin/main -- <pfad/zur/datei>
+git checkout origin/main -- Module_LFO/Modules_Plot/
+git checkout <commit-id> -- <pfad/zur/datei>
