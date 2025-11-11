@@ -505,7 +505,12 @@ class DataContainer:
             key (str, optional): Der Schlüssel unter dem die Daten gespeichert werden. 
                                Standardmäßig "aktuelle_simulation"
         """
-        self.calculation_impulse[key] = calculation
+        if isinstance(calculation, dict):
+            payload = dict(calculation)
+            payload.setdefault("show_in_plot", True)
+            self.calculation_impulse[key] = payload
+        else:
+            self.calculation_impulse[key] = calculation
 
     def delete_calculation_impulse(self, key):
         if key in self.calculation_impulse:

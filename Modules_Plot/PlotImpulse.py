@@ -138,6 +138,15 @@ class DrawImpulsePlots(QWidget):
         return default_width
 
     def _is_current_simulation_visible(self):
+        if hasattr(self.container, 'calculation_impulse'):
+            impulse_data = self.container.calculation_impulse.get("aktuelle_simulation")
+            if isinstance(impulse_data, dict):
+                if "show_in_plot" in impulse_data:
+                    return bool(impulse_data.get("show_in_plot", True))
+                # Wenn Impulsdaten vorhanden sind (mindestens ein Messpunkt), zeige sie standardmäßig
+                if any(key != "show_in_plot" for key in impulse_data.keys()):
+                    return True
+
         if hasattr(self.container, 'calculation_axes'):
             current_axes = self.container.calculation_axes.get("aktuelle_simulation")
             if current_axes is not None:

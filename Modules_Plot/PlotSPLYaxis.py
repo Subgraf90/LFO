@@ -86,6 +86,8 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         for key, value in calculation_Yaxis.items():
             # boleanabfrage. wenn show_in_plot true, wird der plot ausgeführt
             if 'show_in_plot' in value and value['show_in_plot']: 
+                if 'x_data_yaxis' not in value or 'y_data_yaxis' not in value:
+                    continue
                 x_data = value['x_data_yaxis']
                 y_data = value['y_data_yaxis']
 

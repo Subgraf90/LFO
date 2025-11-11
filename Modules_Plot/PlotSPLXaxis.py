@@ -89,6 +89,8 @@ class DrawSPLPlot_Xaxis(ModuleBase):
         for key, value in calculation_Xaxis.items():
             # boleanabfrage. wenn show_in_plot true, wird der plot ausgeführt
             if 'show_in_plot' in value and value['show_in_plot']: 
+                if 'x_data_xaxis' not in value or 'y_data_xaxis' not in value:
+                    continue
                 x_data = value['x_data_xaxis']
                 y_data = value['y_data_xaxis']
 

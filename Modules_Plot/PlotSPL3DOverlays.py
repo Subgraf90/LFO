@@ -24,6 +24,8 @@ class SPL3DOverlayRenderer:
         # (insbesondere bei Draufsicht sollen Linien klar sichtbar bleiben).
         self._planar_z_offset = 0.02
         self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
+        self._last_axis_state: Optional[tuple] = None
+        self._last_impulse_state: Optional[tuple] = None
 
 
     def clear(self) -> None:
@@ -36,6 +38,8 @@ class SPL3DOverlayRenderer:
         self.overlay_counter = 0
         self._category_actors.clear()
         self._speaker_actor_cache.clear()
+        self._last_axis_state = None
+        self._last_impulse_state = None
 
     def clear_category(self, category: str) -> None:
         """Entfernt alle Actor einer Kategorie, ohne andere Overlays anzutasten."""
@@ -52,27 +56,36 @@ class SPL3DOverlayRenderer:
             keys_to_remove = [key for key, info in self._speaker_actor_cache.items() if info['actor'] in actor_names]
             for key in keys_to_remove:
                 self._speaker_actor_cache.pop(key, None)
+        elif category == 'axis':
+            self._last_axis_state = None
+        elif category == 'impulse':
+            self._last_impulse_state = None
 
     # ------------------------------------------------------------------
     # Öffentliche API zum Zeichnen der Overlays
     # ------------------------------------------------------------------
     def draw_axis_lines(self, settings) -> None:
-        self.clear_category('axis')
-        x_axis = getattr(settings, 'position_x_axis', 0.0)
-        y_axis = getattr(settings, 'position_y_axis', 0.0)
+        state = (
+            float(getattr(settings, 'position_x_axis', 0.0)),
+            float(getattr(settings, 'position_y_axis', 0.0)),
+            float(getattr(settings, 'length', 0.0)),
+            float(getattr(settings, 'width', 0.0)),
+        )
+        existing_names = self._category_actors.get('axis', [])
+        if self._last_axis_state == state and existing_names:
+            return
 
-        length = getattr(settings, 'length', 0.0)
-        width = getattr(settings, 'width', 0.0)
+        self.clear_category('axis')
+        x_axis, y_axis, length, width = state
 
         z_offset = self._planar_z_offset
         line_x = self.pv.Line((x_axis, -length / 2, z_offset), (x_axis, length / 2, z_offset))
         line_y = self.pv.Line((-width / 2, y_axis, z_offset), (width / 2, y_axis, z_offset))
 
-        # Durchgängige Linien verschmelzen mit der SPL-Fläche; ein stärkerer Strich
-        # mit Wiederholmuster sorgt für bessere Lesbarkeit in Draufsicht.
         dashed_pattern = 0xAAAA
         self._add_overlay_mesh(line_x, color='black', line_width=1.2, line_pattern=dashed_pattern, line_repeat=2, category='axis')
         self._add_overlay_mesh(line_y, color='black', line_width=1.2, line_pattern=dashed_pattern, line_repeat=2, category='axis')
+        self._last_axis_state = state
 
     def draw_walls(self, settings) -> None:
         self.clear_category('walls')
@@ -139,9 +152,17 @@ class SPL3DOverlayRenderer:
                     key = (array_identifier, int(idx), 'fallback')
                     existing = old_cache.get(key)
                     if existing:
+                        signature = existing.get('signature')
+                        current_signature = self._speaker_signature_from_mesh(sphere, None)
+                        if signature == current_signature:
+                            new_cache[key] = existing
+                            if existing['actor'] not in new_actor_names:
+                                new_actor_names.append(existing['actor'])
+                            continue
                         existing_mesh = existing['mesh']
                         existing_mesh.deep_copy(sphere)
                         self._update_speaker_actor(existing['actor'], existing_mesh, None, body_color, exit_color)
+                        existing['signature'] = current_signature
                         new_cache[key] = existing
                         if existing['actor'] not in new_actor_names:
                             new_actor_names.append(existing['actor'])
@@ -154,7 +175,11 @@ class SPL3DOverlayRenderer:
                             edge_color='black',
                             category='speakers',
                         )
-                        new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name}
+                        new_cache[key] = {
+                            'mesh': mesh_to_add,
+                            'actor': actor_name,
+                            'signature': self._speaker_signature_from_mesh(mesh_to_add, None),
+                        }
                         if actor_name not in new_actor_names:
                             new_actor_names.append(actor_name)
                 else:
@@ -162,9 +187,17 @@ class SPL3DOverlayRenderer:
                         key = (array_identifier, int(idx), geom_idx)
                         existing = old_cache.get(key)
                         if existing:
+                            signature = existing.get('signature')
+                            current_signature = self._speaker_signature_from_mesh(body_mesh, exit_face_index)
+                            if signature == current_signature:
+                                new_cache[key] = existing
+                                if existing['actor'] not in new_actor_names:
+                                    new_actor_names.append(existing['actor'])
+                                continue
                             existing_mesh = existing['mesh']
                             existing_mesh.deep_copy(body_mesh)
                             self._update_speaker_actor(existing['actor'], existing_mesh, exit_face_index, body_color, exit_color)
+                            existing['signature'] = current_signature
                             new_cache[key] = existing
                             if existing['actor'] not in new_actor_names:
                                 new_actor_names.append(existing['actor'])
@@ -196,6 +229,7 @@ class SPL3DOverlayRenderer:
                         new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name}
                         if actor_name not in new_actor_names:
                             new_actor_names.append(actor_name)
+                        new_cache[key]['signature'] = self._speaker_signature_from_mesh(mesh_to_add, exit_face_index)
 
         for key, info in old_cache.items():
             if key not in new_cache:
@@ -205,19 +239,26 @@ class SPL3DOverlayRenderer:
         self._category_actors['speakers'] = new_actor_names
 
     def draw_impulse_points(self, settings) -> None:
+        current_state = self._compute_impulse_state(settings)
+        existing_names = self._category_actors.get('impulse', [])
+        if self._last_impulse_state == current_state and existing_names:
+            return
+
         self.clear_category('impulse')
-        impulse_points = getattr(settings, 'impulse_points', [])
+        _, impulse_points = current_state
         if not impulse_points:
+            self._last_impulse_state = current_state
             return
 
         size = getattr(settings, 'measurement_size', 3.0)
         radius = max(size / 5.0, 0.3)
         height = radius * 2.5
 
-        for point in impulse_points:
+        for x_val, y_val in impulse_points:
             try:
-                x, y = point['data']
-            except Exception:  # noqa: BLE001
+                x = float(x_val)
+                y = float(y_val)
+            except Exception:
                 continue
             base_z = 0.0
             center_z = base_z + (height / 2.0)
@@ -228,6 +269,26 @@ class SPL3DOverlayRenderer:
                 radius=radius,
             )
             self._add_overlay_mesh(cone, color='red', opacity=0.85, category='impulse')
+        self._last_impulse_state = current_state
+
+    def _compute_impulse_state(self, settings) -> tuple:
+        measurement_size = float(getattr(settings, 'measurement_size', 3.0))
+        impulse_points_raw = getattr(settings, 'impulse_points', []) or []
+        points: List[tuple] = []
+
+        for point in impulse_points_raw:
+            try:
+                data = point['data']
+                x_val, y_val = data
+            except Exception:
+                continue
+            try:
+                points.append((round(float(x_val), 4), round(float(y_val), 4)))
+            except Exception:
+                continue
+
+        points.sort()
+        return (round(measurement_size, 4), tuple(points))
 
     # ------------------------------------------------------------------
     # Hilfsfunktionen für Lautsprecher
@@ -823,6 +884,25 @@ class SPL3DOverlayRenderer:
                 mapper.scalar_visibility = False
             if hasattr(actor, 'prop') and actor.prop is not None:
                 actor.prop.color = body_color
+
+    @staticmethod
+    def _speaker_signature_from_mesh(mesh: Any, exit_face_index: Optional[int]) -> tuple:
+        bounds = getattr(mesh, 'bounds', (0.0,) * 6)
+        if bounds is None:
+            bounds = (0.0,) * 6
+        rounded_bounds = tuple(round(float(value), 4) for value in bounds)
+        n_points = int(getattr(mesh, 'n_points', 0))
+        n_cells = int(getattr(mesh, 'n_cells', 0))
+        exit_idx = int(exit_face_index) if exit_face_index is not None else None
+        point_sample: tuple = ()
+        try:
+            points = getattr(mesh, 'points', None)
+            if points is not None:
+                sample = points[: min(5, len(points))]
+                point_sample = tuple(round(float(coord), 4) for pt in np.asarray(sample) for coord in pt)
+        except Exception:
+            point_sample = ()
+        return (rounded_bounds, n_points, n_cells, exit_idx, point_sample)
 
     def _resolve_cabinet_entries(self, cabinet_raw, configuration) -> List[dict]:
         config_lower = (configuration or '').lower()

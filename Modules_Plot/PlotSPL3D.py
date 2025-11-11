@@ -275,7 +275,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 scalars = self._quantize_to_steps(plot_values, cbar_step)
             else:
                 scalars = plot_values
-
         with self._perf_scope("SPL3D build mesh"):
             mesh = self._build_surface_mesh(plot_x, plot_y, scalars)
 
@@ -345,7 +344,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.overlay_helper.DEBUG_ON_TOP = True
             if 'axis' in categories_to_refresh:
                 with self._perf_scope("SPL3D overlays axis"):
-                    self.overlay_helper.clear_category('axis')
                     self.overlay_helper.draw_axis_lines(settings)
             if 'walls' in categories_to_refresh:
                 with self._perf_scope("SPL3D overlays walls"):
@@ -353,12 +351,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     self.overlay_helper.draw_walls(settings)
             if 'speakers' in categories_to_refresh:
                 with self._perf_scope("SPL3D overlays speakers"):
-                    self.overlay_helper.clear_category('speakers')
                     cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
                     self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
             if 'impulse' in categories_to_refresh:
                 with self._perf_scope("SPL3D overlays impulse"):
-                    self.overlay_helper.clear_category('impulse')
                     self.overlay_helper.draw_impulse_points(settings)
         finally:
             self.overlay_helper.DEBUG_ON_TOP = prev_debug_state
@@ -979,6 +975,37 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             return len(x) > 0 and len(y) > 0 and len(pressure) > 0
         except TypeError:
             return False
+
+    @staticmethod
+    def _compute_surface_signature(x: np.ndarray, y: np.ndarray) -> tuple:
+        if x.size == 0 or y.size == 0:
+            return (0, 0, 0.0, 0.0, 0.0, 0.0)
+        return (
+            int(x.size),
+            float(x[0]),
+            float(x[-1]),
+            int(y.size),
+            float(y[0]),
+            float(y[-1]),
+        )
+
+    def _update_surface_scalars(self, flat_scalars: np.ndarray) -> bool:
+        if self.surface_mesh is None:
+            return False
+
+        if flat_scalars.size == self.surface_mesh.n_points:
+            self.surface_mesh.point_data['plot_scalars'] = flat_scalars
+            if hasattr(self.surface_mesh, "modified"):
+                self.surface_mesh.modified()
+            return True
+
+        if flat_scalars.size == self.surface_mesh.n_cells:
+            self.surface_mesh.cell_data['plot_scalars'] = flat_scalars
+            if hasattr(self.surface_mesh, "modified"):
+                self.surface_mesh.modified()
+            return True
+
+        return False
 
     def _build_surface_mesh(self, x: np.ndarray, y: np.ndarray, scalars: np.ndarray) -> "pv.PolyData":
         xm, ym = np.meshgrid(x, y, indexing='xy')

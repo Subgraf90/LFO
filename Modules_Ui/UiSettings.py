@@ -18,6 +18,7 @@ class UiSettings(QtWidgets.QWidget):
     def setup_ui(self):
         self.setWindowTitle("Settings")
         self.setGeometry(100, 100, 300, 600)
+        self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
 
         layout = QtWidgets.QVBoxLayout(self)
         self.tab_widget = QtWidgets.QTabWidget()
@@ -611,10 +612,33 @@ class UiSettings(QtWidgets.QWidget):
 
     def on_calculation_option_changed(self, attribute_name, state):
         new_value = bool(state)
-        if getattr(self.settings, attribute_name, False) != new_value:
-            setattr(self.settings, attribute_name, new_value)
-            if hasattr(self.main_window, "update_speaker_array_calculations"):
-                self.main_window.update_speaker_array_calculations()
+        if getattr(self.settings, attribute_name, False) == new_value:
+            return
+
+        setattr(self.settings, attribute_name, new_value)
+
+        is_auto_flag = attribute_name.startswith("update_pressure_")
+        should_trigger = False
+
+        if is_auto_flag:
+            if not new_value:
+                should_trigger = True
+        else:
+            if attribute_name in {"spl_plot_fem", "spl_plot_superposition"}:
+                should_trigger = getattr(self.settings, "update_pressure_soundfield", True)
+            elif attribute_name in {"xaxis_plot_fem", "xaxis_plot_superposition"}:
+                should_trigger = getattr(self.settings, "update_pressure_axisplot", True)
+            elif attribute_name in {"yaxis_plot_fem", "yaxis_plot_superposition"}:
+                should_trigger = getattr(self.settings, "update_pressure_axisplot", True)
+            elif attribute_name in {"polar_plot_fem", "polar_plot_superposition"}:
+                should_trigger = getattr(self.settings, "update_pressure_polarplot", True)
+            elif attribute_name in {"impulse_plot_superposition", "impulse_plot_bem"}:
+                should_trigger = getattr(self.settings, "update_pressure_impulse", True)
+            else:
+                should_trigger = True
+
+        if should_trigger and hasattr(self.main_window, "update_speaker_array_calculations"):
+            self.main_window.update_speaker_array_calculations()
 
     def on_Resolution_changed(self):
         try:

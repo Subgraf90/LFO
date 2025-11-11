@@ -225,6 +225,27 @@ class DrawPlotsMainwindow(ModuleBase):
         if self.vertical_splitter and len(vertical_sizes) == self.vertical_splitter.count():
             self.vertical_splitter.setSizes(vertical_sizes)
 
+    def show_empty_spl(self, preserve_camera: bool = True):
+        """Setzt nur den SPL-Plot auf eine leere Darstellung."""
+        plotter = self._get_current_spl_plotter()
+        if plotter is not None:
+            plotter.initialize_empty_scene(preserve_camera=preserve_camera)
+            plotter.update_overlays(self.settings, self.container)
+            self.colorbar_canvas.draw()
+
+    def show_empty_axes(self):
+        """Setzt X- und Y-Achsen-Plots zurück."""
+        self.draw_spl_plot_xaxis.initialize_empty_plots()
+        self.matplotlib_canvas_xaxis.draw()
+        self.draw_spl_plot_yaxis.initialize_empty_plots()
+        self.matplotlib_canvas_yaxis.draw()
+
+    def show_empty_polar(self):
+        """Setzt den Polar-Plot zurück."""
+        if hasattr(self.draw_polar_pattern, 'initialize_empty_plots'):
+            self.draw_polar_pattern.initialize_empty_plots()
+            self.matplotlib_canvas_polar_pattern.draw()
+
     def plot_spl(self, settings, speaker_array_id, update_axes=True, reset_camera=False):
         """
         Zeichnet den SPL-Plot
@@ -236,6 +257,23 @@ class DrawPlotsMainwindow(ModuleBase):
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
         self.settings = settings
+
+        draw_spl_plotter = self._get_current_spl_plotter()
+
+        if not self.container.calculation_spl.get("show_in_plot", True):
+            if draw_spl_plotter is not None:
+                draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
+                draw_spl_plotter.update_overlays(self.settings, self.container)
+                self.colorbar_canvas.draw()
+            if update_axes:
+                self.draw_spl_plot_xaxis.initialize_empty_plots()
+                self.matplotlib_canvas_xaxis.draw()
+                self.draw_spl_plot_yaxis.initialize_empty_plots()
+                self.matplotlib_canvas_yaxis.draw()
+                if hasattr(self.draw_polar_pattern, 'initialize_empty_plots'):
+                    self.draw_polar_pattern.initialize_empty_plots()
+                    self.matplotlib_canvas_polar_pattern.draw()
+            return
         
         # Prüfe ob gültige Daten vorhanden sind (nicht nur NaN)
         has_data = (
@@ -253,8 +291,6 @@ class DrawPlotsMainwindow(ModuleBase):
             not self._is_empty_data(self.container.calculation_spl['sound_field_p'])
         )
         
-        draw_spl_plotter = self._get_current_spl_plotter()
-
         if not has_data:
             # Keine Daten - zeige leere Szene
             draw_spl_plotter.initialize_empty_scene(preserve_camera=True)

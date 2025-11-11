@@ -58,7 +58,11 @@ class ImpulseInputDockWidget(QDockWidget):
         self._pending_speaker_update = False
 
         if should_recalc:
-            self.main_window.calculate_impulse()
+            if getattr(self.settings, "update_pressure_impulse", True):
+                self.main_window.calculate_impulse()
+            else:
+                if hasattr(self.main_window, "impulse_manager"):
+                    self.main_window.impulse_manager.show_empty_plot()
 
         if should_update_speakers:
             self.main_window.update_speaker_array_calculations()
@@ -364,6 +368,14 @@ class ImpulseInputDockWidget(QDockWidget):
         
         # Aktualisiere die Berechnung
         self.schedule_calculation()
+
+        # Aktualisiere 3D-Overlays, damit der Messpunkt sofort verschwindet
+        draw_plots = getattr(self.main_window, 'draw_plots', None)
+        if draw_plots is not None and hasattr(draw_plots, 'draw_spl_plotter'):
+            try:
+                draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
+            except Exception as exc:
+                print(f"[ImpulseInputDockWidget] Fehler beim Aktualisieren der SPL-Overlays nach Löschen eines Messpunkts: {exc}")
 
 
     def show_context_menu(self, position):

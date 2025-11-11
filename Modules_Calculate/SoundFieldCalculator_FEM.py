@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import math
 import importlib
+import os
+import sysconfig
+from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
@@ -66,11 +69,17 @@ class SoundFieldCalculatorFEM(ModuleBase):
         self._data_container = None
         self._mesh = None
         self._function_space = None
+        self._python_include_path_prepared = False
 
     # ------------------------------------------------------------------
     # Öffentliche API
     # ------------------------------------------------------------------
     def calculate_soundfield_pressure(self):
+        print(
+            "[SoundFieldCalculator_FEM] Starte FEM-Berechnung "
+            f"(Superposition aktiv={getattr(self.settings, 'spl_plot_superposition', False)}, "
+            f"FEM aktiv={getattr(self.settings, 'spl_plot_fem', False)})"
+        )
         """Berechnet das Schallfeld für alle Frequenzen mit FEM.
 
         Ablauf:
@@ -86,6 +95,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         """
 
         self._ensure_fenics_available()
+        self._prepare_python_include_path()
 
         frequencies = self._determine_frequencies()
         if not frequencies:
@@ -111,6 +121,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 fem_results[float(frequency)]["particle_velocity"] = velocity
 
         self.calculation_spl["fem_simulation"] = fem_results
+        self._assign_primary_soundfield_results(frequencies, fem_results)
 
     def set_data_container(self, data_container):
         """Setzt den gemeinsam genutzten Daten-Container."""
@@ -231,11 +242,127 @@ class SoundFieldCalculatorFEM(ModuleBase):
         )
 
         element_degree = int(getattr(self.settings, "fem_polynomial_degree", 2))
-        self._function_space = fem.FunctionSpace(
-            self._mesh,
-            ("CG", element_degree),
-            dtype=default_scalar_type,
-        )
+        try:
+            functionspace = getattr(fem, "functionspace")
+        except AttributeError:
+            functionspace = None
+
+        if callable(functionspace):
+            try:
+                self._function_space = functionspace(
+                    self._mesh,
+                    ("CG", element_degree),
+                    dtype=default_scalar_type,
+                )
+            except TypeError:
+                self._function_space = functionspace(
+                    self._mesh,
+                    ("CG", element_degree),
+                )
+        else:
+            element = ufl.FiniteElement("CG", self._mesh.ufl_cell(), element_degree)
+            self._function_space = fem.FunctionSpace(self._mesh, element)
+
+    def _prepare_python_include_path(self):
+        if self._python_include_path_prepared:
+            return
+
+        try:
+            include_dir = Path(sysconfig.get_path("include"))
+        except Exception:
+            include_dir = None
+
+        if not include_dir:
+            self._python_include_path_prepared = True
+            return
+
+        include_dir_str = str(include_dir)
+        if " " not in include_dir_str:
+            self._python_include_path_prepared = True
+            return
+
+        cache_root = Path.home() / ".cache" / "lfo_fem"
+        try:
+            cache_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            cache_root = Path.home()
+
+        def _sanitize_path(target: Path, label: str) -> Path:
+            if " " not in str(target):
+                return target
+            candidate = cache_root / label
+            try:
+                if candidate.exists() or candidate.is_symlink():
+                    try:
+                        same_target = candidate.is_symlink() and candidate.resolve() == target
+                    except OSError:
+                        same_target = False
+                    if not same_target:
+                        if candidate.is_symlink() or candidate.is_file():
+                            candidate.unlink()
+                        elif candidate.is_dir():
+                            candidate = cache_root / f"{label}_{abs(hash(str(target)))}"
+                if not candidate.exists():
+                    candidate.symlink_to(target, target_is_directory=True)
+            except OSError:
+                return target
+            return candidate
+
+        sanitized_include = _sanitize_path(include_dir, "python_include")
+        include_parent = include_dir.parent
+        sanitized_include_parent = _sanitize_path(include_parent, "venv_include")
+
+        sanitized_include_str = str(sanitized_include)
+        sanitized_parent_str = str(sanitized_include_parent)
+
+        cfg = sysconfig.get_config_vars()
+        if cfg is not None:
+            cfg["INCLUDEPY"] = sanitized_include_str
+            cfg["CONFINCLUDEPY"] = sanitized_include_str
+            cfg["CONFINCLUDEDIR"] = sanitized_parent_str
+            cfg["INCLUDEDIR"] = sanitized_parent_str
+            cfg["PLATINCLUDEDIR"] = sanitized_parent_str
+
+        try:
+            import distutils.sysconfig as du_sysconfig  # type: ignore
+        except ImportError:
+            du_sysconfig = None
+
+        if du_sysconfig is not None:
+            du_cfg = du_sysconfig.get_config_vars()
+            if du_cfg is not None:
+                du_cfg["INCLUDEPY"] = sanitized_include_str
+                du_cfg["CONFINCLUDEPY"] = sanitized_include_str
+                du_cfg["CONFINCLUDEDIR"] = sanitized_parent_str
+                du_cfg["INCLUDEDIR"] = sanitized_parent_str
+                du_cfg["PLATINCLUDEDIR"] = sanitized_parent_str
+
+        include_dirs = [
+            sanitized_parent_str,
+            sanitized_include_str,
+            str(sanitized_include_parent / "include"),
+            str(sanitized_include_parent / "usr" / "local" / "include"),
+        ]
+
+        existing = os.environ.get("C_INCLUDE_PATH", "").split(os.pathsep) if os.environ.get("C_INCLUDE_PATH") else []
+        for path in include_dirs:
+            if path and path not in existing:
+                existing.insert(0, path)
+        os.environ["C_INCLUDE_PATH"] = os.pathsep.join([p for p in existing if p])
+
+        sanitized_flag = f'-I"{sanitized_parent_str}"'
+        extra_compile = cfg.get("CFLAGS", "") if cfg else ""
+        if sanitized_flag not in extra_compile:
+            cfg["CFLAGS"] = f'{extra_compile} {sanitized_flag}'.strip()
+
+        if du_sysconfig is not None and du_cfg is not None:
+            du_extra = du_cfg.get("CFLAGS", "")
+            if sanitized_flag not in du_extra:
+                du_cfg["CFLAGS"] = f'{du_extra} {sanitized_flag}'.strip()
+
+        os.environ["CPPFLAGS"] = f'{sanitized_flag} {os.environ.get("CPPFLAGS", "")}'.strip()
+
+        self._python_include_path_prepared = True
 
     def _solve_frequency(self, frequency: float) -> fem.Function:
         """Löst die Helmholtz-Gleichung für eine einzelne Frequenz.
@@ -259,13 +386,36 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         absorption = getattr(self.settings, "fem_boundary_absorption", 1.0)
 
-        a_form = fem.form(
-            ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test)) * ufl.dx
-            - (k ** 2) * pressure_trial * pressure_test * ufl.dx
-            + 1j * k * absorption * pressure_trial * pressure_test * ufl.ds
-        )
+        # Real-/Komplex-Modus je nach dolfinx-Version wählen
+        is_complex_enabled = True
+        try:
+            fem.form(pressure_trial * pressure_test * ufl.dx)
+        except ValueError:
+            is_complex_enabled = False
 
-        L_form, point_sources = self._assemble_rhs(V, pressure_test, frequency)
+        if is_complex_enabled:
+            a_form = fem.form(
+                (
+                    ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test))
+                    - (k ** 2) * pressure_trial * pressure_test
+                )
+                * ufl.dx
+                + 1j * k * absorption * pressure_trial * pressure_test * ufl.ds
+            )
+            L_form, point_sources = self._assemble_rhs(
+                V, pressure_test, frequency, allow_complex=True
+            )
+        else:
+            a_form = fem.form(
+                (
+                    ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test))
+                    - (k ** 2) * pressure_trial * pressure_test
+                )
+                * ufl.dx
+            )
+            L_form, point_sources = self._assemble_rhs(
+                V, pressure_test, frequency, allow_complex=False
+            )
 
         A = fem.petsc.assemble_matrix(a_form)
         A.assemble()
@@ -286,7 +436,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         return solution
 
-    def _assemble_rhs(self, V, test_function, frequency: float):
+    def _assemble_rhs(self, V, test_function, frequency: float, allow_complex: bool = True):
         """Baut rechte Seite und Punktquellenliste zusammen.
 
         Jeder Lautsprecher wird als Punktquelle modelliert. Sollte ein Punkt
@@ -299,6 +449,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             return fem.form(0 * test_function * ufl.dx), []
 
         point_sources = []
+        rhs_form = 0 * test_function * ufl.dx
         for speaker_array in self.settings.speaker_arrays.values():
             if speaker_array.mute or speaker_array.hide:
                 continue
@@ -308,14 +459,24 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
             for idx, pos in enumerate(positions):
                 amplitude = level_linear[idx] * self._phase_factor(speaker_array, idx, frequency)
+                if not allow_complex:
+                    amplitude = amplitude.real
                 point = np.array([pos[0], pos[1], 0.0], dtype=np.float64)
 
                 try:
-                    point_sources.append(fem.PointSource(V, point, amplitude))
+                    point_sources.append(
+                        fem.PointSource(
+                            V,
+                            point,
+                            default_scalar_type(amplitude)
+                            if allow_complex
+                            else float(np.real(amplitude)),
+                        )
+                    )
                 except RuntimeError:
                     continue
 
-        return fem.form(0 * test_function * ufl.dx), point_sources
+        return fem.form(rhs_form), point_sources
 
     def _speaker_level_linear(self, speaker_array) -> np.ndarray:
         gain = getattr(speaker_array, "gain", 0.0)
@@ -427,6 +588,92 @@ class SoundFieldCalculatorFEM(ModuleBase):
     # ------------------------------------------------------------------
     # Daten-Export
     # ------------------------------------------------------------------
+    def _assign_primary_soundfield_results(self, frequencies, fem_results):
+        if not fem_results:
+            return
+
+        primary_frequency = self._select_primary_frequency(frequencies, fem_results)
+        if primary_frequency is None:
+            return
+
+        try:
+            sound_field_x, sound_field_y, sound_field_pressure = self.get_soundfield_grid(primary_frequency)
+        except Exception:
+            return
+
+        self.calculation_spl["sound_field_x"] = sound_field_x
+        self.calculation_spl["sound_field_y"] = sound_field_y
+        self.calculation_spl["sound_field_p"] = sound_field_pressure
+
+    def _select_primary_frequency(self, frequencies, fem_results) -> Optional[float]:
+        if not fem_results:
+            return None
+
+        target_frequency = getattr(self.settings, "calculate_frequency", None)
+        if target_frequency is not None:
+            try:
+                target_frequency = float(target_frequency)
+            except (TypeError, ValueError):
+                target_frequency = None
+
+        if target_frequency is not None:
+            if target_frequency in fem_results:
+                return target_frequency
+            for freq_key in fem_results.keys():
+                if math.isclose(freq_key, target_frequency, rel_tol=1e-6, abs_tol=1e-3):
+                    return freq_key
+
+        try:
+            return float(next(iter(fem_results.keys())))
+        except StopIteration:
+            return None
+
+    def get_soundfield_grid(self, frequency: float, decimals: int = 6) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        fem_results = self.calculation_spl.get("fem_simulation")
+        if not fem_results:
+            raise RuntimeError(
+                "Es liegen keine FEM-Ergebnisse vor. Bitte zuerst die Berechnung ausführen."
+            )
+
+        freq_key = float(frequency)
+        freq_data = fem_results.get(freq_key)
+        if freq_data is None:
+            for key in fem_results.keys():
+                if math.isclose(key, freq_key, rel_tol=1e-6, abs_tol=1e-3):
+                    freq_data = fem_results[key]
+                    break
+
+        if freq_data is None:
+            raise KeyError(
+                f"Für die Frequenz {frequency} Hz wurden keine FEM-Ergebnisse gefunden."
+            )
+
+        points = freq_data["points"]
+        pressure = freq_data["pressure"]
+
+        if points.ndim != 2 or points.shape[1] < 2:
+            raise ValueError("Punktkoordinaten besitzen nicht genügend Dimensionen.")
+
+        coords_xy = points[:, :2]
+        rounded_x = np.round(coords_xy[:, 0], decimals=decimals)
+        rounded_y = np.round(coords_xy[:, 1], decimals=decimals)
+
+        x_unique = np.unique(rounded_x)
+        y_unique = np.unique(rounded_y)
+
+        pressure_grid = np.full(
+            (y_unique.size, x_unique.size),
+            np.nan,
+            dtype=pressure.dtype,
+        )
+
+        x_indices = np.searchsorted(x_unique, rounded_x)
+        y_indices = np.searchsorted(y_unique, rounded_y)
+
+        pressure_grid[y_indices, x_indices] = pressure
+
+        return x_unique, y_unique, pressure_grid
+
     def export_pressure_transposed(
         self, frequency: float, decimals: int = 6
     ) -> np.ndarray:
@@ -460,45 +707,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             Wenn die Punktdaten nicht mindestens zweidimensional sind.
         """
 
-        fem_results = self.calculation_spl.get("fem_simulation")
-        if not fem_results:
-            raise RuntimeError(
-                "Es liegen keine FEM-Ergebnisse vor. Bitte zuerst die Berechnung ausführen."
-            )
-
-        freq_key = float(frequency)
-        freq_data = fem_results.get(freq_key)
-        if freq_data is None and frequency in fem_results:
-            freq_data = fem_results[frequency]
-        if freq_data is None:
-            raise KeyError(
-                f"Für die Frequenz {frequency} Hz wurden keine FEM-Ergebnisse gefunden."
-            )
-
-        points = freq_data["points"]
-        pressure = freq_data["pressure"]
-
-        if points.ndim != 2 or points.shape[1] < 2:
-            raise ValueError("Punktkoordinaten besitzen nicht genügend Dimensionen.")
-
-        coords_xy = points[:, :2]
-        rounded_x = np.round(coords_xy[:, 0], decimals=decimals)
-        rounded_y = np.round(coords_xy[:, 1], decimals=decimals)
-
-        x_unique = np.unique(rounded_x)
-        y_unique = np.unique(rounded_y)
-
-        pressure_grid = np.full(
-            (y_unique.size, x_unique.size),
-            np.nan,
-            dtype=pressure.dtype,
-        )
-
-        x_indices = np.searchsorted(x_unique, rounded_x)
-        y_indices = np.searchsorted(y_unique, rounded_y)
-
-        pressure_grid[y_indices, x_indices] = pressure
-
+        _, _, pressure_grid = self.get_soundfield_grid(frequency, decimals=decimals)
         return pressure_grid.T
 
 

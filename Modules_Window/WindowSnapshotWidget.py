@@ -2,6 +2,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QCheckBox, QMenu
 from PyQt5.QtCore import Qt
 import random
+import copy
 
 class SnapshotWidget:
     def __init__(self, main_window, settings, container):
@@ -11,6 +12,10 @@ class SnapshotWidget:
         self.capture_dock_widget = None
         self.snapshot_tree_widget = None  # TreeWidget für Snapshots
         self.selected_snapshot_key = "aktuelle_simulation"  # Standardmäßig current speakers ausgewählt
+        self._current_spl_backup = None
+        self._current_polar_backup = None
+        self._current_axes_backup = None
+        self._current_impulse_backup = None
 
     def show_snapshot_widget(self):
         if self.capture_dock_widget:
@@ -170,10 +175,17 @@ class SnapshotWidget:
             # Rufe die Click-Handler Methode auf (führt Neuberechnung durch)
             self.on_snapshot_item_clicked(current_speakers_item, 0)
         
+        # Stelle sicher, dass die aktuelle Simulation sichtbar bleibt
+        aktuelle_axes = self.container.calculation_axes.get("aktuelle_simulation")
+        if isinstance(aktuelle_axes, dict):
+            aktuelle_axes["show_in_plot"] = True
+        if hasattr(self.container, "calculation_spl"):
+            self.container.calculation_spl["show_in_plot"] = True
+        
         # Jetzt enthalten calculation_spl und calculation_polar die aktuellen Lautsprecherdaten!
         
         # Kopiere die aktuelle Simulation
-        capture_data = self.container.calculation_axes["aktuelle_simulation"].copy()
+        capture_data = copy.deepcopy(self.container.calculation_axes["aktuelle_simulation"])
         
         # Finde einen eindeutigen Namen (Snapshot 1, Snapshot 2, etc.)
         index = 1
@@ -273,6 +285,9 @@ class SnapshotWidget:
             if spl_data:
                 capture_data['spl_field_data'] = spl_data
         
+        # Ausgabe zur Kontrolle der gespeicherten Daten
+        print(f"Snapshot Capture Daten ({new_key}): {list(capture_data.keys())}")
+
         # Speichere den Snapshot
         self.container.calculation_axes[new_key] = capture_data
         
@@ -337,18 +352,13 @@ class SnapshotWidget:
         if key in self.container.calculation_axes:
             self.container.calculation_axes[key]["show_in_plot"] = bool(state)
             
-            # Prüfe ob noch irgendein Snapshot aktiv ist
             has_active = self.has_any_active_snapshot()
-            
-            # Wenn kein Snapshot mehr aktiv ist, zeige Empty-Plots
             if not has_active:
-                # Leere die Plot-Daten
-                if hasattr(self.container, 'calculation_spl'):
-                    self.container.calculation_spl.clear()
-                if hasattr(self.container, 'calculation_polar'):
-                    self.container.calculation_polar.clear()
+                if hasattr(self.main_window, 'draw_plots'):
+                    self.main_window.draw_plots.show_empty_axes()
+                    self.main_window.draw_plots.show_empty_polar()
+                    self.main_window.draw_plots.show_empty_spl()
             
-            # Aktualisiere alle relevanten Plots
             if hasattr(self.main_window, 'plot_xaxis'):
                 self.main_window.plot_xaxis()
             if hasattr(self.main_window, 'plot_yaxis'):
@@ -381,6 +391,7 @@ class SnapshotWidget:
         if not snapshot_key:
             return
         
+        previous_key = getattr(self, "selected_snapshot_key", "aktuelle_simulation")
         # Speichere das ausgewählte Item
         self.selected_snapshot_key = snapshot_key
         
@@ -404,23 +415,25 @@ class SnapshotWidget:
         # SPECIAL CASE: "current speakers" (aktuelle_simulation)
         # ========================================
         if snapshot_key == "aktuelle_simulation":
-            # Berechne die aktuellen Daten NEU statt aus Snapshot zu laden
-            
-            # Führe SPL-Berechnung neu aus
-            if hasattr(self.main_window, 'calculate_spl'):
-                try:
-                    self.main_window.calculate_spl()
-                except Exception as e:
-                    print(f"Fehler bei SPL-Neuberechnung: {e}")
-            
-            # Führe Polarplot-Berechnung neu aus
-            if hasattr(self.main_window, 'calculate_polar'):
-                try:
-                    self.main_window.calculate_polar()
-                except Exception as e:
-                    print(f"Fehler bei Polarplot-Neuberechnung: {e}")
-            
-            return  # Fertig - keine Snapshot-Daten laden
+            # Beim Zurückkehren zur aktuellen Simulation die gesicherten Daten wiederherstellen
+            self._restore_current_data()
+            checkbox = self.snapshot_tree_widget.itemWidget(item, 1)
+            if checkbox and not checkbox.isChecked():
+                blocker = QtCore.QSignalBlocker(checkbox)
+                checkbox.setChecked(True)
+                del blocker
+            aktuelle_axes = self.container.calculation_axes.get("aktuelle_simulation")
+            if isinstance(aktuelle_axes, dict):
+                aktuelle_axes["show_in_plot"] = True
+            if hasattr(self.container, "calculation_spl"):
+                self.container.calculation_spl["show_in_plot"] = True
+            if hasattr(self.container, "calculation_polar"):
+                self.container.calculation_polar["show_in_plot"] = True
+            if hasattr(self.main_window, "plot_spl"):
+                self.main_window.plot_spl()
+                if hasattr(self.main_window, "plot_polar_pattern"):
+                    self.main_window.plot_polar_pattern()
+            return
         
         # ========================================
         # NORMAL CASE: Lade Snapshot-Daten
@@ -429,6 +442,10 @@ class SnapshotWidget:
         if snapshot_key not in self.container.calculation_axes:
             return
         
+        # Wenn wir gerade von der aktuellen Simulation zu einem Snapshot wechseln, Daten sichern
+        if previous_key == "aktuelle_simulation":
+            self._backup_current_data()
+
         snapshot_data = self.container.calculation_axes[snapshot_key]
         
         # ========================================
@@ -525,6 +542,43 @@ class SnapshotWidget:
                     self.main_window.update_plot_impulse()
                 elif hasattr(self.main_window, 'impulse_manager'):
                     self.main_window.impulse_manager.update_plot_impulse()
+
+    def _backup_current_data(self):
+        """Sichert aktuelle SPL-, Polar-, Achsen- und Impuls-Daten bevor ein Snapshot geladen wird."""
+        if hasattr(self.container, "calculation_spl"):
+            self._current_spl_backup = copy.deepcopy(self.container.calculation_spl)
+        else:
+            self._current_spl_backup = None
+
+        if hasattr(self.container, "calculation_polar"):
+            self._current_polar_backup = copy.deepcopy(self.container.calculation_polar)
+        else:
+            self._current_polar_backup = None
+
+        if hasattr(self.container, "calculation_axes"):
+            aktuelle_axes = self.container.calculation_axes.get("aktuelle_simulation")
+            self._current_axes_backup = copy.deepcopy(aktuelle_axes) if isinstance(aktuelle_axes, dict) else None
+        else:
+            self._current_axes_backup = None
+
+        if hasattr(self.container, "calculation_impulse"):
+            aktuelle_impulse = self.container.calculation_impulse.get("aktuelle_simulation")
+            self._current_impulse_backup = copy.deepcopy(aktuelle_impulse) if isinstance(aktuelle_impulse, dict) else None
+        else:
+            self._current_impulse_backup = None
+
+    def _restore_current_data(self):
+        """Stellt gesicherte SPL-, Polar-, Achsen- und Impuls-Daten der aktuellen Simulation wieder her."""
+        if self._current_spl_backup is not None and hasattr(self.container, "calculation_spl"):
+            self.container.calculation_spl.clear()
+            self.container.calculation_spl.update(copy.deepcopy(self._current_spl_backup))
+        if self._current_polar_backup is not None and hasattr(self.container, "calculation_polar"):
+            self.container.calculation_polar.clear()
+            self.container.calculation_polar.update(copy.deepcopy(self._current_polar_backup))
+        if self._current_axes_backup is not None and hasattr(self.container, "calculation_axes"):
+            self.container.calculation_axes["aktuelle_simulation"] = copy.deepcopy(self._current_axes_backup)
+        if self._current_impulse_backup is not None and hasattr(self.container, "calculation_impulse"):
+            self.container.calculation_impulse["aktuelle_simulation"] = copy.deepcopy(self._current_impulse_backup)
 
     def close_capture_dock_widget(self):
         if self.capture_dock_widget:

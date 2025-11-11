@@ -17,6 +17,11 @@ class SoundFieldCalculator(ModuleBase):
         self._grid_hash = None     # Hash der Grid-Parameter
    
     def calculate_soundfield_pressure(self):
+        print(
+            "[SoundFieldCalculator] Starte Superpositions-Berechnung "
+            f"(Superposition aktiv={getattr(self.settings, 'spl_plot_superposition', False)}, "
+            f"FEM aktiv={getattr(self.settings, 'spl_plot_fem', False)})"
+        )
         self.calculation_spl["sound_field_p"], self.calculation_spl["sound_field_x"], self.calculation_spl["sound_field_y"] = self.calculate_sound_field()
 
     def get_balloon_data_at_angle(self, speaker_name, azimuth, elevation=0, use_averaged=True):
