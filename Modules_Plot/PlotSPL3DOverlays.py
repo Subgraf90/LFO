@@ -105,13 +105,13 @@ class SPL3DOverlayRenderer:
             if min_len == 0:
                 continue
 
-            for idx in range(min_len):
+            valid_mask = np.isfinite(xs[:min_len]) & np.isfinite(ys[:min_len]) & np.isfinite(zs[:min_len])
+            valid_indices = np.nonzero(valid_mask)[0]
+
+            for idx in valid_indices:
                 x = xs[idx]
                 y = ys[idx]
                 z = zs[idx]
-
-                if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
-                    continue
 
                 geometries = self._build_speaker_geometries(
                     speaker_array,
@@ -360,36 +360,43 @@ class SPL3DOverlayRenderer:
             speaker_count,
             self._sequence_length(pos_y_raw),
         )
-        site_values = self._float_sequence(getattr(speaker_array, 'source_site', None), speaker_count, 0.0)
-        position_y_values = self._float_sequence(
-            getattr(
-                speaker_array,
-                'source_position_calc_y',
-                getattr(speaker_array, 'source_position_y', None),
+        site_values = np.asarray(
+            self._float_sequence(getattr(speaker_array, 'source_site', None), speaker_count, 0.0),
+            dtype=float,
+        )
+        position_y_values = np.asarray(
+            self._float_sequence(
+                getattr(
+                    speaker_array,
+                    'source_position_calc_y',
+                    getattr(speaker_array, 'source_position_y', None),
+                ),
+                speaker_count,
+                0.0,
             ),
-            speaker_count,
-            0.0,
+            dtype=float,
         )
-        calc_z_values = self._float_sequence(
-            getattr(speaker_array, 'source_position_calc_z', None),
-            speaker_count,
-            float(z_reference),
+        calc_z_values = np.asarray(
+            self._float_sequence(
+                getattr(speaker_array, 'source_position_calc_z', None),
+                speaker_count,
+                float(z_reference),
+            ),
+            dtype=float,
         )
-        angle_values = self._float_sequence(
-            getattr(speaker_array, 'source_angle', None),
-            speaker_count,
-            0.0,
+        angle_values = np.asarray(
+            self._float_sequence(
+                getattr(speaker_array, 'source_angle', None),
+                speaker_count,
+                0.0,
+            ),
+            dtype=float,
         )
-        total_angle_values = [0.0] * speaker_count
-        base_site_angle = site_values[0] if site_values else 0.0
-        if speaker_count > 0:
-            total_angle_values[0] = base_site_angle
-            for idx_angle in range(1, speaker_count):
-                cumulative = base_site_angle
-                for j in range(1, idx_angle + 1):
-                    if j < len(angle_values):
-                        cumulative -= angle_values[j]
-                total_angle_values[idx_angle] = cumulative
+        base_site_angle = float(site_values[0]) if site_values.size > 0 else 0.0
+        total_angle_values = np.full(speaker_count, base_site_angle, dtype=float)
+        if speaker_count > 1:
+            cumulative = np.cumsum(angle_values[1:])
+            total_angle_values[1:] = base_site_angle - cumulative
 
         for entry_idx, entry in enumerate(processed_entries):
             width = entry['width']
@@ -630,13 +637,24 @@ class SPL3DOverlayRenderer:
         z_values = points[:, 2]
         z_mid = float((np.max(z_values) + np.min(z_values)) / 2.0)
 
-        for idx in range(points.shape[0]):
-            y_val = points[idx, 1]
-            z_val = points[idx, 2]
-            if abs(y_val - front_y) <= tol:
-                points[idx, 2] = front_top if z_val >= z_mid else front_bottom
-            elif abs(y_val - back_y) <= tol:
-                points[idx, 2] = back_top if z_val >= z_mid else back_bottom
+        front_mask = np.isclose(y_coords, front_y, atol=tol)
+        back_mask = np.isclose(y_coords, back_y, atol=tol)
+        upper_mask = z_values >= z_mid
+        lower_mask = ~upper_mask
+
+        front_upper = front_mask & upper_mask
+        front_lower = front_mask & lower_mask
+        back_upper = back_mask & upper_mask
+        back_lower = back_mask & lower_mask
+
+        if np.any(front_upper):
+            points[front_upper, 2] = front_top
+        if np.any(front_lower):
+            points[front_lower, 2] = front_bottom
+        if np.any(back_upper):
+            points[back_upper, 2] = back_top
+        if np.any(back_lower):
+            points[back_lower, 2] = back_bottom
 
         try:
             mesh.points = points
