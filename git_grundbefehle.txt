@@ -22,3 +22,5 @@ Git-Alltagsbefehle
 git checkout origin/main -- <pfad/zur/datei>
 git checkout origin/main -- Module_LFO/Modules_Plot/
 git checkout <commit-id> -- <pfad/zur/datei>
+
+cd /Users/MGraf/Python/LFO_Umgebung/LFO         #zu richtigem ordner navigieren
