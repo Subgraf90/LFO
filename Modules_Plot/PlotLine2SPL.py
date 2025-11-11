@@ -14,6 +14,8 @@ class Lineplot2SPL(ModuleBase):
         self.ax.vlines(self.settings.position_x_axis, -self.settings.length/2, self.settings.length/2, color='black', linestyle='-.', linewidth=1)
         self.ax.hlines(self.settings.position_y_axis, -self.settings.width/2, self.settings.width/2, color='black', linestyle='-.', linewidth=1)
 
+    def draw_wall_lines(self, wall_index):
+        return
                         
     def draw_impulse_points(self):
         triangle_size = self.settings.measurement_size

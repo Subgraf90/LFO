@@ -1,5 +1,5 @@
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 from PyQt5.QtWidgets import QSizePolicy
 
 class MplCanvas(FigureCanvas):
@@ -7,7 +7,8 @@ class MplCanvas(FigureCanvas):
 
     def __init__(self, parent=None, width=5, height=4, dpi=100):
         # Initialisierung der Matplotlib-Figur und Achsen
-        self.fig, self.ax = plt.subplots(figsize=(width, height), dpi=dpi)
+        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.ax = self.fig.add_subplot(111)
         super(MplCanvas, self).__init__(self.fig)
 
         # Entferne automatische Achsenbeschriftungen

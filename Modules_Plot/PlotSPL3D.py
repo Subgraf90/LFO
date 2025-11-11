@@ -1133,6 +1133,23 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         result.append(value)
             return tuple(result)
 
+        def _to_str_tuple(sequence) -> tuple:
+            if sequence is None:
+                return tuple()
+            if isinstance(sequence, (str, bytes)):
+                return (sequence.decode('utf-8', errors='ignore') if isinstance(sequence, bytes) else str(sequence),)
+            try:
+                iterable = list(sequence)
+            except TypeError:
+                return (str(sequence),)
+            result: List[str] = []
+            for item in iterable:
+                if isinstance(item, bytes):
+                    result.append(item.decode('utf-8', errors='ignore'))
+                else:
+                    result.append(str(item))
+            return tuple(result)
+
         axis_signature = (
             float(getattr(settings, 'position_x_axis', 0.0)),
             float(getattr(settings, 'position_y_axis', 0.0)),
@@ -1140,7 +1157,28 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             float(getattr(settings, 'width', 0.0)),
         )
 
-        walls_signature_tuple: tuple = ()
+        walls_raw = getattr(settings, 'image_walls', []) or []
+        wall_flags = (
+            bool(getattr(settings, 'image_wall_1', False)),
+            bool(getattr(settings, 'image_wall_2', False)),
+            bool(getattr(settings, 'image_wall_3', False)),
+            bool(getattr(settings, 'image_wall_4', False)),
+        )
+        walls_signature: List[tuple] = []
+        for wall in walls_raw:
+            try:
+                (x1, y1), (x2, y2) = wall
+            except Exception:
+                continue
+            walls_signature.append(
+                (
+                    float(x1),
+                    float(y1),
+                    float(x2),
+                    float(y2),
+                )
+            )
+        walls_signature_tuple = (tuple(walls_signature), wall_flags)
 
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
         speakers_signature: List[tuple] = []
@@ -1161,6 +1199,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 zs_flown = _to_tuple(getattr(array, 'source_position_z_flown', None))
                 azimuth = _to_tuple(getattr(array, 'source_azimuth', None))
                 angles = _to_tuple(getattr(array, 'source_angle', None))
+                polar_pattern = _to_str_tuple(getattr(array, 'source_polar_pattern', None))
+                source_types = _to_str_tuple(getattr(array, 'source_type', None))
                 sources = (
                     tuple(xs),
                     tuple(ys),
@@ -1175,6 +1215,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         configuration,
                         hide,
                         sources,
+                        polar_pattern,
+                        source_types,
                     )
                 )
         speakers_signature_tuple = tuple(speakers_signature)

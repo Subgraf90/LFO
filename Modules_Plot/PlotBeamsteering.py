@@ -33,17 +33,17 @@ class BeamsteeringPlot(QWidget):
 
         if speaker_array is None:
             self.ax.set_title("Kein gültiges SpeakerArray gefunden")
-            self.canvas.draw()
+            self.canvas.draw_idle()
             return
         
         # Plot der Stacks und Beamsteering-Elemente
         self.plot_Stacks2Beamsteering(speaker_array_id)
         
         # Extrahieren der Lautsprecherpositionen
-        source_position_y = speaker_array.source_position_y
-        source_position_x = speaker_array.source_position_x
-        virtual_source_position_x = speaker_array.virtual_source_position_x
-        virtual_source_position_y = speaker_array.virtual_source_position_y
+        source_position_y = self._to_float_array(speaker_array.source_position_y)
+        source_position_x = self._to_float_array(speaker_array.source_position_x)
+        virtual_source_position_x = self._to_float_array(speaker_array.virtual_source_position_x)
+        virtual_source_position_y = self._to_float_array(speaker_array.virtual_source_position_y)
 
         # Plot der virtuellen Lautsprecherpositionen
         self.ax.plot(virtual_source_position_x, virtual_source_position_y, 'o-', label='Virtual Source Positions')
@@ -52,18 +52,13 @@ class BeamsteeringPlot(QWidget):
         for sx, sy, vx, vy in zip(source_position_x, source_position_y, virtual_source_position_x, virtual_source_position_y):
             self.ax.plot([sx, vx], [sy, vy], linestyle='--', color='grey')
 
-        x_values = []
-        x_values.extend(np.atleast_1d(source_position_x).tolist())
-        x_values.extend(np.atleast_1d(virtual_source_position_x).tolist())
+        x_values = self._concatenate_arrays(source_position_x, virtual_source_position_x)
+        y_values = self._concatenate_arrays(source_position_y, virtual_source_position_y)
 
-        y_values = []
-        y_values.extend(np.atleast_1d(source_position_y).tolist())
-        y_values.extend(np.atleast_1d(virtual_source_position_y).tolist())
-
-        if x_values:
-            x_min = min(x_values)
-            x_max = max(x_values)
-            x_range = max(x_max - x_min, 0)
+        if x_values.size:
+            x_min = float(np.min(x_values))
+            x_max = float(np.max(x_values))
+            x_range = max(x_max - x_min, 0.0)
             x_step = self._select_metric_tick_step(x_range)
             x_padding = max(0.5, x_step * 0.5)
             if x_min == x_max:
@@ -72,10 +67,10 @@ class BeamsteeringPlot(QWidget):
             self.ax.set_xlim(x_min - x_padding, x_max + x_padding)
             self.ax.xaxis.set_major_locator(MultipleLocator(x_step))
 
-        if y_values:
-            y_min = min(y_values)
-            y_max = max(y_values)
-            y_range = max(y_max - y_min, 0)
+        if y_values.size:
+            y_min = float(np.min(y_values))
+            y_max = float(np.max(y_values))
+            y_range = max(y_max - y_min, 0.0)
             y_step = self._select_metric_tick_step(y_range)
             y_padding = max(0.5, y_step * 0.5)
             if y_min == y_max:
@@ -93,46 +88,41 @@ class BeamsteeringPlot(QWidget):
 
         self.figure.subplots_adjust(left=0.15)
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
 
     def plot_Stacks2Beamsteering(self, speaker_array_id):
         try:
             speaker_array = self.settings.get_speaker_array(speaker_array_id)
-            cabinet_data = self.container.data['cabinet_data']
-            speaker_names = self.container.data['speaker_names']
+            cabinet_data = self.container.data.get('cabinet_data', [])
+            speaker_names = self.container.data.get('speaker_names', [])
 
             if speaker_array is None:
                 print("Warnung: speaker_array ist nicht initialisiert")
                 return
-            
-            # Löschen Sie alle vorhandenen Patches
-            for patch in self.ax.patches:
-                patch.remove()
-            
+
+            # Vorhandene Patches entfernen
+            if self.ax.patches:
+                self.ax.patches.clear()
+
             # Sammle Cabinet-Daten für dieses Array
             array_cabinets = []
+            name_to_index = {name: idx for idx, name in enumerate(speaker_names)}
             for pattern_name in speaker_array.source_polar_pattern:
-                # Überspringe leere Pattern-Namen
                 if not pattern_name:
                     continue
-                    
                 try:
-                    speaker_index = speaker_names.index(pattern_name)
+                    speaker_index = name_to_index.get(pattern_name)
+                    if speaker_index is None or speaker_index >= len(cabinet_data):
+                        raise ValueError(f"{pattern_name} nicht gefunden")
                     cabinet = cabinet_data[speaker_index]
-                    
-                    # Akzeptiere np.ndarray, list und dict
-                    if isinstance(cabinet, (np.ndarray, list, dict)):
-                        # Konvertiere zu np.ndarray für einheitliche Verarbeitung
-                        if isinstance(cabinet, dict):
-                            cabinet = np.array([cabinet])
-                        elif isinstance(cabinet, list):
-                            cabinet = np.array(cabinet)
-                        array_cabinets.append(cabinet)
+                    normalized_cabinets = self._normalize_cabinet_entries(cabinet)
+                    if normalized_cabinets:
+                        array_cabinets.append(normalized_cabinets)
                 except (ValueError, IndexError) as e:
                     print(f"Fehler beim Verarbeiten von Pattern {pattern_name}: {str(e)}")
                     continue
-            
+
             if len(array_cabinets) > 0:
                 stack_drawer = StackDraw_Beamsteering(
                     speaker_array.source_polar_pattern,
@@ -150,10 +140,10 @@ class BeamsteeringPlot(QWidget):
                     stack_drawer.draw_stack(isrc)
             else:
                 print("Keine gültigen Cabinet-Daten gefunden")
-            
+
             # Aktualisieren Sie die Darstellung
-            self.canvas.draw()
-            
+            self.canvas.draw_idle()
+
         except Exception as e:
             print(f"Fehler in plot_Stacks2Beamsteering: {str(e)}")
             import traceback
@@ -170,3 +160,38 @@ class BeamsteeringPlot(QWidget):
             if value_range > threshold:
                 return step
         return 1
+
+    @staticmethod
+    def _to_float_array(values):
+        if values is None:
+            return np.array([], dtype=float)
+        array = np.atleast_1d(values)
+        result = []
+        for item in array:
+            try:
+                result.append(float(item))
+            except (TypeError, ValueError):
+                continue
+        return np.array(result, dtype=float) if result else np.array([], dtype=float)
+
+    @staticmethod
+    def _concatenate_arrays(*arrays):
+        valid = [arr for arr in arrays if arr is not None and arr.size]
+        if not valid:
+            return np.array([], dtype=float)
+        return np.concatenate(valid)
+
+    @classmethod
+    def _normalize_cabinet_entries(cls, cabinet):
+        if cabinet is None:
+            return []
+        if isinstance(cabinet, dict):
+            return [cabinet]
+        if isinstance(cabinet, np.ndarray):
+            cabinet = cabinet.tolist()
+        if isinstance(cabinet, (list, tuple)):
+            normalized = []
+            for item in cabinet:
+                normalized.extend(cls._normalize_cabinet_entries(item))
+            return normalized
+        return []

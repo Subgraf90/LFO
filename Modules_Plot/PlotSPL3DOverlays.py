@@ -19,6 +19,7 @@ class SPL3DOverlayRenderer:
         self.overlay_counter = 0
         self._category_actors: dict[str, List[str]] = {}
         self._box_template_cache: dict[tuple[float, float, float], Any] = {}
+        self._box_face_cache: dict[tuple[float, float, float], Tuple[Optional[int], Optional[int]]] = {}
         # Kleinster Z-Offset, um Z-Fighting mit Boden/Surface zu vermeiden
         # (insbesondere bei Draufsicht sollen Linien klar sichtbar bleiben).
         self._planar_z_offset = 0.02
@@ -127,7 +128,7 @@ class SPL3DOverlayRenderer:
                     self._add_overlay_mesh(sphere, color=body_color, opacity=1.0, edge_color='black', category='speakers')
                 else:
                     for body_mesh, exit_face_index in geometries:
-                        mesh_to_add = body_mesh
+                        mesh_to_add = body_mesh.copy(deep=True)
                         if exit_face_index is not None and mesh_to_add.n_cells > 0:
                             scalars = np.zeros(mesh_to_add.n_cells, dtype=int)
                             scalars[int(exit_face_index)] = 1
@@ -410,6 +411,7 @@ class SPL3DOverlayRenderer:
                     y_offset = 0.0
                     width = on_top_width
             source_idx = entry.get('source_index', entry_idx)
+            box_key: Optional[tuple[float, float, float]] = None
 
             if entry_config == 'flown':
                 effective_height = entry.get('effective_height', height)
@@ -422,6 +424,8 @@ class SPL3DOverlayRenderer:
                 top_z_info = float(segment.get('top_z', calc_z_values[source_idx] + effective_height / 2.0 if source_idx < len(calc_z_values) else z_reference))
                 pivot_y_info = float(segment.get('pivot_y', position_y_values[source_idx] if source_idx < len(position_y_values) else 0.0))
                 pivot_z_info = float(segment.get('pivot_z', top_z_info))
+                center_y_info = float(segment.get('center_y', position_y_values[source_idx] if source_idx < len(position_y_values) else 0.0))
+                center_z_info = float(segment.get('center_z', calc_z_values[source_idx] if source_idx < len(calc_z_values) else z_reference))
                 front_height_segment = self._safe_float(segment, 'front_height', front_height)
                 back_height_segment = self._safe_float(segment, 'back_height', back_height)
                 effective_height_segment = self._safe_float(segment, 'effective_height', effective_height)
@@ -437,12 +441,28 @@ class SPL3DOverlayRenderer:
                     angle_point_lower = str(angle_point_debug).strip().lower()
                 x_min = x + x_offset
                 x_max = x_min + width
+
                 pivot_y_world = pivot_y_info + y_offset
                 pivot_z_world = pivot_z_info - z_offset
+                center_y_world = center_y_info + y_offset
+                center_z_world = center_z_info - z_offset
                 top_z_world = top_z_info - z_offset
 
+                if angle_point_lower == 'back':
+                    y_min = pivot_y_world
+                    y_max = pivot_y_world + depth
+                elif angle_point_lower == 'front':
+                    y_max = pivot_y_world
+                    y_min = pivot_y_world - depth
+                else:
+                    y_min = pivot_y_world - depth / 2.0
+                    y_max = pivot_y_world + depth / 2.0
+
+                z_max = top_z_world
                 z_min = top_z_world - effective_height
-                template = self._get_box_template(width, depth, effective_height)
+
+                box_key = (float(width), float(depth), float(effective_height))
+                template = self._get_box_template(*box_key)
                 body = template.copy(deep=True)
                 if angle_point_lower == 'back':
                     translation_y = pivot_y_world + depth
@@ -464,26 +484,32 @@ class SPL3DOverlayRenderer:
                 x_min = x + x_offset
                 x_max = x_min + width
                 front_y_world = y + y_offset
+                y_max = front_y_world
+                y_min = front_y_world - depth
                 reference_value = self._array_value(reference_array, entry.get('source_index', index))
                 if reference_value is None:
                     reference_value = z_reference
                 base_world = float(reference_value) + z_offset + stack_offset
                 z_min = base_world
-                template = self._get_box_template(width, depth, height)
+                z_max = base_world + height
+                box_key = (float(width), float(depth), float(height))
+                template = self._get_box_template(*box_key)
                 body = template.copy(deep=True)
                 body.translate((x_min, front_y_world, z_min), inplace=True)
 
             exit_at_front = not cardio
             exit_face_index: Optional[int] = None
-            try:
-                centers = body.cell_centers().points
-                if centers.size > 0:
+            if box_key is not None:
+                face_indices = self._box_face_cache.get(box_key)
+                if face_indices is None and box_key in self._box_template_cache:
+                    face_indices = self._compute_box_face_indices(self._box_template_cache[box_key])
+                    self._box_face_cache[box_key] = face_indices
+                if face_indices is not None:
+                    front_idx, back_idx = face_indices
                     if exit_at_front:
-                        exit_face_index = int(np.argmax(centers[:, 1]))
+                        exit_face_index = front_idx
                     else:
-                        exit_face_index = int(np.argmin(centers[:, 1]))
-            except Exception:  # noqa: BLE001
-                exit_face_index = None
+                        exit_face_index = back_idx
 
             geoms.append((body, exit_face_index))
 
@@ -721,7 +747,36 @@ class SPL3DOverlayRenderer:
         if template is None:
             template = self.pv.Box(bounds=(0.0, width, -depth, 0.0, 0.0, height))
             self._box_template_cache[key] = template
+            self._box_face_cache[key] = self._compute_box_face_indices(template)
+        elif key not in self._box_face_cache:
+            self._box_face_cache[key] = self._compute_box_face_indices(template)
         return template
+
+    @staticmethod
+    def _compute_box_face_indices(mesh: Any) -> Tuple[Optional[int], Optional[int]]:
+        try:
+            faces = mesh.faces.reshape(-1, 5)
+        except Exception:  # noqa: BLE001
+            return (None, None)
+        try:
+            points = mesh.points
+        except Exception:  # noqa: BLE001
+            return (None, None)
+        if faces.size == 0 or points.size == 0:
+            return (None, None)
+        face_y_values: List[float] = []
+        for face in faces:
+            indices = face[1:]
+            try:
+                y_vals = points[indices, 1]
+            except Exception:  # noqa: BLE001
+                return (None, None)
+            face_y_values.append(float(np.mean(y_vals)))
+        if not face_y_values:
+            return (None, None)
+        front_idx = int(np.argmax(face_y_values))
+        back_idx = int(np.argmin(face_y_values))
+        return (front_idx, back_idx)
 
     @staticmethod
     def _get_speaker_name(speaker_array, index: int):

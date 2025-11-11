@@ -2,9 +2,9 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QHBoxLayout, QPus
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt5.QtGui import QIcon
 import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+from matplotlib.figure import Figure
 import sys
 class DrawImpulsePlots(QWidget):
     view_changed = pyqtSignal(str)  # Signal für Ansichtsänderungen
@@ -127,7 +127,10 @@ class DrawImpulsePlots(QWidget):
         # Erstelle eine Canvas mit drei Subplots (wie in PlotDataImporter.py)
         # Verwende measurement_size für die Höhe der Subplots
         subplot_height = self.settings.measurement_size
-        self.figure, (impulse_ax, phase_ax, magnitude_ax) = plt.subplots(3, 1, figsize=(10, subplot_height * 3))
+        self.figure = Figure(figsize=(10, subplot_height * 3))
+        impulse_ax = self.figure.add_subplot(3, 1, 1)
+        phase_ax = self.figure.add_subplot(3, 1, 2)
+        magnitude_ax = self.figure.add_subplot(3, 1, 3, sharex=phase_ax)
         main_canvas = FigureCanvas(self.figure)
         main_canvas.setFixedHeight(self.settings.impulse_plot_height * 3)  # Dreifache Höhe für drei Plots
         
