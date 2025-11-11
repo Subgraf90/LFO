@@ -6,20 +6,6 @@ import os
 from time import perf_counter
 from typing import Optional
 
-# FEM-spezifische Fehlertypen für Fallback-Handling
-from subprocess import CalledProcessError as _CalledProcessError
-
-try:
-    from cffi import VerificationError as _CffiVerificationError
-except ImportError:
-    _CffiVerificationError = None
-
-try:
-    # distutils ist deprecated (entfernt in Python 3.12+)
-    from distutils.errors import CompileError as _DistutilsCompileError
-except (ImportError, ModuleNotFoundError):
-    _DistutilsCompileError = None
-
 import numpy as np
 from qtpy import QtWidgets, QtCore
 from PyQt5.QtCore import Qt
@@ -576,18 +562,11 @@ class MainWindow(QtWidgets.QMainWindow):
         bei denen ein Fallback auf die Superpositionsberechnung sinnvoll ist.
         """
         visited = set()
-        error_types = tuple(
-            err_type
-            for err_type in (_CffiVerificationError, _DistutilsCompileError, _CalledProcessError)
-            if err_type is not None
-        )
-        markers = ("dolfinx", "ffcx", "cffi", "VerificationError", "CompileError", "clang", "ffibuilder")
+        markers = ("dolfinx", "ffcx", "cffi", "VerificationError", "CompileError", "clang", "ffibuilder", "CalledProcessError")
 
         current = exc
         while current is not None and current not in visited:
             visited.add(current)
-            if error_types and isinstance(current, error_types):
-                return True
             summary = f"{current.__class__.__name__}: {current}".lower()
             if any(marker.lower() in summary for marker in markers):
                 return True
