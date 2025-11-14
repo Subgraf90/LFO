@@ -188,7 +188,9 @@ class PolarPlotCalculator(ModuleBase):
             # ============================================================
             # SCHRITT 2: Physikalische Konstanten
             # ============================================================
-            wave_number = 2 * np.pi * actual_freq / self.settings.speed_of_sound
+            # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+            speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
+            wave_number = 2 * np.pi * actual_freq / speed_of_sound
             
             # Berechne Messradius (aus Fraunhofer-Distanz)
             dborder = self.calculate_dborder()

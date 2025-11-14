@@ -126,7 +126,6 @@ class Sources(ModuleBase):
         except Exception as exc:
             print(f"[LFO][DEBUG][UiSourceManagement] snapshot failed: {exc}")
 
-
     def _debug_signal(self, name, extra=""):
         if not getattr(self, "debug_signals", False):
             return
@@ -139,7 +138,6 @@ class Sources(ModuleBase):
         if focus_widget:
             focus_name = focus_widget.objectName() or focus_widget.__class__.__name__
         print(f"[LFO][DEBUG][UiSourceManagement] {name} (sender={sender_name}, focus={focus_name}) {extra}")
-
         
     def closeEvent(self, event):
         if self.sources_dockWidget:
@@ -190,17 +188,14 @@ class Sources(ModuleBase):
                 default_speaker = self.container.data['speaker_names'][0]
                 speaker_array.source_polar_pattern = np.array([default_speaker] * speaker_array.number_of_sources, dtype=object)
 
-
     def get_speakerspecs_instance(self, speaker_array_id):
         for instance in self.speakerspecs_instance:
             if instance['id'] == speaker_array_id:
                 return instance
         return None
-
         
     def add_speakerspecs_instance(self, speaker_array_id, instance):
         self.speakerspecs_instance.append(instance)
-
 
     def create_speakerspecs_instance(self, array_id):
         return {
@@ -210,7 +205,6 @@ class Sources(ModuleBase):
             'state': None,
             'saved_state': {}
         }
-
 
 
     # ---- Dock Widget ---
@@ -277,7 +271,7 @@ class Sources(ModuleBase):
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_beamsteering_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_windowing_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_gain_delay_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.main_window.update_beamsteering_wdw_plot)
+            self.sources_tree_widget.itemSelectionChanged.connect(self.update_beamsteering_windowing_plots)
             self.sources_tree_widget.itemChanged.connect(self.on_speakerspecs_item_text_changed)
     
             # Füge das TreeWidget zum Layout hinzu mit Stretch-Faktor
@@ -340,8 +334,7 @@ class Sources(ModuleBase):
             self.sources_tree_widget.blockSignals(False)
             
         self.sources_tree_widget.clearSelection()
-        self.sources_dockWidget.show()
-        
+        self.sources_dockWidget.show()        
 
     def refresh_active_selection(self):
         """
@@ -368,8 +361,7 @@ class Sources(ModuleBase):
         self.update_beamsteering_input_fields()
         self.update_windowing_input_fields()
         self.update_gain_delay_input_fields()
-        self.main_window.update_beamsteering_wdw_plot()
-    
+        self.update_beamsteering_windowing_plots()
 
 
     # ----- Tab Widget -----
@@ -516,8 +508,6 @@ class Sources(ModuleBase):
         
         self.speaker_tab_layout.addLayout(speaker_grid_layout)
     
-
-
     def create_speaker_tab_flown(self):
         """Erstellt den Speaker Setup Tab mit allen Eingabefeldern für ein Flown Array"""
         speaker_tab = QWidget()
@@ -820,7 +810,6 @@ class Sources(ModuleBase):
 
         self.tab_widget.addTab(windowing_tab, "Windowing")
 
-
     def create_beamsteering_tab(self):
         beamsteering_tab = QWidget()
         main_layout = QHBoxLayout(beamsteering_tab)
@@ -918,8 +907,6 @@ class Sources(ModuleBase):
         main_layout.setSpacing(5)
 
         self.tab_widget.addTab(beamsteering_tab, "Beamsteering")
-
-
 
     def checkbox_symmetric_checked(self, instance, state):
         if state == 2:
@@ -1079,7 +1066,6 @@ class Sources(ModuleBase):
             import traceback
             traceback.print_exc()
             
-
     def apply_symmetric_values(self, instance):
         """
         Wendet symmetrische Werte auf alle relevanten Felder an.
@@ -1256,7 +1242,6 @@ class Sources(ModuleBase):
             traceback.print_exc()
 
         # self.main_window.update_speaker_array_calculations()  
-
 
     def update_widgets(self, instance):
         """
@@ -1600,6 +1585,7 @@ class Sources(ModuleBase):
         # Stelle sicher, dass alle Polar Patterns korrekt initialisiert sind
         self.ensure_polar_patterns_initialized(speaker_array)
 
+
     # @measure_time
     def ensure_polar_patterns_initialized(self, speaker_array):
         """
@@ -1622,7 +1608,6 @@ class Sources(ModuleBase):
                 speaker_array.source_polar_pattern,
                 [default_speaker] * (speaker_array.number_of_sources - len(speaker_array.source_polar_pattern))
             )
-
 
 
     # @measure_time
@@ -1814,7 +1799,6 @@ class Sources(ModuleBase):
             is_manual = speaker_array.arc_shape.lower() == "manual"
             self.update_delay_fields_state(instance['id'], is_manual)
     
-
     def update_symmetry_checkbox(self, instance, is_stack):
         """
         Aktualisiert die Symmetrie-Checkbox basierend auf dem Array-Typ.
@@ -1860,6 +1844,7 @@ class Sources(ModuleBase):
             import traceback
             traceback.print_exc()
 
+    
     # @measure_time
     def display_selected_speakerspecs(self):
         """
@@ -2050,7 +2035,7 @@ class Sources(ModuleBase):
         if last_selected_item:
             self.sources_tree_widget.setCurrentItem(last_selected_item)
             # Aktualisiere den Plot nur einmal am Ende
-            self.main_window.update_axes_spl_plot()
+            self.main_window.update_speaker_array_calculations()
     
 
     # @measure_time
@@ -2148,6 +2133,7 @@ class Sources(ModuleBase):
             self.update_windowing_input_fields()
             self.update_gain_delay_input_fields()
 
+    
     # @measure_time
     def update_beamsteering_input_fields(self):
         selected_item = self.sources_tree_widget.currentItem()
@@ -2186,6 +2172,7 @@ class Sources(ModuleBase):
             if self.beamsteering_plot:
                 self.beamsteering_plot.beamsteering_plot(speaker_array_id)
 
+  
     # @measure_time
     def update_windowing_plot(self, windowing, speaker_array_id):
         selected_item = self.sources_tree_widget.currentItem()
@@ -2262,6 +2249,15 @@ class Sources(ModuleBase):
                     polarity_inverted = False
                 self.polarity_checkbox.setChecked(polarity_inverted)
                 self.polarity_checkbox.blockSignals(False)
+    
+    def update_beamsteering_windowing_plots(self):
+        """Aktualisiert Beamsteering- und Windowing-Plots für das ausgewählte Array (nur Plot, keine Neuberechnung)."""
+        speaker_array_id = self.main_window.get_selected_speaker_array_id()
+        speakerspecs_instance = self.get_speakerspecs_instance(speaker_array_id)
+        if speakerspecs_instance:
+            # Nur plotten, Berechnungen passieren in Main.update_speaker_array_calculations()
+            self.main_window.plot_beamsteering(speaker_array_id)
+            self.main_window.plot_windowing(speaker_array_id)
     
     def add_stack(self):
         """Fügt ein neues Stack-Array hinzu"""
@@ -2345,7 +2341,7 @@ class Sources(ModuleBase):
             for i in range(self.tab_widget.count()):
                 self.tab_widget.setTabEnabled(i, True)
                 
-        self.main_window.update_axes_spl_plot()
+        self.main_window.update_speaker_array_calculations()
 
     def add_flown(self):
         """Fügt ein neues Flown-Array hinzu"""
@@ -2432,9 +2428,7 @@ class Sources(ModuleBase):
             for i in range(1, self.tab_widget.count()):
                 self.tab_widget.setTabEnabled(i, False)
                 
-        self.main_window.update_axes_spl_plot()
-
-
+        self.main_window.update_speaker_array_calculations()
 
 
 # ------ Tree widget Signale ----- 
@@ -2469,7 +2463,6 @@ class Sources(ModuleBase):
         if speaker_array:
             speaker_array.name = new_name
     
-
     def delete_array(self):
         selected_item = self.sources_tree_widget.selectedItems()
         if selected_item:
@@ -2545,7 +2538,6 @@ class Sources(ModuleBase):
                     # Polar-Plot
                     self.main_window.draw_plots.draw_polar_pattern.initialize_empty_plots()
 
-
     def duplicate_array(self, item):
         """Dupliziert das ausgewählte Array"""
         if item:
@@ -2595,11 +2587,6 @@ class Sources(ModuleBase):
                 
                 # Aktualisiere die Anzeige
                 self.main_window.update_speaker_array_calculations()
-
-
-            
-            
-
 
 
     # ---- Signalhandler ----
@@ -2696,8 +2683,6 @@ class Sources(ModuleBase):
         except ValueError:
             pass
 
-
-
     def on_x_position_changed(self, edit, source_index, speaker_array_id):
         """
         Behandelt Änderungen der X-Position einer Quelle.
@@ -2760,8 +2745,6 @@ class Sources(ModuleBase):
                 edit.setText(f"{speaker_array.source_position_x[source_index]:.2f}")
             edit.blockSignals(False)
 
-
-
     def on_y_position_changed(self, edit, source_index, speaker_array_id):
         try:
             # Blockiere Signale während der Verarbeitung
@@ -2808,7 +2791,6 @@ class Sources(ModuleBase):
             if speaker_array:
                 edit.setText(f"{speaker_array.source_position_y[source_index]:.2f}")
             edit.blockSignals(False)
-
 
     def on_z_position_changed(self, edit, source_index, speaker_array_id):
         """Handler für Änderungen der Z-Position"""
@@ -2931,9 +2913,7 @@ class Sources(ModuleBase):
             if speaker_array:
                 edit.setText(f"{speaker_array.source_time[source_index]:.2f}")
             edit.blockSignals(False)
-
-                
-                    
+            
     def on_source_level_changed(self, edit, source_index, speaker_array_id):
         try:
             
@@ -2980,8 +2960,7 @@ class Sources(ModuleBase):
             if speaker_array:
                 edit.setText(f"{speaker_array.source_level[source_index]:.2f}")
             edit.blockSignals(False)
-
-            
+   
     def on_Delay_changed(self):
         try:
             
@@ -3021,7 +3000,6 @@ class Sources(ModuleBase):
         except Exception as e:
             print(f"Fehler in on_Delay_changed: {e}")
             self.delay_edit.blockSignals(False)
-
 
     def on_autosplay_changed(self):
         try:
@@ -3067,10 +3045,6 @@ class Sources(ModuleBase):
             if hasattr(self, 'autosplay_button'):
                 self.autosplay_button.blockSignals(False)
 
-
-
-
-
     def on_WindowRestriction_changed(self):
         try:
             value = float(self.WindowRestriction.text())
@@ -3092,7 +3066,6 @@ class Sources(ModuleBase):
                     self.main_window.update_speaker_array_calculations()
         except ValueError:
             pass
-
 
     def on_WindowFunction_changed(self, index):
         selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
@@ -3131,7 +3104,6 @@ class Sources(ModuleBase):
     
         # self.update_windowing_plot(speakerspecs_instance)
 
-
     def on_Alpha_changed(self):
         try:
             value = float(self.Alpha.text())
@@ -3165,7 +3137,6 @@ class Sources(ModuleBase):
 
         # self.update_windowing_plot(speakerspecs_instance)
 
-
     def on_Sources_set_changed(self):
         selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
         if selected_speaker_array_id is not None:
@@ -3181,7 +3152,6 @@ class Sources(ModuleBase):
                 self.update_input_fields(speakerspecs_instance)  # Aktualisierung der Eingabefelder
                 self.update_widgets(speakerspecs_instance)
 
-
     def on_Sources_to_zero_changed(self):
         selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
         if selected_speaker_array_id is not None:
@@ -3195,7 +3165,6 @@ class Sources(ModuleBase):
             if speakerspecs_instance:
                 self.update_input_fields(speakerspecs_instance)  # Aktualisierung der Eingabefelder
                 self.update_widgets(speakerspecs_instance)
-
 
     def on_SourceLength_changed(self):
         try:
@@ -3216,7 +3185,6 @@ class Sources(ModuleBase):
 
         except ValueError:
             pass
-
 
     def on_Gain_changed(self):
         try:
@@ -3314,7 +3282,6 @@ class Sources(ModuleBase):
         # Nur im "manual" Modus können Delays manuell bearbeitet werden
         is_manual = arc_shape_lower == "manual"
         self.update_delay_fields_state(speaker_array.id, is_manual)
-
 
     def on_ArcAngle_text_changed(self, text):
         """
@@ -3608,8 +3575,6 @@ class Sources(ModuleBase):
         except Exception as e:
             print(f"Fehler beim Ändern des Winkels: {str(e)}")
 
-
-
     def reset_arc_angle(self, speaker_array, decimals):
         """
         Setzt den Arc Angle auf den letzten gültigen Wert zurück.
@@ -3649,7 +3614,6 @@ class Sources(ModuleBase):
                 self.update_input_fields(speakerspecs_instance)
                 self.update_widgets(speakerspecs_instance)
                 self.update_beamsteering_plot(speakerspecs_instance)
-
 
     def on_ArcShape_changed(self, index):
         selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
@@ -3723,15 +3687,12 @@ class Sources(ModuleBase):
                     self.ArcScaleFactor.setStyleSheet("background-color: #FFE4E1;")
                     QtCore.QTimer.singleShot(500, lambda: self.reset_scale_factor(speaker_array, 2))
 
-
-
     def reset_scale_factor(self, speaker_array, decimals):
         """
         Setzt den Scale Factor auf den letzten gültigen Wert zurück.
         """
         self.ArcScaleFactor.setStyleSheet("")
         self.ArcScaleFactor.setText(f"{speaker_array.arc_scale_factor:.{decimals}f}")
-
 
     def on_ArcScaleFactor_editing_finished(self):
         """
@@ -3766,7 +3727,6 @@ class Sources(ModuleBase):
                 self.update_widgets(speakerspecs_instance)
                 self.update_beamsteering_plot(speakerspecs_instance)
 
-
     def close_sources_dock_widget(self):
         if hasattr(self, 'sources_dockWidget'):
             self.sources_dockWidget.close()
@@ -3793,8 +3753,6 @@ class Sources(ModuleBase):
             
             # Zeige Menü an Mausposition
             context_menu.exec_(self.sources_tree_widget.viewport().mapToGlobal(position))
-
-
 
     def change_array_color(self, item):
         """Ändert die Farbe des ausgewählten Arrays"""

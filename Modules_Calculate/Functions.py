@@ -88,6 +88,19 @@ class FunctionToolbox:
     def db2spl(self, x):
         return x*0.00002
     
+    "Berechnet die Schallgeschwindigkeit basierend auf Temperatur"
+    def calculate_speed_of_sound(self, temperature):
+        """
+        Berechnet die Schallgeschwindigkeit in Abhängigkeit der Temperatur
+        
+        Args:
+            temperature: Temperatur in °C
+            
+        Returns:
+            Schallgeschwindigkeit in m/s
+        """
+        return 331.3 + 0.606 * temperature
+    
     "Berechnen der Wellennummer (m)"
     def wavenumber(self, c,f):
         return 2 * np.pi / (c / f)

@@ -13,6 +13,8 @@ class UiSettings(QtWidgets.QWidget):
         self.data = data
         self.setup_ui()
         self.setup_connections()  # Stellen Sie sicher, dass dies aufgerufen wird
+        # Initiale Berechnung der Luftdichte beim Start
+        self.initialize_air_density()
         self.hide()  # Initially hide the settings window
 
     def setup_ui(self):
@@ -296,6 +298,36 @@ class UiSettings(QtWidgets.QWidget):
 
         layout.addSpacing(18)
 
+        environmental_title = QtWidgets.QLabel("Environmental conditions")
+        environmental_title.setStyleSheet(title_style)
+        environmental_title.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(environmental_title)
+        layout.addWidget(QtWidgets.QFrame(frameShape=QtWidgets.QFrame.HLine))
+
+        # Temperature
+        temperature_layout = QtWidgets.QHBoxLayout()
+        temperature_label = QtWidgets.QLabel("Temperature (°C)")
+        self.temperature = QLineEdit()
+        self.temperature.setValidator(QDoubleValidator(-20.0, 50.0, 2))
+        self.temperature.setFixedWidth(INPUT_WIDTH)
+        temperature_layout.addWidget(temperature_label)
+        temperature_layout.addStretch()
+        temperature_layout.addWidget(self.temperature)
+        layout.addLayout(temperature_layout)
+
+        # Humidity
+        humidity_layout = QtWidgets.QHBoxLayout()
+        humidity_label = QtWidgets.QLabel("Humidity (%)")
+        self.humidity = QLineEdit()
+        self.humidity.setValidator(QDoubleValidator(0.0, 100.0, 2))
+        self.humidity.setFixedWidth(INPUT_WIDTH)
+        humidity_layout.addWidget(humidity_label)
+        humidity_layout.addStretch()
+        humidity_layout.addWidget(self.humidity)
+        layout.addLayout(humidity_layout)
+
+        layout.addSpacing(18)
+
         update_pressure_title = QtWidgets.QLabel("Update automatically pressure")
         update_pressure_title.setStyleSheet(title_style)
         update_pressure_title.setContentsMargins(0, 0, 0, 0)
@@ -409,6 +441,8 @@ class UiSettings(QtWidgets.QWidget):
         self.freq_bandwidth_upper.currentIndexChanged.connect(self.validate_frequency_range)
         self.freq_bandwidth_lower.currentIndexChanged.connect(self.validate_frequency_range)
         self.resolution.editingFinished.connect(self.on_Resolution_changed)
+        self.temperature.editingFinished.connect(self.on_Temperature_changed)
+        self.humidity.editingFinished.connect(self.on_Humidity_changed)
         self.position_plot_length.editingFinished.connect(self.on_PositionLength_changed)
         self.position_plot_width.editingFinished.connect(self.on_PositionWidth_changed)
 
@@ -450,6 +484,8 @@ class UiSettings(QtWidgets.QWidget):
         self.set_combobox_to_frequency(self.freq_bandwidth_upper, self.settings.upper_calculate_frequency)
         self.set_combobox_to_frequency(self.freq_bandwidth_lower, self.settings.lower_calculate_frequency)
         self.resolution.setText(f"{self.settings.resolution:.2f}")
+        self.temperature.setText(f"{self.settings.temperature:.1f}")
+        self.humidity.setText(f"{self.settings.humidity:.1f}")
         self.position_plot_length.setText(str(self.settings.position_x_axis))
         self.position_plot_width.setText(str(self.settings.position_y_axis))
 
@@ -649,6 +685,116 @@ class UiSettings(QtWidgets.QWidget):
             self.resolution.setText(f"{value:.2f}")
         except ValueError:
             self.resolution.setText(f"{self.settings.resolution:.2f}")
+
+    def initialize_air_density(self):
+        """
+        Initialisiert die Luftdichte beim Start basierend auf den gespeicherten Werten.
+        """
+        if hasattr(self.settings, 'temperature') and hasattr(self.settings, 'humidity'):
+            air_density = self.calculate_air_density(
+                self.settings.temperature, 
+                self.settings.humidity
+            )
+            self.settings.air_density = air_density
+            print(f"[INFO] Luftdichte initialisiert: {air_density:.4f} kg/m³ bei {self.settings.temperature}°C und {self.settings.humidity}% Luftfeuchtigkeit")
+    
+    def calculate_speed_of_sound(self, temperature):
+        """
+        Berechnet die Schallgeschwindigkeit basierend auf Temperatur.
+        
+        Args:
+            temperature: Temperatur in °C
+            
+        Returns:
+            Schallgeschwindigkeit in m/s
+        """
+        return 331.3 + 0.606 * temperature
+
+    def calculate_air_density(self, temperature, humidity):
+        """
+        Berechnet die Luftdichte basierend auf Temperatur und Luftfeuchtigkeit.
+        
+        Args:
+            temperature: Temperatur in °C
+            humidity: Relative Luftfeuchtigkeit in %
+            
+        Returns:
+            Luftdichte in kg/m³
+        """
+        # Umrechnung
+        T_kelvin = temperature + 273.15
+        h = humidity / 100.0  # Umwandlung von % in Dezimalwert
+        
+        # Sättigungsdampfdruck nach Magnus-Formel (in Pa)
+        p_sat = 611.2 * np.exp(17.62 * temperature / (243.12 + temperature))
+        
+        # Partialdruck des Wasserdampfs
+        p_v = h * p_sat
+        
+        # Atmosphärischer Druck (Standard: 101325 Pa)
+        p_atm = 101325.0
+        
+        # Partialdruck der trockenen Luft
+        p_d = p_atm - p_v
+        
+        # Gaskonstanten
+        R_d = 287.05  # Spezifische Gaskonstante für trockene Luft (J/(kg·K))
+        R_v = 461.495  # Spezifische Gaskonstante für Wasserdampf (J/(kg·K))
+        
+        # Berechnung der Luftdichte
+        rho = (p_d / (R_d * T_kelvin)) + (p_v / (R_v * T_kelvin))
+        
+        return rho
+
+    def on_Temperature_changed(self):
+        try:
+            value = round(float(self.temperature.text()), 1)
+            if self.settings.temperature != value:
+                self.settings.temperature = value
+                
+                # 🌡️ Berechne Schallgeschwindigkeit
+                speed_of_sound = self.calculate_speed_of_sound(self.settings.temperature)
+                self.settings.speed_of_sound = speed_of_sound
+                
+                # Berechne Luftdichte
+                air_density = self.calculate_air_density(
+                    self.settings.temperature, 
+                    self.settings.humidity
+                )
+                self.settings.air_density = air_density
+                
+                print(f"[INFO] Temperatur: {value}°C → c = {speed_of_sound:.2f} m/s, ρ = {air_density:.4f} kg/m³")
+                
+                # Trigger Neuberechnung
+                self.main_window.update_speaker_array_calculations()
+            self.temperature.setText(f"{value:.1f}")
+        except ValueError:
+            self.temperature.setText(f"{self.settings.temperature:.1f}")
+
+    def on_Humidity_changed(self):
+        try:
+            value = round(float(self.humidity.text()), 1)
+            if self.settings.humidity != value:
+                self.settings.humidity = value
+                
+                # 🌡️ Berechne Schallgeschwindigkeit (Temperatur bleibt führend)
+                speed_of_sound = self.calculate_speed_of_sound(self.settings.temperature)
+                self.settings.speed_of_sound = speed_of_sound
+                
+                # Berechne Luftdichte
+                air_density = self.calculate_air_density(
+                    self.settings.temperature, 
+                    self.settings.humidity
+                )
+                self.settings.air_density = air_density
+                
+                print(f"[INFO] Luftfeuchtigkeit: {value}% → c = {speed_of_sound:.2f} m/s, ρ = {air_density:.4f} kg/m³")
+                
+                # Trigger Neuberechnung
+                self.main_window.update_speaker_array_calculations()
+            self.humidity.setText(f"{value:.1f}")
+        except ValueError:
+            self.humidity.setText(f"{self.settings.humidity:.1f}")
 
     def on_PositionLength_changed(self):
         try:

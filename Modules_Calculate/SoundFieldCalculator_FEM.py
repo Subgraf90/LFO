@@ -382,7 +382,9 @@ class SoundFieldCalculatorFEM(ModuleBase):
         pressure_trial = ufl.TrialFunction(V)
         pressure_test = ufl.TestFunction(V)
 
-        k = 2.0 * np.pi * frequency / float(self.settings.speed_of_sound)
+        # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+        speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
+        k = 2.0 * np.pi * frequency / float(speed_of_sound)
 
         absorption = getattr(self.settings, "fem_boundary_absorption", 1.0)
 

@@ -152,7 +152,9 @@ class SoundFieldCalculator(ModuleBase):
         # SCHRITT 2: Vorbereitung - Physikalische Konstanten
         # ============================================================
         # Berechne physikalische Konstanten (einmalig für alle Quellen)
-        wave_number = self.functions.wavenumber(self.settings.speed_of_sound, self.settings.calculate_frequency)
+        # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+        speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
+        wave_number = self.functions.wavenumber(speed_of_sound, self.settings.calculate_frequency)
         calculate_frequency = self.settings.calculate_frequency
         a_source_pa = self.functions.db2spl(self.functions.db2mag(self.settings.a_source_db))
         
@@ -407,7 +409,9 @@ class SoundFieldCalculator(ModuleBase):
             
             # Verarbeite alle gültigen Punkte
             level = self.functions.db2mag(speaker_array.source_level[isrc] + speaker_array.gain)
-            wave_number = self.functions.wavenumber(self.settings.speed_of_sound, self.settings.calculate_frequency)
+            # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+            speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
+            wave_number = self.functions.wavenumber(speed_of_sound, self.settings.calculate_frequency)
             a_source_pa = self.functions.db2spl(self.functions.db2mag(self.settings.a_source_db))
             time_factor = 2 * np.pi * self.settings.calculate_frequency * (speaker_array.source_time[isrc] + speaker_array.delay) / 1000
             

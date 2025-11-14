@@ -200,7 +200,9 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             source_level = self.functions.db2mag(np.array(source_level))
             calculate_frequency = self.settings.calculate_frequency
             a_source_pa = self.functions.db2spl(self.functions.db2mag(self.settings.a_source_db))
-            wave_number = self.functions.wavenumber(self.settings.speed_of_sound, self.settings.calculate_frequency)
+            # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+            speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
+            wave_number = self.functions.wavenumber(speed_of_sound, self.settings.calculate_frequency)
 
             # ============================================================
             # SCHRITT 3: Iteriere über alle Lautsprecher im Array

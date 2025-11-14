@@ -155,12 +155,22 @@ class Settings:
         self.speaker_array = self.speaker_arrays = {}
 
     def load_custom_defaults(self):
+        # Temperatur und Luftfeuchtigkeit zuerst definieren
+        temperature = 20.0
+        humidity = 50.0
+        
+        # 🌡️ Berechne Schallgeschwindigkeit basierend auf Temperatur
+        speed_of_sound = 331.3 + 0.606 * temperature
+        
         defaults = {            
             'impulse_min_spl': -20,
             'measurement_size': 4,
             'impulse_plot_height': 180,
             'resolution': 1,
-            'speed_of_sound': 343,
+            'speed_of_sound': speed_of_sound,
+            'temperature': temperature,
+            'humidity': humidity,
+            'air_density': 1.204,  # kg/m³ bei 20°C und 50% Luftfeuchtigkeit
             'upper_calculate_frequency': 56,
             'lower_calculate_frequency': 45,
             'calculate_frequency': 50.2,    
@@ -217,6 +227,9 @@ class Settings:
             'impulse_plot_height': self.impulse_plot_height,
             'resolution': self.resolution,
             'speed_of_sound': self.speed_of_sound,
+            'temperature': self.temperature,
+            'humidity': self.humidity,
+            'air_density': self.air_density,
             'calculate_frequency': self.calculate_frequency,
             'upper_calculate_frequency': self.upper_calculate_frequency,
             'lower_calculate_frequency': self.lower_calculate_frequency,

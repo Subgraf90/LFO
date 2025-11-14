@@ -38,8 +38,8 @@ class BeamSteering(ModuleBase):
             speaker_array.source_position_y,
         )
         
-        
-        speed_of_sound = self.settings.speed_of_sound
+        # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+        speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
         source_time = speaker_array.source_time
         
         arc_scale_factor = speaker_array.arc_scale_factor

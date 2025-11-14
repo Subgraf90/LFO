@@ -274,6 +274,9 @@ class ImpulseCalculator(ModuleBase):
             if not self.settings.impulse_points:  # Prüfe ob Impulspunkte existieren
                 return None
 
+            # 🌡️ Temperaturabhängige Schallgeschwindigkeit
+            speed_of_sound = self.functions.calculate_speed_of_sound(self.settings.temperature)
+
             impulse_responses = {}
             speaker_names = self._get_speaker_names_list()
             speaker_index_map = self._get_speaker_name_index()
@@ -334,7 +337,7 @@ class ImpulseCalculator(ModuleBase):
                         horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
                         distance = np.sqrt(horizontal_dist**2 + z_distance**2)
                         # Laufzeit in ms berechnen
-                        delay_ms = (distance / self.settings.speed_of_sound) * 1000
+                        delay_ms = (distance / speed_of_sound) * 1000
                         
                         # Winkel berechnen
                         source_to_point_angle = np.arctan2(y_distance, x_distance)
@@ -600,7 +603,7 @@ class ImpulseCalculator(ModuleBase):
 
             freq_row = common_freq[None, :]
             delay_phase = 2 * np.pi * freq_row * (delay_ms / 1000.0)
-            distance_phase = 2 * np.pi * freq_row * (distance_array / self.settings.speed_of_sound)
+            distance_phase = 2 * np.pi * freq_row * (distance_array / speed_of_sound)
             total_phase = phase_rad_stack - delay_phase - distance_phase
 
             complex_contribution = polarity_array * mag_with_gain * np.exp(1j * total_phase)
@@ -737,7 +740,7 @@ class ImpulseCalculator(ModuleBase):
 
             freq_row = common_freq[None, :]
             delay_phase = 2 * np.pi * freq_row * (delay_ms / 1000.0)
-            distance_phase = 2 * np.pi * freq_row * (distance_array / self.settings.speed_of_sound)
+            distance_phase = 2 * np.pi * freq_row * (distance_array / speed_of_sound)
             total_phase = phase_rad_stack + delay_phase + distance_phase
 
             complex_response = polarity_array * mag_with_gain * np.exp(1j * total_phase)
@@ -857,7 +860,7 @@ class ImpulseCalculator(ModuleBase):
             y_distance = point_y - source_y
             distances = np.sqrt(x_distance ** 2 + y_distance ** 2)
 
-            arrival_time = (distances / self.settings.speed_of_sound) * 1000.0 - time_offset + total_delay
+            arrival_time = (distances / speed_of_sound) * 1000.0 - time_offset + total_delay
 
             spl_values = []
             for entry, distance, gain in zip(entries, distances, total_gain):
