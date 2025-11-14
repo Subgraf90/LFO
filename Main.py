@@ -3,6 +3,7 @@ import cProfile
 import logging
 import traceback
 import os
+import hashlib
 from time import perf_counter
 from typing import Optional
 
@@ -119,6 +120,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._perf_enabled = ENABLE_PERFORMANCE_LOGS and bool(int(os.environ.get("LFO_DEBUG_PERF", "1")))
         self._perf_logger = logging.getLogger("LFO.Performance")
         self._fem_unavailable_notified = False
+        
+        # Tracking für physische Speaker-Parameter
+        self._speaker_position_hashes = {}
 
         self._initialize_default_plot_flags()
 
@@ -729,21 +733,139 @@ class MainWindow(QtWidgets.QMainWindow):
             if include_y:
                 self.plot_yaxis()
 
+    def _get_physical_params_hash(self, speaker_array):
+        """
+        Erstellt einen Hash der relevanten physischen Parameter eines speaker_array.
+        
+        Relevante Parameter:
+        - Anzahl der Quellen
+        - Lautsprecher-Typen
+        - Positionen (x, y, z, z_stack, z_flown)
+        - Orientierung (azimuth, site, angle)
+        - Arc-Konfiguration (arc_angle, arc_shape, arc_scale_factor)
+        
+        NICHT enthalten:
+        - Pegel (gain, source_level)
+        - Delay (delay, source_time)
+        - Polarität (source_polarity)
+        - Windowing-Parameter
+        
+        Args:
+            speaker_array: Das SpeakerArray-Objekt
+            
+        Returns:
+            str: SHA256 Hash der relevanten Parameter
+        """
+        def _array_to_string(arr):
+            """Konvertiert ein Array zu einem konsistenten String mit gerundeten Werten."""
+            if isinstance(arr, np.ndarray):
+                # Runde auf 6 Dezimalstellen, um Floating-Point-Ungenauigkeiten zu vermeiden
+                return ','.join(f"{x:.6f}" if isinstance(x, (float, np.floating)) else str(x) for x in arr)
+            else:
+                return ','.join(str(x) for x in arr)
+        
+        # Sammle alle relevanten physischen Parameter
+        params = []
+        
+        # Anzahl und Typen
+        params.append(str(speaker_array.number_of_sources))
+        params.append(_array_to_string(speaker_array.source_polar_pattern))
+        
+        # Positionen
+        if hasattr(speaker_array, 'source_position_x'):
+            params.append(_array_to_string(speaker_array.source_position_x))
+        if hasattr(speaker_array, 'source_position_y'):
+            params.append(_array_to_string(speaker_array.source_position_y))
+        if hasattr(speaker_array, 'source_position_z'):
+            params.append(_array_to_string(speaker_array.source_position_z))
+        if hasattr(speaker_array, 'source_position_z_stack'):
+            params.append(_array_to_string(speaker_array.source_position_z_stack))
+        if hasattr(speaker_array, 'source_position_z_flown'):
+            params.append(_array_to_string(speaker_array.source_position_z_flown))
+        
+        # Orientierung
+        if hasattr(speaker_array, 'source_azimuth'):
+            params.append(_array_to_string(speaker_array.source_azimuth))
+        if hasattr(speaker_array, 'source_site'):
+            params.append(_array_to_string(speaker_array.source_site))
+        if hasattr(speaker_array, 'source_angle'):
+            params.append(_array_to_string(speaker_array.source_angle))
+        
+        # Arc-Konfiguration (runde auch hier)
+        if hasattr(speaker_array, 'arc_angle'):
+            params.append(f"{float(speaker_array.arc_angle):.6f}")
+        if hasattr(speaker_array, 'arc_shape'):
+            params.append(str(speaker_array.arc_shape))
+        if hasattr(speaker_array, 'arc_scale_factor'):
+            params.append(f"{float(speaker_array.arc_scale_factor):.6f}")
+        
+        # Erstelle Hash
+        param_string = '|'.join(params)
+        return hashlib.sha256(param_string.encode('utf-8')).hexdigest()
+
+    def _should_recalculate_speaker_positions(self, speaker_array):
+        """
+        Prüft, ob die Speaker-Positionen neu berechnet werden müssen.
+        
+        Args:
+            speaker_array: Das SpeakerArray-Objekt
+            
+        Returns:
+            bool: True wenn Neuberechnung nötig, False sonst
+        """
+        array_id = speaker_array.id
+        current_hash = self._get_physical_params_hash(speaker_array)
+        
+        # Wenn kein gespeicherter Hash existiert, muss berechnet werden
+        if array_id not in self._speaker_position_hashes:
+            self._speaker_position_hashes[array_id] = current_hash
+            print(f"[DEBUG] Kein Hash gespeichert für Array {array_id} - initialer Berechnungslauf")
+            return True
+        
+        # Wenn sich der Hash geändert hat, muss neu berechnet werden
+        old_hash = self._speaker_position_hashes[array_id]
+        if old_hash != current_hash:
+            self._speaker_position_hashes[array_id] = current_hash
+            print(f"[DEBUG] Hash-Änderung erkannt für Array {array_id}:")
+            print(f"[DEBUG]   Alt: {old_hash[:16]}...")
+            print(f"[DEBUG]   Neu: {current_hash[:16]}...")
+            # Für detailliertes Debugging: zeige welche Parameter sich geändert haben könnten
+            if hasattr(self, '_perf_enabled') and self._perf_enabled:
+                print(f"[DEBUG] Physische Parameter: number_of_sources={speaker_array.number_of_sources}, "
+                      f"arc_angle={getattr(speaker_array, 'arc_angle', 'N/A')}, "
+                      f"arc_shape={getattr(speaker_array, 'arc_shape', 'N/A')}")
+            return True
+        
+        # Keine Änderung erkannt
+        return False
+
     def speaker_position_calculator(self, speaker_array):
         """
         Berechnet den Nullpunkt in der Mitte der Lautsprecherhöhe für Lautsprechersysteme.
         Berücksichtigt die front_height aus den Cabinet-Daten.
+        
+        Optimiert: Berechnung erfolgt nur, wenn sich physische Parameter geändert haben.
         """
-        speaker_position_calculator = SpeakerPositionCalculator(self.container)
-        speaker_position_calculator.calculate_stack_center(speaker_array)
+        if not self._should_recalculate_speaker_positions(speaker_array):
+            print(f"[INFO] Speaker-Positionen für Array {speaker_array.id} unverändert - überspringe Neuberechnung")
+            return
+        
+        config = getattr(speaker_array, 'configuration', 'unknown')
+        print(f"[INFO] Berechne Speaker-Positionen für Array {speaker_array.id} (Typ: {config}, physische Parameter geändert)")
+        
+        with self._perf_scope(f"Speaker position calc ({config})"):
+            speaker_position_calculator = SpeakerPositionCalculator(self.container)
+            speaker_position_calculator.calculate_stack_center(speaker_array)
 
 
     def beamsteering_calculator(self, speaker_array, speaker_array_id):
         """
         Berechnet die Beamsteering-Daten für ein bestimmtes Lautsprecherarray.
         """
-        beamsteering = BeamSteering(speaker_array, self.container.data, self.settings)
-        beamsteering.calculate(speaker_array_id)
+        config = getattr(speaker_array, 'configuration', 'unknown')
+        with self._perf_scope(f"Beamsteering calc ({config})"):
+            beamsteering = BeamSteering(speaker_array, self.container.data, self.settings)
+            beamsteering.calculate(speaker_array_id)
 
 
     def windowing_calculator(self, speaker_array_id):
@@ -797,6 +919,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         self.container.load_polardata(force=force_reload)
         self.container.reset_runtime_state()
+        
+        # Lösche gespeicherte Positionshashes, damit beim nächsten Update neu berechnet wird
+        if force_reload:
+            self._speaker_position_hashes.clear()
 
 
     def get_selected_speaker_array_id(self):
