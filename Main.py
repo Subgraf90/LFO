@@ -4,6 +4,7 @@ import logging
 import traceback
 import os
 import hashlib
+import time
 from typing import Optional
 
 import numpy as np
@@ -14,7 +15,7 @@ import matplotlib as mpl
 mpl.set_loglevel('WARNING')  # Reduziert matplotlib Debug-Ausgaben
 
 from Module_LFO.Modules_Init.Logging import configure_logging, CrashReporter
-from Module_LFO.Modules_Init.Progress import ProgressManager
+from Module_LFO.Modules_Init.Progress import ProgressManager, ProgressCancelled
 
 from Module_LFO.Modules_Ui.UiSourceManagement import Sources
 from Module_LFO.Modules_Ui.UiImpulsemanager import ImpulseManager
@@ -94,6 +95,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.snapshot_engine = SnapshotWidget(self, self.settings, self.container)
         self.surface_manager = None  # Surface-Dock wird nur bei Bedarf erstellt
         self.progress_manager = ProgressManager(self)
+        self._task_runtime_stats: dict[str, dict[str, float]] = {}
         
         # Calculation Handler für Berechnungslogik
         self.calculation_handler = CalculationHandler(self.settings)
@@ -277,7 +279,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not update_soundfield:
             tasks.append(("Calculating SPL", lambda: self.calculate_spl(
-                show_progress=False,
+                show_progress=True,
                 update_plot=True,
                 update_axisplots=not update_axisplot,
                 update_polarplots=not update_polarplot,
@@ -291,8 +293,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not tasks:
             return
-
-        self.run_tasks_with_progress("Running main calculations", tasks)
+        try:
+            self.run_tasks_with_progress("Running main calculations", tasks)
+        except ProgressCancelled:
+            return
 
     def update_freq_bandwidth(self):
         lower_freq = self.settings.lower_calculate_frequency
@@ -439,7 +443,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 if update_soundfield:
                     tasks.append(("Calculating SPL", lambda: self.calculate_spl(
-                        show_progress=False,
+                        show_progress=True,
                         update_plot=True,
                         update_axisplots=False,
                         update_polarplots=False,
@@ -453,7 +457,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     elif not update_impulse:
                         tasks.append(("Clearing impulse plot", self.impulse_manager.show_empty_plot))
 
-                self.run_tasks_with_progress("Updating array calculations", tasks)
+                try:
+                    self.run_tasks_with_progress("Updating array calculations", tasks)
+                except ProgressCancelled:
+                    return
 
                 if not update_axisplot:
                     self.draw_plots.show_empty_axes()
@@ -475,15 +482,72 @@ class MainWindow(QtWidgets.QMainWindow):
         calculator_cls = self.calculation_handler.select_soundfield_calculator_class()
         calculator_instance = calculator_cls(self.settings, self.container.data, self.container.calculation_spl)
         calculator_instance.set_data_container(self.container)  # 🚀 ERFORDERLICH für optimierte Balloon-Daten!
-        
-        # FEM: Progress-Callback für Frequenz-Updates setzen
-        if hasattr(calculator_instance, 'set_progress_callback') and show_progress:
-            # Erstelle Callback der den aktuellen Progress-Dialog updated
-            progress_session = getattr(self, '_current_progress_session', None)
-            if progress_session:
-                calculator_instance.set_progress_callback(lambda msg: progress_session.update(msg))
 
-        calculator_instance.calculate_soundfield_pressure()
+        frequency_progress_ctx = None
+        if show_progress and calculator_cls is SoundFieldCalculatorFEM:
+            try:
+                precomputed_frequencies = calculator_instance._determine_frequencies()
+            except Exception:
+                precomputed_frequencies = []
+            else:
+                calculator_instance.set_precomputed_frequencies(precomputed_frequencies)
+
+            if precomputed_frequencies:
+                total_freqs = len(precomputed_frequencies)
+                if total_freqs >= 3:
+                    import math
+                    last_third_start = math.floor(total_freqs * (2 / 3)) + 1
+                    last_third_start = min(last_third_start, total_freqs)
+                    last_third_count = total_freqs - last_third_start + 1
+                    extra_steps = last_third_count
+                else:
+                    last_third_start = None
+                    extra_steps = 0
+
+                total_steps = len(precomputed_frequencies) + extra_steps
+                frequency_progress_ctx = self.progress_manager.start(
+                    "FEM-Frequenzen",
+                    total_steps,
+                    minimum_duration_ms=0,
+                )
+                calculator_instance.set_frequency_progress_plan(last_third_start)
+
+        # Progress-Callback auch nutzen, wenn bereits eine Session aktiv ist
+        progress_session = getattr(self, '_current_progress_session', None)
+        if hasattr(calculator_instance, 'set_progress_callback') and (show_progress or progress_session):
+            def _progress_callback(message: str):
+                session = getattr(self, '_current_progress_session', None)
+                if session:
+                    session.update(message)
+                    if session.is_cancelled():
+                        session.raise_if_cancelled()
+            calculator_instance.set_progress_callback(_progress_callback)
+
+        def _run_calculator():
+            if frequency_progress_ctx:
+                with frequency_progress_ctx as freq_session:
+                    calculator_instance.set_frequency_progress_session(freq_session)
+                    calculator_instance.calculate_soundfield_pressure()
+                    calculator_instance.set_frequency_progress_session(None)
+            else:
+                calculator_instance.calculate_soundfield_pressure()
+
+        use_internal_progress = show_progress and progress_session is None and frequency_progress_ctx is None
+
+        try:
+            if use_internal_progress:
+                if calculator_cls is SoundFieldCalculatorFEM:
+                    task_title = "FEM-Berechnung"
+                    task_label = "FEM-Schallfeld lösen"
+                else:
+                    task_title = "SPL-Berechnung"
+                    task_label = "Schallfeld berechnen"
+                self.run_tasks_with_progress(task_title, [(task_label, _run_calculator)])
+            else:
+                _run_calculator()
+        except ProgressCancelled:
+            self._show_empty_plots_after_cancel()
+            return
         
         self.container.set_calculation_SPL(calculator_instance.calculation_spl)
         self._set_spl_show_flag(True)
@@ -665,6 +729,44 @@ class MainWindow(QtWidgets.QMainWindow):
 
 # ---- HELP METHODEN ----
 
+    def _record_task_runtime(self, label: str, duration: float) -> None:
+        if duration <= 0:
+            return
+        stats = self._task_runtime_stats.setdefault(label, {"avg": duration, "count": 0, "last": duration})
+        count = int(stats.get("count", 0)) + 1
+        avg = stats.get("avg", duration)
+        avg = ((avg * (count - 1)) + duration) / count
+        stats.update({"avg": avg, "count": count, "last": duration})
+
+    def _get_task_runtime_estimate(self, label: str) -> Optional[float]:
+        stats = self._task_runtime_stats.get(label)
+        if not stats:
+            return None
+        return stats.get("avg")
+
+    def _format_progress_label(self, label: str, estimate: Optional[float] = None) -> str:
+        estimate = estimate if estimate is not None else self._get_task_runtime_estimate(label)
+        if not estimate:
+            return label
+        if estimate >= 1.0:
+            eta = f"{estimate:.1f}s"
+        else:
+            eta = f"{estimate * 1000:.0f}ms"
+        return f"{label} · ≈{eta}"
+
+    def _show_empty_plots_after_cancel(self) -> None:
+        self._set_axes_show_flag(False)
+        self._set_polar_show_flag(False)
+        self._set_spl_show_flag(False)
+        if hasattr(self.draw_plots, "show_empty_axes"):
+            self.draw_plots.show_empty_axes()
+        if hasattr(self.draw_plots, "show_empty_polar"):
+            self.draw_plots.show_empty_polar()
+        if hasattr(self.draw_plots, "show_empty_spl"):
+            self.draw_plots.show_empty_spl()
+        if hasattr(self, "impulse_manager") and hasattr(self.impulse_manager, "show_empty_plot"):
+            self.impulse_manager.show_empty_plot()
+
     def _set_axes_show_flag(self, value: bool):
         axes_data = self.container.calculation_axes.setdefault("aktuelle_simulation", {})
         axes_data["show_in_plot"] = bool(value)
@@ -684,21 +786,71 @@ class MainWindow(QtWidgets.QMainWindow):
         
         Args:
             title: Progress-Bar Titel
-            tasks: Liste von (label, function) Tuples
+            tasks: Liste von (label, function[, cancel_callback]) Tuples
         """
         if not tasks:
-            return
+            return True
 
-        with self.progress_manager.start(title, len(tasks)) as progress:
-            # Speichere Progress-Session für Callbacks (z.B. FEM-Frequenz-Updates)
+        normalized_tasks = []
+        for task in tasks:
+            if len(task) == 3:
+                label, func, cancel_cb = task
+            else:
+                label, func = task  # type: ignore[misc]
+                cancel_cb = None
+            normalized_tasks.append((label, func, cancel_cb))
+
+        weights = []
+        for label, _, _ in normalized_tasks:
+            estimate = self._get_task_runtime_estimate(label)
+            weights.append(estimate if estimate and estimate > 0 else 1.0)
+
+        min_weight = min(weights) if weights else 1.0
+        normalized_steps = [
+            max(1, int(round(weight / min_weight))) if min_weight > 0 else 1
+            for weight in weights
+        ]
+        total_steps = max(1, sum(normalized_steps)) if normalized_steps else len(normalized_tasks)
+
+        cancelled = False
+
+        with self.progress_manager.start(title, total_steps) as progress:
             self._current_progress_session = progress
             try:
-                for label, func in tasks:
-                    progress.update(label)  # UI responsive halten
-                    func()
-                    progress.advance()  # Balken weitersetzen
+                for (label, func, cancel_cb), step_weight in zip(normalized_tasks, normalized_steps):
+                    if progress.is_cancelled():
+                        cancelled = True
+                        if cancel_cb:
+                            cancel_cb()
+                        break
+
+                    progress.update(self._format_progress_label(label))
+                    if progress.is_cancelled():
+                        cancelled = True
+                        if cancel_cb:
+                            cancel_cb()
+                        break
+
+                    start_time = time.perf_counter()
+                    try:
+                        func()
+                    except ProgressCancelled:
+                        cancelled = True
+                        if cancel_cb:
+                            cancel_cb()
+                        break
+                    else:
+                        duration = time.perf_counter() - start_time
+                        self._record_task_runtime(label, duration)
+                    progress.advance(step_weight)
             finally:
                 self._current_progress_session = None
+
+        if cancelled:
+            self._show_empty_plots_after_cancel()
+            raise ProgressCancelled("Tasks cancelled by user.")
+
+        return True
 
 
 
