@@ -377,7 +377,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def update_speaker_array_calculations(self):
-        print("DEBUG: update_speaker_array_calculations called")
         """
         Aktualisiert die Berechnungen für das ausgewählte Lautsprecherarray.
         """
@@ -544,7 +543,6 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, lambda: self._log_perf(f"{label} UI idle", perf_counter() - start))
 
     def _run_with_log(self, label: str, func, post=None, args=()):
-        print(f"[INFO] {label}")
         result = func(*args)
         if callable(post):
             post()
@@ -654,13 +652,11 @@ class MainWindow(QtWidgets.QMainWindow):
                         fallback_instance = fallback_cls(self.settings, self.container.data, self.container.calculation_spl)
                         fallback_instance.set_data_container(self.container)
                     with self._perf_scope("SPL sound field calculation (fallback)"):
-                        print("[INFO] Starte SPL-Berechnung (Fallback Superposition)")
                         fallback_instance.calculate_soundfield_pressure()
                     return fallback_instance
 
                 try:
                     with self._perf_scope("SPL sound field calculation"):
-                        print("[INFO] Starte SPL-Berechnung")
                         calculator_instance.calculate_soundfield_pressure()
                 except ImportError as exc:
                     if calculator_cls is SoundFieldCalculatorFEM:
@@ -679,12 +675,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.plot_spl(update_axes=False)
                 if update_axisplots:
                     with self._perf_scope("Axes plot from SPL"):
-                        print("[INFO] Aktualisiere Achsen-Plots nach SPL")
                         self.plot_xaxis()
                         self.plot_yaxis()
                 if update_polarplots:
                     with self._perf_scope("Polar plot from SPL"):
-                        print("[INFO] Aktualisiere Polar-Plot nach SPL")
                         self.plot_polar_pattern()
             self._log_async("SPL")
 
@@ -819,21 +813,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Wenn kein gespeicherter Hash existiert, muss berechnet werden
         if array_id not in self._speaker_position_hashes:
             self._speaker_position_hashes[array_id] = current_hash
-            print(f"[DEBUG] Kein Hash gespeichert für Array {array_id} - initialer Berechnungslauf")
             return True
         
         # Wenn sich der Hash geändert hat, muss neu berechnet werden
         old_hash = self._speaker_position_hashes[array_id]
         if old_hash != current_hash:
             self._speaker_position_hashes[array_id] = current_hash
-            print(f"[DEBUG] Hash-Änderung erkannt für Array {array_id}:")
-            print(f"[DEBUG]   Alt: {old_hash[:16]}...")
-            print(f"[DEBUG]   Neu: {current_hash[:16]}...")
-            # Für detailliertes Debugging: zeige welche Parameter sich geändert haben könnten
-            if hasattr(self, '_perf_enabled') and self._perf_enabled:
-                print(f"[DEBUG] Physische Parameter: number_of_sources={speaker_array.number_of_sources}, "
-                      f"arc_angle={getattr(speaker_array, 'arc_angle', 'N/A')}, "
-                      f"arc_shape={getattr(speaker_array, 'arc_shape', 'N/A')}")
             return True
         
         # Keine Änderung erkannt
@@ -847,11 +832,9 @@ class MainWindow(QtWidgets.QMainWindow):
         Optimiert: Berechnung erfolgt nur, wenn sich physische Parameter geändert haben.
         """
         if not self._should_recalculate_speaker_positions(speaker_array):
-            print(f"[INFO] Speaker-Positionen für Array {speaker_array.id} unverändert - überspringe Neuberechnung")
             return
         
         config = getattr(speaker_array, 'configuration', 'unknown')
-        print(f"[INFO] Berechne Speaker-Positionen für Array {speaker_array.id} (Typ: {config}, physische Parameter geändert)")
         
         with self._perf_scope(f"Speaker position calc ({config})"):
             speaker_position_calculator = SpeakerPositionCalculator(self.container)
