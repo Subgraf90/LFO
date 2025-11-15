@@ -1,0 +1,35 @@
+name: lfo_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Python
+  - python=3.11
+  
+  # FEniCSx und wissenschaftliche Pakete
+  - fenics-dolfinx
+  - mpich
+  - petsc
+  - petsc4py
+  - mpi4py
+  - gmsh
+  
+  # Numerische und wissenschaftliche Pakete
+  - numpy
+  - scipy
+  
+  # Visualisierung
+  - matplotlib
+  - pyvista
+  - pyvistaqt
+  
+  # GUI - Über Pip installieren für bessere macOS-Unterstützung
+  - qtpy
+  
+  # Entwicklungswerkzeuge
+  - pip
+  
+  # Pip-Pakete
+  - pip:
+    - PyQt5
+    - scooby
