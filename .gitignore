@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.swp
-.DS_Store
-.env
-venv/
-Modules_Data/PolarData_mag/
