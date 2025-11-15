@@ -24,3 +24,12 @@ git checkout origin/main -- Module_LFO/Modules_Plot/
 git checkout <commit-id> -- <pfad/zur/datei>
 
 cd /Users/MGraf/Python/LFO_Umgebung/LFO         #zu richtigem ordner navigieren
+
+""module vergleichen""
+Neueste Infos vom Remote holen: 
+   git fetch
+Vergleich zwischen lokalem Branch und Remote-Branch anzeigen, z. B. main gegen origin/main:
+   git diff main..origin/main
+oder mit Buchstabendiagramm:
+   git log --oneline --graph --decorate --all
+Alternativ kannst du git status verwenden, um kurz zu sehen, ob dein lokaler Branch „ahead“ oder „behind“ ist.
