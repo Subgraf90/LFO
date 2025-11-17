@@ -16,6 +16,7 @@ Venv_FEM/
 
 # Build-/Packaging-Artefakte
 *.spec
+LFO_with_git.tgz
 
 # Polar-Daten (große Dateien)
 Modules_Data/PolarData_mag/
