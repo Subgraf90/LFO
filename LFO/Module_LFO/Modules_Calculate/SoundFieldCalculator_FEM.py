@@ -893,22 +893,36 @@ class SoundFieldCalculatorFEM(ModuleBase):
             )
             outer_loop, outer_curves = self._gmsh_add_polygon(factory, outer_points, mesh_size)
 
-            hole_loops: List[int] = []
+            cabinet_surfaces: List[Tuple[int, int]] = []
+            panel_surfaces: List[Tuple[int, int]] = []
+
             for cabinet in cabinets:
                 loop_tag, _ = self._gmsh_add_polygon(factory, cabinet.points, mesh_size)
-                hole_loops.append(-loop_tag)
+                surface = factory.addPlaneSurface([loop_tag])
+                cabinet_surfaces.append((2, surface))
+
             for panel in panels:
                 if panel.depth > 0.0:
                     continue
                 loop_tag, _ = self._gmsh_add_polygon(factory, panel.points, mesh_size)
-                hole_loops.append(-loop_tag)
+                surface = factory.addPlaneSurface([loop_tag])
+                panel_surfaces.append((2, surface))
 
-            surface_tag = factory.addPlaneSurface([outer_loop] + hole_loops)
+            outer_surface = factory.addPlaneSurface([outer_loop])
+            cut_result = factory.cut(
+                [(2, outer_surface)],
+                cabinet_surfaces + panel_surfaces,
+                removeObject=True,
+                removeTool=True,
+            )
             factory.synchronize()
 
-            surface_entities = [tag for (_, tag) in gmsh.model.getEntities(2)]
+            if cut_result and cut_result[0]:
+                surface_entities = [tag for (_, tag) in cut_result[0]]
+            else:
+                surface_entities = [outer_surface]
             if not surface_entities:
-                surface_entities = [surface_tag]
+                surface_entities = [outer_surface]
             domain_phys = gmsh.model.addPhysicalGroup(2, surface_entities, 1)
             gmsh.model.setPhysicalName(2, domain_phys, "domain")
 
