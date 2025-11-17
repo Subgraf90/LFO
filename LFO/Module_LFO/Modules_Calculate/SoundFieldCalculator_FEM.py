@@ -163,6 +163,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         self._resolved_fem_frequency: Optional[float] = None
         self._panels: list[SpeakerPanel] = []
         self._cabinet_obstacles: list[SpeakerCabinetObstacle] = []
+        self._time_snapshots_cache: dict[float, dict[str, np.ndarray]] = {}
 
     def _log_debug(self, message: str):
         """Hilfsfunktion für konsistente Debug-Ausgaben."""
@@ -352,6 +353,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         if not fem_results:
             self._log_debug("[Ergebnisse] Keine FEM-Frequenzen vorhanden.")
+        self.calculation_spl.setdefault("fem_time_snapshots", {})
         
     def set_data_container(self, data_container):
         """Setzt den gemeinsam genutzten Daten-Container."""
