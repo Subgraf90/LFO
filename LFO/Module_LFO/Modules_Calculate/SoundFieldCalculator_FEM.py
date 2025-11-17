@@ -896,12 +896,12 @@ class SoundFieldCalculatorFEM(ModuleBase):
             hole_loops: List[int] = []
             for cabinet in cabinets:
                 loop_tag, _ = self._gmsh_add_polygon(factory, cabinet.points, mesh_size)
-                hole_loops.append(loop_tag)
+                hole_loops.append(-loop_tag)
             for panel in panels:
                 if panel.depth > 0.0:
                     continue
                 loop_tag, _ = self._gmsh_add_polygon(factory, panel.points, mesh_size)
-                hole_loops.append(loop_tag)
+                hole_loops.append(-loop_tag)
 
             surface_tag = factory.addPlaneSurface([outer_loop] + hole_loops)
             factory.synchronize()
