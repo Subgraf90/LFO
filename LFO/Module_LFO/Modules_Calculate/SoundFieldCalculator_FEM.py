@@ -341,6 +341,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             self._raise_if_frequency_cancelled()
 
         self.calculation_spl["fem_simulation"] = fem_results
+        self.calculation_spl.setdefault("fem_time_snapshots", {})
         
         with self._time_block("assign_primary_soundfield_results"):
             self._assign_primary_soundfield_results(frequencies, fem_results)
