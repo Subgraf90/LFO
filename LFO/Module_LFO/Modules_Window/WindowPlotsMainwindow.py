@@ -356,7 +356,14 @@ class DrawPlotsMainwindow(ModuleBase):
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
         self.settings = settings
-        plot_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
+        self._update_phase_mode_enabled()
+        fem_active = bool(getattr(self.settings, 'spl_plot_fem', False))
+        current_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
+        if fem_active and current_mode != self.PLOT_MODE_OPTIONS[0]:
+            current_mode = self.PLOT_MODE_OPTIONS[0]
+            setattr(self.settings, 'spl_plot_mode', current_mode)
+            self._sync_plot_mode_actions(current_mode)
+        plot_mode = current_mode
         field_key = 'sound_field_phase_diff' if plot_mode == "Phase alignment" else 'sound_field_p'
         
         draw_spl_plotter = self._get_current_spl_plotter()

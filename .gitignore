@@ -1,10 +1,27 @@
+# Python-Bytecode und C-Extensions
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
-*.swp
-.DS_Store
+*.so
+
+# Virtuelle Umgebungen & lokale Konfiguration
 .env
 venv/
+Venv_FEM/
+.venv/
+
+# Editor-/System-Dateien
+*.swp
+.DS_Store
+
+# Build-/Packaging-Artefakte
+*.spec
+
+# Polar-Daten (große Dateien)
 Modules_Data/PolarData_mag/
 LFO/Module_LFO/Modules_Data/PolarData_mag/
+
+# Generische Caches im LFO-Baum
+LFO/**/__pycache__/
+LFO/**/.DS_Store
+LFO/**/.pytest_cache/
