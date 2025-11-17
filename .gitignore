@@ -7,3 +7,4 @@ __pycache__/
 .env
 venv/
 Modules_Data/PolarData_mag/
+LFO/Module_LFO/Modules_Data/PolarData_mag/
