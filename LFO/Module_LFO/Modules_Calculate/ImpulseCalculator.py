@@ -113,8 +113,6 @@ class ImpulseCalculator(ModuleBase):
 
             self.calculation[key] = base_data
 
-        self.container.set_calculation_impulse(self.calculation)
-
     def get_balloon_data_at_angle(self, speaker_name, azimuth, elevation=0):
         """
         Holt die Balloon-Daten (Magnitude und Phase) für einen bestimmten Winkel

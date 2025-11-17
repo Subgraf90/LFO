@@ -163,7 +163,6 @@ class SoundFieldCalculatorFEM(ModuleBase):
         self._resolved_fem_frequency: Optional[float] = None
         self._panels: list[SpeakerPanel] = []
         self._cabinet_obstacles: list[SpeakerCabinetObstacle] = []
-        self._time_snapshots_cache: dict[float, dict[str, np.ndarray]] = {}
 
     def _log_debug(self, message: str):
         """Hilfsfunktion für konsistente Debug-Ausgaben."""
@@ -341,7 +340,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             self._raise_if_frequency_cancelled()
 
         self.calculation_spl["fem_simulation"] = fem_results
-        self.calculation_spl.setdefault("fem_time_snapshots", {})
+        self.calculation_spl["fem_time_snapshots"] = {}
         
         with self._time_block("assign_primary_soundfield_results"):
             self._assign_primary_soundfield_results(frequencies, fem_results)
@@ -912,12 +911,15 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 panel_surfaces.append((2, surface))
 
             outer_surface = factory.addPlaneSurface([outer_loop])
-            cut_result = factory.cut(
-                [(2, outer_surface)],
-                cabinet_surfaces + panel_surfaces,
-                removeObject=True,
-                removeTool=True,
-            )
+            cut_surfaces = cabinet_surfaces + panel_surfaces
+            cut_result = None
+            if cut_surfaces:
+                cut_result = factory.cut(
+                    [(2, outer_surface)],
+                    cut_surfaces,
+                    removeObject=True,
+                    removeTool=True,
+                )
             factory.synchronize()
 
             if cut_result and cut_result[0]:
@@ -2313,6 +2315,59 @@ class SoundFieldCalculatorFEM(ModuleBase):
             return 0.0
         return solution.x.array[idx]
 
+    def _resolve_frequency_key(self, fem_results: dict, frequency: float) -> Optional[float]:
+        if fem_results is None:
+            return None
+        freq_key = float(frequency)
+        if freq_key in fem_results:
+            return freq_key
+        for key in fem_results.keys():
+            if math.isclose(key, freq_key, rel_tol=1e-6, abs_tol=1e-3):
+                return key
+        return None
+
+    def _map_dofs_to_grid(
+        self,
+        points: np.ndarray,
+        values: np.ndarray,
+        decimals: int = 6,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if points.ndim != 2 or points.shape[1] < 2:
+            raise ValueError("Punktkoordinaten besitzen nicht genügend Dimensionen.")
+
+        width = float(self.settings.width)
+        length = float(self.settings.length)
+        resolution = float(getattr(self.settings, "resolution", 0.5) or 0.5)
+
+        sound_field_x = np.arange((width / 2 * -1), ((width / 2) + resolution), resolution)
+        sound_field_y = np.arange((length / 2 * -1), ((length / 2) + resolution), resolution)
+
+        pressure_sum = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=values.dtype)
+        count_grid = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=int)
+
+        coords_xy = points[:, :2]
+        x_coords = np.round(coords_xy[:, 0], decimals=decimals)
+        y_coords = np.round(coords_xy[:, 1], decimals=decimals)
+
+        x_start = sound_field_x[0]
+        y_start = sound_field_y[0]
+
+        x_indices = np.round((x_coords - x_start) / resolution).astype(int)
+        y_indices = np.round((y_coords - y_start) / resolution).astype(int)
+        x_indices = np.clip(x_indices, 0, len(sound_field_x) - 1)
+        y_indices = np.clip(y_indices, 0, len(sound_field_y) - 1)
+
+        flat_indices = y_indices * len(sound_field_x) + x_indices
+
+        np.add.at(pressure_sum.ravel(), flat_indices, values)
+        np.add.at(count_grid.ravel(), flat_indices, 1)
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            pressure_grid = pressure_sum / count_grid
+        pressure_grid[count_grid == 0] = np.nan
+
+        return sound_field_x, sound_field_y, pressure_grid
+
     def _compute_particle_velocity(
         self, solution: fem.Function, frequency: float
         ) -> Optional[np.ndarray]:
@@ -2488,91 +2543,88 @@ class SoundFieldCalculatorFEM(ModuleBase):
         points = freq_data["points"]
         pressure = freq_data["pressure"]
 
-        if points.ndim != 2 or points.shape[1] < 2:
-            raise ValueError("Punktkoordinaten besitzen nicht genügend Dimensionen.")
+        sound_field_x, sound_field_y, pressure_grid = self._map_dofs_to_grid(points, pressure, decimals=decimals)
 
-        # ============================================================
-        # EXAKT das gleiche Grid wie SoundfieldCalculator.py erstellen
-        # ============================================================
-        width = float(self.settings.width)
-        length = float(self.settings.length)
-        resolution = float(getattr(self.settings, "resolution", 0.5) or 0.5)
-        
-        sound_field_x = np.arange((width / 2 * -1), 
-                                 ((width / 2) + resolution), 
-                                 resolution)
-        sound_field_y = np.arange((length / 2 * -1), 
-                                 ((length / 2) + resolution), 
-                                 resolution)
-        
-
-        # Initialisiere Grids für Mittelwertbildung
-        pressure_sum = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=pressure.dtype)
-        count_grid = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=int)
-
-        # Ordne jeden FEM-Knoten dem nächsten Grid-Punkt zu
-        coords_xy = points[:, :2]
-        x_coords = coords_xy[:, 0]
-        y_coords = coords_xy[:, 1]
-        
-        # Debug: Zeige FEM-Koordinaten-Bereich
-        
-        # Berechne Grid-Indizes durch Runden auf nächsten Grid-Punkt
-        # Index = round((coordinate - grid_start) / resolution)
-        x_start = sound_field_x[0]
-        y_start = sound_field_y[0]
-        
-        
-        x_indices = np.round((x_coords - x_start) / resolution).astype(int)
-        y_indices = np.round((y_coords - y_start) / resolution).astype(int)
-        
-        # Clamp auf gültigen Bereich (falls FEM-Knoten außerhalb des Grids liegen)
-        x_indices = np.clip(x_indices, 0, len(sound_field_x) - 1)
-        y_indices = np.clip(y_indices, 0, len(sound_field_y) - 1)
-        
-
-        # Konvertiere 2D-Indizes zu flachen Indizes für np.add.at
-        # flat_index = y * width + x
-        flat_indices = y_indices * len(sound_field_x) + x_indices
-        
-        # Debug: Überprüfe Array-Shapes vor np.add.at
-        
-        # Verwende np.add.at für effizienten Accumulator (mehrere Knoten → gleicher Grid-Punkt)
-        np.add.at(pressure_sum.ravel(), flat_indices, pressure)
-        np.add.at(count_grid.ravel(), flat_indices, 1)
-        
-        # Debug: Zeige Averaging-Statistik
-        unique_counts = np.unique(count_grid[count_grid > 0])
-        if len(unique_counts) > 1:
-            max_count = np.max(count_grid)
-            avg_count = np.mean(count_grid[count_grid > 0])
-            num_averaged = np.sum(count_grid > 1)
-        
-        # Mittelwert bilden: Summe / Anzahl
-        with np.errstate(invalid='ignore', divide='ignore'):
-            pressure_grid = pressure_sum / count_grid
-        pressure_grid[count_grid == 0] = np.nan
-        
         pressure_grid = self._apply_2p5d_correction(
             pressure_grid,
             sound_field_x,
             sound_field_y,
         )
-        
-        if np.iscomplexobj(pressure_grid):
-            pressure_magnitude = np.abs(pressure_grid)
-        else:
-            pressure_magnitude = pressure_grid
-        
-        pressure_magnitude = self._apply_air_absorption_to_grid(
-            pressure_magnitude,
+
+        pressure_grid = self._apply_air_absorption_to_grid(
+            pressure_grid,
             sound_field_x,
             sound_field_y,
             freq_data.get("source_positions"),
             frequency,
         )
-        
-        return sound_field_x, sound_field_y, pressure_magnitude
+
+        if np.iscomplexobj(pressure_grid):
+            pressure_grid = np.abs(pressure_grid)
+
+        return sound_field_x, sound_field_y, pressure_grid
+
+    def get_time_snapshot_grid(
+        self,
+        frequency: float,
+        frame_index: int,
+        frames_per_period: int = 16,
+        decimals: int = 6,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Liefert einen Zeitschnappschuss (Druck und SPL) für eine Frequenz."""
+
+        if frames_per_period <= 0:
+            raise ValueError("frames_per_period muss > 0 sein.")
+
+        fem_results = self.calculation_spl.get("fem_simulation")
+        if not fem_results:
+            raise RuntimeError("Keine FEM-Ergebnisse vorhanden. Bitte zuerst berechnen.")
+
+        freq_key = self._resolve_frequency_key(fem_results, frequency)
+        if freq_key is None:
+            raise KeyError(f"Für die Frequenz {frequency} Hz liegen keine FEM-Daten vor.")
+
+        frame = int(frame_index) % frames_per_period
+        cache_store = self.calculation_spl.setdefault("fem_time_snapshots", {})
+        freq_cache = cache_store.setdefault(freq_key, {})
+        cache_key = f"{frames_per_period}:{frame}"
+        cached = freq_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        freq_data = fem_results[freq_key]
+        pressure_complex = freq_data.get("pressure_complex")
+        if pressure_complex is None:
+            raise ValueError("Komplexer Druck wurde nicht gespeichert – Zeitschnappschuss nicht möglich.")
+
+        phase = (2.0 * np.pi * frame) / frames_per_period
+        time_factor = np.exp(1j * phase)
+        snapshot_dofs = np.real(pressure_complex * time_factor)
+
+        sound_field_x, sound_field_y, pressure_grid = self._map_dofs_to_grid(
+            freq_data["points"],
+            snapshot_dofs,
+            decimals=decimals,
+        )
+
+        pressure_grid = self._apply_2p5d_correction(
+            pressure_grid,
+            sound_field_x,
+            sound_field_y,
+        )
+        pressure_grid = self._apply_air_absorption_to_grid(
+            pressure_grid,
+            sound_field_x,
+            sound_field_y,
+            freq_data.get("source_positions"),
+            freq_key,
+        )
+
+        p_ref = 20e-6
+        spl_grid = self.functions.mag2db((np.abs(pressure_grid) / p_ref) + 1e-12)
+
+        freq_cache[cache_key] = (sound_field_x, sound_field_y, pressure_grid, spl_grid)
+        return freq_cache[cache_key]
     def _apply_2p5d_correction(
         self,
         pressure_grid: np.ndarray,

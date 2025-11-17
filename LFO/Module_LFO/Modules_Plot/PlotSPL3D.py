@@ -14,7 +14,7 @@ from matplotlib.colors import BoundaryNorm, Normalize, LinearSegmentedColormap
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer
+from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
 
 DEBUG_SPL_DUMP = bool(int(os.environ.get("LFO_DEBUG_SPL", "0")))
 
@@ -85,6 +85,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.cbar = None
         self.has_data = False
         self.surface_mesh = None  # type: pv.DataSet | None
+        self.time_control: Optional[SPLTimeControlBar] = None
+        self._time_slider_callback = None
+        self._time_mode_active = False
 
         # Colorbar-Caching: merkt sich den ScalarMappable sowie den Modus,
         # damit wir bei Area-Updates keine neue Colorbar erzeugen müssen.
@@ -101,6 +104,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._configure_plotter()
         self.initialize_empty_scene(preserve_camera=False)
         self._setup_view_controls()
+        self._setup_time_control()
 
     def eventFilter(self, obj, event):  # noqa: PLR0911
         if obj is self.widget:
@@ -192,6 +196,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.render()
         self._skip_next_render_restore = False
         self._save_camera_state()
+        if self.time_control is not None:
+            self.time_control.hide()
 
     def update_spl_plot(
         self,
@@ -217,9 +223,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.initialize_empty_scene(preserve_camera=True)
             return
 
-        plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL Plot')
+        plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
         phase_mode = plot_mode == 'Phase alignment'
+        time_mode = plot_mode == 'SPL over time'
         self._phase_mode_active = phase_mode
+        self._time_mode_active = time_mode
 
         self._debug_dump_soundfield(x, y, pressure)
 
@@ -238,7 +246,29 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.initialize_empty_scene(preserve_camera=True)
             return
 
-        if phase_mode:
+        self._colorbar_override = None
+
+        if time_mode:
+            pressure = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
+            finite_mask = np.isfinite(pressure)
+            if not np.any(finite_mask):
+                self.initialize_empty_scene(preserve_camera=True)
+                return
+            max_abs = float(np.nanmax(np.abs(pressure)))
+            if not np.isfinite(max_abs) or max_abs <= 0.0:
+                max_abs = 1e-6
+            plot_values = np.clip(pressure, -max_abs, max_abs)
+            tick = max_abs / 5.0
+            if tick <= 0:
+                tick = max_abs
+            self._colorbar_override = {
+                'min': -max_abs,
+                'max': max_abs,
+                'step': tick,
+                'tick_step': tick,
+                'label': "Pressure (Pa)",
+            }
+        elif phase_mode:
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
                 self.initialize_empty_scene(preserve_camera=True)
@@ -263,7 +293,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         tick_step = colorbar_params['tick_step']
         self._colorbar_override = colorbar_params
 
-        if phase_mode:
+        if time_mode:
+            plot_values = np.clip(plot_values, cbar_min, cbar_max)
+        elif phase_mode:
             plot_values = np.clip(plot_values, cbar_min, cbar_max)
         else:
             plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
@@ -298,7 +330,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             scalars = plot_values
         mesh = self._build_surface_mesh(plot_x, plot_y, scalars)
 
-        cmap_object = self.PHASE_CMAP if phase_mode else 'jet'
+        if time_mode:
+            cmap_object = 'RdBu_r'
+        elif phase_mode:
+            cmap_object = self.PHASE_CMAP
+        else:
+            cmap_object = 'jet'
 
         actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
         if actor is None or self.surface_mesh is None:
@@ -570,6 +607,30 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.view_control_widget.move(3, 3)
         self.view_control_widget.show()
         self.view_control_widget.raise_()
+
+    def _setup_time_control(self):
+        try:
+            self.time_control = SPLTimeControlBar(self.widget)
+            self.time_control.hide()
+            self.time_control.valueChanged.connect(self._handle_time_slider_change)
+        except Exception:
+            self.time_control = None
+
+    def set_time_slider_callback(self, callback):
+        self._time_slider_callback = callback
+
+    def update_time_control(self, active: bool, frames: int, value: int):
+        if self.time_control is None:
+            return
+        if not active:
+            self.time_control.hide()
+            return
+        self.time_control.configure(frames, value)
+        self.time_control.show()
+
+    def _handle_time_slider_change(self, value: int):
+        if callable(self._time_slider_callback):
+            self._time_slider_callback(int(value))
 
     def _pan_camera(self, delta_x: float, delta_y: float):
         if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
@@ -869,12 +930,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         )
 
     def _get_colorbar_params(self, phase_mode: bool) -> dict[str, float]:
+        if self._colorbar_override:
+            return self._colorbar_override
         if phase_mode:
             return {
                 'min': 0.0,
                 'max': 180.0,
                 'step': 10.0,
                 'tick_step': 30.0,
+                'label': "Phase difference (°)",
             }
         rng = self.settings.colorbar_range
         return {
@@ -882,6 +946,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             'max': float(rng['max']),
             'step': float(rng['step']),
             'tick_step': float(rng['tick_step']),
+            'label': "SPL (dB)",
         }
 
     def _initialize_empty_colorbar(self):
@@ -1001,7 +1066,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.colorbar_ax.tick_params(labelsize=7)
             self.colorbar_ax.set_position([0.1, 0.05, 0.1, 0.9])
         if self.cbar is not None:
-            label = "Phase difference (°)" if self._phase_mode_active else "SPL (dB)"
+            label = None
+            if self._colorbar_override and 'label' in self._colorbar_override:
+                label = str(self._colorbar_override['label'])
+            elif self._time_mode_active:
+                label = "Pressure (Pa)"
+            elif self._phase_mode_active:
+                label = "Phase difference (°)"
+            else:
+                label = "SPL (dB)"
             self.cbar.set_label(label, fontsize=8)
             if self._phase_mode_active:
                 self.cbar.ax.set_ylim(cbar_max, cbar_min)

@@ -440,7 +440,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 run_spl = not getattr(self.settings, "spl_plot_fem", False)
                 run_xaxis = not getattr(self.settings, "xaxis_plot_fem", False)
                 run_yaxis = not getattr(self.settings, "yaxis_plot_fem", False)
-                run_polar = not getattr(self.settings, "polar_plot_fem", False)
 
                 # Plots werden aktualisiert, wenn SPL, Polar oder Impulse berechnet werden
                 should_update_plots = update_soundfield or update_polarplot or update_impulse
@@ -640,9 +639,6 @@ class MainWindow(QtWidgets.QMainWindow):
         Args:
             update_plot: Ob der Plot aktualisiert werden soll
         """
-        if getattr(self.settings, "polar_plot_fem", False):
-            return
-
         calculator_instance = PolarPlotCalculator(self.settings, self.container.data, self.container.calculation_polar)
         calculator_instance.set_data_container(self.container)  # 🚀 ERFORDERLICH für optimierte Balloon-Daten!
         calculator_instance.calculate_polar_pressure()

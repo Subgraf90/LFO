@@ -1,4 +1,4 @@
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtWidgets, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
@@ -8,6 +8,7 @@ from functools import partial
 from Module_LFO.Modules_Plot.PlotMPLCanvas import MplCanvas
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SoundFieldCalculator_PhaseDiff import SoundFieldCalculatorPhaseDiff
+from Module_LFO.Modules_Calculate.SoundFieldCalculator_FEM import SoundFieldCalculatorFEM
 
 try:
     from Module_LFO.Modules_Plot.PlotSPL3D import DrawSPLPlot3D
@@ -19,12 +20,16 @@ from Module_LFO.Modules_Plot.PlotPolarPattern import DrawPolarPattern
 
 
 class DrawPlotsMainwindow(ModuleBase):
-    PLOT_MODE_OPTIONS = ("SPL Plot", "Phase alignment")
+    PLOT_MODE_OPTIONS = ("SPL plot", "Phase alignment", "SPL over time")
     def __init__(self, main_window, settings, container):
         super().__init__(settings)  
         self.main_window = main_window
         self.settings = settings
         self.container = container
+        self._time_frame_index = 0
+        self._time_frames_per_period = int(getattr(self.settings, "fem_time_frames_per_period", 16) or 16)
+        if not hasattr(self.settings, "fem_time_frames_per_period"):
+            setattr(self.settings, "fem_time_frames_per_period", self._time_frames_per_period)
         
         # Initialisiere die Splitter-Referenzen
         self.set_splitter_positions()
@@ -149,6 +154,8 @@ class DrawPlotsMainwindow(ModuleBase):
                 "PyVista und PyVistaQt sind nicht verfügbar. Bitte installieren, um den 3D-SPL-Plot zu verwenden."
             )
         self.draw_spl_plotter = DrawSPLPlot3D(self.main_window.ui.SPLPlot, self.settings, self.colorbar_ax)
+        self.draw_spl_plotter.set_time_slider_callback(self._on_time_slider_changed)
+        self.draw_spl_plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
         self.active_spl_widget = self.draw_spl_plotter.widget
 
     def _initialize_empty_sound_field(self):
@@ -179,6 +186,32 @@ class DrawPlotsMainwindow(ModuleBase):
         self.container.calculation_spl['sound_field_p'] = sound_field_p.tolist()
         self.container.calculation_spl['sound_field_phase'] = sound_field_phase.tolist()
         self.container.calculation_spl['sound_field_phase_diff'] = sound_field_phase_diff.tolist()
+
+    def _compute_time_mode_field(self):
+        calc_spl = getattr(self.container, 'calculation_spl', {})
+        fem_results = calc_spl.get("fem_simulation")
+        if not isinstance(fem_results, dict) or not fem_results:
+            return None
+        frames = int(getattr(self.settings, "fem_time_frames_per_period", self._time_frames_per_period) or self._time_frames_per_period)
+        frames = max(1, frames)
+        self._time_frames_per_period = frames
+        try:
+            provider = SoundFieldCalculatorFEM(self.settings, getattr(self.container, 'data', None), self.container.calculation_spl)
+            provider.calculation_spl = self.container.calculation_spl
+            provider.set_data_container(self.container)
+            frequency = provider._select_primary_frequency(list(fem_results.keys()), fem_results)
+            if frequency is None:
+                return None
+            frame_index = self._time_frame_index % frames
+            sound_field_x, sound_field_y, pressure_grid, _ = provider.get_time_snapshot_grid(
+                frequency,
+                frame_index,
+                frames_per_period=frames,
+            )
+            return frequency, frames, sound_field_x, sound_field_y, pressure_grid
+        except Exception as exc:  # noqa: BLE001
+            print(f"[SPL over time] Snapshot fehlgeschlagen: {exc}")
+            return None
 
     def show_empty_plots(self, preserve_camera: bool = True, view: Optional[str] = None):
         """
@@ -234,6 +267,10 @@ class DrawPlotsMainwindow(ModuleBase):
             self.plot_mode_context_group.addAction(action)
             action.toggled.connect(partial(self._handle_plot_mode_change, mode))
             self.plot_mode_menu_actions[mode] = action
+        self.plot_mode_menu.addSeparator()
+        self.time_alignment_action = self.plot_mode_menu.addAction("Time alignment")
+        self.time_alignment_action.setIcon(QtGui.QIcon.fromTheme("view-time-line"))
+        self.time_alignment_action.triggered.connect(self._handle_time_alignment_action)
 
         self.menu_mode_actions = {}
         ui = getattr(self.main_window, 'ui', None)
@@ -243,6 +280,7 @@ class DrawPlotsMainwindow(ModuleBase):
             for mode, action_name in (
                 (self.PLOT_MODE_OPTIONS[0], "actionPlotMode_SPL"),
                 (self.PLOT_MODE_OPTIONS[1], "actionPlotMode_Phase"),
+                (self.PLOT_MODE_OPTIONS[2], "actionPlotMode_Time"),
             ):
                 action = getattr(ui, action_name, None)
                 if action is None:
@@ -267,30 +305,65 @@ class DrawPlotsMainwindow(ModuleBase):
         initial_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
         setattr(self.settings, 'spl_plot_mode', initial_mode)
         self._sync_plot_mode_actions(initial_mode)
-        self._update_phase_mode_enabled()
+        self._update_plot_mode_availability()
 
-    def _update_phase_mode_enabled(self):
-        """Aktiviert/ deaktiviert den Phasenmodus abhängig vom FEM-Status."""
+    def _handle_time_alignment_action(self):
+        """Kontextmenü-Aktion für schnelle Umschaltung in den Time-Alignment-Modus."""
+        if not self._is_mode_allowed("SPL over time"):
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                "Time alignment nur im FEM-SPL-Modus verfügbar.",
+            )
+            return
+        setattr(self.settings, 'spl_plot_mode', "SPL over time")
+        self._sync_plot_mode_actions("SPL over time")
+        self.plot_spl(self.settings, None, update_axes=False, reset_camera=False)
+
+    def _is_mode_allowed(self, mode: str) -> bool:
         fem_active = bool(getattr(self.settings, 'spl_plot_fem', False))
-        phase_mode = self.PLOT_MODE_OPTIONS[1]
-        enabled = not fem_active
+        if mode == "Phase alignment":
+            return not fem_active
+        if mode == "SPL over time":
+            return fem_active
+        return True
+
+    def _update_plot_mode_availability(self):
+        """Aktualisiert die Aktivierung der Plotmodi je nach FEM-Status."""
+        current_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
+        allowed_default = self.PLOT_MODE_OPTIONS[0]
         for action_source in (self.plot_mode_menu_actions, self.menu_mode_actions):
-            action = action_source.get(phase_mode) if action_source else None
-            if action is not None:
-                action.setEnabled(enabled)
-                if enabled:
+            if not action_source:
+                continue
+            for mode, action in action_source.items():
+                if action is None:
+                    continue
+                allowed = self._is_mode_allowed(mode)
+                action.setEnabled(allowed)
+                if allowed:
                     action.setToolTip("")
                 else:
-                    action.setToolTip("Phase alignment im FEM-Modus nicht verfügbar")
+                    tooltip = (
+                        "Nur im FEM-Modus verfügbar"
+                        if mode == "SPL over time"
+                        else "Nur im Superpositionsmodus verfügbar"
+                    )
+                    action.setToolTip(tooltip)
 
-        if fem_active and getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0]) != self.PLOT_MODE_OPTIONS[0]:
-            setattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
-            self._sync_plot_mode_actions(self.PLOT_MODE_OPTIONS[0])
+        if not self._is_mode_allowed(current_mode):
+            # fallback auf Standardmodus, der immer erlaubt ist
+            new_mode = allowed_default
+            if not self._is_mode_allowed(new_mode):
+                for mode in self.PLOT_MODE_OPTIONS:
+                    if self._is_mode_allowed(mode):
+                        new_mode = mode
+                        break
+            setattr(self.settings, 'spl_plot_mode', new_mode)
+            self._sync_plot_mode_actions(new_mode)
             self.show_empty_spl()
 
     def refresh_plot_mode_availability(self):
         """Öffentliche Schnittstelle für UI-Änderungen (z. B. FEM-Umschaltung)."""
-        self._update_phase_mode_enabled()
+        self._update_plot_mode_availability()
 
     def _show_plot_mode_menu(self, widget, pos):
         """Zeigt das Kontextmenü für die Plotmodus-Auswahl."""
@@ -298,6 +371,7 @@ class DrawPlotsMainwindow(ModuleBase):
             return
         if widget is None:
             return
+        self._update_plot_mode_availability()
         current_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
         self._sync_plot_mode_actions(current_mode)
         global_pos = widget.mapToGlobal(pos)
@@ -322,6 +396,9 @@ class DrawPlotsMainwindow(ModuleBase):
         """Signal-Handler für Kontext- oder Menüaktionen."""
         if not checked:
             return
+        if not self._is_mode_allowed(selection):
+            self._update_plot_mode_availability()
+            return
         self.on_plot_mode_changed(selection)
 
     def show_empty_spl(self, preserve_camera: bool = True):
@@ -331,6 +408,7 @@ class DrawPlotsMainwindow(ModuleBase):
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
             plotter.update_overlays(self.settings, self.container)
             self.colorbar_canvas.draw()
+            plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
 
     def show_empty_axes(self):
         """Setzt X- und Y-Achsen-Plots zurück."""
@@ -356,15 +434,17 @@ class DrawPlotsMainwindow(ModuleBase):
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
         self.settings = settings
-        self._update_phase_mode_enabled()
-        fem_active = bool(getattr(self.settings, 'spl_plot_fem', False))
-        current_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
-        if fem_active and current_mode != self.PLOT_MODE_OPTIONS[0]:
-            current_mode = self.PLOT_MODE_OPTIONS[0]
-            setattr(self.settings, 'spl_plot_mode', current_mode)
-            self._sync_plot_mode_actions(current_mode)
-        plot_mode = current_mode
-        field_key = 'sound_field_phase_diff' if plot_mode == "Phase alignment" else 'sound_field_p'
+        self._update_plot_mode_availability()
+        plot_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
+        if not self._is_mode_allowed(plot_mode):
+            plot_mode = self.PLOT_MODE_OPTIONS[0]
+            setattr(self.settings, 'spl_plot_mode', plot_mode)
+            self._sync_plot_mode_actions(plot_mode)
+        time_mode_enabled = plot_mode == "SPL over time"
+        if plot_mode == "Phase alignment":
+            field_key = 'sound_field_phase_diff'
+        else:
+            field_key = 'sound_field_p'
         
         draw_spl_plotter = self._get_current_spl_plotter()
 
@@ -391,20 +471,25 @@ class DrawPlotsMainwindow(ModuleBase):
                 if not self._calculate_phase_alignment_field():
                     calc_spl['sound_field_phase_diff'] = []
         # Prüfe ob gültige Daten vorhanden sind (nicht nur NaN)
-        has_data = (
-            isinstance(calc_spl, dict) and
-            len(calc_spl) > 0 and
-            'sound_field_x' in calc_spl and
-            'sound_field_y' in calc_spl and
-            field_key in calc_spl and
-            calc_spl.get('sound_field_x') is not None and
-            calc_spl.get('sound_field_y') is not None and
-            calc_spl.get(field_key) is not None and
-            len(calc_spl.get('sound_field_x', [])) > 0 and
-            len(calc_spl.get('sound_field_y', [])) > 0 and
-            len(calc_spl.get(field_key, [])) > 0 and
-            not self._is_empty_data(calc_spl[field_key])
-        )
+        time_snapshot = None
+        if time_mode_enabled:
+            time_snapshot = self._compute_time_mode_field()
+            has_data = time_snapshot is not None
+        else:
+            has_data = (
+                isinstance(calc_spl, dict) and
+                len(calc_spl) > 0 and
+                'sound_field_x' in calc_spl and
+                'sound_field_y' in calc_spl and
+                field_key in calc_spl and
+                calc_spl.get('sound_field_x') is not None and
+                calc_spl.get('sound_field_y') is not None and
+                calc_spl.get(field_key) is not None and
+                len(calc_spl.get('sound_field_x', [])) > 0 and
+                len(calc_spl.get('sound_field_y', [])) > 0 and
+                len(calc_spl.get(field_key, [])) > 0 and
+                not self._is_empty_data(calc_spl[field_key])
+            )
         
         if not has_data:
             # Debug: Warum greift der Fallback?
@@ -426,8 +511,10 @@ class DrawPlotsMainwindow(ModuleBase):
             print(f"[Plot SPL] Fallback zu leerem Plot aktiviert. Prüfung: {', '.join(debug_info)}")
             
             # Keine Daten - zeige leere Szene
-            draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
-            draw_spl_plotter.update_overlays(self.settings, self.container)
+            if draw_spl_plotter is not None:
+                draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
+                draw_spl_plotter.update_overlays(self.settings, self.container)
+                draw_spl_plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
 
             self.colorbar_canvas.draw()
 
@@ -437,10 +524,23 @@ class DrawPlotsMainwindow(ModuleBase):
                 self.plot_polar_pattern()
             return
         
-        # Daten aus dem Container abrufen
-        sound_field_x = self.container.calculation_spl['sound_field_x']
-        sound_field_y = self.container.calculation_spl['sound_field_y']
-        sound_field_values = self.container.calculation_spl[field_key]
+        if time_mode_enabled and time_snapshot is not None:
+            _, snapshot_frames, sound_field_x, sound_field_y, snapshot_values = time_snapshot
+            self._time_frames_per_period = snapshot_frames
+            self.settings.fem_time_frames_per_period = snapshot_frames
+            sound_field_values = snapshot_values
+            if draw_spl_plotter is not None:
+                draw_spl_plotter.update_time_control(
+                    True,
+                    self._time_frames_per_period,
+                    self._time_frame_index % self._time_frames_per_period,
+                )
+        else:
+            sound_field_x = self.container.calculation_spl['sound_field_x']
+            sound_field_y = self.container.calculation_spl['sound_field_y']
+            sound_field_values = self.container.calculation_spl[field_key]
+            if draw_spl_plotter is not None:
+                draw_spl_plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
 
         # 3D-Plot aktualisieren
         draw_spl_plotter.update_spl_plot(
@@ -596,9 +696,8 @@ class DrawPlotsMainwindow(ModuleBase):
 
     def on_plot_mode_changed(self, selection: str):
         """Zentrale Reaktion auf einen Moduswechsel."""
-        if selection == "Phase alignment" and bool(getattr(self.settings, 'spl_plot_fem', False)):
-            # FEM-Modus: Phase-Ansicht gesperrt
-            self._update_phase_mode_enabled()
+        if not self._is_mode_allowed(selection):
+            self._update_plot_mode_availability()
             return
         setattr(self.settings, 'spl_plot_mode', selection)
         self._sync_plot_mode_actions(selection)
@@ -618,6 +717,14 @@ class DrawPlotsMainwindow(ModuleBase):
         get_id = getattr(self.main_window, 'get_selected_speaker_array_id', None)
         speaker_array_id = get_id() if callable(get_id) else None
         self.plot_spl(self.settings, speaker_array_id, update_axes=False)
+
+    def _on_time_slider_changed(self, value: int):
+        frames = max(1, self._time_frames_per_period)
+        new_value = int(value) % frames
+        if new_value == self._time_frame_index:
+            return
+        self._time_frame_index = new_value
+        self.plot_spl(self.settings, None, update_axes=False)
 
     def on_pan(self, event):
         """Handler für Mausbewegung während des Pannens"""

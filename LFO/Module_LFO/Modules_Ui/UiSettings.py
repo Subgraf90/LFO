@@ -183,8 +183,6 @@ class UiSettings(QtWidgets.QWidget):
             self.xaxis_plot_fem: "xaxis_plot_fem",
             self.yaxis_plot_superposition: "yaxis_plot_superposition",
             self.yaxis_plot_fem: "yaxis_plot_fem",
-            self.polar_plot_superposition: "polar_plot_superposition",
-            self.polar_plot_fem: "polar_plot_fem",
             self.impulse_plot_superposition: "impulse_plot_superposition",
             self.impulse_plot_bem: "impulse_plot_bem",
             self.update_pressure_soundfield: "update_pressure_soundfield",
@@ -463,7 +461,7 @@ class UiSettings(QtWidgets.QWidget):
 
         plot_option_layout.addWidget(QtWidgets.QLabel(""), 0, 0)
         plot_option_layout.addWidget(QtWidgets.QLabel("Superposition"), 0, 1, alignment=QtCore.Qt.AlignCenter)
-        plot_option_layout.addWidget(QtWidgets.QLabel("FEM Analyse"), 0, 2, alignment=QtCore.Qt.AlignCenter)
+        plot_option_layout.addWidget(QtWidgets.QLabel("FEM Analysis"), 0, 2, alignment=QtCore.Qt.AlignCenter)
 
         self.spl_plot_superposition = QtWidgets.QCheckBox()
         self.spl_plot_fem = QtWidgets.QCheckBox()
@@ -483,12 +481,6 @@ class UiSettings(QtWidgets.QWidget):
         plot_option_layout.addWidget(self.yaxis_plot_superposition, 3, 1, alignment=QtCore.Qt.AlignCenter)
         plot_option_layout.addWidget(self.yaxis_plot_fem, 3, 2, alignment=QtCore.Qt.AlignCenter)
 
-        self.polar_plot_superposition = QtWidgets.QCheckBox()
-        self.polar_plot_fem = QtWidgets.QCheckBox()
-        plot_option_layout.addWidget(QtWidgets.QLabel("Polar Plot"), 4, 0)
-        plot_option_layout.addWidget(self.polar_plot_superposition, 4, 1, alignment=QtCore.Qt.AlignCenter)
-        plot_option_layout.addWidget(self.polar_plot_fem, 4, 2, alignment=QtCore.Qt.AlignCenter)
-
         self._spl_calc_group = QtWidgets.QButtonGroup(self)
         self._spl_calc_group.setExclusive(True)
         self._spl_calc_group.addButton(self.spl_plot_superposition)
@@ -503,11 +495,6 @@ class UiSettings(QtWidgets.QWidget):
         self._yaxis_calc_group.setExclusive(True)
         self._yaxis_calc_group.addButton(self.yaxis_plot_superposition)
         self._yaxis_calc_group.addButton(self.yaxis_plot_fem)
-
-        self._polar_calc_group = QtWidgets.QButtonGroup(self)
-        self._polar_calc_group.setExclusive(True)
-        self._polar_calc_group.addButton(self.polar_plot_superposition)
-        self._polar_calc_group.addButton(self.polar_plot_fem)
 
         calculation_section_layout = self._create_collapsible_section(
             layout,
@@ -535,7 +522,7 @@ class UiSettings(QtWidgets.QWidget):
 
         impulse_option_layout.addWidget(QtWidgets.QLabel(""), 0, 0)
         impulse_option_layout.addWidget(QtWidgets.QLabel("Superposition"), 0, 1, alignment=QtCore.Qt.AlignCenter)
-        impulse_option_layout.addWidget(QtWidgets.QLabel("BEM Analyse"), 0, 2, alignment=QtCore.Qt.AlignCenter)
+        impulse_option_layout.addWidget(QtWidgets.QLabel("BEM Analysis"), 0, 2, alignment=QtCore.Qt.AlignCenter)
 
         self.impulse_plot_superposition = QtWidgets.QCheckBox()
         self.impulse_plot_bem = QtWidgets.QCheckBox()
@@ -619,8 +606,6 @@ class UiSettings(QtWidgets.QWidget):
         self.xaxis_plot_fem.setChecked(self.settings.xaxis_plot_fem)
         self.yaxis_plot_superposition.setChecked(self.settings.yaxis_plot_superposition)
         self.yaxis_plot_fem.setChecked(self.settings.yaxis_plot_fem)
-        self.polar_plot_superposition.setChecked(self.settings.polar_plot_superposition)
-        self.polar_plot_fem.setChecked(self.settings.polar_plot_fem)
         self.impulse_plot_superposition.setChecked(self.settings.impulse_plot_superposition)
         self.impulse_plot_bem.setChecked(self.settings.impulse_plot_bem)
         self.update_pressure_soundfield.setChecked(self.settings.update_pressure_soundfield)
@@ -815,8 +800,6 @@ class UiSettings(QtWidgets.QWidget):
                 should_trigger = getattr(self.settings, "update_pressure_axisplot", True)
             elif attribute_name in {"yaxis_plot_fem", "yaxis_plot_superposition"}:
                 should_trigger = getattr(self.settings, "update_pressure_axisplot", True)
-            elif attribute_name in {"polar_plot_fem", "polar_plot_superposition"}:
-                should_trigger = getattr(self.settings, "update_pressure_polarplot", True)
             elif attribute_name in {"impulse_plot_superposition", "impulse_plot_bem"}:
                 should_trigger = getattr(self.settings, "update_pressure_impulse", True)
             else:

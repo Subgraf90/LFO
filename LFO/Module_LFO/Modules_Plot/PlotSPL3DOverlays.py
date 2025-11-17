@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple, Any
 
 import numpy as np
+from PyQt5 import QtWidgets, QtCore
 
 
 class SPL3DOverlayRenderer:
@@ -383,6 +384,7 @@ class SPL3DOverlayRenderer:
                     lookup.setdefault(alias.lower(), lookup[actual])
 
         return lookup
+
 
     def _create_geometry_cache_key(self, speaker_array, index: int, speaker_name: str, configuration: str, cabinet_raw) -> str:
         """Erstellt einen Cache-Key für die Geometrie basierend auf relevanten Parametern."""
@@ -1196,5 +1198,79 @@ class SPL3DOverlayRenderer:
             return 0
 
 
-__all__ = ['SPL3DOverlayRenderer']
+class SPLTimeControlBar(QtWidgets.QFrame):
+    valueChanged = QtCore.pyqtSignal(int)
+
+    def __init__(self, parent: QtWidgets.QWidget):
+        super().__init__(parent)
+        self.setObjectName("spl_time_control")
+        self.setStyleSheet(
+            "QFrame#spl_time_control {"
+            "  background-color: rgba(255, 255, 255, 210);"
+            "  border: 1px solid rgba(0, 0, 0, 120);"
+            "  border-radius: 6px;"
+            "}"
+        )
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+        self._frames = 1
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
+
+        self.label = QtWidgets.QLabel("Frame 1/1", self)
+        self.label.setAlignment(QtCore.Qt.AlignHCenter)
+        self.label.setStyleSheet("font-size: 10px; font-weight: bold;")
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Vertical, self)
+        self.slider.setMinimum(0)
+        self.slider.setMaximum(0)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(1)
+        self.slider.setTracking(True)
+        self.slider.setInvertedAppearance(True)  # min (t=0) unten
+
+        layout.addWidget(self.label)
+        layout.addWidget(self.slider, 1)
+
+        self.slider.valueChanged.connect(self._on_value_changed)
+        parent.installEventFilter(self)
+        self.hide()
+
+    def eventFilter(self, obj, event):  # noqa: D401
+        if obj is self.parent() and event.type() == QtCore.QEvent.Resize:
+            self._reposition()
+        return super().eventFilter(obj, event)
+
+    def _reposition(self):
+        parent = self.parent()
+        if parent is None:
+            return
+        margin = 12
+        width = 60
+        height = max(120, parent.height() - 2 * margin)
+        x = parent.width() - width - margin
+        y = margin
+        self.setGeometry(x, y, width, height)
+
+    def configure(self, frames: int, value: int):
+        frames = max(1, int(frames))
+        self._frames = frames
+        self.slider.setMaximum(frames - 1)
+        clamped = max(0, min(value, frames - 1))
+        self.slider.blockSignals(True)
+        self.slider.setValue(clamped)
+        self.slider.blockSignals(False)
+        self._update_label(clamped)
+        self._reposition()
+
+    def _on_value_changed(self, value: int):
+        self._update_label(value)
+        self.valueChanged.emit(int(value))
+
+    def _update_label(self, value: int):
+        self.label.setText(f"Frame {value + 1}/{self._frames}")
+
+
+__all__ = ['SPL3DOverlayRenderer', 'SPLTimeControlBar']
 

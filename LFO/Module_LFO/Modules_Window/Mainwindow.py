@@ -146,6 +146,8 @@ class Ui_MainWindow(object):
         self.actionPlotMode_SPL.setObjectName("actionPlotMode_SPL")
         self.actionPlotMode_Phase = QtWidgets.QAction(MainWindow)
         self.actionPlotMode_Phase.setObjectName("actionPlotMode_Phase")
+        self.actionPlotMode_Time = QtWidgets.QAction(MainWindow)
+        self.actionPlotMode_Time.setObjectName("actionPlotMode_Time")
 
         # Aktionen zu den Menüs hinzufügen
         self.menuFile.addAction(self.actionNew)
@@ -167,6 +169,7 @@ class Ui_MainWindow(object):
         self.menuWindow.addAction(self.actionSurface_Window)
         self.menuCalculation.addAction(self.actionPlotMode_SPL)
         self.menuCalculation.addAction(self.actionPlotMode_Phase)
+        self.menuCalculation.addAction(self.actionPlotMode_Time)
 
         # Füge neue Actions für die View-Kontrolle hinzu
         self.actionFocus_SPL = QtWidgets.QAction(MainWindow)
@@ -236,6 +239,7 @@ class Ui_MainWindow(object):
         self.actionSettings_window.setShortcut(_translate("MainWindow", "Ctrl+-"))
         self.actionPlotMode_SPL.setText(_translate("MainWindow", "SPL Plot"))
         self.actionPlotMode_Phase.setText(_translate("MainWindow", "Phase alignment"))
+        self.actionPlotMode_Time.setText(_translate("MainWindow", "SPL over time"))
 
         # Setze die Texte und Shortcuts für die neuen Actions
         self.actionFocus_SPL.setText(_translate("MainWindow", "Focus SPL"))

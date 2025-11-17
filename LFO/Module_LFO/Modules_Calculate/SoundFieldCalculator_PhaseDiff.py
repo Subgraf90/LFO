@@ -27,8 +27,10 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
 
     def _compute_phase_differences(self, array_fields: dict) -> np.ndarray:
         arrays = [field for field in array_fields.values() if field is not None]
-        if len(arrays) < 2:
-            return np.full_like(arrays[0], np.nan, dtype=float) if arrays else np.array([])
+        if not arrays:
+            return np.array([])
+        if len(arrays) == 1:
+            return np.zeros_like(arrays[0], dtype=float)
 
         stack = np.stack(arrays, axis=0)  # [n_arrays, ny, nx]
         magnitudes = np.abs(stack)
