@@ -906,8 +906,11 @@ class SoundFieldCalculatorFEM(ModuleBase):
             surface_tag = factory.addPlaneSurface([outer_loop] + hole_loops)
             factory.synchronize()
 
-            gmsh.model.addPhysicalGroup(2, [surface_tag], 1)
-            gmsh.model.setPhysicalName(2, 1, "domain")
+            surface_entities = [tag for (_, tag) in gmsh.model.getEntities(2)]
+            if not surface_entities:
+                surface_entities = [surface_tag]
+            domain_phys = gmsh.model.addPhysicalGroup(2, surface_entities, 1)
+            gmsh.model.setPhysicalName(2, domain_phys, "domain")
 
             outer_phys = gmsh.model.addPhysicalGroup(1, outer_curves, self._outer_boundary_tag)
             gmsh.model.setPhysicalName(1, outer_phys, "outer")
