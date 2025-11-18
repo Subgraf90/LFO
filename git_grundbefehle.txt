@@ -33,3 +33,7 @@ Vergleich zwischen lokalem Branch und Remote-Branch anzeigen, z. B. main gegen
 oder mit Buchstabendiagramm:
    git log --oneline --graph --decorate --all
 Alternativ kannst du git status verwenden, um kurz zu sehen, ob dein lokaler Branch „ahead“ oder „behind“ ist.
+
+
+
+   git diff origin/main -- LFO/Module_LFO/Modules_Calculate/SoundFieldCalculator_FEM.py

@@ -254,20 +254,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if not np.any(finite_mask):
                 self.initialize_empty_scene(preserve_camera=True)
                 return
-            max_abs = float(np.nanmax(np.abs(pressure)))
-            if not np.isfinite(max_abs) or max_abs <= 0.0:
-                max_abs = 1e-6
-            plot_values = np.clip(pressure, -max_abs, max_abs)
-            tick = max_abs / 5.0
-            if tick <= 0:
-                tick = max_abs
-            self._colorbar_override = {
-                'min': -max_abs,
-                'max': max_abs,
-                'step': tick,
-                'tick_step': tick,
-                'label': "Pressure (Pa)",
-            }
+            # Verwende feste Colorbar-Parameter (keine dynamische Skalierung)
+            plot_values = pressure
         elif phase_mode:
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
@@ -619,13 +607,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     def set_time_slider_callback(self, callback):
         self._time_slider_callback = callback
 
-    def update_time_control(self, active: bool, frames: int, value: int):
+    def update_time_control(self, active: bool, frames: int, value: int, simulation_time: float = 0.2):
         if self.time_control is None:
             return
         if not active:
             self.time_control.hide()
             return
-        self.time_control.configure(frames, value)
+        self.time_control.configure(frames, value, simulation_time)
         self.time_control.show()
 
     def _handle_time_slider_change(self, value: int):
@@ -939,6 +927,17 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 'step': 10.0,
                 'tick_step': 30.0,
                 'label': "Phase difference (°)",
+            }
+        if self._time_mode_active:
+            # Fester Wertebereich für Zeitmodus (in Pascal)
+            # Standardwert auf 50 Pa gesetzt für höheren Kontrast
+            max_pressure = float(getattr(self.settings, 'fem_time_plot_max_pressure', 50.0) or 50.0)
+            return {
+                'min': -max_pressure,
+                'max': max_pressure,
+                'step': max_pressure / 5.0,
+                'tick_step': max_pressure / 5.0,
+                'label': "Pressure (Pa)",
             }
         rng = self.settings.colorbar_range
         return {

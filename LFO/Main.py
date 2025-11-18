@@ -27,6 +27,7 @@ from Module_LFO.Modules_Ui.UISurfaceManager import UISurfaceManager
 
 from Module_LFO.Modules_Calculate.SoundfieldCalculator import SoundFieldCalculator
 from Module_LFO.Modules_Calculate.SoundFieldCalculator_FEM import SoundFieldCalculatorFEM
+from Module_LFO.Modules_Calculate.SoundFieldCalculator_FDTD import SoundFieldCalculatorFDTD
 from Module_LFO.Modules_Calculate.SoundfieldCalculatorXaxis import SoundFieldCalculatorXaxis
 from Module_LFO.Modules_Calculate.SoundfieldCalculatorYaxis import SoundFieldCalculatorYaxis
 from Module_LFO.Modules_Calculate.WindowingCalculator import WindowingCalculator
@@ -280,12 +281,38 @@ class MainWindow(QtWidgets.QMainWindow):
             tasks.append(("Calculating Polar", lambda: self.calculate_polar(update_plot=True)))
 
         if not update_soundfield:
-            tasks.append(("Calculating SPL", lambda: self.calculate_spl(
-                show_progress=True,
-                update_plot=True,
-                update_axisplots=not update_axisplot,
-                update_polarplots=not update_polarplot,
-            )))
+            # Calculate Button: Manuelle Berechnung basierend auf Plot-Modus
+            plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+            is_fem_mode = bool(getattr(self.settings, 'spl_plot_fem', False))
+            
+            if plot_mode == "SPL plot" and is_fem_mode:
+                # "SPL plot" + FEM: Nur FEM-Analyse
+                tasks.append(("Calculating FEM", lambda: self.calculate_spl(
+                    show_progress=True,
+                    update_plot=True,
+                    update_axisplots=not update_axisplot,
+                    update_polarplots=not update_polarplot,
+                )))
+            elif plot_mode == "SPL over time" and is_fem_mode:
+                # "SPL over time" + FEM: Nur FDTD-Analyse
+                tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
+                    show_progress=True,
+                    update_plot=True,
+                )))
+            elif plot_mode == "SPL over time":
+                # "SPL over time" ohne FEM: Nur FDTD
+                tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
+                    show_progress=True,
+                    update_plot=True,
+                )))
+            else:
+                # Normale SPL-Berechnung (inkl. FEM falls aktiv)
+                tasks.append(("Calculating SPL", lambda: self.calculate_spl(
+                    show_progress=True,
+                    update_plot=True,
+                    update_axisplots=not update_axisplot,
+                    update_polarplots=not update_polarplot,
+                )))
 
         if hasattr(self, 'impulse_manager'):
             if not update_impulse and self.settings.impulse_points:
@@ -405,10 +432,18 @@ class MainWindow(QtWidgets.QMainWindow):
                             self.container.calculation_polar = {}
 
                     snapshot_engine.selected_snapshot_key = "aktuelle_simulation"
-                    if snapshot_engine.snapshot_tree_widget:
-                        blocker = QtCore.QSignalBlocker(snapshot_engine.snapshot_tree_widget)
+                    # Prüfe ob snapshot_tree_widget existiert und noch gültig ist
+                    if hasattr(snapshot_engine, '_is_widget_valid') and snapshot_engine._is_widget_valid():
+                        try:
+                            blocker = QtCore.QSignalBlocker(snapshot_engine.snapshot_tree_widget)
+                            snapshot_engine.update_snapshot_widgets()
+                            del blocker
+                        except RuntimeError:
+                            # Widget wurde während der Verwendung gelöscht
+                            print("[Main] snapshot_tree_widget wurde während Update gelöscht")
+                    elif snapshot_engine.snapshot_tree_widget:
+                        # Widget existiert, aber ist nicht mehr gültig - update_snapshot_widgets() wird es selbst prüfen
                         snapshot_engine.update_snapshot_widgets()
-                        del blocker
                 skip_fem_recalc = skip_fem_recalc or self._skip_fem_recalc_once
                 self._skip_fem_recalc_once = False
                 if self._fem_frequency_dirty:
@@ -462,15 +497,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 fem_calculated = False
 
+                # Automatische Berechnung: Prüfe Plot-Modus
+                plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+                
                 if update_soundfield:
-                    tasks.append(("Calculating SPL", lambda: self.calculate_spl(
-                        show_progress=True,
-                        update_plot=True,
-                        update_axisplots=False,
-                        update_polarplots=False,
-                    )))
-                    if is_fem_mode:
+                    # Automatische Berechnung basierend auf aktivem Plot-Modus
+                    if plot_mode == "SPL plot" and is_fem_mode:
+                        # "SPL plot" + FEM: Nur FEM-Analyse
+                        tasks.append(("Calculating FEM", lambda: self.calculate_spl(
+                            show_progress=True,
+                            update_plot=True,
+                            update_axisplots=False,
+                            update_polarplots=False,
+                        )))
                         fem_calculated = True
+                    elif plot_mode == "SPL over time":
+                        # "SPL over time": Nur FDTD-Analyse (unabhängig von FEM-Modus)
+                        tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
+                            show_progress=True,
+                            update_plot=True,
+                        )))
+                    else:
+                        # Normale SPL-Berechnung (ohne FEM)
+                        tasks.append(("Calculating SPL", lambda: self.calculate_spl(
+                            show_progress=True,
+                            update_plot=True,
+                            update_axisplots=False,
+                            update_polarplots=False,
+                        )))
                 elif skipped_fem_run:
                     pass
                 else:
@@ -588,6 +642,57 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plot_yaxis()
         if update_plot and update_polarplots:
             self.plot_polar_pattern()
+
+    def calculate_fdtd(self, show_progress: bool = True, update_plot: bool = True):
+        """
+        Führt die FDTD-Zeitsimulation durch und aktualisiert optional den Plot.
+        
+        Args:
+            show_progress: Progress-Bar anzeigen
+            update_plot: SPL-Plot aktualisieren
+        """
+        print("[FDTD] calculate_fdtd() aufgerufen")
+        
+        # Erstelle FDTD-Calculator (unabhängig von FEM)
+        calculator = SoundFieldCalculatorFDTD(
+            self.settings,
+            self.container.data,
+            self.container.calculation_spl,
+        )
+        calculator.set_data_container(self.container)
+        
+        # Ermittle primäre Frequenz aus Settings
+        frequency = calculator._select_primary_frequency()
+        if frequency is None:
+            print("[FDTD] Keine gültige Frequenz gefunden.")
+            return
+        
+        # Frames pro Periode
+        frames_per_period = int(getattr(self.settings, "fem_time_frames_per_period", 16) or 16)
+        frames_per_period = max(1, frames_per_period)
+        
+        def _run_fdtd():
+            calculator.calculate_fdtd_snapshots(frequency, frames_per_period=frames_per_period)
+        
+        # Führe Berechnung mit Progress durch
+        try:
+            if show_progress:
+                self.run_tasks_with_progress(
+                    "FDTD-Berechnung",
+                    [("FDTD-Zeitsimulation", _run_fdtd)]
+                )
+            else:
+                _run_fdtd()
+        except ProgressCancelled:
+            return
+        
+        # Aktualisiere calculation_spl (FDTD-Daten werden bereits in calculator.calculation_spl gespeichert,
+        # da es das gleiche Objekt wie self.container.calculation_spl ist)
+        self.container.set_calculation_SPL(calculator.calculation_spl)
+        
+        # Aktualisiere Plot
+        if update_plot:
+            self.plot_spl(update_axes=False)
 
     def calculate_axes(self, include_x: bool = True, include_y: bool = True, update_plot: bool = True):
         """

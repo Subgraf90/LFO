@@ -16,6 +16,20 @@ class SnapshotWidget:
         self._current_polar_backup = None
         self._current_axes_backup = None
         self._current_impulse_backup = None
+        self._current_time_frame_index_backup = 0
+        self._current_time_frames_per_period_backup = 16
+    
+    def _is_widget_valid(self):
+        """Prüft ob snapshot_tree_widget existiert und noch gültig ist (nicht gelöscht)"""
+        if not self.snapshot_tree_widget:
+            return False
+        try:
+            _ = self.snapshot_tree_widget.objectName()
+            return True
+        except RuntimeError:
+            # Widget wurde gelöscht
+            self.snapshot_tree_widget = None
+            return False
 
     def show_snapshot_widget(self):
         if self.capture_dock_widget:
@@ -83,7 +97,7 @@ class SnapshotWidget:
 
     def update_snapshot_widgets(self):
         """Aktualisiert das TreeWidget mit allen Snapshots in Erstellungsreihenfolge"""
-        if not self.snapshot_tree_widget:
+        if not self._is_widget_valid():
             return
         
         # Blockiere Signale während der Aktualisierung
@@ -288,6 +302,47 @@ class SnapshotWidget:
             if spl_data:
                 capture_data['spl_field_data'] = spl_data
         
+        # ========================================
+        # 4. FDTD-Simulationsdaten speichern (für "SPL over time" Modus)
+        # ========================================
+        if hasattr(self.container, 'calculation_spl') and self.container.calculation_spl:
+            # Speichere alle FDTD-Frames für Zeit-Slider-Funktionalität
+            if 'fdtd_simulation' in self.container.calculation_spl:
+                import numpy as np
+                fdtd_sim = self.container.calculation_spl['fdtd_simulation']
+                # Deep copy der FDTD-Daten (kann große Arrays enthalten)
+                fdtd_data = copy.deepcopy(fdtd_sim)
+                # Konvertiere NumPy-Arrays zu Listen für JSON-Kompatibilität
+                if isinstance(fdtd_data, dict):
+                    for freq_key, sim_data in fdtd_data.items():
+                        if isinstance(sim_data, dict) and 'pressure_frames' in sim_data:
+                            pressure_frames = sim_data['pressure_frames']
+                            if isinstance(pressure_frames, np.ndarray):
+                                sim_data['pressure_frames'] = pressure_frames.tolist()
+                            elif isinstance(pressure_frames, list):
+                                # Bereits Liste, aber könnte verschachtelte Arrays enthalten
+                                sim_data['pressure_frames'] = [
+                                    frame.tolist() if isinstance(frame, np.ndarray) else frame
+                                    for frame in pressure_frames
+                                ]
+                        # Konvertiere auch sound_field_x und sound_field_y falls vorhanden
+                        if isinstance(sim_data, dict):
+                            for key in ['sound_field_x', 'sound_field_y']:
+                                if key in sim_data:
+                                    arr = sim_data[key]
+                                    if isinstance(arr, np.ndarray):
+                                        sim_data[key] = arr.tolist()
+                capture_data['fdtd_simulation'] = fdtd_data
+                print(f"[Snapshot] FDTD-Daten gespeichert: {len(fdtd_data)} Frequenz(en)")
+            
+            # Speichere auch aktuelle Zeit-Frame-Einstellungen
+            if hasattr(self.main_window, 'draw_plots'):
+                draw_plots = self.main_window.draw_plots
+                if hasattr(draw_plots, '_time_frame_index'):
+                    capture_data['fdtd_time_frame_index'] = draw_plots._time_frame_index
+                if hasattr(draw_plots, '_time_frames_per_period'):
+                    capture_data['fdtd_time_frames_per_period'] = draw_plots._time_frames_per_period
+        
         # Ausgabe zur Kontrolle der gespeicherten Daten
         print(f"Snapshot Capture Daten ({new_key}): {list(capture_data.keys())}")
 
@@ -352,16 +407,18 @@ class SnapshotWidget:
         print(f"Snapshot umbenannt: '{old_key}' → '{new_key}'")
 
     def update_plots(self, key, state):
+        """
+        Wird aufgerufen wenn sich die Checkbox ändert.
+        Beeinflusst nur X/Y-Achsen-Plots und Impuls-Plot.
+        SPL und Polarplot werden nicht durch Checkbox beeinflusst.
+        """
         if key in self.container.calculation_axes:
             show = bool(state)
             self.container.calculation_axes[key]["show_in_plot"] = show
             is_selected = (key == getattr(self, "selected_snapshot_key", "aktuelle_simulation"))
 
-            if is_selected:
-                if hasattr(self.container, "calculation_spl"):
-                    self.container.calculation_spl["show_in_plot"] = show
-                if hasattr(self.container, "calculation_polar"):
-                    self.container.calculation_polar["show_in_plot"] = show
+            # Checkbox beeinflusst SPL und Polarplot NICHT mehr
+            # Diese werden nur durch Item-Auswahl gesteuert
 
             # Achsen und Impulsplots immer anhand der Checkbox aktualisieren
             if hasattr(self.main_window, 'plot_xaxis'):
@@ -373,27 +430,23 @@ class SnapshotWidget:
             elif hasattr(self.main_window, 'impulse_manager'):
                 self.main_window.impulse_manager.update_plot_impulse()
 
+            # Prüfe ob irgendein Snapshot für Achsen/Impuls aktiviert ist
             if not self.has_any_active_snapshot():
                 if hasattr(self.main_window, 'draw_plots'):
                     self.main_window.draw_plots.show_empty_axes()
-                    self.main_window.draw_plots.show_empty_polar()
-                    self.main_window.draw_plots.show_empty_spl()
+                    # SPL und Polar nur leeren wenn kein Snapshot ausgewählt ist
+                    if not is_selected:
+                        self.main_window.draw_plots.show_empty_polar()
+                        self.main_window.draw_plots.show_empty_spl()
                 return
 
-            # SPL- und Polar-Plots nur für das aktuell ausgewählte Item anpassen
-            if is_selected:
-                if show:
-                    if hasattr(self.main_window, 'plot_spl'):
-                        self.main_window.plot_spl()
-                    if hasattr(self.main_window, 'plot_polar_pattern'):
-                        self.main_window.plot_polar_pattern()
-                else:
-                    if hasattr(self.main_window, 'draw_plots'):
-                        self.main_window.draw_plots.show_empty_spl()
-                        self.main_window.draw_plots.show_empty_polar()
+            # SPL und Polarplot werden NICHT durch Checkbox beeinflusst
+            # Sie bleiben immer angezeigt wenn der Snapshot ausgewählt ist
     
     def _select_item_by_key(self, snapshot_key):
         """Wählt ein Item im TreeWidget basierend auf dem Key aus"""
+        if not self._is_widget_valid():
+            return
         root = self.snapshot_tree_widget.invisibleRootItem()
         for i in range(root.childCount()):
             item = root.child(i)
@@ -404,7 +457,8 @@ class SnapshotWidget:
     def on_snapshot_item_clicked(self, item, column):
         """
         Wird aufgerufen wenn ein Snapshot-Item angeklickt wird.
-        Zeigt die Daten dieses Snapshots in SPL- und Polarplot an (wenn Checkbox aktiviert).
+        Zeigt die Daten dieses Snapshots in SPL- und Polarplot an (unabhängig von Checkbox).
+        Checkbox beeinflusst nur X/Y-Achsen-Plots und Impuls-Plot.
         """
         # Hole den Key des geklickten Items
         snapshot_key = item.data(0, Qt.UserRole)
@@ -415,21 +469,20 @@ class SnapshotWidget:
         # Speichere das ausgewählte Item
         self.selected_snapshot_key = snapshot_key
         
-        # Aktualisiere Achsen-Plots (für Liniendicke-Aktualisierung)
+        # Hole Checkbox-Status für Achsen/Impuls-Plots
+        checkbox = self.snapshot_tree_widget.itemWidget(item, 1)
+        is_checked = checkbox.isChecked() if checkbox else False
+        
+        # Aktualisiere Achsen-Plots basierend auf Checkbox
         if hasattr(self.main_window, 'plot_xaxis'):
             self.main_window.plot_xaxis()
         if hasattr(self.main_window, 'plot_yaxis'):
             self.main_window.plot_yaxis()
-        # Aktualisiere Impuls-Plots für Snapshot-Hervorhebung
+        # Aktualisiere Impuls-Plots basierend auf Checkbox
         if hasattr(self.main_window, 'update_plot_impulse'):
             self.main_window.update_plot_impulse()
         elif hasattr(self.main_window, 'impulse_manager'):
             self.main_window.impulse_manager.update_plot_impulse()
-        
-        # Prüfe ob Checkbox aktiviert ist
-        checkbox = self.snapshot_tree_widget.itemWidget(item, 1)
-        if not checkbox or not checkbox.isChecked():
-            return
         
         # ========================================
         # SPECIAL CASE: "current speakers" (aktuelle_simulation)
@@ -437,26 +490,21 @@ class SnapshotWidget:
         if snapshot_key == "aktuelle_simulation":
             # Beim Zurückkehren zur aktuellen Simulation die gesicherten Daten wiederherstellen
             self._restore_current_data()
-            checkbox = self.snapshot_tree_widget.itemWidget(item, 1)
             aktuelle_axes = self.container.calculation_axes.get("aktuelle_simulation")
-            is_checked = checkbox.isChecked() if checkbox else False
             if isinstance(aktuelle_axes, dict):
                 aktuelle_axes["show_in_plot"] = bool(is_checked)
+            
+            # SPL und Polarplot immer anzeigen (unabhängig von Checkbox)
             if hasattr(self.container, "calculation_spl"):
-                self.container.calculation_spl["show_in_plot"] = bool(is_checked)
+                self.container.calculation_spl["show_in_plot"] = True
             if hasattr(self.container, "calculation_polar"):
-                self.container.calculation_polar["show_in_plot"] = bool(is_checked)
+                self.container.calculation_polar["show_in_plot"] = True
 
-            if is_checked:
-                if hasattr(self.main_window, "plot_spl"):
-                    self.main_window.plot_spl()
-                if hasattr(self.main_window, "plot_polar_pattern"):
-                    self.main_window.plot_polar_pattern()
-            else:
-                if hasattr(self.main_window, "draw_plots"):
-                    self.main_window.draw_plots.show_empty_axes()
-                    self.main_window.draw_plots.show_empty_polar()
-                    self.main_window.draw_plots.show_empty_spl()
+            # SPL und Polarplot immer plotten
+            if hasattr(self.main_window, "plot_spl"):
+                self.main_window.plot_spl()
+            if hasattr(self.main_window, "plot_polar_pattern"):
+                self.main_window.plot_polar_pattern()
             return
         
         # ========================================
@@ -473,7 +521,7 @@ class SnapshotWidget:
         snapshot_data = self.container.calculation_axes[snapshot_key]
         
         # ========================================
-        # 1. Aktualisiere SPL 2D-Schallfeld-Daten
+        # 1. Aktualisiere SPL 2D-Schallfeld-Daten (immer laden wenn Snapshot ausgewählt)
         # ========================================
         has_spl_data = False
         if 'spl_field_data' in snapshot_data and snapshot_data['spl_field_data']:
@@ -512,7 +560,77 @@ class SnapshotWidget:
                 self.main_window.draw_plots.show_empty_spl()
         
         # ========================================
-        # 2. Aktualisiere Polarplot-Daten
+        # 1b. FDTD-Simulationsdaten wiederherstellen (für "SPL over time" Modus)
+        # ========================================
+        has_fdtd_data = False
+        if 'fdtd_simulation' in snapshot_data and snapshot_data['fdtd_simulation']:
+            import numpy as np
+            fdtd_data = snapshot_data['fdtd_simulation']
+            # Konvertiere Listen zurück zu NumPy-Arrays
+            if isinstance(fdtd_data, dict) and bool(fdtd_data):
+                restored_fdtd = {}
+                for freq_key, sim_data in fdtd_data.items():
+                    if isinstance(sim_data, dict):
+                        restored_sim = copy.deepcopy(sim_data)
+                        # Konvertiere pressure_frames zurück zu NumPy-Array
+                        if 'pressure_frames' in restored_sim:
+                            pressure_frames = restored_sim['pressure_frames']
+                            if isinstance(pressure_frames, list):
+                                # Konvertiere verschachtelte Listen zu NumPy-Array
+                                restored_sim['pressure_frames'] = np.array(pressure_frames, dtype=np.float32)
+                        # Konvertiere sound_field_x und sound_field_y zurück
+                        for key in ['sound_field_x', 'sound_field_y']:
+                            if key in restored_sim and isinstance(restored_sim[key], list):
+                                restored_sim[key] = np.array(restored_sim[key], dtype=float)
+                        restored_fdtd[freq_key] = restored_sim
+                self.container.calculation_spl['fdtd_simulation'] = restored_fdtd
+                has_fdtd_data = True
+                print(f"[Snapshot] FDTD-Daten wiederhergestellt: {len(restored_fdtd)} Frequenz(en)")
+            
+            # Stelle Zeit-Frame-Einstellungen wieder her
+            if hasattr(self.main_window, 'draw_plots'):
+                draw_plots = self.main_window.draw_plots
+                if 'fdtd_time_frame_index' in snapshot_data:
+                    draw_plots._time_frame_index = int(snapshot_data['fdtd_time_frame_index'])
+                if 'fdtd_time_frames_per_period' in snapshot_data:
+                    frames_per_period = int(snapshot_data['fdtd_time_frames_per_period'])
+                    draw_plots._time_frames_per_period = frames_per_period
+                    # Aktualisiere auch Settings
+                    if hasattr(self.settings, 'fem_time_frames_per_period'):
+                        self.settings.fem_time_frames_per_period = frames_per_period
+                    print(f"[Snapshot] Zeit-Frame-Einstellungen wiederhergestellt: Frame {draw_plots._time_frame_index}/{frames_per_period-1}")
+        else:
+            # Keine FDTD-Daten im Snapshot - entferne vorhandene FDTD-Daten
+            if hasattr(self.container, "calculation_spl") and 'fdtd_simulation' in self.container.calculation_spl:
+                del self.container.calculation_spl['fdtd_simulation']
+        
+        # ========================================
+        # 1c. Prüfe aktuellen Plot-Modus (NICHT ändern, nur aktualisieren)
+        # ========================================
+        current_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+        
+        # Prüfe ob wir im "SPL over time" Modus sind, aber keine FDTD-Daten vorhanden sind
+        if current_mode == "SPL over time" and not has_fdtd_data:
+            # Im "SPL over time" Modus aber keine FDTD-Daten -> leerer Plot
+            print(f"[Snapshot] Keine FDTD-Daten vorhanden, zeige leeren Plot")
+            if hasattr(self.main_window, 'draw_plots'):
+                self.main_window.draw_plots.show_empty_spl()
+            # Polarplot trotzdem aktualisieren falls vorhanden
+            if 'polar_data' in snapshot_data and snapshot_data['polar_data']:
+                polar_data = snapshot_data['polar_data']
+                self.container.calculation_polar['sound_field_p'] = polar_data.get('sound_field_p', {})
+                self.container.calculation_polar['angles'] = polar_data.get('angles', None)
+                self.container.calculation_polar['frequencies'] = polar_data.get('frequencies', {})
+                self.container.calculation_polar['show_in_plot'] = True
+                if hasattr(self.main_window, 'plot_polar_pattern'):
+                    try:
+                        self.main_window.plot_polar_pattern()
+                    except Exception as e:
+                        print(f"Fehler beim Aktualisieren des Polarplots: {e}")
+            return  # Früh beenden, kein SPL-Plot nötig
+        
+        # ========================================
+        # 2. Aktualisiere Polarplot-Daten (immer laden wenn Snapshot ausgewählt)
         # ========================================
         has_polar_data = False
         if 'polar_data' in snapshot_data and snapshot_data['polar_data']:
@@ -533,14 +651,17 @@ class SnapshotWidget:
                 self.main_window.draw_plots.show_empty_polar()
         
         # ========================================
-        # 3. Plots neu zeichnen
+        # 3. Plots neu zeichnen (aktueller Plot-Modus bleibt erhalten)
         # ========================================
-        # SPL Plot neu zeichnen
-        if has_spl_data and hasattr(self.main_window, 'plot_spl'):
-            try:
-                self.main_window.plot_spl()
-            except Exception as e:
-                print(f"Fehler beim Aktualisieren des SPL Plots: {e}")
+        # Aktualisiere den aktuell geöffneten Plot (nicht den Modus ändern)
+        # Nur plotten wenn FDTD-Daten vorhanden sind ODER normale SPL-Daten vorhanden sind
+        if has_fdtd_data or has_spl_data:
+            if hasattr(self.main_window, 'plot_spl'):
+                try:
+                    # plot_spl() verwendet den aktuellen Plot-Modus aus Settings
+                    self.main_window.plot_spl()
+                except Exception as e:
+                    print(f"Fehler beim Aktualisieren des SPL Plots: {e}")
         
         # Polarplot neu zeichnen
         if has_polar_data and hasattr(self.main_window, 'plot_polar_pattern'):
@@ -615,6 +736,15 @@ class SnapshotWidget:
             self._current_impulse_backup = copy.deepcopy(aktuelle_impulse) if isinstance(aktuelle_impulse, dict) else None
         else:
             self._current_impulse_backup = None
+        
+        # Sichere auch Zeit-Frame-Einstellungen
+        if hasattr(self.main_window, 'draw_plots'):
+            draw_plots = self.main_window.draw_plots
+            self._current_time_frame_index_backup = getattr(draw_plots, '_time_frame_index', 0)
+            self._current_time_frames_per_period_backup = getattr(draw_plots, '_time_frames_per_period', 16)
+        else:
+            self._current_time_frame_index_backup = 0
+            self._current_time_frames_per_period_backup = 16
 
     def _restore_current_data(self):
         """Stellt gesicherte SPL-, Polar-, Achsen- und Impuls-Daten der aktuellen Simulation wieder her."""
@@ -628,6 +758,17 @@ class SnapshotWidget:
             self.container.calculation_axes["aktuelle_simulation"] = copy.deepcopy(self._current_axes_backup)
         if self._current_impulse_backup is not None and hasattr(self.container, "calculation_impulse"):
             self.container.calculation_impulse["aktuelle_simulation"] = copy.deepcopy(self._current_impulse_backup)
+        
+        # Stelle auch Zeit-Frame-Einstellungen wieder her
+        if hasattr(self.main_window, 'draw_plots'):
+            draw_plots = self.main_window.draw_plots
+            if hasattr(self, '_current_time_frame_index_backup'):
+                draw_plots._time_frame_index = self._current_time_frame_index_backup
+            if hasattr(self, '_current_time_frames_per_period_backup'):
+                draw_plots._time_frames_per_period = self._current_time_frames_per_period_backup
+                # Aktualisiere auch Settings
+                if hasattr(self.settings, 'fem_time_frames_per_period'):
+                    self.settings.fem_time_frames_per_period = self._current_time_frames_per_period_backup
 
     def close_capture_dock_widget(self):
         if self.capture_dock_widget:

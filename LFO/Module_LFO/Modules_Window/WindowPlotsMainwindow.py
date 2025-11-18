@@ -8,7 +8,7 @@ from functools import partial
 from Module_LFO.Modules_Plot.PlotMPLCanvas import MplCanvas
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SoundFieldCalculator_PhaseDiff import SoundFieldCalculatorPhaseDiff
-from Module_LFO.Modules_Calculate.SoundFieldCalculator_FEM import SoundFieldCalculatorFEM
+from Module_LFO.Modules_Calculate.SoundFieldCalculator_FDTD import SoundFieldCalculatorFDTD
 
 try:
     from Module_LFO.Modules_Plot.PlotSPL3D import DrawSPLPlot3D
@@ -155,7 +155,14 @@ class DrawPlotsMainwindow(ModuleBase):
             )
         self.draw_spl_plotter = DrawSPLPlot3D(self.main_window.ui.SPLPlot, self.settings, self.colorbar_ax)
         self.draw_spl_plotter.set_time_slider_callback(self._on_time_slider_changed)
-        self.draw_spl_plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
+        # Prüfe ob "SPL over time" aktiv ist
+        plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+        time_mode_active = (plot_mode == "SPL over time")
+        if time_mode_active:
+            frames = max(1, self._time_frames_per_period)
+            self.draw_spl_plotter.update_time_control(True, frames + 1, self._time_frame_index, 0.2)
+        else:
+            self.draw_spl_plotter.update_time_control(False, self._time_frames_per_period + 1, self._time_frame_index, 0.2)
         self.active_spl_widget = self.draw_spl_plotter.widget
 
     def _initialize_empty_sound_field(self):
@@ -189,28 +196,84 @@ class DrawPlotsMainwindow(ModuleBase):
 
     def _compute_time_mode_field(self):
         calc_spl = getattr(self.container, 'calculation_spl', {})
-        fem_results = calc_spl.get("fem_simulation")
-        if not isinstance(fem_results, dict) or not fem_results:
-            return None
-        frames = int(getattr(self.settings, "fem_time_frames_per_period", self._time_frames_per_period) or self._time_frames_per_period)
+        
+        # Prüfe ob FDTD-Daten vorhanden sind (FDTD ist eigenständig, keine FEM-Abhängigkeit)
+        fdtd_results = calc_spl.get("fdtd_simulation")
+        has_fdtd = isinstance(fdtd_results, dict) and bool(fdtd_results)
+        print(f"[SPL over time] _compute_time_mode_field: FDTD-Daten vorhanden={has_fdtd}")
+        
+        # WICHTIG: Auch wenn keine FDTD-Daten vorhanden sind, versuchen wir die Simulation zu starten.
+        # get_time_snapshot_grid() ruft automatisch calculate_fdtd_snapshots() auf, wenn keine Daten vorhanden sind.
+        
+        # Hole frames_per_period aus FDTD-Daten (falls vorhanden), sonst aus Settings
+        frames = None
+        if has_fdtd:
+            # Versuche frames_per_period aus den FDTD-Daten zu holen
+            for freq_key, sim_data in fdtd_results.items():
+                if isinstance(sim_data, dict):
+                    stored_frames = sim_data.get("frames_per_period")
+                    if stored_frames is not None:
+                        frames = int(stored_frames)
+                        break
+                    # Fallback: Berechne aus total_frames
+                    total_frames = sim_data.get("total_frames")
+                    if total_frames is not None:
+                        frames = int(total_frames) - 1  # -1 weil total_frames = frames_per_period + 1
+                        break
+        
+        # Fallback auf Settings
+        if frames is None:
+            frames = int(getattr(self.settings, "fem_time_frames_per_period", self._time_frames_per_period) or self._time_frames_per_period)
+        
         frames = max(1, frames)
         self._time_frames_per_period = frames
+        print(f"[SPL over time] Verwende frames_per_period: {frames} (aus FDTD-Daten: {frames is not None and has_fdtd})")
+        
         try:
-            provider = SoundFieldCalculatorFEM(self.settings, getattr(self.container, 'data', None), self.container.calculation_spl)
-            provider.calculation_spl = self.container.calculation_spl
+            provider = SoundFieldCalculatorFDTD(
+                self.settings,
+                getattr(self.container, 'data', None),
+                self.container.calculation_spl,
+            )
             provider.set_data_container(self.container)
-            frequency = provider._select_primary_frequency(list(fem_results.keys()), fem_results)
+            
+            # Frequenz zu finden: zuerst aus FDTD-Daten, dann aus Settings (KEINE FEM-Abhängigkeit)
+            frequency = None
+            if has_fdtd:
+                # Nimm die erste verfügbare Frequenz aus FDTD-Daten
+                try:
+                    freq_keys = [float(k) for k in fdtd_results.keys() if isinstance(k, (int, float, str))]
+                    if freq_keys:
+                        frequency = float(freq_keys[0])
+                        print(f"[SPL over time] Frequenz aus FDTD-Daten: {frequency} Hz")
+                except (ValueError, TypeError):
+                    pass
+            
+            # Falls keine Frequenz aus FDTD-Daten, versuche aus Settings
             if frequency is None:
+                frequency = provider._select_primary_frequency()
+            
+            if frequency is None:
+                print("[SPL over time] Keine gültige Frequenz gefunden")
                 return None
-            frame_index = self._time_frame_index % frames
+            
+            print(f"[SPL over time] Verwende Frequenz: {frequency} Hz, Frame: {self._time_frame_index}")
+            # total_frames = frames_per_period + 1 (inkl. Frame 0 für t=0)
+            total_frames = frames + 1
+            frame_index = self._time_frame_index % total_frames
+            # get_time_snapshot_grid() ruft automatisch calculate_fdtd_snapshots() auf,
+            # wenn keine Daten vorhanden sind (mit Caching)
             sound_field_x, sound_field_y, pressure_grid, _ = provider.get_time_snapshot_grid(
                 frequency,
                 frame_index,
                 frames_per_period=frames,
             )
-            return frequency, frames, sound_field_x, sound_field_y, pressure_grid
+            print(f"[SPL over time] Daten geladen: Grid {len(sound_field_x)}x{len(sound_field_y)}, Druck min={np.min(pressure_grid):.3e}, max={np.max(pressure_grid):.3e}")
+            return frequency, total_frames, sound_field_x, sound_field_y, pressure_grid
         except Exception as exc:  # noqa: BLE001
             print(f"[SPL over time] Snapshot fehlgeschlagen: {exc}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def show_empty_plots(self, preserve_camera: bool = True, view: Optional[str] = None):
@@ -408,7 +471,14 @@ class DrawPlotsMainwindow(ModuleBase):
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
             plotter.update_overlays(self.settings, self.container)
             self.colorbar_canvas.draw()
-            plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
+            # Prüfe ob "SPL over time" aktiv ist
+            plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+            time_mode_active = (plot_mode == "SPL over time")
+            if time_mode_active:
+                frames = max(1, self._time_frames_per_period)
+                plotter.update_time_control(True, frames + 1, self._time_frame_index, 0.2)
+            else:
+                plotter.update_time_control(False, self._time_frames_per_period + 1, self._time_frame_index, 0.2)
 
     def show_empty_axes(self):
         """Setzt X- und Y-Achsen-Plots zurück."""
@@ -464,10 +534,11 @@ class DrawPlotsMainwindow(ModuleBase):
             return
         
         calc_spl = self.container.calculation_spl
+        allow_zero_phase = plot_mode == "Phase alignment"
         if plot_mode == "Phase alignment":
             if not isinstance(calc_spl, dict):
                 calc_spl = {}
-            if self._is_empty_data(calc_spl.get('sound_field_phase_diff')):
+            if self._is_empty_data(calc_spl.get('sound_field_phase_diff'), allow_all_zero=True):
                 if not self._calculate_phase_alignment_field():
                     calc_spl['sound_field_phase_diff'] = []
         # Prüfe ob gültige Daten vorhanden sind (nicht nur NaN)
@@ -488,7 +559,7 @@ class DrawPlotsMainwindow(ModuleBase):
                 len(calc_spl.get('sound_field_x', [])) > 0 and
                 len(calc_spl.get('sound_field_y', [])) > 0 and
                 len(calc_spl.get(field_key, [])) > 0 and
-                not self._is_empty_data(calc_spl[field_key])
+                not self._is_empty_data(calc_spl[field_key], allow_all_zero=allow_zero_phase)
             )
         
         if not has_data:
@@ -506,7 +577,7 @@ class DrawPlotsMainwindow(ModuleBase):
                 v_len = len(calc_spl.get(field_key, []))
                 debug_info.append(f"len_x={x_len}, len_y={y_len}, len_value={v_len}")
                 if field_key in calc_spl:
-                    is_empty = self._is_empty_data(calc_spl[field_key])
+                    is_empty = self._is_empty_data(calc_spl[field_key], allow_all_zero=allow_zero_phase)
                     debug_info.append(f"is_empty={is_empty}")
             print(f"[Plot SPL] Fallback zu leerem Plot aktiviert. Prüfung: {', '.join(debug_info)}")
             
@@ -514,7 +585,13 @@ class DrawPlotsMainwindow(ModuleBase):
             if draw_spl_plotter is not None:
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
                 draw_spl_plotter.update_overlays(self.settings, self.container)
-                draw_spl_plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
+                # Zeit-Fader immer anzeigen wenn "SPL over time" aktiv ist
+                if time_mode_enabled:
+                    # Zeige Zeit-Fader auch ohne Daten
+                    frames = max(1, self._time_frames_per_period)
+                    draw_spl_plotter.update_time_control(True, frames + 1, self._time_frame_index, 0.2)
+                else:
+                    draw_spl_plotter.update_time_control(False, self._time_frames_per_period + 1, self._time_frame_index, 0.2)
 
             self.colorbar_canvas.draw()
 
@@ -525,22 +602,17 @@ class DrawPlotsMainwindow(ModuleBase):
             return
         
         if time_mode_enabled and time_snapshot is not None:
-            _, snapshot_frames, sound_field_x, sound_field_y, snapshot_values = time_snapshot
-            self._time_frames_per_period = snapshot_frames
-            self.settings.fem_time_frames_per_period = snapshot_frames
+            _, snapshot_total_frames, sound_field_x, sound_field_y, snapshot_values = time_snapshot
+            # snapshot_total_frames ist bereits total_frames (frames_per_period + 1)
+            # Berechne frames_per_period aus total_frames
+            snapshot_frames_per_period = max(1, snapshot_total_frames - 1)  # -1 weil total_frames = frames_per_period + 1
+            self._time_frames_per_period = snapshot_frames_per_period
+            self.settings.fem_time_frames_per_period = snapshot_frames_per_period
             sound_field_values = snapshot_values
-            if draw_spl_plotter is not None:
-                draw_spl_plotter.update_time_control(
-                    True,
-                    self._time_frames_per_period,
-                    self._time_frame_index % self._time_frames_per_period,
-                )
         else:
             sound_field_x = self.container.calculation_spl['sound_field_x']
             sound_field_y = self.container.calculation_spl['sound_field_y']
             sound_field_values = self.container.calculation_spl[field_key]
-            if draw_spl_plotter is not None:
-                draw_spl_plotter.update_time_control(False, self._time_frames_per_period, self._time_frame_index)
 
         # 3D-Plot aktualisieren
         draw_spl_plotter.update_spl_plot(
@@ -550,6 +622,31 @@ class DrawPlotsMainwindow(ModuleBase):
             self.settings.colorization_mode,
         )
         draw_spl_plotter.update_overlays(self.settings, self.container)
+        
+        # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
+        # damit der Fader nicht von initialize_empty_scene() versteckt wird
+        if draw_spl_plotter is not None:
+            if time_mode_enabled:
+                if time_snapshot is not None:
+                    # Verwende total_frames aus snapshot
+                    simulation_time = 0.2  # Standard
+                    fdtd_results = calc_spl.get("fdtd_simulation")
+                    if isinstance(fdtd_results, dict) and fdtd_results:
+                        # Versuche simulation_time aus den FDTD-Daten zu holen
+                        # (wird aktuell nicht gespeichert, daher Standard verwenden)
+                        pass
+                    draw_spl_plotter.update_time_control(
+                        True,
+                        snapshot_total_frames,  # Verwende total_frames direkt
+                        self._time_frame_index % snapshot_total_frames,
+                        simulation_time,
+                    )
+                else:
+                    # Fallback: Verwende frames_per_period
+                    frames = max(1, self._time_frames_per_period)
+                    draw_spl_plotter.update_time_control(True, frames + 1, self._time_frame_index, 0.2)
+            else:
+                draw_spl_plotter.update_time_control(False, self._time_frames_per_period + 1, self._time_frame_index, 0.2)
         self.colorbar_canvas.draw()
         if reset_camera:
             self.reset_zoom()
@@ -571,7 +668,7 @@ class DrawPlotsMainwindow(ModuleBase):
             arr for arr in self.settings.speaker_arrays.values()
             if not getattr(arr, 'mute', False) and not getattr(arr, 'hide', False)
         ]
-        if len(active_arrays) < 2:
+        if len(active_arrays) == 0:
             return False
 
         calculator = SoundFieldCalculatorPhaseDiff(self.settings, self.container.data, calc_spl)
@@ -579,7 +676,7 @@ class DrawPlotsMainwindow(ModuleBase):
         calculator.calculate_phase_alignment()
         return True
 
-    def _is_empty_data(self, sound_field_p):
+    def _is_empty_data(self, sound_field_p, allow_all_zero: bool = False):
         """Prüft ob sound_field_p nur NaN oder Nullen enthält"""
         # Prüfe ob sound_field_p None oder leer ist
         if sound_field_p is None:
@@ -593,8 +690,11 @@ class DrawPlotsMainwindow(ModuleBase):
             if arr.size == 0:
                 return True
             
-            # Prüfe ob alle Werte NaN oder 0 sind
-            return np.all(np.isnan(arr)) or np.all(arr == 0)
+            all_nan = np.all(np.isnan(arr))
+            all_zero = np.all(arr == 0)
+            if allow_all_zero:
+                return all_nan
+            return all_nan or all_zero
         except Exception:
             return True
 
@@ -702,6 +802,34 @@ class DrawPlotsMainwindow(ModuleBase):
         setattr(self.settings, 'spl_plot_mode', selection)
         self._sync_plot_mode_actions(selection)
         calc_spl = getattr(self.container, 'calculation_spl', None)
+        
+        # Wenn "SPL over time" aktiviert wird, prüfe ob FDTD berechnet werden soll
+        if selection == "SPL over time":
+            print(f"[SPL over time] Modus aktiviert, autocalc prüfen...")
+            # Prüfe ob FDTD-Daten bereits vorhanden sind
+            fdtd_results = calc_spl.get("fdtd_simulation") if isinstance(calc_spl, dict) else None
+            has_fdtd = isinstance(fdtd_results, dict) and bool(fdtd_results)
+            print(f"[SPL over time] FDTD-Daten vorhanden: {has_fdtd}")
+            
+            if not has_fdtd:
+                # Prüfe ob autocalc aktiv ist (show_in_plot)
+                autocalc = calc_spl.get("show_in_plot", True) if isinstance(calc_spl, dict) else True
+                print(f"[SPL over time] autocalc={autocalc}")
+                if autocalc:
+                    # FDTD berechnen
+                    if hasattr(self.main_window, 'calculate_fdtd'):
+                        print("[SPL over time] Starte FDTD-Berechnung...")
+                        self.main_window.calculate_fdtd(show_progress=True, update_plot=True)
+                        return
+                    else:
+                        print("[SPL over time] calculate_fdtd nicht verfügbar")
+            else:
+                # FDTD-Daten vorhanden - nur Plot aktualisieren
+                print("[SPL over time] FDTD-Daten vorhanden, aktualisiere Plot")
+                if hasattr(self.main_window, 'plot_spl'):
+                    self.main_window.plot_spl(update_axes=False)
+                return
+        
         if selection == "Phase alignment" and isinstance(calc_spl, dict):
             has_data = self._calculate_phase_alignment_field()
             if not has_data:
@@ -719,8 +847,9 @@ class DrawPlotsMainwindow(ModuleBase):
         self.plot_spl(self.settings, speaker_array_id, update_axes=False)
 
     def _on_time_slider_changed(self, value: int):
-        frames = max(1, self._time_frames_per_period)
-        new_value = int(value) % frames
+        # total_frames = frames_per_period + 1 (inkl. Frame 0)
+        total_frames = max(1, self._time_frames_per_period + 1)
+        new_value = int(value) % total_frames
         if new_value == self._time_frame_index:
             return
         self._time_frame_index = new_value
