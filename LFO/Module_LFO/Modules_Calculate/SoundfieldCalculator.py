@@ -1,5 +1,7 @@
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
+from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
+from typing import List, Dict, Tuple, Optional
 
 class SoundFieldCalculator(ModuleBase):
     def __init__(self, settings, data, calculation_spl):
@@ -15,6 +17,9 @@ class SoundFieldCalculator(ModuleBase):
         self._geometry_cache = {}  # {source_key: {distances, azimuths, elevations}}
         self._grid_cache = None    # Gespeichertes Grid
         self._grid_hash = None     # Hash der Grid-Parameter
+        
+        # 🎯 GRID-CALCULATOR: Separate Instanz für Grid-Erstellung
+        self._grid_calculator = SurfaceGridCalculator(settings)
    
     def calculate_soundfield_pressure(self):
         (
@@ -134,16 +139,20 @@ class SoundFieldCalculator(ModuleBase):
         )
         
         # ============================================================
-        # SCHRITT 1: Grid-Erstellung
+        # SCHRITT 1: Grid-Erstellung (mit Surface-Unterstützung)
         # ============================================================
-        # Erstelle 1D-Arrays für X- und Y-Koordinaten
-        sound_field_x = np.arange((self.settings.width / 2 * -1), 
-                                 ((self.settings.width / 2) + self.settings.resolution), 
-                                 self.settings.resolution)
-        sound_field_y = np.arange((self.settings.length / 2 * -1), 
-                                 ((self.settings.length / 2) + self.settings.resolution), 
-                                 self.settings.resolution)
-
+        # Hole aktivierte Surfaces
+        enabled_surfaces = self._get_enabled_surfaces()
+        
+        # 🎯 VERWENDE SURFACE-GRID-CALCULATOR: Erstellt komplettes Grid basierend auf enabled Surfaces
+        (
+            sound_field_x,
+            sound_field_y,
+            X_grid,
+            Y_grid,
+            Z_grid,
+            surface_mask,
+        ) = self._grid_calculator.create_calculation_grid(enabled_surfaces)
         
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
@@ -243,8 +252,10 @@ class SoundFieldCalculator(ModuleBase):
                 # √(x² + y²) für ALLE Punkte gleichzeitig
                 horizontal_dists = np.sqrt(x_distances**2 + y_distances**2)
                 
-                # Z-Distanz (konstant für alle Punkte, da Grid auf Z=0)
-                z_distance = -source_position_z[isrc]  # Negativ, da Lautsprecher ÜBER dem Grid
+                # 🎯 Z-DISTANZ: Verwende interpolierte Z-Koordinaten aus Surfaces (falls aktiviert)
+                # Z_grid enthält die Z-Koordinaten jedes Grid-Punkts (aus Surface-Interpolation)
+                # Wenn keine Surfaces aktiviert sind, ist Z_grid = 0 (Standard)
+                z_distance = Z_grid - source_position_z[isrc]  # Z-Distanz für jeden Punkt individuell
                 
                 # Berechne 3D-Distanz (Pythagoras in 3D)
                 # √(horizontal² + z²) für ALLE Punkte gleichzeitig
@@ -260,6 +271,7 @@ class SoundFieldCalculator(ModuleBase):
                 azimuths = (azimuths + 90) % 360  # Drehe 90° (Polar-Koordinatensystem)
                 
                 # Berechne Elevations-Winkel für ALLE Punkte gleichzeitig
+                # Verwende die individuellen Z-Distanzen (aus Surface-Interpolation)
                 elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
                 
                 # --------------------------------------------------------
@@ -269,8 +281,11 @@ class SoundFieldCalculator(ModuleBase):
                 # Distanz-Maske (filtert Punkte zu nah an der Quelle, verhindert Division durch Null)
                 dist_mask = source_dists >= 0.001
                 
-                # Kombiniere beide Masken → Nur Punkte die BEIDE Bedingungen erfüllen
-                valid_mask = dist_mask
+                # 🎯 SURFACE-INTEGRATION: Kombiniere Distanz-Maske mit Surface-Maske
+                # Nur Punkte die BEIDE Bedingungen erfüllen:
+                # 1. Ausreichend weit von der Quelle entfernt (dist_mask)
+                # 2. Innerhalb mindestens eines aktivierten Surfaces (surface_mask)
+                valid_mask = dist_mask & surface_mask
                 
                 # --------------------------------------------------------
                 # 4.4: BATCH-INTERPOLATION (der Performance-Booster! 🚀)
@@ -324,6 +339,11 @@ class SoundFieldCalculator(ModuleBase):
                         array_wave += wave
             if capture_arrays and array_wave is not None:
                 array_fields[array_key] = array_wave
+
+        # 🎯 Speichere Z-Grid für Plot-Verwendung
+        # Konvertiere Z_grid zu Liste für JSON-Serialisierung
+        if isinstance(self.calculation_spl, dict):
+            self.calculation_spl['sound_field_z'] = Z_grid.tolist()
 
         return sound_field_p, sound_field_x, sound_field_y, array_fields
 
@@ -793,6 +813,35 @@ class SoundFieldCalculator(ModuleBase):
     def set_data_container(self, data_container):
         """🚀 Setzt den optimierten DataContainer für Performance-Zugriff"""
         self._data_container = data_container
+
+    # ============================================================
+    # SURFACE-INTEGRATION: Helper-Methoden
+    # ============================================================
+    
+    def _get_enabled_surfaces(self) -> List[Tuple[str, Dict]]:
+        """
+        Gibt alle aktivierten Surfaces zurück, die für die Berechnung verwendet werden sollen.
+        
+        Filtert Surfaces nach:
+        - enabled=True: Surface ist aktiviert
+        - hidden=False: Surface ist nicht versteckt
+        
+        Nur Surfaces, die beide Bedingungen erfüllen, werden in die Berechnung einbezogen.
+        Die Koordination (wann Empty Plot, wann Berechnung) erfolgt über
+        WindowPlotsMainwindow.update_plots_for_surface_state().
+        
+        Returns:
+            Liste von Tupeln (surface_id, surface_definition) - nur enabled + nicht-hidden Surfaces
+        """
+        if not hasattr(self.settings, 'surface_definitions'):
+            return []
+        
+        enabled = []
+        for surface_id, surface_def in self.settings.surface_definitions.items():
+            if surface_def.get('enabled', False) and not surface_def.get('hidden', False):
+                enabled.append((surface_id, surface_def))
+        
+        return enabled
 
     def calculate_mirror_azimuth(self, source_azimuth, wall):
         """

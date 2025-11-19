@@ -21,16 +21,50 @@ class UISurfaceManager:
     def show_surface_dock_widget(self):
         """
         Erstellt (falls nötig) und zeigt das SurfaceDockWidget an.
+        Positioniert es rechts neben dem Hauptfenster als schwebendes Fenster.
         """
         if self.surface_dock_widget is None:
             from Module_LFO.Modules_Window.WindowSurfaceWidget import SurfaceDockWidget
 
             self.surface_dock_widget = SurfaceDockWidget(self.main_window, self.settings, self.container)
-            self._dock_surface_initial()
+            # Automatisches Docking deaktiviert - Widget wird nicht direkt an UI angehängt
 
         self.surface_dock_widget.initialize()
+        
+        # Als schwebendes Fenster setzen und rechts neben dem Hauptfenster positionieren
+        self.surface_dock_widget.setFloating(True)
+        
+        # Position berechnen: rechts neben dem Hauptfenster
+        main_geometry = self.main_window.geometry()
+        main_x = main_geometry.x()
+        main_y = main_geometry.y()
+        main_width = main_geometry.width()
+        main_height = main_geometry.height()
+        
+        # DockWidget-Größe (Standard oder bereits gesetzt)
+        dock_width = self.surface_dock_widget.width() if self.surface_dock_widget.width() > 0 else 520
+        dock_height = self.surface_dock_widget.height() if self.surface_dock_widget.height() > 0 else 600
+        
+        # Position: rechts neben dem Hauptfenster, vertikal zentriert
+        offset_x = 20  # Kleiner Abstand zum Hauptfenster
+        new_x = main_x + main_width + offset_x
+        new_y = main_y + (main_height - dock_height) // 2  # Vertikal zentriert
+        
+        # Stelle sicher, dass das Fenster auf dem Bildschirm bleibt
+        screen = self.main_window.screen()
+        if screen:
+            screen_geometry = screen.availableGeometry()
+            # Wenn das Fenster außerhalb des Bildschirms wäre, positioniere es innerhalb
+            if new_x + dock_width > screen_geometry.right():
+                new_x = screen_geometry.right() - dock_width - 20
+            if new_y + dock_height > screen_geometry.bottom():
+                new_y = screen_geometry.bottom() - dock_height - 20
+            if new_y < screen_geometry.top():
+                new_y = screen_geometry.top() + 20
+        
+        self.surface_dock_widget.setGeometry(new_x, new_y, dock_width, dock_height)
         self.surface_dock_widget.show()
-        self._align_with_snapshot_if_possible()
+        # Automatische Ausrichtung mit Snapshot deaktiviert
 
     def close_surface_dock_widget(self):
         """

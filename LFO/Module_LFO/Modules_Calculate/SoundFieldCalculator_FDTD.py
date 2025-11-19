@@ -50,17 +50,21 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         Diese Methode simuliert die Wellenausbreitung im Zeitbereich,
         beginnend vom Lautsprecher und zeigt die Ausbreitung über die Zeit.
         """
+        print(f"[DEBUG FDTD] calculate_fdtd_snapshots() aufgerufen: frequency={frequency} Hz, frames_per_period={frames_per_period}")
         if frames_per_period <= 0:
             frames_per_period = 16
         freq_key = float(frequency)
         sim_store = self.calculation_spl.setdefault("fdtd_simulation", {})
         entry = sim_store.get(freq_key)
         if entry and entry.get("frames_per_period") == frames_per_period:
+            print(f"[DEBUG FDTD] calculate_fdtd_snapshots() - Gecachte Daten gefunden, überspringe Berechnung")
             return entry
         
         # Führe echte FDTD-Simulation durch
+        print(f"[DEBUG FDTD] calculate_fdtd_snapshots() - Starte neue FDTD-Simulation")
         simulation = self._run_fdtd_simulation(freq_key, frames_per_period)
         sim_store[freq_key] = simulation
+        print(f"[DEBUG FDTD] calculate_fdtd_snapshots() - FDTD-Simulation abgeschlossen, Daten gespeichert")
         return simulation
 
     def get_time_snapshot_grid(
@@ -70,6 +74,7 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         frames_per_period: int = 16,
         decimals: int = 6,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        print(f"[DEBUG FDTD] get_time_snapshot_grid() aufgerufen: frequency={frequency} Hz, frame_index={frame_index}, frames_per_period={frames_per_period}")
         if frames_per_period <= 0:
             raise ValueError("frames_per_period muss > 0 sein.")
         simulation = self.calculate_fdtd_snapshots(frequency, frames_per_period)
@@ -99,24 +104,77 @@ class SoundFieldCalculatorFDTD(ModuleBase):
     # FDTD-Simulation
     # ------------------------------------------------------------------
     def _run_fdtd_simulation(self, frequency: float, frames_per_period: int) -> dict:
+        print(f"[DEBUG FDTD] _run_fdtd_simulation() START: frequency={frequency} Hz, frames_per_period={frames_per_period}")
         if frequency <= 0.0:
             raise ValueError("Frequenz für FDTD muss > 0 Hz sein.")
 
         width = float(self.settings.width)
         length = float(self.settings.length)
         base_resolution = float(getattr(self.settings, "fdtd_resolution", None) or getattr(self.settings, "resolution", 0.5) or 0.5)
-        resolution = max(0.05, base_resolution)
-
-        nx = max(3, int(round(width / resolution)) + 1)
-        ny = max(3, int(round(length / resolution)) + 1)
-        sound_field_x = np.linspace(-width / 2.0, width / 2.0, nx, dtype=float)
-        sound_field_y = np.linspace(-length / 2.0, length / 2.0, ny, dtype=float)
         
-        # Berechne tatsächliche Schrittweite im Grid (wichtig für korrekte FDTD-Berechnung!)
-        dx = width / (nx - 1) if nx > 1 else resolution
-        dy = length / (ny - 1) if ny > 1 else resolution
+        # Optimiere Auflösung basierend auf Wellenlänge für bessere Wellenausbreitung
+        # Für stabile und genaue FDTD-Simulation braucht man mindestens 10-20 Punkte pro Wellenlänge
+        temperature = getattr(self.settings, "temperature", 20.0)
+        c = self.functions.calculate_speed_of_sound(temperature)
+        wavelength = c / frequency if frequency > 0 else float('inf')
+        
+        # Punkte pro Wellenlänge (Standard: 15 für gute Genauigkeit)
+        points_per_wavelength = float(getattr(self.settings, "fdtd_points_per_wavelength", 15.0) or 15.0)
+        points_per_wavelength = max(10.0, min(30.0, points_per_wavelength))  # Zwischen 10 und 30
+        
+        # Ideale Auflösung basierend auf Wellenlänge
+        ideal_resolution = wavelength / points_per_wavelength if wavelength < float('inf') else base_resolution
+        
+        # Verwende die feinere Auflösung (besser für Wellenausbreitung)
+        # Aber nicht zu fein (Performance)
+        min_resolution = float(getattr(self.settings, "fdtd_min_resolution", 0.02) or 0.02)
+        max_resolution = float(getattr(self.settings, "fdtd_max_resolution", base_resolution * 2) or base_resolution * 2)
+        resolution = max(min_resolution, min(ideal_resolution, base_resolution, max_resolution))
+        
+        print(f"[FDTD] Auflösungsoptimierung: Wellenlänge={wavelength:.3f}m, Ideal={ideal_resolution:.3f}m, "
+              f"Verwendet={resolution:.3f}m ({wavelength/resolution:.1f} Punkte/Wellenlänge)")
+
+        nx_inner = max(3, int(round(width / resolution)) + 1)
+        ny_inner = max(3, int(round(length / resolution)) + 1)
+        sound_field_x = np.linspace(-width / 2.0, width / 2.0, nx_inner, dtype=float)
+        sound_field_y = np.linspace(-length / 2.0, length / 2.0, ny_inner, dtype=float)
+        
+        # Berechne tatsächliche Schrittweite im Innenbereich (wichtig für korrekte FDTD-Berechnung!)
+        dx = width / (nx_inner - 1) if nx_inner > 1 else resolution
+        dy = length / (ny_inner - 1) if ny_inner > 1 else resolution
         # Verwende die kleinere Schrittweite für CFL (konservativ)
         grid_resolution = min(dx, dy)
+
+        # Lege äußere PML-Zone an (außerhalb des Innenbereichs)
+        min_freq_for_pml = float(getattr(self.settings, "fdtd_pml_min_frequency", 30.0) or 30.0)
+        min_wavelength = c / max(min_freq_for_pml, 1e-3)
+        default_pml_width = 10.0  # vom Nutzer gefordert
+        min_phys_width = float(getattr(self.settings, "fdtd_absorption_min_width", default_pml_width) or default_pml_width)
+        min_phys_width = max(min_phys_width, 1.2 * min_wavelength, default_pml_width)
+        max_phys_width = float(getattr(self.settings, "fdtd_absorption_max_width", max(width, length) * 0.45) or max(width, length) * 0.45)
+        target_amp = float(getattr(self.settings, "fdtd_absorption_edge_gain", 1e-7) or 1e-7)
+        profile_order = int(getattr(self.settings, "fdtd_absorption_profile_order", 7) or 7)
+        profile_order = min(9, max(5, profile_order))
+        
+        damping_zone_width_cells = int(round(min_phys_width / grid_resolution))
+        damping_zone_width_cells = max(12, damping_zone_width_cells)
+        damping_zone_width_cells = min(
+            damping_zone_width_cells,
+            int(round(max_phys_width / grid_resolution)),
+        )
+        padding_cells = max(1, damping_zone_width_cells)
+        pml_phys_width = padding_cells * grid_resolution
+        
+        nx = nx_inner + 2 * padding_cells
+        ny = ny_inner + 2 * padding_cells
+        x_min_ext = sound_field_x[0] - padding_cells * grid_resolution
+        x_max_ext = sound_field_x[-1] + padding_cells * grid_resolution
+        y_min_ext = sound_field_y[0] - padding_cells * grid_resolution
+        y_max_ext = sound_field_y[-1] + padding_cells * grid_resolution
+        simulation_x = np.linspace(x_min_ext, x_max_ext, nx, dtype=float)
+        simulation_y = np.linspace(y_min_ext, y_max_ext, ny, dtype=float)
+        inner_slice_y = slice(padding_cells, padding_cells + ny_inner)
+        inner_slice_x = slice(padding_cells, padding_cells + nx_inner)
 
         temperature = getattr(self.settings, "temperature", 20.0)
         c = self.functions.calculate_speed_of_sound(temperature)
@@ -169,7 +227,7 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         # Die Simulation läuft von Step 0 bis total_steps, und die Wellenausbreitung
         # findet während des gesamten Laufs statt, inklusive Warmup
 
-        sources = self._collect_sources(frequency, sound_field_x, sound_field_y, grid_resolution)
+        sources = self._collect_sources(frequency, simulation_x, simulation_y, grid_resolution)
         max_distance = math.sqrt((width / 2.0) ** 2 + (length / 2.0) ** 2)
         
         # Debug: Berechne erwartete Ausbreitungsdistanz für Frame 1
@@ -178,8 +236,10 @@ class SoundFieldCalculatorFDTD(ModuleBase):
             expected_distance = c * frame1_time
             print(f"[FDTD] Erwartete Ausbreitung Frame 1 (t={frame1_time*1000:.1f}ms): ~{expected_distance:.2f}m")
         
+        domain_width_total = width + 2.0 * pml_phys_width
+        domain_length_total = length + 2.0 * pml_phys_width
         print(f"[FDTD] Simulation: {total_steps} Steps, {steps_per_period} Steps/Periode, {len(sources)} Quellen")
-        print(f"[FDTD] Domäne: {width:.1f}m x {length:.1f}m, max. Distanz: {max_distance:.1f}m")
+        print(f"[FDTD] Feldfläche: {width:.1f}m x {length:.1f}m, Domäne (inkl. 10m-PML): {domain_width_total:.1f}m x {domain_length_total:.1f}m, max. Distanz: {max_distance:.1f}m, PML-Breite ~{pml_phys_width:.1f}m")
         print(f"[FDTD] Simulationszeit: {simulation_time*1000:.1f}ms (0-200ms, kein Warmup)")
         print(f"[FDTD] Frame-Zeiten: {[f'{t*1000:.1f}ms' for t in frame_times[:5]]} ... {[f'{t*1000:.1f}ms' for t in frame_times[-3:]]} (über {simulation_time*1000:.1f}ms)")
         print(f"[FDTD] Frame-Steps: {[int(s) for s in frame_steps[:3]]} ... {[int(s) for s in frame_steps[-3:]]} (von 0 bis {total_steps-1})")
@@ -188,52 +248,45 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         pressure_curr = np.zeros_like(pressure_prev)
         pressure_next = np.zeros_like(pressure_prev)
         # +1 für Frame 0 (t=0)
-        snapshots = np.zeros((frames_per_period + 1, ny, nx), dtype=np.float32)
+        snapshots_full = np.zeros((frames_per_period + 1, ny, nx), dtype=np.float32)
         
         # Frame 0: t=0 - nur Quellen, keine Ausbreitung
         time_s_0 = 0.0
         for src in sources:
             source_value = np.real(src["amplitude"] * np.exp(1j * omega * time_s_0))
-            snapshots[0, src["iy"], src["ix"]] = source_value
+            snapshots_full[0, src["iy"], src["ix"]] = source_value
 
         # FDTD-Koeffizient: (c·dt/dx)² - muss die tatsächliche Grid-Schrittweite verwenden!
         coeff = (c * dt / grid_resolution) ** 2
         
-        # Erstelle Dämpfungsmatrix für absorbierende Randbedingungen
-        # Dämpfungszone: exponentielles Dämpfen in den Randzellen
-        damping_zone_width = max(3, int(round(0.1 / grid_resolution)))  # ~10cm Dämpfungszone
-        damping_zone_width = min(damping_zone_width, min(nx, ny) // 4)  # Max. 25% der Domäne
-        
-        # Vektorisierte Berechnung der Dämpfungsfaktoren
-        # Erstelle Koordinaten-Arrays
-        i_coords = np.arange(ny, dtype=np.float32)[:, np.newaxis]  # [ny, 1]
-        j_coords = np.arange(nx, dtype=np.float32)[np.newaxis, :]  # [1, nx]
-        
-        # Berechne Distanz zu jedem Rand
+        i_coords = np.arange(ny, dtype=np.float32)[:, np.newaxis]
+        j_coords = np.arange(nx, dtype=np.float32)[np.newaxis, :]
         dist_top = i_coords
         dist_bottom = (ny - 1) - i_coords
         dist_left = j_coords
         dist_right = (nx - 1) - j_coords
-        
-        # Minimale Distanz zum nächsten Rand
         min_dist = np.minimum(
             np.minimum(dist_top, dist_bottom),
             np.minimum(dist_left, dist_right)
-        )
+        ).astype(np.float32)
         
-        # Exponentielles Dämpfen: 1.0 im Inneren, ~0.01 am Rand
-        # Dämpfungsfaktor = exp(-α * (damping_zone_width - min_dist))
-        # α wird so gewählt, dass am Rand (min_dist=0) der Faktor ~0.01 ist
-        alpha = -math.log(0.01) / damping_zone_width if damping_zone_width > 0 else 1.0
         damping_factor = np.ones((ny, nx), dtype=np.float32)
-        
-        # Wende Dämpfung nur in der Dämpfungszone an
-        mask = min_dist < damping_zone_width
-        damping_factor[mask] = np.exp(-alpha * (damping_zone_width - min_dist[mask]))
+        pml_mask = min_dist < padding_cells
+        if np.any(pml_mask):
+            normalized = (padding_cells - min_dist[pml_mask]) / padding_cells
+            normalized = np.clip(normalized, 0.0, 1.0)
+            # Polynomprofil (σ ~ normalized^profile_order)
+            sigma = normalized ** profile_order
+            max_sigma = -math.log(max(target_amp, 1e-8))
+            sigma = sigma * max_sigma
+            damping_factor[pml_mask] = np.exp(-sigma).astype(np.float32)
+
+        debug_pml = bool(getattr(self.settings, "fdtd_debug_pml", False))
+        debug_pml_steps = int(getattr(self.settings, "fdtd_debug_pml_steps", 40) or 40)
         
         print(f"[FDTD] Grid-Auflösung: dx={dx:.3f}m, dy={dy:.3f}m (gewählt: {grid_resolution:.3f}m)")
         print(f"[FDTD] CFL-Koeffizient: {coeff:.6f}, dt={dt:.6e} s, Wellenausbreitung: {c:.1f} m/s")
-        print(f"[FDTD] Randbedingungen: Absorbierend mit Dämpfungszone (Breite: {damping_zone_width} Zellen, ~{damping_zone_width*grid_resolution:.2f}m)")
+        print(f"[FDTD] Randbedingungen: Absorbierend mit Dämpfungszone (Breite: {padding_cells} Zellen, ~{pml_phys_width:.2f}m, Ziel {min_phys_width:.2f}m) – vollständig außerhalb des Innenbereichs")
 
         for step in range(total_steps):
             """
@@ -252,12 +305,6 @@ class SoundFieldCalculatorFDTD(ModuleBase):
                 - c = Schallgeschwindigkeit
                 - ∇²p = Laplace-Operator (2. Ableitung im Raum)
             """
-            
-            # WICHTIG: Dämpfung VOR der Laplace-Berechnung anwenden
-            # Dies dämpft Wellen in der Dämpfungszone, bevor sie den Rand erreichen
-            # und verhindert Reflexionen durch allmähliche Energieabsorption
-            pressure_curr = pressure_curr * damping_factor
-            pressure_prev = pressure_prev * damping_factor
             
             # Berechne Laplace-Operator (2. räumliche Ableitung) mit zentralen Differenzen
             # ∇²p ≈ (p[i+1,j] + p[i-1,j] + p[i,j+1] + p[i,j-1] - 4·p[i,j]) / dx²
@@ -288,15 +335,33 @@ class SoundFieldCalculatorFDTD(ModuleBase):
                 source_value = np.real(src["amplitude"] * np.exp(1j * omega * time_s))
                 pressure_next[src["iy"], src["ix"]] += source_value
 
-            # Absorbierende Randbedingungen: Dämpfung in der Dämpfungszone anwenden
-            # Dies verhindert Reflexionen durch allmähliche Energieabsorption
-            # Die Dämpfung wird nach dem Zeitschritt angewendet, um Wellen zu absorbieren
+            # Absorbierende Randbedingungen: Dämpfung NUR EINMAL pro Schritt anwenden
+            # Die Dämpfung wird nach dem Zeitschritt angewendet, um Wellen in der Dämpfungszone zu absorbieren
+            # WICHTIG: Dämpfung nur auf pressure_next anwenden (nicht auf curr/prev, um Überdämpfung zu vermeiden)
             pressure_next = pressure_next * damping_factor
 
-            # Speichere Snapshots für die Frames
             frame_idx = sample_map.get(step)
+
+            if debug_pml and (step < debug_pml_steps or frame_idx is not None):
+                inner_vals = pressure_next[inner_slice_y, inner_slice_x]
+                inner_max = float(np.max(np.abs(inner_vals)))
+                transition_strip = pressure_next[
+                    inner_slice_y.start - 1:inner_slice_y.start + 1,
+                    inner_slice_x,
+                ]
+                transition_max = float(np.max(np.abs(transition_strip)))
+                pml_vals = pressure_next[pml_mask]
+                pml_max = float(np.max(np.abs(pml_vals))) if pml_vals.size else 0.0
+                ratio = transition_max / (inner_max + 1e-20)
+                print(
+                    f"[DEBUG PML] Step {step:5d}: inner_max={inner_max:8.3e}, "
+                    f"transition_max={transition_max:8.3e} (ratio {ratio:6.3f}), "
+                    f"pml_max={pml_max:8.3e}"
+                )
+
+            # Speichere Snapshots für die Frames
             if frame_idx is not None:
-                snapshots[frame_idx] = pressure_next.copy()
+                snapshots_full[frame_idx] = pressure_next.copy()
                 # Berechne Zeit für diesen Frame (tatsächliche Zeit seit Start)
                 frame_time = frame_times[frame_idx]
                 actual_time = step * dt
@@ -315,16 +380,15 @@ class SoundFieldCalculatorFDTD(ModuleBase):
                       f"center={center_pressure:8.3e}, edge={edge_pressure:8.3e}")
 
             # Zeit-Update: verschiebe Felder
+            # pressure_next wurde bereits gedämpft, daher nur rotieren ohne weitere Dämpfung
             pressure_prev, pressure_curr, pressure_next = pressure_curr, pressure_next, pressure_prev
             pressure_next.fill(0.0)
-            
-            # WICHTIG: Dämpfung auch nach dem Rotieren anwenden, um Reflexionen zu vermeiden
-            # Die Dämpfung wird kontinuierlich in allen Zeitfeldern angewendet,
-            # um Wellen in der Dämpfungszone zu absorbieren
-            pressure_curr = pressure_curr * damping_factor
-            pressure_prev = pressure_prev * damping_factor
 
-        return {
+        inner_slice_y = slice(padding_cells, padding_cells + ny_inner)
+        inner_slice_x = slice(padding_cells, padding_cells + nx_inner)
+        snapshots = snapshots_full[:, inner_slice_y, inner_slice_x].copy()
+        
+        result = {
             "frequency": frequency,
             "frames_per_period": frames_per_period,  # Anzahl Frames für eine Periode (ohne t=0)
             "total_frames": frames_per_period + 1,  # Inkl. Frame 0 (t=0)
@@ -334,6 +398,8 @@ class SoundFieldCalculatorFDTD(ModuleBase):
             "time_step": dt,
             "steps_per_period": steps_per_period,
         }
+        print(f"[DEBUG FDTD] _run_fdtd_simulation() ENDE: {result['total_frames']} Frames erstellt, Grid {len(sound_field_x)}x{len(sound_field_y)}")
+        return result
 
     def _collect_sources(self, frequency: float, x_coords: np.ndarray, y_coords: np.ndarray, resolution: float):
         """
@@ -341,11 +407,11 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         Keine Abhängigkeit von FEM-Ergebnissen mehr.
         """
         if self._data_container is None:
-            raise RuntimeError("Data-Container nicht gesetzt – bitte set_data_container() aufrufen.")
+            raise RuntimeError("Data container not set – please call set_data_container() first.")
         
         speaker_arrays = getattr(self.settings, "speaker_arrays", None)
         if not isinstance(speaker_arrays, dict) or not speaker_arrays:
-            raise RuntimeError("Keine Speaker-Arrays gefunden.")
+            raise RuntimeError("No speaker arrays found. Please add at least one speaker array first.")
 
         x_min = x_coords[0]
         y_min = y_coords[0]
@@ -363,6 +429,11 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         default_height = float(getattr(self.settings, "fem_default_panel_height", 0.5) or 0.5)
 
         sources = []
+        source_positions = {}  # Dictionary zum Zusammenfassen von Quellen an derselben Position
+        
+        # Debug: Zähle Arrays
+        active_arrays = [k for k, arr in speaker_arrays.items() if not (arr.mute or arr.hide)]
+        print(f"[FDTD] _collect_sources: {len(active_arrays)} aktive Arrays gefunden: {active_arrays}")
         
         # Iteriere über alle Speaker-Arrays
         for array_key, speaker_array in speaker_arrays.items():

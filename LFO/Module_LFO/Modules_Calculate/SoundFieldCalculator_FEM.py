@@ -28,10 +28,7 @@ import importlib
 import os
 import sys
 import sysconfig
-import time
-from collections import defaultdict
-from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -44,6 +41,7 @@ try:  # Optional Beschleunigung für Punktquellen-Projektion
     from scipy.spatial import cKDTree
 except ImportError:  # pragma: no cover - optional dependency
     cKDTree = None
+
 
 MPI = None
 dolfinx_pkg = None
@@ -62,11 +60,63 @@ except ImportError:  # pragma: no cover - optionale Abhängigkeit
     gmsh = None
 
 
+DEFAULT_RESOLUTION = 0.5           # Grundlegende Rasterweite des FEM-Netzes (Meter)
+DEFAULT_FEM_DOMAIN_HEIGHT = 2.0    # Standardhöhe des 3D-Rechenraums (Meter)
+DEFAULT_FEM_MIN_DOMAIN_HEIGHT = 1.0  # Untere Schranke für die Domainhöhe (Meter) / minimale domainhöhe
+DEFAULT_FEM_DOMAIN_CLEARANCE_TOP = 0.5  # Sicherheitsabstand nach oben zur höchsten Quelle (Meter)
+DEFAULT_FEM_POINTS_PER_WAVELENGTH = 10.0  # Zielauflösung: Knoten pro Wellenlänge
+DEFAULT_FEM_MAX_DOFS = 250_000      # Obergrenze für Freiheitsgrade, um Rechenzeit zu begrenzen
+DEFAULT_FEM_MIN_RESOLUTION = 0.05   # Minimal erlaubte Netzauflösung (Meter)
+DEFAULT_FEM_MAX_RESOLUTION_FACTOR = 4.0  # Max. Faktor, um die Basisauflösung zu vergrößern
+DEFAULT_FEM_MESH_MIN_SIZE = 0.05    # Harte Untergrenze für einzelne Elementgrößen (Meter)
+DEFAULT_FEM_POLYNOMIAL_DEGREE = 2   # Standard-FEM-Basisgrad (z. B. P2)
+DEFAULT_POINT_SOURCE_SPL_DB = 130.0 # Bezugspegel für Punktschallquellen (dB @ 1 m, 20 µPa)
+DEFAULT_TEMPERATURE_CELSIUS = 20.0  # Referenztemperatur zur Schallgeschwindigkeitsberechnung (°C)
+DEFAULT_FEM_OUTPUT_PLANE_TOLERANCE = 0.1  # Z-Toleranz für _get_output_plane_height() beim Auslesen der Ebene
+DEFAULT_FEM_GRID_K_NEIGHBORS = 16   # Anzahl Nachbarn für IDW-Interpolation (Grid-Abbildung)
+DEFAULT_FEM_GRID_IDW_POWER = 2.0    # Potenz im Inverse-Distance-Weighting (IDW)
+DEFAULT_HUMIDITY_PERCENT = 50.0     # Standard-Luftfeuchte [%] (kann in den Settings überschrieben werden)
+DEFAULT_AIR_PRESSURE_PA = 101_325.0 # Standard-Luftdruck (Pa) für Akustikmodelle
+FEM_SETTING_DEFAULTS: dict[str, object] = {
+    "fem_use_direct_solver": True,
+    "fem_compute_particle_velocity": True,
+    "fem_calculate_frequency": None,
+    "resolution": DEFAULT_RESOLUTION,
+    "fem_domain_height": DEFAULT_FEM_DOMAIN_HEIGHT,
+    "fem_min_domain_height": DEFAULT_FEM_MIN_DOMAIN_HEIGHT,
+    "fem_domain_clearance_top": DEFAULT_FEM_DOMAIN_CLEARANCE_TOP,
+    "fem_points_per_wavelength": DEFAULT_FEM_POINTS_PER_WAVELENGTH,
+    "fem_max_dofs": DEFAULT_FEM_MAX_DOFS,
+    "fem_min_resolution": DEFAULT_FEM_MIN_RESOLUTION,
+    "fem_polynomial_degree": DEFAULT_FEM_POLYNOMIAL_DEGREE,
+    "fem_max_resolution_limit": None,
+    "fem_debug_logging": True,
+    "fem_point_source_spl_db": DEFAULT_POINT_SOURCE_SPL_DB,
+    "fem_output_plane_tolerance": DEFAULT_FEM_OUTPUT_PLANE_TOLERANCE,
+    "fem_output_plane_height": None,
+    "fem_enable_panel_neumann": True,
+    "fem_use_boundary_sources": False,
+    "fem_grid_interpolation": True,
+    "fem_grid_k_neighbors": DEFAULT_FEM_GRID_K_NEIGHBORS,
+    "fem_grid_idw_power": DEFAULT_FEM_GRID_IDW_POWER,
+    "a_source_db": 94,
+    "temperature": DEFAULT_TEMPERATURE_CELSIUS,
+    "speed_of_sound": None,
+    "listener_height": None,
+    "use_air_absorption": False,
+    "humidity": DEFAULT_HUMIDITY_PERCENT,
+    "air_pressure": DEFAULT_AIR_PRESSURE_PA,
+}
+
+
 def _try_import_fenics_modules():
     """Versucht die optionalen FEniCSx-Module nachzuladen."""
     global MPI, dolfinx_pkg, fem, mesh, ufl, PETSc, gmshio, dolfinx_gmsh, default_scalar_type, _fenics_import_error
 
-    if all(module is not None for module in (MPI, dolfinx_pkg, fem, mesh, ufl, PETSc, gmshio)):
+    if all(
+        module is not None
+        for module in (MPI, dolfinx_pkg, fem, mesh, ufl, PETSc, gmshio)
+    ):
         _fenics_import_error = None
         return
 
@@ -89,39 +139,21 @@ def _try_import_fenics_modules():
         MPI = fem = mesh = ufl = PETSc = gmshio = dolfinx_pkg = dolfinx_gmsh = None
         default_scalar_type = np.float64
         _fenics_import_error = exc
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Fehler beim Laden der FEniCS-Module", exc_info=exc
+        )
 
 
 @dataclass
-class SpeakerPanel:
-    """Repräsentiert eine Lautsprecherfläche (jetzt 3D-orientiert)."""
+class PointSource:
+    """Einfache Punktschallquelle für FEM-Berechnung."""
 
     identifier: str
     array_key: str
-    points: Optional[np.ndarray]
-    width: float
-    height: float
-    perimeter: float
-    area: float
-    center: np.ndarray  # [x, y, z]
-    azimuth_rad: float
+    position: np.ndarray  # [x, y, z]
     level_adjust_db: float
-    speaker_name: Optional[str] = None
-    line_height: float = 0.0
-    depth: float = 0.0
-    is_muted: bool = False
-
-
-@dataclass
-class SpeakerCabinetObstacle:
-    """Repräsentiert das Gehäuse als undurchlässiges Hindernis."""
-
-    identifier: str
-    array_key: str
-    points: np.ndarray
-    width: float
-    depth: float
-    center: np.ndarray
-    azimuth_rad: float
     speaker_name: Optional[str] = None
     is_muted: bool = False
 
@@ -161,15 +193,12 @@ class SoundFieldCalculatorFEM(ModuleBase):
         self._dof_tree = None
         self._dof_cache_version = None
         self._grid_cache = None
-        self._balloon_data_cache: dict[str, dict] = {}
         self._python_include_path_prepared = False
         self._frequency_progress_session = None
         self._precomputed_frequencies: Optional[list[float]] = None
         self._frequency_progress_last_third_start: Optional[int] = None
-        self._timings_store: defaultdict[str, list[float]] = defaultdict(list)
         self._resolved_fem_frequency: Optional[float] = None
-        self._panels: list[SpeakerPanel] = []
-        self._cabinet_obstacles: list[SpeakerCabinetObstacle] = []
+        self._point_sources: list[PointSource] = []
         self._boundary_tags = {
             "floor": 11,
             "ceiling": 12,
@@ -178,84 +207,18 @@ class SoundFieldCalculatorFEM(ModuleBase):
             "wall_y_min": 15,
             "wall_y_max": 16,
         }
-        self._panel_tags: Dict[str, int] = {}  # Panel-Identifier → Facet-Tag
-        self._cabinet_tags: Dict[str, int] = {}  # Cabinet-Identifier → Facet-Tag (für Dirichlet-RB)
+        self._panel_tags: Dict[str, int] = {}  # Panel-Identifier → Facet-Tag (nicht mehr verwendet)
 
     def _log_debug(self, message: str):
         """Hilfsfunktion für konsistente Debug-Ausgaben."""
-        if getattr(self.settings, "fem_debug_logging", True):
+        if self._get_setting("fem_debug_logging"):
             print(f"[FEM Debug] {message}")
 
-    # ------------------------------------------------------------------
-    # Timing-Hilfsfunktionen
-    # ------------------------------------------------------------------
-    def _reset_timings(self):
-        self._timings_store = defaultdict(list)
-
-    def _record_timing(self, label: str, duration: float):
-        if not label:
-            label = "unlabeled"
-        self._timings_store[label].append(float(duration))
-
-    def _summarize_timings(self) -> dict[str, dict[str, float]]:
-        summary: dict[str, dict[str, float]] = {}
-        for label, durations in self._timings_store.items():
-            if not durations:
-                continue
-            total = float(sum(durations))
-            count = len(durations)
-            summary[label] = {
-                "count": float(count),
-                "total": total,
-                "avg": total / count if count else 0.0,
-                "last": float(durations[-1]),
-            }
-        return summary
-
-    @contextmanager
-    def _time_block(self, label: str, detail: Optional[str] = None):
-        start = time.perf_counter()
-        try:
-            yield
-        finally:
-            elapsed = time.perf_counter() - start
-            self._record_timing(label, elapsed)
-            if detail:
-                self._record_timing(f"{label}#{detail}", elapsed)
-
-    def _log_timings(self, summary: dict[str, dict[str, float]]):
-        """Gibt die gemessenen Laufzeiten auf der Konsole aus."""
-        if not summary:
-            print("[FEM Timing] Keine Messdaten verfügbar.")
-            return
-
-        def _fmt(val: float) -> str:
-            return f"{val * 1000:.2f} ms"
-
-        aggregate = {k: v for k, v in summary.items() if "#" not in k}
-        detail = {k: v for k, v in summary.items() if "#" in k}
-
-        print("\n[FEM Timing] Übersicht der Rechenschritte:")
-        for label, stats in sorted(
-            aggregate.items(), key=lambda item: item[1]["total"], reverse=True
-        ):
-            count = int(stats["count"])
-            print(
-                f" - {label:<35} total={_fmt(stats['total'])} "
-                f"avg={_fmt(stats['avg'])} count={count} last={_fmt(stats['last'])}"
-            )
-
-        if detail:
-            print("[FEM Timing] Detail (pro Frequenz, Top 10 nach total):")
-            for label, stats in sorted(
-                detail.items(), key=lambda item: item[1]["total"], reverse=True
-            )[:10]:
-                count = int(stats["count"])
-                print(
-                    f"   • {label:<33} total={_fmt(stats['total'])} "
-                    f"avg={_fmt(stats['avg'])} count={count} last={_fmt(stats['last'])}"
-                )
-        print()
+    def _get_setting(self, name: str):
+        """Zentraler Zugriff auf Settings mit Fallback auf Modul-Defaults."""
+        default = FEM_SETTING_DEFAULTS.get(name)
+        value = getattr(self.settings, name, default)
+        return default if value is None else value
 
     # ------------------------------------------------------------------
     # Öffentliche API
@@ -275,39 +238,37 @@ class SoundFieldCalculatorFEM(ModuleBase):
         (z.B. Partikelgeschwindigkeit), sofern verfügbar.
         """
 
-        self._reset_timings()
         if isinstance(self.calculation_spl, dict):
             self.calculation_spl.pop("fdtd_simulation", None)
             self.calculation_spl.pop("fdtd_time_snapshots", None)
 
-        with self._time_block("ensure_fenics_available"):
-            self._ensure_fenics_available()
-        with self._time_block("prepare_python_include_path"):
-            self._prepare_python_include_path()
+        self._ensure_fenics_available()
+        self._prepare_python_include_path()
 
         if self._precomputed_frequencies is not None:
-            with self._time_block("use_precomputed_frequencies"):
-                frequencies = list(self._precomputed_frequencies)
-                self._precomputed_frequencies = None
+            frequencies = list(self._precomputed_frequencies)
+            self._precomputed_frequencies = None
         else:
-            with self._time_block("determine_frequencies"):
-                frequencies = self._determine_frequencies()
+            frequencies = self._determine_frequencies()
         if not frequencies:
             raise ValueError("Es sind keine Frequenzen zur Berechnung definiert.")
 
-        with self._time_block("build_domain"):
-            self._build_domain(frequencies)
+        # ==================================================================
+        # ABSCHNITT 1: GRID-ERSTELLUNG
+        # ==================================================================
+        self._build_domain(frequencies)
         
         # Info über FEM-Konfiguration
-        use_direct_solver = getattr(self.settings, "fem_use_direct_solver", True)
+        use_direct_solver = bool(self._get_setting("fem_use_direct_solver"))
         width = float(self.settings.width)
         length = float(self.settings.length)
-        grid_resolution = float(getattr(self.settings, "resolution", 0.5) or 0.5)
+        resolution_setting = self._get_setting("resolution")
+        grid_resolution = float(resolution_setting or DEFAULT_RESOLUTION)
         fem_resolution = getattr(self, "_mesh_resolution", grid_resolution)
 
         fem_results = {}
         total_freqs = len(frequencies)
-        compute_velocity = bool(getattr(self.settings, "fem_compute_particle_velocity", True))
+        compute_velocity = bool(self._get_setting("fem_compute_particle_velocity"))
         panel_centers = self._get_panel_centers_array()
         
         for idx, frequency in enumerate(frequencies, 1):
@@ -329,15 +290,15 @@ class SoundFieldCalculatorFEM(ModuleBase):
                     f"FEM: {frequency} Hz ({idx}/{total_freqs})"
                 )
             
-            with self._time_block("solve_frequency", f"{frequency:.2f}Hz"):
-                solution = self._solve_frequency(frequency)
-            with self._time_block("extract_pressure_and_phase", f"{frequency:.2f}Hz"):
-                pressure, spl, phase = self._extract_pressure_and_phase(solution)
+            # ==================================================================
+            # ABSCHNITT 3: BERECHNUNG
+            # ==================================================================
+            solution = self._solve_frequency(frequency)
+            pressure, spl, phase = self._extract_pressure_and_phase(solution)
 
             velocity = None
             if compute_velocity:
-                with self._time_block("compute_particle_velocity", f"{frequency:.2f}Hz"):
-                    velocity = self._compute_particle_velocity(solution, frequency)
+                velocity = self._compute_particle_velocity(solution, frequency)
 
             # WICHTIG: Verwende DOF-Koordinaten, nicht geometrische Mesh-Knoten!
             # Bei quadratischen Elementen gibt es mehr DOFs als geometrische Knoten
@@ -350,7 +311,11 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 "pressure": pressure,
                 "spl": spl,
                 "phase": phase,
-                "source_positions": panel_centers,
+                "source_positions": (
+                    self._last_point_source_positions
+                    if self._last_point_source_positions is not None
+                    else panel_centers
+                ),
             }
 
             if compute_velocity and velocity is not None:
@@ -360,25 +325,24 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 self._frequency_progress_session.advance()
             self._raise_if_frequency_cancelled()
 
+        # ==================================================================
+        # ABSCHNITT 4: OUTPUT/SPEICHERUNG
+        # ==================================================================
         self.calculation_spl["fem_simulation"] = fem_results
-        
-        with self._time_block("assign_primary_soundfield_results"):
-            self._assign_primary_soundfield_results(frequencies, fem_results)
+        self._assign_primary_soundfield_results(
+            frequencies,
+            fem_results,
+        )
 
         self._frequency_progress_session = None
         self._frequency_progress_last_third_start = None
-        timing_summary = self._summarize_timings()
-        self.calculation_spl["fem_timings"] = timing_summary
-        self._log_timings(timing_summary)
 
         if not fem_results:
             self._log_debug("[Ergebnisse] Keine FEM-Frequenzen vorhanden.")
-        self._store_panel_metadata()
         
     def set_data_container(self, data_container):
         """Setzt den gemeinsam genutzten Daten-Container."""
         self._data_container = data_container
-        self._balloon_data_cache.clear()
     
     def set_progress_callback(self, callback):
         """
@@ -415,13 +379,26 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
     def _ensure_fenics_available(self):
         _try_import_fenics_modules()
-        if fem is None or mesh is None or MPI is None or ufl is None or PETSc is None:
+        required_modules = {
+            "fem": fem,
+            "mesh": mesh,
+            "MPI": MPI,
+            "ufl": ufl,
+            "PETSc": PETSc,
+        }
+        missing = [name for name, module in required_modules.items() if module is None]
+        if missing:
             hint = ""
             if _fenics_import_error is not None:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "FEniCS-Import schlug fehl", exc_info=_fenics_import_error
+                )
                 hint = f" (Grund: {_fenics_import_error})"
+            missing_str = ", ".join(missing)
             raise ImportError(
-                "FEniCSx (dolfinx, ufl, mpi4py) ist nicht installiert oder konnte nicht geladen werden."
-                f"{hint}"
+                "FEniCSx (dolfinx, ufl, mpi4py) ist nicht installiert oder konnte nicht geladen werden. "
+                f"Fehlende Module: {missing_str}.{hint}"
             )
         
         # Aktiviere verbose Logging für JIT-Kompilierung
@@ -447,7 +424,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         self._resolved_fem_frequency = None
 
-        fem_frequency = getattr(self.settings, "fem_calculate_frequency", None)
+        fem_frequency = self._get_setting("fem_calculate_frequency")
         base_frequency = fem_frequency
 
         base = self._normalize_frequencies(base_frequency)
@@ -523,58 +500,11 @@ class SoundFieldCalculatorFEM(ModuleBase):
                     yield speaker_name
 
     def _get_data_container(self):
-        """Liefert den Daten-Container (für Cabinet-/Balloon-Daten)."""
+        """Liefert den Daten-Container (für Balloon-Daten)."""
         if self._data_container is not None:
             return self._data_container
         return getattr(self, "data", None)
 
-    def _build_cabinet_lookup(self, container) -> Dict[str, object]:
-        """
-        Erstellt ein Lookup von Lautsprechernamen zu Cabinet-Metadaten.
-        Orientiert sich an der Logik aus PlotSPL3DOverlays.
-        """
-        lookup: Dict[str, object] = {}
-        if container is None:
-            return lookup
-
-        data = container
-        if not isinstance(data, dict):
-            data = getattr(container, "data", None)
-        if not isinstance(data, dict):
-            data = {}
-
-        speaker_names = data.get("speaker_names") or []
-        cabinet_data = data.get("cabinet_data") or []
-
-        def _as_list(value):
-            if value is None:
-                return []
-            if isinstance(value, (list, tuple)):
-                return list(value)
-            try:
-                return list(value)
-            except TypeError:
-                return [value]
-
-        speaker_names = _as_list(speaker_names)
-        cabinet_data = _as_list(cabinet_data)
-
-        for name, cabinet in zip(speaker_names, cabinet_data):
-            if not isinstance(name, str):
-                continue
-            lookup[name] = cabinet
-            lookup.setdefault(name.lower(), cabinet)
-
-        alias_mapping = getattr(container, "_speaker_name_mapping", None)
-        if isinstance(alias_mapping, dict):
-            for alias, actual in alias_mapping.items():
-                if not isinstance(alias, str):
-                    continue
-                if actual in lookup:
-                    lookup.setdefault(alias, lookup[actual])
-                    lookup.setdefault(alias.lower(), lookup[actual])
-
-        return lookup
 
     @staticmethod
     def _decode_speaker_name(value) -> Optional[str]:
@@ -611,274 +541,90 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 continue
         return normalized
 
-    def _resolve_cabinet_entry(self, speaker_name: Optional[str], cabinet_lookup: Dict[str, object]) -> Optional[dict]:
-        if not speaker_name:
-            return None
-        entry = cabinet_lookup.get(speaker_name)
-        if entry is None:
-            entry = cabinet_lookup.get(speaker_name.lower())
-        if isinstance(entry, dict):
-            return entry
-        if isinstance(entry, list):
-            for candidate in entry:
-                if isinstance(candidate, dict):
-                    return candidate
-        return None
-
-    def _resolve_cabinet_dimensions(
-        self,
-        speaker_name: Optional[str],
-        cabinet_lookup: Dict[str, object],
-        default_width: float,
-        default_height: float,
-        default_depth: float,
-    ) -> Tuple[float, float, float]:
-        entry = self._resolve_cabinet_entry(speaker_name, cabinet_lookup)
-        if not isinstance(entry, dict):
-            raise ValueError(f"Keine Abmessungen für Lautsprecher '{speaker_name}' hinterlegt.")
-
-        def _safe_float(key: str, fallback: float) -> float:
-            try:
-                value = entry.get(key, fallback)
-                return float(value)
-            except Exception:
-                return float(fallback)
-
-        width = _safe_float("width", default_width)
-        height = _safe_float("front_height", default_height)
-        depth = _safe_float("depth", default_depth)
-
-        if width <= 0.0 or height <= 0.0:
-            raise ValueError(
-                f"Ungültige Membranabmessungen für '{speaker_name}': width={width}, height={height}."
-            )
-        if depth <= 0.0:
-            depth = default_depth
-        return float(width), float(height), float(depth)
-
-    def _derive_line_height(self, physical_height: float) -> float:
-        """Für 3D wird die tatsächliche Membranhöhe verwendet."""
-        if physical_height <= 0.0:
-            return 1e-3
-        return float(physical_height)
-
-    def _create_panel_points(self, center: np.ndarray, width: float, height: float, azimuth_rad: float) -> np.ndarray:
-        half_w = max(width / 2.0, 0.05)
-        half_h = max(height / 2.0, 1e-3)
-        local_points = np.array(
-            [
-                [-half_w, -half_h],
-                [half_w, -half_h],
-                [half_w, half_h],
-                [-half_w, half_h],
-            ],
-            dtype=float,
-        )
-        c = math.cos(azimuth_rad)
-        s = math.sin(azimuth_rad)
-        rotation = np.array([[c, -s], [s, c]], dtype=float)
-        rotated = local_points @ rotation.T
-        rotated += center.reshape(1, 2)
-        return rotated
-
-    @staticmethod
-    def _compute_polygon_perimeter(points: np.ndarray) -> float:
-        if not isinstance(points, np.ndarray) or points.ndim != 2 or points.shape[0] < 2:
-            return 0.0
-        diffs = np.diff(points, axis=0)
-        edge_lengths = np.linalg.norm(diffs, axis=1)
-        closing = np.linalg.norm(points[0] - points[-1])
-        return float(edge_lengths.sum() + closing)
-
-    @staticmethod
-    def _compute_polygon_area(points: np.ndarray) -> float:
-        if not isinstance(points, np.ndarray) or points.ndim != 2 or points.shape[0] < 3:
-            return 0.0
-        x = points[:, 0]
-        y = points[:, 1]
-        return 0.5 * float(np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
-
-    def _collect_speaker_panels(self) -> tuple[List[SpeakerPanel], List[SpeakerCabinetObstacle]]:
-        """Erzeugt Listen von Membranflächen und Gehäusehindernissen."""
-        panels: List[SpeakerPanel] = []
-        cabinets: List[SpeakerCabinetObstacle] = []
+    def _collect_point_sources(self) -> list[PointSource]:
+        """Erzeugt einfache Punktschallquellen aus Speaker-Arrays."""
+        sources: list[PointSource] = []
         speaker_arrays = getattr(self.settings, "speaker_arrays", None)
         if not isinstance(speaker_arrays, dict):
-            return panels, cabinets
+            return sources
 
-        self._log_debug(f"Starte Panel-Erstellung für {len(speaker_arrays)} Lautsprecher-Arrays.")
-        data_container = self._get_data_container()
-        cabinet_lookup = self._build_cabinet_lookup(data_container)
-        default_width = float(getattr(self.settings, "fem_default_panel_width", 0.6) or 0.6)
-        default_height = float(getattr(self.settings, "fem_default_panel_height", 0.5) or 0.5)
-        default_depth = float(getattr(self.settings, "fem_default_cabinet_depth", default_width) or default_width)
+        self._log_debug(f"Starte Punktschallquellen-Erstellung für {len(speaker_arrays)} Lautsprecher-Arrays.")
 
         for array_key, speaker_array in speaker_arrays.items():
-            array_hidden = getattr(speaker_array, "hide", False)
-            array_muted = getattr(speaker_array, "mute", False)
-            if array_hidden:
-                self._log_debug(f"[Panels] Array '{array_key}' ist ausgeblendet – übersprungen.")
+            if getattr(speaker_array, "hide", False):
+                self._log_debug(f"[Sources] Array '{array_key}' ist ausgeblendet – übersprungen.")
                 continue
 
+            # Extrahiere Quellennamen
             raw_names_primary = getattr(speaker_array, "source_polar_pattern", None)
             names_list = self._normalize_source_name_sequence(raw_names_primary)
             if not names_list:
                 raw_names_secondary = getattr(speaker_array, "source_type", None)
                 names_list = self._normalize_source_name_sequence(raw_names_secondary)
             if not names_list:
-                self._log_debug(f"[Panels] Array '{array_key}' hat keine gültigen source‑Namen – übersprungen.")
+                self._log_debug(f"[Sources] Array '{array_key}' hat keine gültigen source‑Namen – übersprungen.")
                 continue
-
-            self._log_debug(
-                f"[Panels] Array '{array_key}': {len(names_list)} Quellen, Konfiguration={getattr(speaker_array, 'configuration', None)}"
-            )
 
             num_sources = len(names_list)
             if num_sources == 0:
                 continue
+
+            # Extrahiere Positionen und Level
+            def get_attr(primary, secondary=None, default=None):
+                value = getattr(speaker_array, primary, None)
+                if value is None and secondary:
+                    value = getattr(speaker_array, secondary, None)
+                return value if value is not None else default
+
             xs = np.asarray(
-                self._normalize_sequence(
-                    getattr(speaker_array, "source_position_calc_x", getattr(speaker_array, "source_position_x", None)),
-                    num_sources,
-                ),
+                self._normalize_sequence(get_attr("source_position_calc_x", "source_position_x"), num_sources),
                 dtype=float,
             )
             ys = np.asarray(
-                self._normalize_sequence(
-                    getattr(speaker_array, "source_position_calc_y", getattr(speaker_array, "source_position_y", None)),
-                    num_sources,
-                ),
+                self._normalize_sequence(get_attr("source_position_calc_y", "source_position_y"), num_sources),
                 dtype=float,
             )
             zs = np.asarray(
-                self._normalize_sequence(
-                    getattr(
-                        speaker_array,
-                        "source_position_calc_z",
-                        getattr(speaker_array, "source_position_z", None),
-                    ),
-                    num_sources,
-                ),
+                self._normalize_sequence(get_attr("source_position_calc_z", "source_position_z"), num_sources),
                 dtype=float,
             )
-            azimuths = np.deg2rad(
-                self._normalize_sequence(getattr(speaker_array, "source_azimuth", [0.0] * num_sources), num_sources)
-            )
             gains = np.asarray(
-                self._normalize_sequence(getattr(speaker_array, "gain", [0.0] * num_sources), num_sources),
+                self._normalize_sequence(get_attr("gain", default=[0.0] * num_sources), num_sources),
                 dtype=float,
             )
             source_levels = np.asarray(
-                self._normalize_sequence(getattr(speaker_array, "source_level", [0.0] * num_sources), num_sources),
+                self._normalize_sequence(get_attr("source_level", default=[0.0] * num_sources), num_sources),
                 dtype=float,
             )
 
-            a_source_db = float(getattr(self.settings, "a_source_db", 0.0) or 0.0)
+            a_source_db = float(self._get_setting("a_source_db") or 0.0)
             level_adjust_db = source_levels + gains + a_source_db
+            array_muted = getattr(speaker_array, "mute", False)
 
+            # Erstelle Punktschallquellen
             for idx, raw_name in enumerate(names_list):
                 speaker_name = self._decode_speaker_name(raw_name)
-                try:
-                    width, height, depth = self._resolve_cabinet_dimensions(
-                        speaker_name, cabinet_lookup, default_width, default_height, default_depth
-                    )
-                except ValueError as exc:
-                    raise ValueError(
-                        f"FEM Panel kann nicht erstellt werden: {exc}"
-                    ) from exc
-                line_height = self._derive_line_height(height)
-                # Panel-Höhe leicht über z=0 setzen, um Überlappung mit Boden-Fläche zu vermeiden
-                # Verwende halbe Panel-Höhe, damit Panel zentriert ist
-                panel_z = max(line_height / 2.0, 0.01)  # Mindestens 1 cm über Boden
-                center = np.array([xs[idx], ys[idx], panel_z], dtype=float)
-                azimuth = azimuths[idx] if idx < len(azimuths) else 0.0
-                points = None
+                position = np.array([xs[idx], ys[idx], zs[idx]], dtype=float)
                 identifier = f"{array_key}_{idx}"
-                perimeter = 2.0 * (width + line_height)
-                area = max(width * line_height, 1e-6)
-                panels.append(
-                    SpeakerPanel(
+
+                source = PointSource(
                         identifier=identifier,
                         array_key=str(array_key),
-                        points=points,
-                        width=width,
-                        height=height,
-                        perimeter=perimeter,
-                        area=area,
-                        center=center,
-                        azimuth_rad=azimuth,
+                    position=position,
                         level_adjust_db=float(level_adjust_db[idx]),
                         speaker_name=speaker_name,
-                        line_height=line_height,
-                        depth=depth,
                         is_muted=array_muted,
-                    )
                 )
-                self._log_debug(
-                    f"[Panels] Fläche {identifier}: Speaker={speaker_name}, Breite={width:.2f} m, Höhe={height:.2f} m, "
-                    f"LineHeight={line_height*1000:.1f} mm, Area={area:.3f} m², Mittelpunkt=({center[0]:.2f},{center[1]:.2f},{center[2]:.2f}), "
-                    f"Azimut={np.rad2deg(azimuth):.1f}°"
-                )
-                self._log_debug(
-                    f"[Panels] → Panel {identifier} @ ({center[0]:.2f}, {center[1]:.2f}), "
-                    f"Breite={width:.2f} m, Höhe={height:.2f} m, LineHeight={line_height*1000:.1f} mm, Perimeter={perimeter:.3f} m, "
-                    f"Azimut={np.rad2deg(azimuth):.1f}°"
-                )
-                if depth > 0.0:
-                    cabinet_points = None
-                    cabinets.append(
-                        SpeakerCabinetObstacle(
-                            identifier=f"{identifier}_cabinet",
-                            array_key=str(array_key),
-                            points=cabinet_points,
-                            width=width,
-                            depth=depth,
-                            center=center,
-                            azimuth_rad=azimuth,
-                            speaker_name=speaker_name,
-                            is_muted=array_muted,
-                        )
-                    )
-                    self._log_debug(
-                        f"[Cabinet] Hindernis {identifier}_cabinet: Speaker={speaker_name}, Breite={width:.2f} m, Tiefe={depth:.2f} m."
-                    )
-        self._log_debug(f"Panel-Erstellung abgeschlossen: {len(panels)} Panels erzeugt, {len(cabinets)} Gehäuse erkannt.")
-        return panels, cabinets
+                sources.append(source)
 
-    def _store_panel_metadata(self):
-        """Exportiert Panel-Metadaten für zeitbasierte Auswertungen."""
-        if not isinstance(self.calculation_spl, dict):
-            return
-        panel_info = []
-        for panel in getattr(self, "_panels", []) or []:
-            try:
-                panel_info.append(
-                    {
-                        "identifier": panel.identifier,
-                        "center": panel.center.tolist(),
-                        "width": float(panel.width),
-                        "height": float(panel.height),
-                        "line_height": float(panel.line_height),
-                        "speaker_name": panel.speaker_name,
-                        "level_adjust_db": float(panel.level_adjust_db),
-                    }
+                self._log_debug(
+                    f"[Sources] {identifier}: Speaker={speaker_name}, "
+                    f"Position=({position[0]:.2f},{position[1]:.2f},{position[2]:.2f}), "
+                    f"Level={level_adjust_db[idx]:.1f}dB"
                 )
-            except Exception:
-                continue
-        self.calculation_spl["fem_panel_info"] = panel_info
 
-    def _record_panel_drive(self, frequency: float, panel: SpeakerPanel, pressure_complex: complex, phase_deg: Optional[float]):
-        if not isinstance(self.calculation_spl, dict):
-            return
-        drive_store = self.calculation_spl.setdefault("fem_panel_drives", {})
-        freq_key = float(frequency)
-        freq_store = drive_store.setdefault(freq_key, {})
-        freq_store[panel.identifier] = {
-            "pressure_complex": complex(pressure_complex),
-            "phase_deg": float(phase_deg) if phase_deg is not None else 0.0,
-            "speaker_name": panel.speaker_name,
-            "level_adjust_db": float(panel.level_adjust_db),
-        }
+        self._log_debug(f"Punktschallquellen-Erstellung abgeschlossen: {len(sources)} Quellen erzeugt.")
+        return sources
 
     def _require_gmsh(self):
         if gmsh is None:
@@ -904,25 +650,13 @@ class SoundFieldCalculatorFEM(ModuleBase):
             "bitte fenics-dolfinx korrekt installieren."
         )
 
-    def _gmsh_add_polygon(self, factory, points: np.ndarray, mesh_size: float) -> Tuple[int, List[int]]:
-        point_tags: List[int] = []
-        for px, py in points:
-            point_tags.append(factory.addPoint(float(px), float(py), 0.0, mesh_size))
-        curve_tags: List[int] = []
-        for idx in range(len(point_tags)):
-            start = point_tags[idx]
-            end = point_tags[(idx + 1) % len(point_tags)]
-            curve_tags.append(factory.addLine(start, end))
-        loop_tag = factory.addCurveLoop(curve_tags)
-        return loop_tag, curve_tags
-
     def _generate_gmsh_mesh(
         self,
         width: float,
         length: float,
         height: float,
         resolution: float,
-    ) -> Tuple["mesh.Mesh", Optional["mesh.MeshTags"], Optional["mesh.MeshTags"]]:
+        ) -> Tuple["mesh.Mesh", Optional["mesh.MeshTags"], Optional["mesh.MeshTags"]]:
         self._require_gmsh()
         initialized_here = False
         if not gmsh.isInitialized():
@@ -935,7 +669,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             except Exception:
                 pass
             factory = gmsh.model.occ
-            mesh_size = max(resolution, 0.05)
+            mesh_size = max(resolution, DEFAULT_FEM_MESH_MIN_SIZE)
             self._log_debug(
                 f"[Gmsh] Erzeuge 3D-Domain {width:.2f}×{length:.2f}×{height:.2f} m, mesh_size={mesh_size:.3f}."
             )
@@ -944,94 +678,13 @@ class SoundFieldCalculatorFEM(ModuleBase):
             half_l = length / 2.0
             box = factory.addBox(-half_w, -half_l, 0.0, width, length, height)
             
-            # Erstelle Gehäuse-Geometrien und subtrahiere sie vom Domain
-            cabinet_objects = []
-            if self._cabinet_obstacles:
-                self._log_debug(f"[Gmsh] Erzeuge {len(self._cabinet_obstacles)} Gehäuse-Hindernisse.")
-                for cabinet in self._cabinet_obstacles:
-                    # Erstelle Box für Gehäuse (als undurchlässiges Hindernis)
-                    # Gehäuse liegt hinter der Membran in Abstrahlrichtung
-                    center = cabinet.center
-                    cab_width = cabinet.width
-                    cab_depth = cabinet.depth
-                    cab_height = max(0.1, cab_depth)  # Mindesthöhe für Gehäuse
-                    
-                    # Berechne Position in lokalen Koordinaten (Membran normal zur Abstrahlrichtung)
-                    c = math.cos(cabinet.azimuth_rad)
-                    s = math.sin(cabinet.azimuth_rad)
-                    # Gehäuse liegt in negativer y-Richtung (hinter der Membran)
-                    cab_x = center[0]
-                    cab_y = center[1]
-                    cab_z = center[2]
-                    
-                    # Erstelle Box: Position ist linker unterer Eckpunkt
-                    cab_box = factory.addBox(
-                        cab_x - cab_width / 2.0,
-                        cab_y - cab_depth / 2.0,
-                        cab_z - cab_height / 2.0,
-                        cab_width,
-                        cab_depth,
-                        cab_height
-                    )
-                    cabinet_objects.append((3, cab_box))
-                    self._log_debug(
-                        f"[Gmsh] Gehäuse {cabinet.identifier}: Box @ ({cab_x:.2f}, {cab_y:.2f}, {cab_z:.2f}), "
-                        f"Größe {cab_width:.2f}×{cab_depth:.2f}×{cab_height:.2f} m"
-                    )
-                
-                # Subtrahiere Gehäuse vom Domain
-                if cabinet_objects:
-                    factory.cut([(3, box)], cabinet_objects, removeObject=False, removeTool=True)
-                    self._log_debug("[Gmsh] Gehäuse vom Domain subtrahiert.")
-            
             factory.synchronize()
 
-            # Erstelle Panel-Flächen als separate Geometrie
-            panel_surfaces = []
-            panel_tag_start = 100  # Start-Facet-Tag für Panels (außerhalb von boundary_tags)
-            self._panel_tags.clear()
-            
-            if self._panels:
-                self._log_debug(f"[Gmsh] Erzeuge {len(self._panels)} Panel-Flächen.")
-                for idx, panel in enumerate(self._panels):
-                    if panel.is_muted:
-                        continue
-                    
-                    center = panel.center
-                    panel_width = panel.width
-                    panel_height = panel.line_height if panel.line_height > 0.0 else panel.height
-                    
-                    # Erstelle Rechteck als Panel-Fläche
-                    # Panel ist normal zur Abstrahlrichtung (azimuth)
-                    # Erstelle Rechteck in XY-Ebene (bei z=0), dann rotiere um z-Achse und verschiebe
-                    # WICHTIG: Rechteck wird leicht versetzt erstellt, um Überlappung mit Randflächen zu vermeiden
-                    rect = factory.addRectangle(
-                        -panel_width / 2.0,  # x-Mitte
-                        -panel_height / 2.0,  # y-Mitte
-                        0.0,  # z=0 (wird später verschoben)
-                        panel_width,
-                        panel_height
-                    )
-                    
-                    # Rotiere um z-Achse (azimuth), dann verschiebe zu center
-                    # Rotation: um z-Achse um azimuth-Winkel
-                    # WICHTIG: Center ist bereits korrekt gesetzt (nicht direkt auf Randflächen)
-                    factory.rotate([(2, rect)], 0.0, 0.0, 0.0, 0, 0, 1, panel.azimuth_rad)
-                    factory.translate([(2, rect)], center[0], center[1], center[2])
-                    
-                    panel_surfaces.append((2, rect))
-                    panel_tag = panel_tag_start + idx
-                    self._panel_tags[panel.identifier] = panel_tag
-                    
-                    self._log_debug(
-                        f"[Gmsh] Panel {panel.identifier}: Rechteck-Fläche @ ({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}), "
-                        f"Größe {panel_width:.2f}×{panel_height:.2f} m, Tag={panel_tag}"
-                    )
-                
-                # Schneide Panel-Flächen aus dem Domain (erstellt Facets)
-                if panel_surfaces:
-                    factory.fragment([(3, box)], panel_surfaces)
-                    self._log_debug("[Gmsh] Panel-Flächen in Domain integriert.")
+            # Punktschallquellen werden später über DOF-Koordinaten identifiziert
+            if self._point_sources:
+                self._log_debug(
+                    f"[Gmsh] {len(self._point_sources)} Punktschallquellen werden später über DOF-Koordinaten identifiziert."
+                )
             
             factory.synchronize()
 
@@ -1084,56 +737,10 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 group_id = gmsh.model.addPhysicalGroup(2, tags, phys_tag)
                 gmsh.model.setPhysicalName(2, group_id, name)
 
-            # Markiere Panel-Flächen als Physical Groups
-            for panel in self._panels:
-                if panel.is_muted or panel.identifier not in self._panel_tags:
-                    continue
-                # Finde Facet-Tags für Panel-Fläche
-                # Nach fragment() sind Panel-Flächen als separate Flächen vorhanden
-                # Wir müssen sie über Geometrie-Informationen identifizieren
-                panel_tag = self._panel_tags[panel.identifier]
-                
-                # Finde Flächen nahe Panel-Center
-                center = panel.center
-                panel_width = panel.width
-                panel_height = panel.line_height if panel.line_height > 0.0 else panel.height
-                
-                # Suche Flächen in der Nähe des Panel-Centers
-                nearby_surfaces = []
-                for dim, tag in surfaces:
-                    if dim != 2:
-                        continue
-                    xmin, ymin, zmin, xmax, ymax, zmax = _bbox(dim, tag)
-                    # Prüfe ob Fläche nahe Panel-Center liegt
-                    center_x = (xmin + xmax) / 2.0
-                    center_y = (ymin + ymax) / 2.0
-                    center_z = (zmin + zmax) / 2.0
-                    
-                    dist = math.sqrt(
-                        (center_x - center[0])**2 + 
-                        (center_y - center[1])**2 + 
-                        (center_z - center[2])**2
-                    )
-                    # Wenn Fläche nahe Panel-Center und Größe ähnlich
-                    if dist < max(panel_width, panel_height) * 1.5:
-                        nearby_surfaces.append(tag)
-                
-                if nearby_surfaces:
-                    group_id = gmsh.model.addPhysicalGroup(2, nearby_surfaces, panel_tag)
-                    gmsh.model.setPhysicalName(2, group_id, f"panel_{panel.identifier}")
-                    self._log_debug(
-                        f"[Gmsh] Panel {panel.identifier}: {len(nearby_surfaces)} Facets als Tag {panel_tag} markiert."
-                    )
+            # Panel-Flächen werden NICHT als Physical Groups markiert,
+            # da sie nicht als separate Geometrie in Gmsh erstellt werden.
+            # Sie werden später über DOF-Koordinaten identifiziert.
 
-            # Markiere Gehäuse-Flächen als Physical Groups (für Dirichlet-RB: p = 0)
-            cabinet_tag_start = 200  # Start-Facet-Tag für Cabinets
-            self._cabinet_tags.clear()
-            for idx, cabinet in enumerate(self._cabinet_obstacles):
-                cabinet_tag = cabinet_tag_start + idx
-                self._cabinet_tags[cabinet.identifier] = cabinet_tag
-                # Finde Facets nahe Cabinet-Center (nach cut() sind sie Teil der Domain-Begrenzung)
-                # Für jetzt: Cabinet-Flächen werden später über DOF-Koordinaten identifiziert
-                self._log_debug(f"[Gmsh] Cabinet {cabinet.identifier}: Tag {cabinet_tag} zugewiesen.")
 
             domain, cell_tags, facet_tags = self._gmsh_model_to_mesh(gdim=3)
             return domain, cell_tags, facet_tags
@@ -1147,7 +754,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
     def _estimate_dofs_for_resolution(
         self, width: float, length: float, height: float, resolution: float, degree: int
-    ) -> int:
+        ) -> int:
         """Schätzt die DOF-Anzahl für ein 3D-Gitter grob ab."""
         nx = max(2, int(round(width / resolution)))
         ny = max(2, int(round(length / resolution)))
@@ -1158,16 +765,19 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
     def _calculate_fem_mesh_resolution(self, frequencies: list[float]) -> float:
         """Leitet eine FEM-Auflösung aus max. Frequenz & DOF-Limit ab."""
-        base_resolution = float(getattr(self.settings, "resolution", 0.5) or 0.5)
+        base_resolution = float(self._get_setting("resolution") or DEFAULT_RESOLUTION)
         width = float(self.settings.width)
         length = float(self.settings.length)
-        domain_height = float(getattr(self.settings, "fem_domain_height", 2.0) or 2.0)
-        degree = int(getattr(self.settings, "fem_polynomial_degree", 2))
+        domain_height = float(self._get_setting("fem_domain_height") or DEFAULT_FEM_DOMAIN_HEIGHT)
+        degree = int(self._get_setting("fem_polynomial_degree") or DEFAULT_FEM_POLYNOMIAL_DEGREE)
         # Standard points_per_wavelength (kann erhöht werden für bessere Auflösung)
-        base_points_per_wavelength = float(getattr(self.settings, "fem_points_per_wavelength", 10.0) or 10.0)
-        base_max_dofs = int(getattr(self.settings, "fem_max_dofs", 250_000) or 250_000)
-        base_min_resolution = float(getattr(self.settings, "fem_min_resolution", 0.05) or 0.05)
-        max_resolution = float(getattr(self.settings, "fem_max_resolution_limit", base_resolution * 4) or (base_resolution * 4))
+        base_points_per_wavelength = float(self._get_setting("fem_points_per_wavelength") or DEFAULT_FEM_POINTS_PER_WAVELENGTH)
+        base_max_dofs = int(self._get_setting("fem_max_dofs") or DEFAULT_FEM_MAX_DOFS)
+        base_min_resolution = float(self._get_setting("fem_min_resolution") or DEFAULT_FEM_MIN_RESOLUTION)
+        max_resolution_setting = self._get_setting("fem_max_resolution_limit")
+        max_resolution = float(
+            max_resolution_setting or (base_resolution * DEFAULT_FEM_MAX_RESOLUTION_FACTOR)
+        )
 
         (
             points_per_wavelength,
@@ -1188,7 +798,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         if frequencies:
             f_max = max(frequencies)
             if f_max > 0 and points_per_wavelength > 0:
-                temperature = getattr(self.settings, "temperature", 20.0)
+                temperature = self._get_setting("temperature") or 20.0
                 speed_of_sound = self.functions.calculate_speed_of_sound(temperature)
                 wavelength = speed_of_sound / f_max
                 ideal_resolution = wavelength / points_per_wavelength
@@ -1206,19 +816,21 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
     def _determine_domain_height(self, frequencies: list[float]) -> float:
         """Bestimmt die vertikale Ausdehnung des 3D-Domains."""
-        base_height = float(getattr(self.settings, "fem_domain_height", 2.0) or 2.0)
-        min_height = float(getattr(self.settings, "fem_min_domain_height", 1.0) or 1.0)
-        clearance_top = float(getattr(self.settings, "fem_domain_clearance_top", 0.5) or 0.5)
+        base_height = float(self._get_setting("fem_domain_height") or DEFAULT_FEM_DOMAIN_HEIGHT)
+        min_height = float(self._get_setting("fem_min_domain_height") or DEFAULT_FEM_MIN_DOMAIN_HEIGHT)
+        clearance_top = float(
+            self._get_setting("fem_domain_clearance_top") or DEFAULT_FEM_DOMAIN_CLEARANCE_TOP
+        )
 
-        if self._panels:
-            highest_panel = max((panel.center[2] + (panel.height / 2.0) for panel in self._panels), default=0.0)
-            base_height = max(base_height, highest_panel + clearance_top)
+        if self._point_sources:
+            highest_source = max((source.position[2] for source in self._point_sources), default=0.0)
+            base_height = max(base_height, highest_source + clearance_top)
 
         if frequencies:
             f_min = min(frequencies)
-            speed_of_sound = getattr(self.settings, "speed_of_sound", None)
+            speed_of_sound = self._get_setting("speed_of_sound")
             if speed_of_sound is None:
-                temperature = getattr(self.settings, "temperature", 20.0)
+                temperature = self._get_setting("temperature") or 20.0
                 speed_of_sound = self.functions.calculate_speed_of_sound(temperature)
             if f_min > 0.0:
                 wavelength = speed_of_sound / f_min
@@ -1228,7 +840,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 # Maximal 5 m Höhe für Performance
                 auto_height = min(auto_height, 5.0)
                 base_height = max(base_height, auto_height)
-                if getattr(self.settings, "fem_debug_logging", True):
+                if self._get_setting("fem_debug_logging"):
                     self._log_debug(
                         f"[Domain] Frequenz={f_min:.1f} Hz, Wellenlänge={wavelength:.2f} m, "
                         f"auto_height={auto_height:.2f} m (λ/2, max 5m), final_height={base_height:.2f} m"
@@ -1278,7 +890,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             used_coeffs[name] = coeff
         
         # Debug: Logge verwendete Absorptionskoeffizienten
-        if getattr(self.settings, "fem_debug_logging", True) and used_coeffs:
+        if self._get_setting("fem_debug_logging") and used_coeffs:
             self._log_debug(
                 f"[Boundary] Robin-Randbedingungen aktiv: {len(used_coeffs)} Flächen, "
                 f"Koeffizienten={used_coeffs}, k={k:.3f} m⁻¹"
@@ -1293,21 +905,23 @@ class SoundFieldCalculatorFEM(ModuleBase):
         In diesem Fall verwenden wir z=0 (Boden), wo die DOFs tatsächlich vorhanden sind.
         Da der Boden jetzt absorbierend ist, ist das kein Problem mehr.
         """
-        explicit = getattr(self.settings, "fem_output_plane_height", None)
+        explicit = self._get_setting("fem_output_plane_height")
         if explicit is not None:
             try:
                 return float(explicit)
             except (TypeError, ValueError):
                 pass
         
-        domain_height = self._domain_height or float(getattr(self.settings, "fem_domain_height", 2.0) or 2.0)
+        domain_height = self._domain_height or float(
+            self._get_setting("fem_domain_height") or DEFAULT_FEM_DOMAIN_HEIGHT
+        )
         
         # Standard: z=0 (Boden), da dort die DOFs vorhanden sind
         # Der Boden ist jetzt absorbierend, daher kein Problem mit Baffle-Wand
-        default_plane = 0.0
+        default_plane = 1.0
         
         # listener_height überschreibt Default, falls gesetzt
-        listener_height = getattr(self.settings, "listener_height", None)
+        listener_height = self._get_setting("listener_height")
         if listener_height is not None:
             try:
                 plane = float(listener_height)
@@ -1355,6 +969,10 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         return points_per_wavelength, max_dofs, min_resolution
 
+    # ==================================================================
+    # ABSCHNITT 1: GRID-ERSTELLUNG
+    # ==================================================================
+
     def _build_domain(self, frequencies: list[float]):
         """Erzeugt das FEM-Mesh auf Basis der Settings.
 
@@ -1375,14 +993,10 @@ class SoundFieldCalculatorFEM(ModuleBase):
         length = float(self.settings.length)
         resolution = desired_resolution
 
-        panels, cabinets = self._collect_speaker_panels()
-        self._panels = panels
-        self._cabinet_obstacles = cabinets
-        self._store_panel_metadata()
-        self._log_debug(f"[Domain] Anzahl Panels für FEM-Domain: {len(panels)}.")
-        self._log_debug(f"[Domain] Anzahl Gehäuse-Hindernisse: {len(cabinets)}.")
-        if not panels:
-            self._log_debug("[Domain] Keine Speaker-Panels vorhanden – es werden nur äußere Ränder meshing.")
+        self._point_sources = self._collect_point_sources()
+        self._log_debug(f"[Domain] Anzahl Punktschallquellen für FEM-Domain: {len(self._point_sources)}.")
+        if not self._point_sources:
+            self._log_debug("[Domain] Keine Punktschallquellen vorhanden – es werden nur äußere Ränder meshing.")
 
         mesh_obj = None
         cell_tags = None
@@ -1392,7 +1006,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         try:
             mesh_obj, cell_tags, facet_tags = self._generate_gmsh_mesh(width, length, domain_height, resolution)
         except ImportError:
-            if panels:
+            if self._point_sources:
                 raise
             # Fallback: einfaches Rechteck-Mesh ohne Lautsprecheröffnungen
             nx = max(2, int(round(width / resolution)))
@@ -1412,7 +1026,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         self._facet_tags = facet_tags
         self._mesh_resolution = resolution
 
-        element_degree = int(getattr(self.settings, "fem_polynomial_degree", 2))
+        element_degree = int(self._get_setting("fem_polynomial_degree") or DEFAULT_FEM_POLYNOMIAL_DEGREE)
         
         # Prüfe, ob dolfinx mit komplexer Arithmetik kompiliert wurde
         is_complex_dolfinx = np.issubdtype(default_scalar_type, np.complexfloating)
@@ -1543,16 +1157,6 @@ class SoundFieldCalculatorFEM(ModuleBase):
             return None
         return int(np.argmin(distances))
 
-    # ------------------------------------------------------------------
-    # Balloon-Daten & Quellenanregung
-    # ------------------------------------------------------------------
-    def _get_injection_radius(self) -> float:
-        if getattr(self.settings, "fem_balloon_injection_radius", None):
-            return float(self.settings.fem_balloon_injection_radius)
-        if self._mesh_resolution:
-            return float(self._mesh_resolution)
-        return float(getattr(self.settings, "resolution", 0.5) or 0.5)
-
     def _normalize_sequence(self, values, target_length: int, default: float = 0.0) -> list[float]:
         if values is None:
             return [default] * target_length
@@ -1566,797 +1170,57 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 normalized.append(float(values[-1]) if values else default)
         return normalized
 
-    def _get_balloon_dataset_for_frequency(self, speaker_name: str, frequency: float) -> Optional[dict]:
-        if self._data_container is None or not speaker_name:
-            return None
+    # ==================================================================
+    # ABSCHNITT 2: QUELLEN-ERSTELLUNG
+    # ==================================================================
 
-        cache_key = f"{speaker_name}:{frequency:.3f}"
-        cached = self._balloon_data_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        def _fetch_balloon_data(use_averaged: bool) -> Optional[dict]:
-            try:
-                data = self._data_container.get_balloon_data(speaker_name, use_averaged=use_averaged)
-            except Exception:
-                return None
-            if not isinstance(data, dict):
-                return None
-            return data
-
-        def _normalize_dataset(source: dict, freq: float) -> Optional[dict]:
-            magnitude = source.get("magnitude")
-            phase = source.get("phase")
-            vertical_angles = source.get("vertical_angles")
-            if magnitude is None or vertical_angles is None:
-                return None
-
-            magnitude_np = np.asarray(magnitude)
-            vertical_np = np.asarray(vertical_angles, dtype=float)
-            phase_np = np.asarray(phase, dtype=float) if phase is not None else None
-
-            # Averaged (2D) Daten → direkt übernehmen
-            if magnitude_np.ndim == 2:
-                dataset_dict = {
-                    "magnitude": magnitude_np.astype(float, copy=False),
-                    "phase": phase_np.astype(float, copy=False) if phase_np is not None else None,
-                    "vertical_angles": vertical_np,
-                }
-            # Original (3D) Daten → Frequenz-Slice wählen
-            elif magnitude_np.ndim == 3:
-                freqs = source.get("freqs")
-                if freqs is None:
-                    freqs = source.get("frequencies")
-                if freqs is None:
-                    return None
-                freqs_arr = np.asarray(freqs, dtype=float).flatten()
-                if freqs_arr.size == 0:
-                    return None
-                nearest_idx = int(np.argmin(np.abs(freqs_arr - float(freq))))
-                nearest_idx = max(0, min(nearest_idx, magnitude_np.shape[2] - 1))
-                mag_slice = magnitude_np[:, :, nearest_idx]
-                phase_slice = None
-                if phase_np is not None and phase_np.ndim == 3:
-                    phase_slice = phase_np[:, :, nearest_idx]
-                dataset_dict = {
-                    "magnitude": mag_slice.astype(float, copy=False),
-                    "phase": phase_slice.astype(float, copy=False) if phase_slice is not None else None,
-                    "vertical_angles": vertical_np,
-                }
-            else:
-                return None
-
-            horizontal = source.get("horizontal_angles")
-            if horizontal is not None:
-                dataset_dict["horizontal_angles"] = np.asarray(horizontal, dtype=float)
-            return dataset_dict
-
-        raw_dataset = _fetch_balloon_data(False)
-        if raw_dataset is None:
-            self._log_debug(
-                "[BalloonDataset] "
-                f"Keine Balloon-Daten für '{speaker_name}' @ {frequency:.1f} Hz gefunden."
-            )
-            self._balloon_data_cache[cache_key] = None
-            return None
-
-        dataset_dict = _normalize_dataset(raw_dataset, frequency)
-
-        if dataset_dict is None:
-            self._log_debug(
-                "[BalloonDataset] "
-                f"Dataset für '{speaker_name}' @ {frequency:.1f} Hz konnte nicht normalisiert werden."
-            )
-            self._balloon_data_cache[cache_key] = None
-            return None
-
-        if not self._validate_balloon_dataset(speaker_name, frequency, dataset_dict):
-            self._balloon_data_cache[cache_key] = None
-            return None
-
-        self._debug_balloon_dataset_overview(speaker_name, frequency, dataset_dict)
-        self._debug_balloon_cardioid_sample(speaker_name, frequency, dataset_dict)
-        self._balloon_data_cache[cache_key] = dataset_dict
-        return dataset_dict
-
-    def _interpolate_balloon_values(
-        self,
-        dataset: dict,
-        azimuths_deg: np.ndarray,
-        elevations_deg: np.ndarray,
-        ) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        magnitude = dataset.get("magnitude")
-        phase = dataset.get("phase")
-        vertical_angles = dataset.get("vertical_angles")
-        if magnitude is None or vertical_angles is None:
-            return np.zeros_like(azimuths_deg), None
-
-        azimuths_norm = np.round(azimuths_deg).astype(int) % magnitude.shape[1]
-        elevations = elevations_deg.astype(float)
-        vertical_angles = np.asarray(vertical_angles, dtype=float)
-
-        mag_values = np.zeros_like(azimuths_deg, dtype=float)
-        phase_values = np.zeros_like(azimuths_deg, dtype=float) if phase is not None else None
-
-        mask_below = elevations <= vertical_angles[0]
-        mask_above = elevations >= vertical_angles[-1]
-        mask_interp = ~(mask_below | mask_above)
-
-        if np.any(mask_below):
-            indices = azimuths_norm[mask_below]
-            mag_values[mask_below] = magnitude[0, indices]
-            if phase_values is not None:
-                phase_values[mask_below] = phase[0, indices]
-
-        if np.any(mask_above):
-            indices = azimuths_norm[mask_above]
-            mag_values[mask_above] = magnitude[-1, indices]
-            if phase_values is not None:
-                phase_values[mask_above] = phase[-1, indices]
-
-        if np.any(mask_interp):
-            elev_vals = elevations[mask_interp]
-            az_vals = azimuths_norm[mask_interp]
-            lower_idx = np.searchsorted(vertical_angles, elev_vals, side="right") - 1
-            lower_idx = np.clip(lower_idx, 0, len(vertical_angles) - 1)
-            upper_idx = np.clip(lower_idx + 1, 0, len(vertical_angles) - 1)
-            denom = vertical_angles[upper_idx] - vertical_angles[lower_idx]
-            denom = np.where(np.abs(denom) < 1e-6, 1.0, denom)
-            t = (elev_vals - vertical_angles[lower_idx]) / denom
-            mag_lower = magnitude[lower_idx, az_vals]
-            mag_upper = magnitude[upper_idx, az_vals]
-            mag_values[mask_interp] = mag_lower + t * (mag_upper - mag_lower)
-            if phase_values is not None:
-                phase_lower = phase[lower_idx, az_vals]
-                phase_upper = phase[upper_idx, az_vals]
-                phase_values[mask_interp] = phase_lower + t * (phase_upper - phase_lower)
-
-        return mag_values, phase_values
-
-    def _validate_balloon_dataset(
-        self,
-        speaker_name: str,
-        frequency: float,
-        dataset: dict,
-    ) -> bool:
-        """Prüft Balloon-Datensätze auf minimale Konsistenz, bevor sie genutzt werden."""
-        magnitude = dataset.get("magnitude")
-        vertical_angles = dataset.get("vertical_angles")
-        phase = dataset.get("phase")
-        issues: list[str] = []
-
-        if not isinstance(magnitude, np.ndarray) or magnitude.size == 0:
-            issues.append("keine Magnituden")
-        elif magnitude.ndim < 2:
-            issues.append(f"unerwartete Magnitude-Dimension ({magnitude.ndim})")
-        elif not np.all(np.isfinite(magnitude)):
-            issues.append("Magnitude enthält NaN/Inf")
-
-        if phase is not None:
-            if not isinstance(phase, np.ndarray):
-                issues.append("Phase ist kein Array")
-            elif phase.shape != magnitude.shape:
-                issues.append(
-                    f"Phase-Shape {phase.shape} passt nicht zu Magnitude {magnitude.shape}"
-                )
-
-        if not isinstance(vertical_angles, np.ndarray) or vertical_angles.size == 0:
-            issues.append("keine vertikalen Winkel")
-        elif magnitude is not None and vertical_angles.shape[0] != magnitude.shape[0]:
-            issues.append(
-                f"vertical_angles ({vertical_angles.shape[0]}) != magnitude-elevations ({magnitude.shape[0]})"
-            )
-
-        if issues:
-            self._log_debug(
-                "[BalloonCheck] "
-                f"{speaker_name or 'unbekannt'} @ {frequency:.1f} Hz: "
-                + "; ".join(issues)
-            )
-            return False
-        return True
-
-    def _debug_balloon_dataset_overview(
-        self,
-        speaker_name: str,
-        frequency: float,
-        dataset: dict,
-    ) -> None:
-        if not getattr(self.settings, "fem_debug_logging", True):
-            return
-        mag = dataset.get("magnitude")
-        phase = dataset.get("phase")
-        vertical = dataset.get("vertical_angles")
-        if isinstance(mag, np.ndarray):
-            mag_stats = (
-                float(np.nanmin(mag)),
-                float(np.nanmax(mag)),
-                mag.shape,
-            )
-        else:
-            mag_stats = None
-        if isinstance(phase, np.ndarray):
-            phase_stats = (
-                float(np.nanmin(phase)),
-                float(np.nanmax(phase)),
-                phase.shape,
-            )
-        else:
-            phase_stats = None
-        vertical_info = (
-            float(vertical[0]),
-            float(vertical[-1]),
-            vertical.shape[0],
-        ) if isinstance(vertical, np.ndarray) and vertical.size else None
-        self._log_debug(
-            "[BalloonDataset] "
-            f"{speaker_name or 'unbekannt'} @ {frequency:.1f} Hz | "
-            f"mag_stats={mag_stats} phase_stats={phase_stats} vertical={vertical_info}"
-        )
-
-    def _debug_balloon_source_projection(
-        self,
-        speaker_name: str,
-        frequency: float,
-        dataset: Optional[dict],
-        dof_indices: np.ndarray,
-        distances: np.ndarray,
-        azimuths: np.ndarray,
-        elevations: np.ndarray,
-        mag_values: np.ndarray,
-        phase_values: np.ndarray,
-        wave_amplitude: np.ndarray,
-    ) -> None:
-        """Ausführliche Debug-Ausgabe für Balloon → Punktquellen-Projektion."""
-        if not getattr(self.settings, "fem_debug_logging", True):
-            return
-        num_points = dof_indices.size
-        sample_end = min(4, num_points)
-        dataset_shape = None
-        vertical_range = None
-        if isinstance(dataset, dict):
-            magnitude = dataset.get("magnitude")
-            vertical = dataset.get("vertical_angles")
-            if isinstance(magnitude, np.ndarray):
-                dataset_shape = magnitude.shape
-            if isinstance(vertical, np.ndarray) and vertical.size:
-                vertical_range = (float(vertical[0]), float(vertical[-1]))
-        self._log_debug(
-            "[BalloonDebug] "
-            f"{speaker_name} @ {frequency:.1f} Hz | DOFs={num_points} "
-            f"dataset={dataset_shape} vert_range={vertical_range}"
-        )
-        if sample_end == 0:
-            return
-        sample = slice(0, sample_end)
-        self._log_debug(
-            "[BalloonDebug] "
-            f"indices={dof_indices[sample].tolist()} "
-            f"dist={np.round(distances[sample], 3).tolist()} m "
-            f"az={np.round(azimuths[sample], 1).tolist()}° "
-            f"el={np.round(elevations[sample], 1).tolist()}°"
-        )
-        self._log_debug(
-            "[BalloonDebug] "
-            f"mag(dB)={np.round(mag_values[sample], 2).tolist()} "
-            f"phase(deg)={np.round(phase_values[sample], 1).tolist()} "
-            f"|wave|={np.round(np.abs(wave_amplitude[sample]), 4).tolist()}"
-        )
-
-    def _debug_balloon_level_chain(
-        self,
-        speaker_name: str,
-        frequency: float,
-        base_level_db: float,
-        measurement_correction_db: float,
-        resulting_level_db: float,
-        base_pressure_pa: float,
-        relative_magnitude_sample: float,
-    ) -> None:
-        if not getattr(self.settings, "fem_debug_logging", True):
-            return
-        self._log_debug(
-            "[BalloonLevel] "
-            f"{speaker_name or 'unbekannt'} @ {frequency:.1f} Hz | "
-            f"base_level={base_level_db:.2f} dB, "
-            f"meas_corr={measurement_correction_db:.2f} dB, "
-            f"result={resulting_level_db:.2f} dB, "
-            f"base_pressure={base_pressure_pa:.3f} Pa, "
-            f"rel_mag_sample={relative_magnitude_sample:.3f}"
-        )
-
-    def _debug_balloon_angle_chain(
-        self,
-        speaker_name: str,
-        frequency: float,
-        source_orientation_deg: float,
-        raw_horizontal_angles: np.ndarray,
-        final_balloon_angles: np.ndarray,
-        elevations: np.ndarray,
-    ) -> None:
-        if not getattr(self.settings, "fem_debug_logging", True):
-            return
-        sample = slice(0, min(4, raw_horizontal_angles.size))
-        self._log_debug(
-            "[BalloonAngles] "
-            f"{speaker_name or 'unbekannt'} @ {frequency:.1f} Hz | "
-            f"source_az={source_orientation_deg:.1f}° "
-            f"raw={np.round(raw_horizontal_angles[sample],1).tolist()}° "
-            f"balloon={np.round(final_balloon_angles[sample],1).tolist()}° "
-            f"elev={np.round(elevations[sample],1).tolist()}°"
-        )
-
-    def _debug_balloon_cardioid_sample(
-        self,
-        speaker_name: str,
-        frequency: float,
-        dataset: dict,
-    ) -> None:
-        if not getattr(self.settings, "fem_debug_logging", True):
-            return
-        magnitude = dataset.get("magnitude")
-        phase = dataset.get("phase")
-        vertical = dataset.get("vertical_angles")
-        if magnitude is None or vertical is None:
-            return
-        mag_np = np.asarray(magnitude)
-        phase_np = np.asarray(phase) if phase is not None else None
-        v_idx = int(np.abs(np.asarray(vertical, dtype=float)).argmin())
-        def _value_at(angle_deg: int):
-            h_idx = angle_deg % 360
-            mag_val = float(mag_np[v_idx, h_idx])
-            phase_val = float(phase_np[v_idx, h_idx]) if phase_np is not None else None
-            return mag_val, phase_val
-        mag_front, phase_front = _value_at(0)
-        mag_back, phase_back = _value_at(180)
-        self._log_debug(
-            "[BalloonCardioid] "
-            f"{speaker_name or 'unbekannt'} @ {frequency:.1f} Hz | "
-            f"mag0°={mag_front:.2f} dB, mag180°={mag_back:.2f} dB, "
-            f"phase0°={phase_front if phase_front is not None else 'n/a'}, "
-            f"phase180°={phase_back if phase_back is not None else 'n/a'}"
-        )
-
-    def _sample_balloon_on_axis(self, dataset: dict) -> tuple[Optional[float], Optional[float]]:
-        magnitude = dataset.get("magnitude")
-        phase = dataset.get("phase")
-        vertical = dataset.get("vertical_angles")
-        if magnitude is None or vertical is None:
-            return None, None
-        mag_np = np.asarray(magnitude)
-        phase_np = np.asarray(phase) if phase is not None else None
-        v_idx = int(np.abs(np.asarray(vertical, dtype=float)).argmin())
-        mag0 = float(mag_np[v_idx, 0]) if mag_np.ndim >= 2 else None
-        phase0 = float(phase_np[v_idx, 0]) if phase_np is not None and phase_np.ndim >= 2 else None
-        return mag0, phase0
-
-
-    def _build_balloon_point_sources(
-        self,
-        V,
-        frequency: float,
-        allow_complex: bool,
-    ) -> Optional[dict]:
-        """Erzeugt verteilte Punktquellen mit Balloon-Magnitude/Phase."""
-        if self._data_container is None or not hasattr(self.settings, "speaker_arrays"):
-            return None
-
-        coords_xy = self._get_dof_coords_xy()
-        if coords_xy is None:
-            return None
-
-        num_dofs = coords_xy.shape[0]
-        from dolfinx import default_scalar_type
-
-        contributions = np.zeros(num_dofs, dtype=default_scalar_type)
-        handled_keys: list[tuple[str, int]] = []
-        source_positions: list[list[float]] = []
-
-        injection_radius = self._get_injection_radius()
-        reference_distance = float(
-            getattr(self.settings, "fem_balloon_reference_distance", 1.0) or 1.0
-        )
-        omega = 2.0 * np.pi * frequency
-        rho = getattr(self.settings, "air_density", 1.2)
-        is_complex_fem = np.issubdtype(default_scalar_type, np.complexfloating)
-
-        for array_id, speaker_array in self.settings.speaker_arrays.items():
-            if speaker_array.mute or speaker_array.hide:
-                continue
-            array_identifier = str(array_id)
-
-            names_list = self._normalize_source_name_sequence(
-                getattr(speaker_array, "source_polar_pattern", None)
-            )
-            if not names_list:
-                names_list = self._normalize_source_name_sequence(
-                    getattr(speaker_array, "source_type", None)
-                )
-            if not names_list:
-                continue
-
-            num_sources = len(names_list)
-            xs = np.asarray(
-                self._normalize_sequence(
-                    getattr(
-                        speaker_array,
-                        "source_position_calc_x",
-                        getattr(speaker_array, "source_position_x", None),
-                    ),
-                    num_sources,
-                ),
-                dtype=float,
-            )
-            ys = np.asarray(
-                self._normalize_sequence(
-                    getattr(
-                        speaker_array,
-                        "source_position_calc_y",
-                        getattr(speaker_array, "source_position_y", None),
-                    ),
-                    num_sources,
-                ),
-                dtype=float,
-            )
-            zs = np.asarray(
-                self._normalize_sequence(
-                    getattr(
-                        speaker_array,
-                        "source_position_calc_z",
-                        getattr(speaker_array, "source_position_z", None),
-                    ),
-                    num_sources,
-                ),
-                dtype=float,
-            )
-            gains = np.asarray(
-                self._normalize_sequence(getattr(speaker_array, "gain", [0.0] * num_sources), num_sources),
-                dtype=float,
-            )
-            source_levels = np.asarray(
-                self._normalize_sequence(getattr(speaker_array, "source_level", [0.0] * num_sources), num_sources),
-                dtype=float,
-            )
-            delays_ms = np.asarray(
-                self._normalize_sequence(getattr(speaker_array, "delay", [0.0] * num_sources), num_sources),
-                dtype=float,
-            )
-
-            source_time_entries = getattr(speaker_array, "source_time", None)
-            if isinstance(source_time_entries, (int, float)):
-                source_time_ms = np.asarray(
-                    [float(source_time_entries) + delays_ms[i] for i in range(num_sources)],
-                    dtype=float,
-                )
-            else:
-                source_time_seq = self._normalize_sequence(source_time_entries, num_sources)
-                source_time_ms = np.asarray(
-                    [source_time_seq[i] + delays_ms[i] for i in range(num_sources)],
-                    dtype=float,
-                )
-            source_time_s = source_time_ms / 1000.0
-
-            level_corrections_db = source_levels + gains
-            measurement_distance = float(
-                getattr(self.settings, "fem_balloon_measurement_distance", 1.0) or 1.0
-            )
-            reference_distance = float(
-                getattr(self.settings, "fem_balloon_reference_distance", 1.0) or 1.0
-            )
-            measurement_scale = reference_distance / measurement_distance
-            if measurement_scale <= 0.0:
-                measurement_scale = 1.0
-            correction_offset_db = float(
-                getattr(self.settings, "fem_debug_level_offset_db", 60.0) or 60.0
-            )
-            measurement_correction_db = (
-                20.0 * math.log10(measurement_scale) + correction_offset_db
-            )
-            p_ref = 20e-6
-            base_pressures = p_ref * (10 ** (level_corrections_db / 20.0))
-            source_azimuth = np.deg2rad(
-                self._normalize_sequence(getattr(speaker_array, "source_azimuth", [0.0] * num_sources), num_sources)
-            )
-            source_polarity = self._normalize_sequence(
-                getattr(speaker_array, "source_polarity", [0] * num_sources),
-                num_sources,
-            )
-
-            for idx, speaker_name in enumerate(names_list):
-                point_xy = np.array([xs[idx], ys[idx]], dtype=float)
-                dataset = self._get_balloon_dataset_for_frequency(speaker_name, frequency)
-                if dataset is None:
-                    continue
-
-                handled_keys.append((array_identifier, idx))
-                nearby_indices = self._find_nearby_dofs(point_xy, radius=injection_radius)
-                if nearby_indices.size == 0:
-                    nearest_idx = self._find_nearest_dof(point_xy)
-                    if nearest_idx is None:
-                        continue
-                    nearby_indices = np.array([nearest_idx], dtype=int)
-
-                dof_points = coords_xy[nearby_indices]
-                dx = dof_points[:, 0] - xs[idx]
-                dy = dof_points[:, 1] - ys[idx]
-                horizontal = np.sqrt(dx**2 + dy**2)
-                max_dofs = int(getattr(self.settings, "fem_balloon_max_dofs", 12) or 12)
-                if nearby_indices.size > max_dofs:
-                    order = np.argsort(horizontal)
-                    select = order[:max_dofs]
-                    nearby_indices = nearby_indices[select]
-                    dof_points = dof_points[select]
-                    dx = dx[select]
-                    dy = dy[select]
-                    horizontal = horizontal[select]
-                z_distance = -zs[idx]
-                distances = np.sqrt(horizontal**2 + z_distance**2)
-                distances = np.maximum(distances, 1e-3)
-                source_angles = np.arctan2(dy, dx)
-                raw_horizontal_deg = (np.degrees(source_angles)) % 360.0
-                azimuths = (raw_horizontal_deg + np.degrees(source_azimuth[idx])) % 360.0
-                azimuths = (360.0 - azimuths) % 360.0
-                azimuths = (azimuths + 90.0) % 360.0
-                elevations = np.degrees(np.arctan2(z_distance, horizontal + 1e-9))
-
-                mag_values, phase_values = self._interpolate_balloon_values(dataset, azimuths, elevations)
-                if mag_values is None or mag_values.size == 0:
-                    continue
-                phase_values = phase_values if phase_values is not None else np.zeros_like(mag_values)
-
-                p_ref = 20e-6
-                relative_magnitude = 10 ** ((mag_values + measurement_correction_db) / 20.0)
-                polar_phase_rad = np.radians(phase_values)
-                phase_argument = polar_phase_rad + (2.0 * np.pi * frequency * source_time_s[idx])
-                distance_scale = reference_distance / distances
-                wave_amplitude = (
-                    relative_magnitude
-                    * base_pressures[idx]
-                    * distance_scale
-                    * np.exp(1j * phase_argument)
-                )
-                if mag_values.size > 0:
-                    resulting_level_db = (
-                        float(level_corrections_db[idx])
-                        + measurement_correction_db
-                        + float(mag_values[0])
-                    )
-                    self._debug_balloon_level_chain(
-                        speaker_name=speaker_name,
-                        frequency=frequency,
-                        base_level_db=float(level_corrections_db[idx]),
-                        measurement_correction_db=measurement_correction_db,
-                        resulting_level_db=resulting_level_db,
-                        base_pressure_pa=float(base_pressures[idx]),
-                        relative_magnitude_sample=float(relative_magnitude[0]),
-                    )
-                self._debug_balloon_angle_chain(
-                    speaker_name=speaker_name,
-                    frequency=frequency,
-                    source_orientation_deg=float(np.degrees(source_azimuth[idx])),
-                    raw_horizontal_angles=raw_horizontal_deg,
-                    final_balloon_angles=azimuths,
-                    elevations=elevations,
-                )
-                sigma = max(injection_radius / 2.0, 0.05)
-                weights = np.exp(-0.5 * (horizontal / (sigma + 1e-9)) ** 2)
-                weight_sum = float(np.sum(weights))
-                if weight_sum > 0.0:
-                    weights /= weight_sum
-                else:
-                    weights = np.full_like(horizontal, 1.0 / len(horizontal))
-                if source_polarity[idx]:
-                    wave_amplitude = -wave_amplitude
-
-                if is_complex_fem and allow_complex:
-                    values = wave_amplitude.astype(default_scalar_type)
-                else:
-                    values = np.real(wave_amplitude).astype(default_scalar_type)
-                self._debug_balloon_source_projection(
-                    speaker_name=speaker_name or f"{array_identifier}_{idx}",
-                    frequency=frequency,
-                    dataset=dataset,
-                    dof_indices=nearby_indices,
-                    distances=distances,
-                    azimuths=azimuths,
-                    elevations=elevations,
-                    mag_values=mag_values,
-                    phase_values=phase_values,
-                    wave_amplitude=wave_amplitude,
-                )
-
-                contributions[nearby_indices] += values * weights
-                source_positions.append([xs[idx], ys[idx]])
-
-        non_zero = np.flatnonzero(np.abs(contributions) > 0)
-        if non_zero.size == 0:
-            return None
-
-        self._last_point_source_positions = np.array(source_positions, dtype=float) if source_positions else None
-        return {
-            "indices": non_zero.astype(np.int32),
-            "values": contributions[non_zero],
-            "handled_keys": handled_keys,
-        }
-
-    def _build_panel_neumann_loads(self, frequency: float) -> list[tuple[str, complex]]:
-        """Erstellt Neumann-Randbedingungen (Geschwindigkeit) für Panel-Flächen.
-        
-        Die Amplitude wird aus Balloon-Daten bei 1m berechnet, damit der SPL in 1m
-        den Balloon-Daten entspricht.
-        
-        Für eine abstrahlende Fläche: ∂p/∂n = iωρ * v
-        wobei v die normale Geschwindigkeit auf der Membran ist.
-        
-        Balloon-Daten geben SPL in 1m an: p_1m = 20e-6 * 10^(SPL_db/20)
-        Für eine kompakte Quelle: p(r) ≈ (Q/(4πr)) * exp(ikr) für r >> λ
-        wobei Q = v * A der Volumenfluss ist (Geschwindigkeit * Fläche)
-        
-        p_1m = (v*A/(4π*1m)) * exp(ik*1m)
-        v = (4π * p_1m * exp(-ik*1m)) / A
-        
-        Neumann-RB: ∂p/∂n = iωρ * v = iωρ * (4π * p_1m * exp(-ik*1m)) / A
-        
-        HINWEIS: Da Panel-Flächen nicht als Facet-Tags im Mesh existieren,
-        verwenden wir die Panel-Identifikatoren und identifizieren die Flächen
-        über DOF-Koordinaten in der RHS-Integration.
+    def _build_point_source_loads(self, frequency: float) -> list[tuple[str, complex, np.ndarray]]:
         """
-        loads: list[tuple[str, complex]] = []
-        if not self._panels:
+        Erzeugt Punktquellen-Lasten für einfache Punktschallquellen.
+        
+        Für eine Punktquelle: p(r) = (Q/(4πr)) * exp(ikr)
+        wobei Q die Quellstärke ist.
+        
+        Die Quelle wird als Dirac-Delta-Funktion δ(x-x_s) modelliert,
+        was in der schwachen Form zu einem Punktlast-Term führt.
+        """
+        loads: list[tuple[str, complex, np.ndarray]] = []
+        if not self._point_sources:
             return loads
 
-        rho = getattr(self.settings, "air_density", 1.2)
-        omega = 2.0 * np.pi * frequency
         speed_of_sound = self.settings.speed_of_sound
         k = 2.0 * np.pi * frequency / float(speed_of_sound)
-        reference_distance = 1.0  # Balloon-Daten sind bei 1m gemessen
+        reference_distance = 1.0  # Referenzdistanz für SPL
         
-        for panel in self._panels:
-            if panel.is_muted:
+        # Standard-SPL bei 1m (kann über level_adjust_db angepasst werden)
+        default_spl_db = float(
+            self._get_setting("fem_point_source_spl_db") or DEFAULT_POINT_SOURCE_SPL_DB
+        )
+        
+        for source in self._point_sources:
+            if source.is_muted:
                 continue
                 
-            if not panel.speaker_name:
-                continue
-                
-            dataset = self._get_balloon_dataset_for_frequency(panel.speaker_name, frequency)
-            if dataset is None:
-                if getattr(self.settings, "fem_debug_logging", True):
-                    self._log_debug(
-                        f"[Neumann] Keine Balloon-Daten für Panel {panel.identifier} "
-                        f"(Speaker={panel.speaker_name}) bei {frequency:.2f} Hz"
-                    )
-                continue
-                
-            mag_db, phase_deg = self._sample_balloon_on_axis(dataset)
-            if mag_db is None:
-                continue
-                
-            # Balloon-Daten geben SPL in 1m an
-            p_1m_amp = 20e-6 * 10 ** (mag_db / 20.0)
-            phase_rad = math.radians(phase_deg) if phase_deg is not None else 0.0
-            p_1m_complex = p_1m_amp * np.exp(1j * phase_rad)
+            # Berechne SPL aus level_adjust_db
+            spl_db = default_spl_db + source.level_adjust_db
+            
+            # Konvertiere SPL zu Schalldruck bei 1m
+            p_1m_amp = 20e-6 * 10 ** (spl_db / 20.0)
+            
+            # Für Punktquelle: Q = 4π * p_1m * exp(-ik*1m)
+            # Die Quellstärke Q wird direkt als komplexe Amplitude verwendet
+            source_strength = 4.0 * np.pi * reference_distance * p_1m_amp * np.exp(-1j * k * reference_distance)
+            
+            loads.append((source.identifier, source_strength, source.position))
 
-            effective_height = panel.line_height if panel.line_height > 0.0 else panel.height
-            area = panel.area if abs(panel.area) > 1e-6 else panel.width * effective_height
-            if area <= 0.0:
-                continue
-
-           
-            
-            # Für jetzt verwenden wir die Formel, aber die Integration muss korrekt sein.
-            v_normal = (4.0 * np.pi * p_1m_complex * np.exp(-1j * k * reference_distance)) / area
-            
-            # DEBUG: Prüfe ob Geschwindigkeit realistisch ist
-            v_magnitude = abs(v_normal)
-            if v_magnitude > speed_of_sound:
-                if getattr(self.settings, "fem_debug_logging", True):
+            if self._get_setting("fem_debug_logging"):
                     self._log_debug(
-                        f"[Neumann] WARNUNG: Geschwindigkeit {v_magnitude:.1f} m/s > Schallgeschwindigkeit {speed_of_sound:.1f} m/s! "
-                        f"Formel gibt unrealistische Werte für Flächenquelle."
-                    )
-            
-            # Neumann-RB: ∂p/∂n = iωρ * v
-            neumann_value = 1j * omega * rho * v_normal
-            
-            # Verwende Panel-Identifier statt Facet-Tag
-            loads.append((panel.identifier, neumann_value))
-            
-            if getattr(self.settings, "fem_debug_logging", True):
-                self._log_debug(
-                    f"[Neumann] Panel {panel.identifier} (Speaker={panel.speaker_name}): "
-                    f"SPL_1m={mag_db:.1f} dB, p_1m={abs(p_1m_complex):.3e} Pa, "
-                    f"area={area:.3f} m², v={abs(v_normal):.3e} m/s, "
-                    f"∂p/∂n={abs(neumann_value):.3e} Pa/m"
+                    f"[PointSource] {source.identifier}: Speaker={source.speaker_name}, "
+                    f"Position=({source.position[0]:.2f},{source.position[1]:.2f},{source.position[2]:.2f}), "
+                    f"SPL_1m={spl_db:.1f}dB, Q={abs(source_strength):.3e}"
                 )
                 
         return loads
-
-    def _build_panel_dirichlet_bcs(self, frequency: float) -> list:
-        """Erstellt Dirichlet-Randbedingungen für Panel-Flächen.
-        
-        WICHTIGE ANFORDERUNGEN für Dirichlet-Randbedingungen in der Helmholtz-Gleichung:
-        1. Konsistenz: Randwerte müssen physikalisch sinnvoll sein
-        2. Eindeutigkeit: k darf keine Resonanzfrequenz des Gebiets sein
-        3. Kontinuität: Randbedingung sollte kontinuierlich sein (oder stückweise)
-        4. Physikalische Bedeutung: 
-           - Dirichlet legt DRUCK p fest (nicht Geschwindigkeit)
-           - Für abstrahlende Flächen wäre normalerweise eine Neumann-RB (Geschwindigkeit) 
-             oder eine gemischte RB physikalisch korrekter
-           - Konstanter Druck auf gesamter Fläche entspricht nicht einer realen Membran
-        
-        HINWEIS: Aktuelle Implementierung setzt konstanten Druck auf Panel-Fläche.
-        Dies könnte die Ursache für falsche 1/r²-Abnahme sein, da eine reale Membran
-        eine Geschwindigkeitsverteilung hat, nicht einen konstanten Druck.
-        """
-        bcs = []
-        if self._function_space is None or not self._panels:
-            return bcs
-
-        coords_xyz = self._get_dof_coords_xyz()
-        if coords_xyz is None:
-            return bcs
-
-        tol_xy = max(self._mesh_resolution or 0.1, 0.05)
-        tol_z = tol_xy
-        base_drive_db = float(getattr(self.settings, "fem_panel_drive_db", 94.0) or 94.0)
-        phase_offset_deg = float(getattr(self.settings, "fem_panel_phase_deg", 0.0) or 0.0)
-        phase_offset_rad = math.radians(phase_offset_deg)
-
-        for panel in self._panels:
-            if panel.is_muted:
-                continue
-
-            total_db = base_drive_db + panel.level_adjust_db
-            pressure_linear = 20e-6 * 10 ** (total_db / 20.0)
-            p_complex = pressure_linear * np.exp(1j * phase_offset_rad)
-
-            rel = coords_xyz - panel.center.reshape(1, 3)
-            c = math.cos(-panel.azimuth_rad)
-            s = math.sin(-panel.azimuth_rad)
-            rot = np.array([[c, -s], [s, c]], dtype=float)
-            local_xy = rel[:, :2] @ rot.T
-            local_z = rel[:, 2]
-            half_w = panel.width / 2.0 + tol_xy
-            half_depth = panel.depth / 2.0 if panel.depth > 0.0 else tol_xy
-            half_depth += tol_xy
-            half_height = panel.height / 2.0 + tol_z
-
-            mask = (
-                (np.abs(local_xy[:, 0]) <= half_w)
-                & (np.abs(local_xy[:, 1]) <= half_depth)
-                & (np.abs(local_z) <= half_height)
-            )
-            dof_indices = np.nonzero(mask)[0].astype(np.int32)
-            if dof_indices.size == 0:
-                self._log_debug(
-                    f"[Dirichlet] Keine DOFs für Panel {panel.identifier} gefunden – Panel übersprungen."
-                )
-                continue
-
-            bc_value = fem.Constant(self._mesh, default_scalar_type(p_complex))
-            bc = fem.dirichletbc(bc_value, dof_indices, self._function_space)
-            bcs.append(bc)
-            self._record_panel_drive(frequency, panel, p_complex, math.degrees(phase_offset_rad))
-            
-            # Debug: Panel-Position und DOF-Verteilung
-            panel_dofs = coords_xyz[dof_indices]
-            if len(panel_dofs) > 0:
-                x_range = (float(np.min(panel_dofs[:, 0])), float(np.max(panel_dofs[:, 0])))
-                y_range = (float(np.min(panel_dofs[:, 1])), float(np.max(panel_dofs[:, 1])))
-                z_range = (float(np.min(panel_dofs[:, 2])), float(np.max(panel_dofs[:, 2])))
-                self._log_debug(
-                    f"[Dirichlet] Panel {panel.identifier} (Speaker={panel.speaker_name}) "
-                    f"→ Center=({panel.center[0]:.3f}, {panel.center[1]:.3f}, {panel.center[2]:.3f}), "
-                    f"DOFs={dof_indices.size}, |p|={abs(p_complex):.2f} Pa, phase={math.degrees(phase_offset_rad):.1f}° | "
-                    f"DOF-Bereich: X[{x_range[0]:.3f}, {x_range[1]:.3f}], Y[{y_range[0]:.3f}, {y_range[1]:.3f}], Z[{z_range[0]:.3f}, {z_range[1]:.3f}]"
-                )
-            else:
-                self._log_debug(
-                    f"[Dirichlet] Panel {panel.identifier} (Speaker={panel.speaker_name}) "
-                    f"→ DOFs={dof_indices.size}, |p|={abs(p_complex):.2f} Pa, phase={math.degrees(phase_offset_rad):.1f}°"
-                )
-        return bcs
-
         
     def _prepare_python_include_path(self):
         if self._python_include_path_prepared:
@@ -2459,219 +1323,145 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         self._python_include_path_prepared = True
 
+    # ==================================================================
+    # ABSCHNITT 3: BERECHNUNG
+    # ==================================================================
+
     def _solve_frequency(self, frequency: float) -> fem.Function:
-        """Löst die Helmholtz-Gleichung für eine einzelne Frequenz.
-
-        Die schwache Form umfasst:
-        - Laplace-Term (∇p · ∇q) als Steifigkeitsanteil.
-        - Massenanteil für k² mit negativem Vorzeichen.
-        - Robin-Randbedingung zur Approximation eines absorbierenden Randes.
-
-        Als Löser wird GMRES mit ILU-Präkonditionierer auf dem PETSc-Stack
-        verwendet. Die Toleranzen sind relativ streng gewählt, damit die
-        Ergebnisse mit dem klassischen Rechner vergleichbar bleiben.
-        """
+        """Löst die Helmholtz-Gleichung für eine einzelne Frequenz."""
 
         V = self._function_space
         freq_label = f"{frequency:.2f}Hz"
 
+        if V is None:
+            raise RuntimeError("FEM-Funktionsraum wurde nicht initialisiert. Bitte _build_domain() aufrufen.")
+
         from dolfinx.fem.petsc import assemble_matrix, assemble_vector
 
-        with self._time_block("solve_frequency_setup_forms", freq_label):
-            pressure_trial = ufl.TrialFunction(V)
-            pressure_test = ufl.TestFunction(V)
-            
-            # 🌡️ Temperaturabhängige Schallgeschwindigkeit (wird in UiSettings berechnet)
-            speed_of_sound = self.settings.speed_of_sound
-            k = 2.0 * np.pi * frequency / float(speed_of_sound)
-            
-            dx = ufl.Measure("dx", domain=self._mesh)
-            if self._facet_tags is not None:
-                ds = ufl.Measure("ds", domain=self._mesh, subdomain_data=self._facet_tags)
-            else:
-                ds = ufl.Measure("ds", domain=self._mesh)
-            
-            is_complex = np.issubdtype(default_scalar_type, np.complexfloating)
-            
-            if is_complex:
-                boundary_term = self._build_boundary_absorption_form(
-                    k, pressure_trial, pressure_test, ds
-                )
+        pressure_trial = ufl.TrialFunction(V)
+        pressure_test = ufl.TestFunction(V)
 
-                # Helmholtz-Gleichung in schwacher Form: ∫ (∇p · ∇q - k²pq) dx = 0
-                # Für eine Quelle als Dirichlet-Randbedingung wird p auf der Panel-Fläche festgelegt
-                a_form = fem.form(
-                    ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test)) * dx
-                    - (k ** 2) * ufl.inner(pressure_trial, pressure_test) * dx
-                    + boundary_term
+        speed_of_sound = self.settings.speed_of_sound
+        k = 2.0 * np.pi * frequency / float(speed_of_sound)
+
+        dx = ufl.Measure("dx", domain=self._mesh)
+        if self._facet_tags is not None:
+            ds = ufl.Measure("ds", domain=self._mesh, subdomain_data=self._facet_tags)
+        else:
+            ds = ufl.Measure("ds", domain=self._mesh)
+
+        is_complex = np.issubdtype(default_scalar_type, np.complexfloating)
+
+        if is_complex:
+            boundary_term = self._build_boundary_absorption_form(
+                k, pressure_trial, pressure_test, ds
+            )
+            a_form = fem.form(
+                ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test)) * dx
+                - (k ** 2) * ufl.inner(pressure_trial, pressure_test) * dx
+                + boundary_term
+            )
+            if self._get_setting("fem_debug_logging"):
+                wavelength = 2.0 * np.pi / k if k > 0 else float("inf")
+                self._log_debug(
+                    f"[Helmholtz] f={frequency:.2f} Hz, k={k:.3f} m⁻¹, "
+                    f"λ={wavelength:.2f} m, c={speed_of_sound:.1f} m/s"
                 )
-                
-                # Debug: Prüfe Helmholtz-Parameter
-                if getattr(self.settings, "fem_debug_logging", True):
-                    wavelength = 2.0 * np.pi / k if k > 0 else float('inf')
-                    self._log_debug(
-                        f"[Helmholtz] f={frequency:.2f} Hz, k={k:.3f} m⁻¹, "
-                        f"λ={wavelength:.2f} m, c={speed_of_sound:.1f} m/s"
-                    )
-                
-                L_form, rhs_payload = self._assemble_rhs(
-                    V, pressure_test, frequency, allow_complex=True
+            L_form, rhs_payload = self._assemble_rhs(
+                V, pressure_test, frequency, allow_complex=True
+            )
+        else:
+            a_form = fem.form(
+                (
+                    ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test))
+                    - (k ** 2) * pressure_trial * pressure_test
                 )
-            else:
-                a_form = fem.form(
-                    (
-                        ufl.inner(ufl.grad(pressure_trial), ufl.grad(pressure_test))
-                        - (k ** 2) * pressure_trial * pressure_test
-                    )
-                    * dx
-                )
-                
-                L_form, rhs_payload = self._assemble_rhs(
-                    V, pressure_test, frequency, allow_complex=False
-                )
+                * dx
+            )
+            L_form, rhs_payload = self._assemble_rhs(
+                V, pressure_test, frequency, allow_complex=False
+            )
         self._raise_if_frequency_cancelled()
 
-        # Verwende Neumann-Randbedingungen (Geschwindigkeit) auf Panel-Flächen
-        # Dies ist physikalisch korrekter für abstrahlende Flächen
-        # Neumann-RB wird korrekt als Flächenintegral in der schwachen Form behandelt
-        
-        # Erstelle Dirichlet-RB für Gehäuse (undurchlässiges Hindernis: p = 0)
-        bcs = []
-        if self._facet_tags is not None and self._cabinet_tags:
+        bcs: list[fem.DirichletBC] = []
+        use_panel_neumann = bool(self._get_setting("fem_enable_panel_neumann"))
+        neumann_loads = self._build_point_source_loads(frequency) if use_panel_neumann else []
+
+        A = assemble_matrix(a_form, bcs=bcs)
+        A.assemble()
+        self._raise_if_frequency_cancelled()
+
+        b = assemble_vector(L_form)
+
+        if neumann_loads:
             coords_xyz = self._get_dof_coords_xyz()
             if coords_xyz is not None:
-                for cabinet in self._cabinet_obstacles:
-                    if cabinet.is_muted:
-                        continue
-                    cabinet_tag = self._cabinet_tags.get(cabinet.identifier)
-                    if cabinet_tag is None:
-                        continue
-                    
-                    # Finde DOFs auf Cabinet-Fläche über Facet-Tags
-                    # Cabinet-Flächen sind nach cut() Teil der Domain-Begrenzung
-                    # Für jetzt: Identifiziere über Koordinaten (später: über Facet-Tags)
-                    tol = max(self._mesh_resolution or 0.1, 0.05)
-                    rel = coords_xyz - cabinet.center.reshape(1, 3)
-                    c = math.cos(-cabinet.azimuth_rad)
-                    s = math.sin(-cabinet.azimuth_rad)
-                    rot = np.array([[c, -s], [s, c]], dtype=float)
-                    local_xy = rel[:, :2] @ rot.T
-                    local_z = rel[:, 2]
-                    
-                    half_w = cabinet.width / 2.0 + tol
-                    half_d = cabinet.depth / 2.0 + tol
-                    half_h = max(0.1, cabinet.depth / 2.0) + tol
-                    
-                    mask = (
-                        (np.abs(local_xy[:, 0]) <= half_w)
-                        & (np.abs(local_xy[:, 1]) <= half_d)
-                        & (np.abs(local_z) <= half_h)
-                    )
-                    cabinet_dof_indices = np.nonzero(mask)[0].astype(np.int32)
-                    
-                    if cabinet_dof_indices.size > 0:
-                        # Dirichlet-RB: p = 0 auf Gehäuse-Fläche (schallhartes Hindernis)
-                        bc_value = fem.Constant(self._mesh, default_scalar_type(0.0))
-                        bc = fem.dirichletbc(bc_value, cabinet_dof_indices, self._function_space)
-                        bcs.append(bc)
-                        self._log_debug(
-                            f"[Cabinet] {cabinet.identifier}: {cabinet_dof_indices.size} DOFs als Dirichlet-RB (p=0) markiert."
-                        )
-        
-        # Erstelle Neumann-RB-Terme für Panel-Flächen in der schwachen Form
-        neumann_forms = []
-        if self._facet_tags is not None:
-            neumann_loads = self._build_panel_neumann_loads(frequency)
-            for panel_id, neumann_value in neumann_loads:
-                panel_tag = self._panel_tags.get(panel_id)
-                if panel_tag is None:
-                    continue
-                
-                # Korrekte schwache Form: ∫_S (∂p/∂n) * q ds = ∫_S (iωρ*v) * q ds
-                # neumann_value ist bereits iωρ*v (in Pa/m)
-                neumann_constant = fem.Constant(self._mesh, default_scalar_type(neumann_value))
-                neumann_form_term = ufl.inner(neumann_constant, pressure_test) * ds(panel_tag)
-                neumann_forms.append(neumann_form_term)
-                
-                if getattr(self.settings, "fem_debug_logging", True):
-                    panel = next((p for p in self._panels if p.identifier == panel_id), None)
-                    panel_area = panel.area if panel else 0.0
-                    self._log_debug(
-                        f"[Neumann] Panel {panel_id} (Tag {panel_tag}): "
-                        f"∫_S (∂p/∂n) * q ds, |∂p/∂n|={abs(neumann_value):.3e} Pa/m, "
-                        f"area={panel_area:.3f} m²"
-                    )
-            
-            # Füge Neumann-Terme zur RHS-Form hinzu
-            if neumann_forms:
-                L_form = fem.form(L_form + sum(neumann_forms))
-                self._log_debug(f"[Neumann] {len(neumann_forms)} Panel-Neumann-Terme zur RHS hinzugefügt.")
+                for source_id, source_strength, source_position in neumann_loads:
+                    distances = np.linalg.norm(coords_xyz - source_position.reshape(1, 3), axis=1)
+                    nearest_dof_idx = int(np.argmin(distances))
+                    nearest_distance = distances[nearest_dof_idx]
+                    if nearest_distance < (self._mesh_resolution or 0.1) * 2.0:
+                        b.array[nearest_dof_idx] += source_strength
+                        if self._get_setting("fem_debug_logging"):
+                            self._log_debug(
+                                f"[PointSource] {source_id}: DOF={nearest_dof_idx}, "
+                                f"distance={nearest_distance:.3f}m, Q={abs(source_strength):.3e}"
+                            )
 
-        with self._time_block("solve_frequency_assemble_matrix", freq_label):
-            A = assemble_matrix(a_form, bcs=bcs)
-            A.assemble()
+        if bcs:
+            fem.apply_lifting(b, [a_form], [bcs])
+        b.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+        if bcs:
+            fem.set_bc(b, bcs)
+
+        try:
+            rhs_norm_initial = b.norm()
+        except Exception:
+            rhs_norm_initial = None
+        if rhs_norm_initial is not None:
+            self._log_debug(f"[Solve {freq_label}] RHS-Norm vor Quellen: {rhs_norm_initial:.3e}")
         self._raise_if_frequency_cancelled()
 
-        with self._time_block("solve_frequency_assemble_vector", freq_label):
-            b = assemble_vector(L_form)
-            
-            if bcs:
-                fem.apply_lifting(b, [a_form], [bcs])
-            b.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
-            if bcs:
-                fem.set_bc(b, bcs)
-            try:
-                rhs_norm_initial = b.norm()
-            except Exception:
-                rhs_norm_initial = None
-            if rhs_norm_initial is not None:
-                self._log_debug(f"[Solve {freq_label}] RHS-Norm vor Quellen: {rhs_norm_initial:.3e}")
+        self._apply_rhs_payload_to_vector(b, rhs_payload, V)
+        try:
+            rhs_norm_after = b.norm()
+        except Exception:
+            rhs_norm_after = None
+        if rhs_norm_after is not None:
+            self._log_debug(f"[Solve {freq_label}] RHS-Norm nach Quellen: {rhs_norm_after:.3e}")
         self._raise_if_frequency_cancelled()
 
-        with self._time_block("solve_frequency_apply_point_sources", freq_label):
-            self._apply_rhs_payload_to_vector(b, rhs_payload, V)
-            try:
-                rhs_norm_after = b.norm()
-            except Exception:
-                rhs_norm_after = None
-            if rhs_norm_after is not None:
-                self._log_debug(f"[Solve {freq_label}] RHS-Norm nach Quellen: {rhs_norm_after:.3e}")
+        use_direct_solver = bool(self._get_setting("fem_use_direct_solver"))
+        solver = PETSc.KSP().create(self._mesh.comm)
+        solver.setOperators(A)
+
+        if use_direct_solver:
+            solver.setType("preonly")
+            solver.getPC().setType("lu")
+        else:
+            solver.setType("gmres")
+            solver.setTolerances(rtol=1e-9, atol=1e-12, max_it=10000)
+            solver.getPC().setType("ilu")
+
+        solution = fem.Function(V, name="pressure")
         self._raise_if_frequency_cancelled()
 
-        use_direct_solver = getattr(self.settings, "fem_use_direct_solver", True)
+        solver.solve(b, solution.x.petsc_vec)
+        solution.x.scatter_forward()
+        sol_array = solution.x.array
+        if sol_array is not None and sol_array.size:
+            sol_norm = float(np.linalg.norm(sol_array))
+            sol_max = float(np.max(np.abs(sol_array)))
+            self._log_debug(
+                f"[Solve {freq_label}] Lösung: ||p||₂={sol_norm:.3e}, max|p|={sol_max:.3e}"
+            )
 
-        with self._time_block("solve_frequency_setup_solver", freq_label):
-            solver = PETSc.KSP().create(self._mesh.comm)
-            solver.setOperators(A)
-            
-            if use_direct_solver:
-                solver.setType("preonly")
-                solver.getPC().setType("lu")
-            else:
-                solver.setType("gmres")
-                solver.setTolerances(rtol=1e-9, atol=1e-12, max_it=10000)
-                solver.getPC().setType("ilu")
-            
-            solution = fem.Function(V, name="pressure")
-        self._raise_if_frequency_cancelled()
-
-        with self._time_block("solve_frequency_solve_system", freq_label):
-            solver.solve(b, solution.x.petsc_vec)
-            solution.x.scatter_forward()
-            sol_array = solution.x.array
-            if sol_array is not None and sol_array.size:
-                sol_norm = float(np.linalg.norm(sol_array))
-                sol_max = float(np.max(np.abs(sol_array)))
-                self._log_debug(
-                    f"[Solve {freq_label}] Lösung: ||p||₂={sol_norm:.3e}, max|p|={sol_max:.3e}"
+        if not use_direct_solver:
+            reason = solver.getConvergedReason()
+            if reason < 0:
+                raise RuntimeError(
+                    f"Iterativer FEM-Solver konvergierte nicht (Grund: {reason})"
                 )
-            
-            if not use_direct_solver:
-                reason = solver.getConvergedReason()
-                if reason < 0:
-                    raise RuntimeError(
-                        f"Iterativer FEM-Solver konvergierte nicht (Grund: {reason})"
-                    )
         self._raise_if_frequency_cancelled()
 
         return solution
@@ -2698,16 +1488,22 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         # Variante 2 (verteilte Punktquellen) ist nun exklusiv aktiv; Neumann-Randquellen
         # werden unabhängig von den Settings nicht mehr verwendet.
-        if getattr(self.settings, "fem_use_boundary_sources", False):
+        if self._get_setting("fem_use_boundary_sources"):
             self._log_debug(
                 "[RHS] Neumann-Randquellen sind deaktiviert – verwende Punktquellen."
             )
 
+        # Monopole-Quellen sind standardmäßig deaktiviert (verwende Neumann-RB für Panels)
+        payload: dict[str, object] = {}
         self._last_point_source_positions = None
-        return fem.form(rhs_form), {}
+        return fem.form(rhs_form), payload
 
     def _apply_rhs_payload_to_vector(self, b_vector, rhs_payload, V):
-        """Wendet verteilte Balloon-Quellen und Fallback-Punktquellen auf den RHS-Vektor an."""
+        """Wendet verteilte Quellen auf den RHS-Vektor an.
+        
+        Aktuell werden keine verteilten Punktquellen verwendet (Monopole deaktiviert).
+        Die Methode bleibt für zukünftige Erweiterungen erhalten.
+        """
         if not rhs_payload:
             return
 
@@ -2716,8 +1512,9 @@ class SoundFieldCalculatorFEM(ModuleBase):
             # Die Neumann-BC-Terme sind bereits in der Form enthalten, nichts zu tun
             return
 
+        # Verteilte Punktquellen (z.B. Monopole) - aktuell deaktiviert
         distributed = rhs_payload.get("distributed") if isinstance(rhs_payload, dict) else None
-        if distributed:
+        if isinstance(distributed, dict):
             indices = distributed.get("indices")
             values = distributed.get("values")
             if indices is not None and values is not None and len(indices) > 0:
@@ -2726,7 +1523,14 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 except Exception:
                     for idx, val in zip(indices, values):
                         b_vector.setValue(int(idx), val, addv=True)
+            positions = distributed.get("positions")
+            if positions is not None:
+                try:
+                    self._last_point_source_positions = np.array(positions, dtype=float)
+                except Exception:
+                    pass
 
+        # Debug-Ausgabe
         try:
             arr = b_vector.getArray(readonly=True)
         except Exception:
@@ -2745,57 +1549,9 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         b_vector.assemble()
         
-    def _speaker_positions_2d(self, speaker_array) -> np.ndarray:
-        # Debug: Zeige verfügbare Attribute
-        has_calc_x = hasattr(speaker_array, 'source_position_calc_x')
-        has_calc_y = hasattr(speaker_array, 'source_position_calc_y')
-        has_orig_x = hasattr(speaker_array, 'source_position_x')
-        has_orig_y = hasattr(speaker_array, 'source_position_y')
-        
-        # Versuche zuerst berechnete Positionen zu holen
-        xs = getattr(speaker_array, 'source_position_calc_x', None)
-        ys = getattr(speaker_array, 'source_position_calc_y', None)
-        
-        
-        # Fallback auf Original-Positionen
-        if xs is None or (isinstance(xs, (list, tuple)) and len(xs) == 0) or (isinstance(xs, np.ndarray) and xs.size == 0):
-            xs = getattr(speaker_array, 'source_position_x', [0.0])
-        
-        if ys is None or (isinstance(ys, (list, tuple)) and len(ys) == 0) or (isinstance(ys, np.ndarray) and ys.size == 0):
-            ys = getattr(speaker_array, 'source_position_y', [0.0])
-        
-        xs = np.array(xs, dtype=float)
-        ys = np.array(ys, dtype=float)
-        
-        
-        return np.column_stack([xs, ys])
-
-    def _phase_factor(self, speaker_array, index: int, frequency: float) -> complex:
-        delay_ms = float(getattr(speaker_array, "delay", 0.0))
-        time_entries = getattr(speaker_array, "source_time", 0.0)
-
-        if isinstance(time_entries, (int, float, np.integer, np.floating)):
-            source_time_ms = float(time_entries)
-        else:
-            try:
-                source_time_ms = float(time_entries[index])
-            except (IndexError, TypeError, ValueError):
-                source_time_ms = float(time_entries[0]) if time_entries else 0.0
-
-        total_time_s = (source_time_ms + delay_ms) / 1000.0
-        phase_shift = 2.0 * np.pi * frequency * total_time_s
-
-        polarity = 1.0
-        if hasattr(speaker_array, "source_polarity") and speaker_array.source_polarity[index]:
-            polarity = -1.0
-
-        phase_rad = np.deg2rad(
-            getattr(speaker_array, "source_azimuth", [0.0])[index]
-            if isinstance(getattr(speaker_array, "source_azimuth", [0.0]), (list, tuple, np.ndarray))
-            else getattr(speaker_array, "source_azimuth", 0.0)
-        )
-
-        return polarity * np.exp(1j * (phase_shift + phase_rad))
+    # ==================================================================
+    # ABSCHNITT 4: OUTPUT/SPEICHERUNG
+    # ==================================================================
 
     def _extract_pressure_and_phase(
         self, solution: fem.Function
@@ -2806,7 +1562,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         spl = self.functions.mag2db((pressure / p_ref) + 1e-12)
         phase = np.angle(values, deg=True)
 
-        if getattr(self.settings, "fem_debug_logging", True):
+        if self._get_setting("fem_debug_logging"):
             try:
                 plane_height = self._get_output_plane_height()
                 front_point = self._sample_grid_pressure(solution, np.array([0.0, 20.0, plane_height]))
@@ -2851,15 +1607,17 @@ class SoundFieldCalculatorFEM(ModuleBase):
         points: np.ndarray,
         values: np.ndarray,
         decimals: int = 6,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if points.ndim != 2 or points.shape[1] < 2:
             raise ValueError("Punktkoordinaten besitzen nicht genügend Dimensionen.")
 
         width = float(self.settings.width)
         length = float(self.settings.length)
-        resolution = float(getattr(self.settings, "resolution", 0.5) or 0.5)
+        resolution = float(self._get_setting("resolution") or DEFAULT_RESOLUTION)
         plane_height = self._get_output_plane_height()
-        plane_tol = float(getattr(self.settings, "fem_output_plane_tolerance", 0.1) or 0.1)
+        plane_tol = float(
+            self._get_setting("fem_output_plane_tolerance") or DEFAULT_FEM_OUTPUT_PLANE_TOLERANCE
+        )
         
         # Toleranz basierend auf Mesh-Auflösung anpassen
         # Für 3D-Simulation: Verwende eine sehr kleine Toleranz, um nur DOFs nahe der Auswerte-Ebene zu verwenden
@@ -2874,7 +1632,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         sound_field_y = np.arange((length / 2 * -1), ((length / 2) + resolution), resolution)
         
         # Debug: Prüfe Grid-Dimensionierung
-        if getattr(self.settings, "fem_debug_logging", True):
+        if self._get_setting("fem_debug_logging"):
             grid_x_min = float(sound_field_x[0])
             grid_x_max = float(sound_field_x[-1])
             grid_y_min = float(sound_field_y[0])
@@ -2938,43 +1696,16 @@ class SoundFieldCalculatorFEM(ModuleBase):
             num_masked = int(np.sum(mask))
             
             if num_masked == 0:
-                # Fallback: Nimm die nächsten DOFs zur Auswerte-Ebene
+                # Fallback: verwende die DOFs, die den Listener-Plane am nächsten liegen
                 z_distances = np.abs(z_coords - plane_height)
-                # Nimm alle DOFs innerhalb von 2*plane_tol oder mindestens die 10% nächsten
-                max_dist = max(2.0 * plane_tol, np.percentile(z_distances, 10.0))
-                mask = z_distances <= max_dist
-                num_masked = int(np.sum(mask))
+                closest_count = max(1, int(0.1 * len(z_distances)))
+                closest_indices = np.argsort(z_distances)[:closest_count]
+                mask = np.zeros_like(z_coords, dtype=bool)
+                mask[closest_indices] = True
+                num_masked = closest_count
                 self._log_debug(
-                    f"[GridMapping] Keine DOFs in Toleranz – verwende Fallback: "
-                    f"{num_masked} DOFs innerhalb {max_dist:.3f} m"
-                )
-            
-            # ZUSÄTZLICH: Filtere DOFs, die nahe dem Panel sind (wenn Panel vorhanden)
-            # Dies verhindert, dass DOFs weit vom Panel verwendet werden
-            if self._panels and num_masked > 0:
-                panel_center = self._panels[0].center
-                # Berechne Distanzen der gefilterten DOFs zum Panel
-                filtered_coords_xy = coords_xy[mask]
-                if len(filtered_coords_xy) > 0:
-                    dof_distances_to_panel = np.sqrt(
-                        (filtered_coords_xy[:, 0] - panel_center[0])**2 + 
-                        (filtered_coords_xy[:, 1] - panel_center[1])**2
-                    )
-                    # Verwende nur DOFs innerhalb von max_distance vom Panel
-                    # Für präzise Interpolation: Maximal 50 m vom Panel
-                    # Dies stellt sicher, dass nur relevante DOFs verwendet werden
-                    max_distance_from_panel = min(
-                        max(width, length) * 0.3,  # 30% der Domain-Größe
-                        50.0  # Maximal 50 m vom Panel
-                    )
-                    panel_mask = dof_distances_to_panel <= max_distance_from_panel
-                    # Kombiniere mit Z-Mask
-                    mask_indices = np.where(mask)[0]
-                    mask[mask_indices[~panel_mask]] = False
-                    num_masked = int(np.sum(mask))
-                    self._log_debug(
-                        f"[GridMapping] Nach Panel-Distanz-Filterung: {num_masked} DOFs "
-                        f"(max_distance={max_distance_from_panel:.1f} m)"
+                    "[GridMapping] Keine DOFs innerhalb der Ebene gefunden – "
+                    f"verwende {closest_count} nächstgelegene DOFs (max Δz={float(z_distances[closest_indices[-1]]):.3f} m)."
                     )
             
             if num_masked > 0:
@@ -3010,15 +1741,15 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 y_filtered_mean = float(np.mean(coords_xy[:, 1])) if len(coords_xy) > 0 else float('nan')
                 
                 # Debug: Prüfe Distanz zum Panel (wenn vorhanden)
-                if self._panels and len(coords_xy) > 0:
-                    panel_center = self._panels[0].center
-                    dof_distances = np.sqrt((coords_xy[:, 0] - panel_center[0])**2 + (coords_xy[:, 1] - panel_center[1])**2)
+                if self._point_sources and len(coords_xy) > 0:
+                    source_center = self._point_sources[0].position
+                    dof_distances = np.sqrt((coords_xy[:, 0] - source_center[0])**2 + (coords_xy[:, 1] - source_center[1])**2)
                     dist_min = float(np.min(dof_distances)) if len(dof_distances) > 0 else float('nan')
                     dist_max = float(np.max(dof_distances)) if len(dof_distances) > 0 else float('nan')
                     dist_mean = float(np.mean(dof_distances)) if len(dof_distances) > 0 else float('nan')
                     dist_median = float(np.median(dof_distances)) if len(dof_distances) > 0 else float('nan')
                     self._log_debug(
-                        f"[GridMapping] DOF-Distanzen zum Panel @ ({panel_center[0]:.3f}, {panel_center[1]:.3f}): "
+                        f"[GridMapping] DOF-Distanzen zur Quelle @ ({source_center[0]:.3f}, {source_center[1]:.3f}): "
                         f"min={dist_min:.2f} m, max={dist_max:.2f} m, mean={dist_mean:.2f} m, median={dist_median:.2f} m"
                     )
                 
@@ -3041,7 +1772,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         y_start = sound_field_y[0]
 
         # Inverse Distanzgewichtung (IDW): Für jeden Grid-Punkt finden wir die nächstgelegenen DOFs
-        use_interpolation = getattr(self.settings, "fem_grid_interpolation", True)
+        use_interpolation = bool(self._get_setting("fem_grid_interpolation"))
         
         if use_interpolation and len(x_coords) > 0 and cKDTree is not None:
             # Erstelle Grid-Koordinaten
@@ -3052,48 +1783,37 @@ class SoundFieldCalculatorFEM(ModuleBase):
             # Erstelle KD-Tree für schnelle Nachbarschaftssuche
             tree = cKDTree(dof_points_xy)
             
-            # Für jeden Grid-Punkt: Finde nächstgelegene DOFs (max. 8) innerhalb von 5*resolution
-            # Größerer Suchradius, um sicherzustellen, dass alle Grid-Punkte gefüllt werden
-            search_radius = resolution * 5.0
-            max_neighbors = 8
-            power = 2.0  # Exponent für inverse Distanzgewichtung
-            
-            # Vektorisierte Suche für alle Grid-Punkte
-            filled_count = 0
-            for grid_idx in range(len(grid_points)):
-                grid_point = grid_points[grid_idx:grid_idx+1]  # Shape (1, 2) für query
-                # Finde Nachbarn innerhalb des Suchradius
-                distances, indices = tree.query(grid_point, k=min(max_neighbors, len(dof_points_xy)), distance_upper_bound=search_radius)
-                
-                # Flache Arrays zurückgeben
-                distances = distances.flatten()
-                indices = indices.flatten()
-                
-                # Filtere ungültige Indizes (inf distances)
-                valid = np.isfinite(distances)
-                if not np.any(valid):
-                    continue
-                
-                distances = distances[valid]
-                indices = indices[valid]
-                
-                # Vermeide Division durch Null
-                distances = np.maximum(distances, 1e-6)
-                
-                # Inverse Distanzgewichtung: w = 1 / d^power
-                weights = 1.0 / (distances ** power)
-                weight_sum = np.sum(weights)
-                
-                if weight_sum > 0:
-                    weights /= weight_sum
-                    weighted_value = np.sum(values[indices] * weights)
-                    pressure_sum.ravel()[grid_idx] = weighted_value
-                    count_grid.ravel()[grid_idx] = 1.0
-                    filled_count += 1
-            
+            max_neighbors = int(
+                self._get_setting("fem_grid_k_neighbors") or DEFAULT_FEM_GRID_K_NEIGHBORS
+            )
+            max_neighbors = max(4, min(max_neighbors, len(dof_points_xy)))
+            power = float(self._get_setting("fem_grid_idw_power") or DEFAULT_FEM_GRID_IDW_POWER)
+
+            distances, indices = tree.query(grid_points, k=max_neighbors)
+
+            if max_neighbors == 1:
+                distances = distances[:, np.newaxis]
+                indices = indices[:, np.newaxis]
+
+            # Definiere valid immer (unabhängig von max_neighbors)
+            valid = np.isfinite(distances)
+            weights = np.zeros_like(distances, dtype=float)
+            weights[valid] = 1.0 / np.maximum(distances[valid], 1e-6) ** power
+
+            weight_sums = np.sum(weights, axis=1)
+            nonzero_mask = weight_sums > 0
+            interpolated = np.full(grid_points.shape[0], np.nan, dtype=values.dtype)
+            if np.any(nonzero_mask):
+                numerator = np.sum(values[indices] * weights, axis=1)
+                interpolated[nonzero_mask] = numerator[nonzero_mask] / weight_sums[nonzero_mask]
+
+            pressure_sum = interpolated.reshape(grid_x.shape)
+            count_grid = np.where(np.isfinite(pressure_sum), 1, 0)
+
+            filled_count = int(np.sum(nonzero_mask))
             self._log_debug(
                 f"[IDW-Interpolation] {filled_count} von {len(grid_points)} Grid-Punkten gefüllt "
-                f"(Suchradius={search_radius:.2f} m, max_neighbors={max_neighbors})"
+                f"(k={max_neighbors}, power={power:.2f})"
             )
         elif len(x_coords) > 0:
             # Fallback: Bilineare Interpolation (DOF → 4 Grid-Punkte)
@@ -3166,32 +1886,32 @@ class SoundFieldCalculatorFEM(ModuleBase):
         )
         
         # Debug: Analysiere Druckwerte über Distanz (nur wenn Panel vorhanden)
-        if self._panels and num_grid_finite > 0:
-            panel_center = self._panels[0].center
+        if self._point_sources and num_grid_finite > 0:
+            source_center = self._point_sources[0].position
             grid_x, grid_y = np.meshgrid(sound_field_x, sound_field_y)
-            distances = np.sqrt((grid_x - panel_center[0])**2 + (grid_y - panel_center[1])**2)
+            distances = np.sqrt((grid_x - source_center[0])**2 + (grid_y - source_center[1])**2)
             
             # Debug: Prüfe Grid-Koordinaten und Panel-Position
             grid_center_x = (sound_field_x[0] + sound_field_x[-1]) / 2.0
             grid_center_y = (sound_field_y[0] + sound_field_y[-1]) / 2.0
-            panel_x_offset = panel_center[0] - grid_center_x
-            panel_y_offset = panel_center[1] - grid_center_y
+            source_x_offset = source_center[0] - grid_center_x
+            source_y_offset = source_center[1] - grid_center_y
             self._log_debug(
-                f"[Distanz-Analyse] Panel @ ({panel_center[0]:.3f}, {panel_center[1]:.3f}), "
+                f"[Distanz-Analyse] Quelle @ ({source_center[0]:.3f}, {source_center[1]:.3f}), "
                 f"Grid-Center @ ({grid_center_x:.3f}, {grid_center_y:.3f}), "
-                f"Offset: ({panel_x_offset:.3f}, {panel_y_offset:.3f}) m | "
+                f"Offset: ({source_x_offset:.3f}, {source_y_offset:.3f}) m | "
                 f"Grid X-Bereich: [{sound_field_x[0]:.2f}, {sound_field_x[-1]:.2f}] m, "
                 f"Grid Y-Bereich: [{sound_field_y[0]:.2f}, {sound_field_y[-1]:.2f}] m, "
                 f"Grid-Auflösung: {resolution:.2f} m"
             )
             
-            # Prüfe, ob Panel im Grid-Bereich liegt
-            panel_in_grid_x = sound_field_x[0] <= panel_center[0] <= sound_field_x[-1]
-            panel_in_grid_y = sound_field_y[0] <= panel_center[1] <= sound_field_y[-1]
-            if not (panel_in_grid_x and panel_in_grid_y):
+            # Prüfe, ob Quelle im Grid-Bereich liegt
+            source_in_grid_x = sound_field_x[0] <= source_center[0] <= sound_field_x[-1]
+            source_in_grid_y = sound_field_y[0] <= source_center[1] <= sound_field_y[-1]
+            if not (source_in_grid_x and source_in_grid_y):
                 self._log_debug(
-                    f"[Distanz-Analyse] WARNUNG: Panel liegt außerhalb des Grid-Bereichs! "
-                    f"Panel in Grid X: {panel_in_grid_x}, Panel in Grid Y: {panel_in_grid_y}"
+                    f"[Distanz-Analyse] WARNUNG: Quelle liegt außerhalb des Grid-Bereichs! "
+                    f"Quelle in Grid X: {source_in_grid_x}, Quelle in Grid Y: {source_in_grid_y}"
                 )
             
             # Analysiere Druckwerte in Distanz-Bereichen
@@ -3384,7 +2104,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
 
         target_frequency = getattr(self, "_resolved_fem_frequency", None)
         if target_frequency is None:
-            target_frequency = getattr(self.settings, "fem_calculate_frequency", None)
+            target_frequency = self._get_setting("fem_calculate_frequency")
         if target_frequency is not None:
             try:
                 target_frequency = float(target_frequency)
@@ -3449,7 +2169,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         sound_field_x, sound_field_y, pressure_grid = self._map_dofs_to_grid(points, pressure, decimals=decimals)
 
         # Debug: Druckwerte vor Luftabsorptions-Korrektur
-        if getattr(self.settings, "fem_debug_logging", True) and pressure_grid is not None:
+        if self._get_setting("fem_debug_logging") and pressure_grid is not None:
             p_before_air = pressure_grid.copy()
             p_min_before_air = float(np.nanmin(p_before_air)) if np.any(np.isfinite(p_before_air)) else float('nan')
             p_max_before_air = float(np.nanmax(p_before_air)) if np.any(np.isfinite(p_before_air)) else float('nan')
@@ -3467,7 +2187,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
         )
 
         # Debug: Druckwerte nach Luftabsorptions-Korrektur
-        if getattr(self.settings, "fem_debug_logging", True) and pressure_grid is not None:
+        if self._get_setting("fem_debug_logging") and pressure_grid is not None:
             p_after_air = pressure_grid.copy()
             p_min_after_air = float(np.nanmin(p_after_air)) if np.any(np.isfinite(p_after_air)) else float('nan')
             p_max_after_air = float(np.nanmax(p_after_air)) if np.any(np.isfinite(p_after_air)) else float('nan')
@@ -3492,12 +2212,12 @@ class SoundFieldCalculatorFEM(ModuleBase):
         frequency: float,
         ) -> np.ndarray:
         """Skaliert das Grid nachträglich mit Luftdämpfung (ISO 9613-1)."""
-        if pressure_grid is None or not getattr(self.settings, "use_air_absorption", False):
+        if pressure_grid is None or not self._get_setting("use_air_absorption"):
             return pressure_grid
 
-        temperature = float(getattr(self.settings, "temperature", 20.0))
-        humidity = float(getattr(self.settings, "humidity", 50.0))
-        air_pressure = float(getattr(self.settings, "air_pressure", 101325.0))
+        temperature = float(self._get_setting("temperature") or 20.0)
+        humidity = float(self._get_setting("humidity") or 50.0)
+        air_pressure = float(self._get_setting("air_pressure") or 101325.0)
 
         alpha = self.functions.calculate_air_absorption(
             float(frequency),
@@ -3531,10 +2251,10 @@ class SoundFieldCalculatorFEM(ModuleBase):
         return pressure_grid
 
     def _get_panel_centers_array(self) -> Optional[np.ndarray]:
-        if not self._panels:
+        if not self._point_sources:
             return None
         try:
-            return np.array([panel.center for panel in self._panels], dtype=float)
+            return np.array([source.position for source in self._point_sources], dtype=float)
         except Exception:
             return None
 
@@ -3562,20 +2282,22 @@ class SoundFieldCalculatorFEM(ModuleBase):
         p_ref = 20e-6
         spl_grid = self.functions.mag2db((np.abs(pressure_grid) / p_ref) + 1e-12)
         
-        
-        # Debug: Zeige SPL-Werte an spezifischen Punkten
-        center_x_idx = np.argmin(np.abs(sound_field_x - 0.0))
-        center_y_idx = np.argmin(np.abs(sound_field_y - 0.0))
-        spl_at_source = spl_grid[center_y_idx, center_x_idx]
-        
-        x_10m_idx = np.argmin(np.abs(sound_field_x - 10.0))
-        y_0m_idx = center_y_idx
-        spl_at_10m = spl_grid[y_0m_idx, x_10m_idx]
-        
-        # Berechne erwarteten SPL-Abfall (6 dB pro Distanzverdopplung für Punktquelle)
-        # Von 1m zu 10m: log2(10) = 3.32 Verdopplungen → -20 dB
-        expected_drop = 20 * np.log10(10.0 / 1.0)
-        
+        if self._get_setting("fem_debug_logging") and len(sound_field_x) and len(sound_field_y):
+            center_x_idx = np.argmin(np.abs(sound_field_x - 0.0))
+            center_y_idx = np.argmin(np.abs(sound_field_y - 0.0))
+            spl_at_source = float(spl_grid[center_y_idx, center_x_idx])
+
+            sample_distance = 10.0
+            x_sample_idx = np.argmin(np.abs(sound_field_x - sample_distance))
+            spl_at_sample = float(spl_grid[center_y_idx, x_sample_idx])
+
+            expected_drop = 20 * np.log10(sample_distance / 1.0)
+            measured_drop = spl_at_source - spl_at_sample
+            self._log_debug(
+                "[SPL Debug] SPL@0m≈{:.2f} dB, SPL@{:.1f}m≈{:.2f} dB, Δ={:.2f} dB (Ideal {:.2f} dB)".format(
+                    spl_at_source, sample_distance, spl_at_sample, measured_drop, expected_drop
+                )
+            )
         
         return sound_field_x, sound_field_y, spl_grid
 

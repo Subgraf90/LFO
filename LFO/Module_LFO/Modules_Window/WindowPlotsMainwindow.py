@@ -493,6 +493,93 @@ class DrawPlotsMainwindow(ModuleBase):
             self.draw_polar_pattern.initialize_empty_plots()
             self.matplotlib_canvas_polar_pattern.draw()
 
+    def update_plots_for_surface_state(self):
+        """
+        🎯 ZENTRALE METHODE: Analysiert Surface-Status und koordiniert Berechnung + Plotting.
+        
+        Kategorisiert alle Surfaces nach ihrem Status (enabled/hidden):
+        - enabled + nicht-hidden → Für Berechnung (SoundfieldCalculator)
+        - disabled + nicht-hidden → Empty Plot (gestrichelt im Overlay)
+        - hidden → Nicht geplottet
+        
+        Triggert entsprechend:
+        - Berechnung wenn enabled Surfaces vorhanden
+        - Empty Plot wenn keine enabled Surfaces vorhanden
+        - Overlay-Update für visuelle Darstellung
+        """
+        # ============================================================
+        # SCHRITT 1: Analysiere Surface-Status
+        # ============================================================
+        surface_definitions = getattr(self.settings, 'surface_definitions', {})
+        if not isinstance(surface_definitions, dict):
+            # Keine Surface-Definitionen → Empty Plot
+            self.show_empty_plots()
+            return
+        
+        # Kategorisiere Surfaces
+        enabled_surfaces = []      # Für Berechnung: enabled + nicht-hidden
+        empty_plot_surfaces = []   # Für Empty Plot: disabled + nicht-hidden
+        hidden_surfaces = []       # Nicht geplottet: hidden
+        
+        for surface_id, surface_def in surface_definitions.items():
+            enabled = surface_def.get('enabled', False)
+            hidden = surface_def.get('hidden', False)
+            
+            if hidden:
+                hidden_surfaces.append(surface_id)
+            elif enabled:
+                enabled_surfaces.append(surface_id)
+            else:
+                empty_plot_surfaces.append(surface_id)
+        
+        # ============================================================
+        # SCHRITT 2: Entscheide Berechnung oder Empty Plot
+        # ============================================================
+        has_enabled_surface = len(enabled_surfaces) > 0
+        
+        if not has_enabled_surface:
+            # Keine enabled Surfaces → Empty Plot
+            self.show_empty_plots()
+            
+            # Overlays aktualisieren (zeigt disabled Surfaces als gestrichelt)
+            if self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
+                self.draw_spl_plotter.update_overlays(self.settings, self.container)
+            return
+        
+        # ============================================================
+        # SCHRITT 3: Enabled Surfaces vorhanden → Trigger Berechnung
+        # ============================================================
+        # SoundfieldCalculator holt sich enabled Surfaces automatisch via _get_enabled_surfaces()
+        # (filtert bereits auf enabled + nicht-hidden)
+        
+        # Prüfe ob aktiver Speaker vorhanden ist
+        has_active_speaker = False
+        speaker_array_id = None
+        if hasattr(self.main_window, 'sources_instance') and self.main_window.sources_instance:
+            if hasattr(self.main_window, 'get_selected_speaker_array_id'):
+                speaker_array_id = self.main_window.get_selected_speaker_array_id()
+                if (speaker_array_id is not None and 
+                    self.settings.get_speaker_array(speaker_array_id) is not None):
+                    has_active_speaker = True
+        
+        # Trigger Berechnung oder Plot-Update
+        if has_active_speaker and hasattr(self.main_window, 'update_speaker_array_calculations'):
+            # Neuberechnung mit aktiver Quelle
+            self.main_window.update_speaker_array_calculations()
+        elif hasattr(self.main_window, 'plot_spl'):
+            # Nur Plot-Update (wenn bereits Daten vorhanden)
+            self.main_window.plot_spl(update_axes=False)
+        
+        # ============================================================
+        # SCHRITT 4: Overlays aktualisieren (für visuelle Darstellung)
+        # ============================================================
+        # PlotSPL3DOverlays.draw_surfaces() zeichnet automatisch:
+        # - enabled + nicht-hidden → Normale Linien (SPL Plot)
+        # - disabled + nicht-hidden → Gestrichelte Linien (Empty Plot)
+        # - hidden → Nicht geplottet
+        if self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
+            self.draw_spl_plotter.update_overlays(self.settings, self.container)
+
     def plot_spl(self, settings, speaker_array_id, update_axes=True, reset_camera=False):
         """
         Zeichnet den SPL-Plot
@@ -503,6 +590,8 @@ class DrawPlotsMainwindow(ModuleBase):
             update_axes: Wenn True, werden auch X/Y-Achsen und Polar aktualisiert
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
+        plot_mode = getattr(settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
+        print(f"[DEBUG] WindowPlotsMainwindow.plot_spl() START: speaker_array_id={speaker_array_id}, update_axes={update_axes}, plot_mode={plot_mode}")
         self.settings = settings
         self._update_plot_mode_availability()
         plot_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
@@ -625,6 +714,7 @@ class DrawPlotsMainwindow(ModuleBase):
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
         # damit der Fader nicht von initialize_empty_scene() versteckt wird
+        print(f"[DEBUG] WindowPlotsMainwindow.plot_spl() - Vor update_time_control(): time_mode_enabled={time_mode_enabled}")
         if draw_spl_plotter is not None:
             if time_mode_enabled:
                 if time_snapshot is not None:
@@ -650,6 +740,8 @@ class DrawPlotsMainwindow(ModuleBase):
         self.colorbar_canvas.draw()
         if reset_camera:
             self.reset_zoom()
+        
+        print(f"[DEBUG] WindowPlotsMainwindow.plot_spl() ENDE: Plot-Update abgeschlossen")
 
         if update_axes:
             self.plot_xaxis()
@@ -853,7 +945,37 @@ class DrawPlotsMainwindow(ModuleBase):
         if new_value == self._time_frame_index:
             return
         self._time_frame_index = new_value
-        self.plot_spl(self.settings, None, update_axes=False)
+        if not self._try_fast_time_frame_update():
+            self.plot_spl(self.settings, None, update_axes=False)
+
+    def _try_fast_time_frame_update(self) -> bool:
+        """Schneller Pfad für den Zeit-Slider, bei dem nur die Skalare aktualisiert werden."""
+        plot_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
+        if plot_mode != "SPL over time":
+            return False
+
+        draw_spl_plotter = self._get_current_spl_plotter()
+        if draw_spl_plotter is None or not hasattr(draw_spl_plotter, 'update_time_frame_values'):
+            return False
+
+        snapshot = self._compute_time_mode_field()
+        if snapshot is None:
+            return False
+
+        _, snapshot_total_frames, sound_field_x, sound_field_y, snapshot_values = snapshot
+        if not draw_spl_plotter.update_time_frame_values(sound_field_x, sound_field_y, snapshot_values):
+            return False
+
+        self._time_frames_per_period = max(1, snapshot_total_frames - 1)
+        self.settings.fem_time_frames_per_period = self._time_frames_per_period
+        draw_spl_plotter.update_time_control(
+            True,
+            snapshot_total_frames,
+            self._time_frame_index % snapshot_total_frames,
+            0.2,
+        )
+        self.colorbar_canvas.draw()
+        return True
 
     def on_pan(self, event):
         """Handler für Mausbewegung während des Pannens"""

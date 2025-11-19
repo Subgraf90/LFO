@@ -20,6 +20,12 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QFont, QDoubleValidator
 
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    build_planar_model,
+    derive_surface_plane,
+    evaluate_surface_plane,
+)
+
 
 SurfacePoint = Dict[str, float]
 SurfaceDefinition = Dict[str, object]
@@ -268,7 +274,10 @@ class SurfaceDockWidget(QDockWidget):
         self.current_surface_id = surface_id
         self._set_points_panel_visible(True)
         self._load_points_for_surface(surface_id)
-        self._propagate_surface_changes()
+        # 🎯 Trigger Calc/Plot Update: Surface wurde hinzugefügt
+        if hasattr(self.main_window, "draw_plots"):
+            if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _handle_delete_surface(self, item: Optional[QTreeWidgetItem] = None) -> None:
         if item is None:
@@ -303,7 +312,10 @@ class SurfaceDockWidget(QDockWidget):
             self.surface_tree.setCurrentItem(None)
             self._load_points_for_surface(None)
 
-        self._propagate_surface_changes()
+        # 🎯 Trigger Calc/Plot Update: Surface wurde gelöscht
+        if hasattr(self.main_window, "draw_plots"):
+            if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _handle_duplicate_surface(self, item: Optional[QTreeWidgetItem]) -> None:
         if item is None:
@@ -330,7 +342,10 @@ class SurfaceDockWidget(QDockWidget):
         self.current_surface_id = new_surface_id
         self._set_points_panel_visible(True)
         self._load_points_for_surface(new_surface_id)
-        self._propagate_surface_changes()
+        # 🎯 Trigger Calc/Plot Update: Surface wurde dupliziert
+        if hasattr(self.main_window, "draw_plots"):
+            if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _handle_surface_selection_changed(self) -> None:
         if self._loading_surfaces:
@@ -362,16 +377,38 @@ class SurfaceDockWidget(QDockWidget):
                 self._loading_surfaces = False
                 return
             surface_data["name"] = new_name
+            # 🎯 Trigger Calc/Plot Update: Name-Änderung (Name könnte in Visualisierung angezeigt werden)
+            if hasattr(self.main_window, "draw_plots"):
+                if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
         elif column == 1:
             enabled = item.checkState(1) == Qt.Checked
             surface_data["enabled"] = enabled
             self.settings.set_surface_enabled(surface_id, enabled)
-            if surface_id == self.settings.DEFAULT_SURFACE_ID:
-                self._propagate_surface_changes()
+            
+            # 🎯 Trigger Calc/Plot Update: Enable-Status ändert sich
+            # (Enable-Status-Änderung kann Berechnung beeinflussen → Empty Plot, beeinflusst immer Overlay)
+            if hasattr(self.main_window, "draw_plots"):
+                if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
         elif column == 2:
-            surface_data["hidden"] = item.checkState(2) == Qt.Checked
+            hidden = item.checkState(2) == Qt.Checked
+            surface_data["hidden"] = hidden
+            
+            # 🎯 Trigger Calc/Plot Update: Hide-Status ändert sich
+            # (Hide-Status-Änderung kann Berechnung beeinflussen wenn Surface enabled ist, beeinflusst immer Overlay)
+            if hasattr(self.main_window, "draw_plots"):
+                if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _activate_surface(self, surface_id: Optional[str]) -> None:
+        """
+        Aktiviert ein Surface für die Bearbeitung.
+        Aktualisiert UI-Dimensionen und Overlays (für rote Markierung des aktiven Surfaces),
+        aber löst KEINE Neuberechnung aus.
+        Neuberechnungen erfolgen ausschließlich über _handle_surface_item_changed
+        bei Enable/Hide-Änderungen.
+        """
         if surface_id is None:
             return
 
@@ -380,50 +417,24 @@ class SurfaceDockWidget(QDockWidget):
             return
 
         previous_active = getattr(self.settings, "active_surface_id", None)
-        previous_width = getattr(self.settings, "width", None)
-        previous_length = getattr(self.settings, "length", None)
 
         try:
             self.settings.set_active_surface(surface_id)
         except KeyError:
             return
-
-        if (
-            surface_id != previous_active
-            or self.settings.width != previous_width
-            or self.settings.length != previous_length
-        ):
-            self._propagate_surface_changes()
-
-    def _propagate_surface_changes(self) -> None:
-        # Aktualisiere die Dimensionen basierend auf dem Default-Surface
-        self.settings.update_surface_dimensions()
-
-        ui_settings = getattr(self.main_window, "ui_settings", None)
-        if ui_settings and hasattr(ui_settings, "update_soundfield_dimensions"):
-            ui_settings.update_soundfield_dimensions(self.settings.width, self.settings.length)
-
-        sources_instance = getattr(self.main_window, "sources_instance", None)
-        has_active_speaker = False
-        if sources_instance and hasattr(self.main_window, "get_selected_speaker_array_id"):
-            speaker_array_id = self.main_window.get_selected_speaker_array_id()
-            if (
-                speaker_array_id is not None
-                and self.settings.get_speaker_array(speaker_array_id) is not None
-            ):
-                has_active_speaker = True
-
-        if not self.settings.is_default_surface_enabled():
-            if hasattr(self.main_window, "draw_plots"):
-                self.main_window.draw_plots.show_empty_plots()
-            return
-
-        if has_active_speaker and hasattr(self.main_window, "update_speaker_array_calculations"):
-            self.main_window.update_speaker_array_calculations()
-        elif hasattr(self.main_window, "plot_spl"):
-            self.main_window.plot_spl()
+        
+        # Aktualisiere Overlays, wenn sich die Auswahl ändert (für rote Markierung)
+        # KEINE Neuberechnung, nur visuelle Aktualisierung
+        if surface_id != previous_active:
+            if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "draw_spl_plotter"):
+                if hasattr(self.main_window.draw_plots.draw_spl_plotter, "update_overlays"):
+                    self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
 
     def _on_surface_geometry_changed(self, surface_id: Optional[str]) -> None:
+        """
+        Wird aufgerufen, wenn sich die Geometrie eines Surfaces ändert (Punkte hinzugefügt/gelöscht/geändert).
+        Prüft ob Calc/Plot aktualisiert werden muss und propagiert die Änderungen.
+        """
         if surface_id is None:
             return
 
@@ -431,19 +442,11 @@ class SurfaceDockWidget(QDockWidget):
         if surface_id not in surface_store:
             return
 
-        if surface_id != self.settings.DEFAULT_SURFACE_ID:
-            return
-
-        previous_width = getattr(self.settings, "width", None)
-        previous_length = getattr(self.settings, "length", None)
-
-        self.settings.update_surface_dimensions()
-
-        if (
-            self.settings.width != previous_width
-            or self.settings.length != previous_length
-        ):
-            self._propagate_surface_changes()
+        # 🎯 Trigger Calc/Plot Update: Punkt-Änderungen beeinflussen Berechnung und Plot
+        # (Grid-Erstellung basiert auf Surface-Koordinaten, Overlays zeigen Surface-Geometrie)
+        if hasattr(self.main_window, "draw_plots"):
+            if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _show_surface_context_menu(self, position: QPoint) -> None:
         menu = QtWidgets.QMenu(self.surface_tree)
@@ -615,6 +618,8 @@ class SurfaceDockWidget(QDockWidget):
             return
 
         coords = surface["points"][index]
+        previous_coords = coords.copy()
+
         if column == 1:
             coords["x"] = value
             item.setText(1, f"{value:.2f}")
@@ -624,6 +629,18 @@ class SurfaceDockWidget(QDockWidget):
         else:
             coords["z"] = value
             item.setText(3, f"{value:.2f}")
+        if not self._enforce_surface_planarity(surface):
+            # Rückgängig machen, falls Modell nicht bestimmt werden konnte
+            self._loading_points = True
+            coords.update(previous_coords)
+            if column == 1:
+                item.setText(1, f"{previous_coords.get('x', 0.0):.2f}")
+            elif column == 2:
+                item.setText(2, f"{previous_coords.get('y', 0.0):.2f}")
+            else:
+                item.setText(3, f"{previous_coords.get('z', 0.0):.2f}")
+            self._loading_points = False
+            return
 
         self._on_surface_geometry_changed(self.current_surface_id)
 
@@ -650,6 +667,64 @@ class SurfaceDockWidget(QDockWidget):
         if not hasattr(self.settings, "surface_definitions") or self.settings.surface_definitions is None:
             self.settings.surface_definitions = {}
         return self.settings.surface_definitions
+
+    def _validate_surface_planarity(
+        self,
+        surface: Optional[SurfaceDefinition],
+        *,
+        show_warning: bool = True,
+    ) -> bool:
+        """
+        Prüft, ob die Z-Werte einer Surface konform mit den Planar-Regeln sind.
+        """
+        if surface is None:
+            return True
+
+        points = surface.get("points", [])
+        model, error = derive_surface_plane(points)
+        if model is None:
+            if show_warning:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Ungültige Z-Geometrie",
+                    (
+                        f"Die Fläche '{surface.get('name', 'Surface')}' kann nicht gezeichnet werden:\n"
+                        f"{error}"
+                    ),
+                )
+            return False
+        return True
+
+    def _enforce_surface_planarity(self, surface: SurfaceDefinition) -> bool:
+        """
+        Erzwingt planare Z-Werte, indem die Fläche auf das beste gültige Modell projiziert wird.
+        """
+        if surface is None:
+            return False
+
+        points = surface.get("points", [])
+        model, needs_adjustment = build_planar_model(points)
+        if model is None:
+            return False
+
+        if needs_adjustment:
+            previous_loading = self._loading_points
+            self._loading_points = True
+            try:
+                for idx, point in enumerate(points):
+                    new_z = evaluate_surface_plane(
+                        model,
+                        float(point.get("x", 0.0)),
+                        float(point.get("y", 0.0)),
+                    )
+                    point["z"] = new_z
+                    item = self.points_tree.topLevelItem(idx)
+                    if item is not None:
+                        item.setText(3, f"{new_z:.2f}")
+            finally:
+                self._loading_points = previous_loading
+
+        return True
 
     def _ensure_default_surface(self, surface_store: Dict[str, SurfaceDefinition]) -> None:
         if self.DEFAULT_SURFACE_ID not in surface_store:

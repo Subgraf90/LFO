@@ -150,14 +150,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def plot_spl(self, update_axes: bool = True, reset_camera: bool = False):
         """Zeichnet den SPL-Plot (Sound Pressure Level)."""
+        print(f"[DEBUG] Main.plot_spl() aufgerufen: update_axes={update_axes}, reset_camera={reset_camera}")
         if not self.container.calculation_spl.get("show_in_plot", True):
+            print(f"[DEBUG] Main.plot_spl() - show_in_plot=False, zeige leeren Plot")
             self.draw_plots.show_empty_spl()
             if update_axes:
                 self.draw_plots.show_empty_axes()
                 self.draw_plots.show_empty_polar()
             return
         speaker_array_id = self.get_selected_speaker_array_id()
+        print(f"[DEBUG] Main.plot_spl() - Rufe draw_plots.plot_spl() auf mit speaker_array_id={speaker_array_id}")
         self.draw_plots.plot_spl(self.settings, speaker_array_id, update_axes=update_axes, reset_camera=reset_camera)
+        print(f"[DEBUG] Main.plot_spl() - draw_plots.plot_spl() abgeschlossen")
 
     def plot_xaxis(self):
         """Zeichnet den X-Achsen-Plot."""
@@ -651,7 +655,21 @@ class MainWindow(QtWidgets.QMainWindow):
             show_progress: Progress-Bar anzeigen
             update_plot: SPL-Plot aktualisieren
         """
-        print("[FDTD] calculate_fdtd() aufgerufen")
+        print(f"[DEBUG] Main.calculate_fdtd() aufgerufen: show_progress={show_progress}, update_plot={update_plot}")
+        
+        # Prüfe ob Speaker-Arrays vorhanden sind (erforderlich für FDTD)
+        speaker_arrays = getattr(self.settings, "speaker_arrays", None)
+        if not isinstance(speaker_arrays, dict) or not speaker_arrays:
+            print("[FDTD] ERROR: No speaker arrays found. Please add a speaker array first.")
+            # Zeige benutzerfreundliche Fehlermeldung
+            from qtpy import QtWidgets
+            msg = QtWidgets.QMessageBox()
+            msg.setIcon(QtWidgets.QMessageBox.Warning)
+            msg.setWindowTitle("FDTD Calculation")
+            msg.setText("No speaker arrays found.")
+            msg.setInformativeText("Please add at least one speaker array before starting the FDTD calculation.")
+            msg.exec_()
+            return
         
         # Erstelle FDTD-Calculator (unabhängig von FEM)
         calculator = SoundFieldCalculatorFDTD(
@@ -664,7 +682,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # Ermittle primäre Frequenz aus Settings
         frequency = calculator._select_primary_frequency()
         if frequency is None:
-            print("[FDTD] Keine gültige Frequenz gefunden.")
+            print("[FDTD] No valid frequency found.")
+            from qtpy import QtWidgets
+            msg = QtWidgets.QMessageBox()
+            msg.setIcon(QtWidgets.QMessageBox.Warning)
+            msg.setWindowTitle("FDTD Calculation")
+            msg.setText("No valid frequency found.")
+            msg.setInformativeText("Please select a frequency for the simulation.")
+            msg.exec_()
             return
         
         # Frames pro Periode
@@ -685,14 +710,48 @@ class MainWindow(QtWidgets.QMainWindow):
                 _run_fdtd()
         except ProgressCancelled:
             return
+        except RuntimeError as e:
+            # Fange RuntimeErrors ab (z.B. "Keine Speaker-Arrays gefunden")
+            error_msg = str(e)
+            print(f"[FDTD] ERROR: {error_msg}")
+            from qtpy import QtWidgets
+            msg = QtWidgets.QMessageBox()
+            msg.setIcon(QtWidgets.QMessageBox.Warning)
+            msg.setWindowTitle("FDTD Calculation Failed")
+            msg.setText("The FDTD calculation could not be performed.")
+            msg.setInformativeText(error_msg)
+            msg.exec_()
+            return
+        except Exception as e:
+            # Fange alle anderen Fehler ab, um Crash zu vermeiden
+            error_msg = str(e)
+            print(f"[FDTD] Unexpected error: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            from qtpy import QtWidgets
+            msg = QtWidgets.QMessageBox()
+            msg.setIcon(QtWidgets.QMessageBox.Critical)
+            msg.setWindowTitle("FDTD Calculation Failed")
+            msg.setText("An unexpected error occurred.")
+            msg.setInformativeText(f"Error: {error_msg}")
+            msg.setDetailedText(traceback.format_exc())
+            msg.exec_()
+            return
         
         # Aktualisiere calculation_spl (FDTD-Daten werden bereits in calculator.calculation_spl gespeichert,
         # da es das gleiche Objekt wie self.container.calculation_spl ist)
         self.container.set_calculation_SPL(calculator.calculation_spl)
         
+        # WICHTIG: Setze show_in_plot=True, damit der Plot angezeigt wird
+        # (set_calculation_SPL ersetzt das gesamte Dictionary und könnte show_in_plot überschreiben)
+        self.container.calculation_spl["show_in_plot"] = True
+        print(f"[DEBUG] Main.calculate_fdtd() - FDTD-Berechnung abgeschlossen, calculation_spl aktualisiert, show_in_plot=True gesetzt")
+        
         # Aktualisiere Plot
         if update_plot:
+            print(f"[DEBUG] Main.calculate_fdtd() - Starte Plot-Update (plot_spl)")
             self.plot_spl(update_axes=False)
+            print(f"[DEBUG] Main.calculate_fdtd() - Plot-Update abgeschlossen")
 
     def calculate_axes(self, include_x: bool = True, include_y: bool = True, update_plot: bool = True):
         """

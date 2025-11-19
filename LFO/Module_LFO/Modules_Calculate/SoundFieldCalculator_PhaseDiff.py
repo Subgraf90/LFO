@@ -37,8 +37,8 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         valid_masks = magnitudes > self._AMPLITUDE_THRESHOLD
 
         phases_rad = np.angle(stack)  # [-pi, pi]
-        max_diff_rad = np.zeros_like(magnitudes[0], dtype=float)
-        has_pair = np.zeros_like(magnitudes[0], dtype=bool)
+        weighted_diff_sum = np.zeros_like(magnitudes[0], dtype=float)
+        weight_sum = np.zeros_like(magnitudes[0], dtype=float)
 
         num_arrays = stack.shape[0]
         for i in range(num_arrays):
@@ -47,12 +47,20 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
                 if not np.any(pair_mask):
                     continue
                 diff_rad = np.abs(np.angle(np.exp(1j * (phases_rad[i] - phases_rad[j]))))
-                update_mask = pair_mask & (diff_rad > max_diff_rad)
-                max_diff_rad = np.where(update_mask, diff_rad, max_diff_rad)
-                has_pair = has_pair | pair_mask
+                pair_weight = magnitudes[i] * magnitudes[j]
+                pair_weight = np.where(pair_mask, pair_weight, 0.0)
+                if not np.any(pair_weight):
+                    continue
+                weighted_diff_sum += diff_rad * pair_weight
+                weight_sum += pair_weight
 
-        phase_diff_deg = np.degrees(max_diff_rad)
-        phase_diff_deg = np.where(has_pair, phase_diff_deg, np.nan)
+        phase_diff_rad = np.divide(
+            weighted_diff_sum,
+            weight_sum,
+            out=np.full_like(weight_sum, np.nan),
+            where=weight_sum > 0,
+        )
+        phase_diff_deg = np.degrees(phase_diff_rad)
         return phase_diff_deg
 
 

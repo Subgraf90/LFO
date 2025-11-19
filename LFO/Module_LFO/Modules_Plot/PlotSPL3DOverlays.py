@@ -29,6 +29,7 @@ class SPL3DOverlayRenderer:
         self._geometry_cache_max_size = 100  # Maximale Anzahl gecachter Geometrien
         self._last_axis_state: Optional[tuple] = None
         self._last_impulse_state: Optional[tuple] = None
+        self._last_surfaces_state: Optional[tuple] = None
 
 
     def clear(self) -> None:
@@ -67,6 +68,8 @@ class SPL3DOverlayRenderer:
             self._last_axis_state = None
         elif category == 'impulse':
             self._last_impulse_state = None
+        elif category == 'surfaces':
+            self._last_surfaces_state = None
 
     # ------------------------------------------------------------------
     # Öffentliche API zum Zeichnen der Overlays
@@ -94,8 +97,152 @@ class SPL3DOverlayRenderer:
         self._add_overlay_mesh(line_y, color='black', line_width=1.2, line_pattern=dashed_pattern, line_repeat=2, category='axis')
         self._last_axis_state = state
 
-    def draw_walls(self, settings) -> None:
-        self.clear_category('walls')
+    def draw_surfaces(self, settings) -> None:
+        """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot."""
+        # Erstelle Signatur für Änderungsdetektion
+        surface_definitions = getattr(settings, 'surface_definitions', {})
+        if not isinstance(surface_definitions, dict):
+            self.clear_category('surfaces')
+            self._last_surfaces_state = None
+            return
+
+        # Hole aktives Surface für Signatur und Markierung
+        active_surface_id = getattr(settings, 'active_surface_id', None)
+
+        surfaces_signature: List[tuple] = []
+        for surface_id in sorted(surface_definitions.keys()):
+            surface_def = surface_definitions[surface_id]
+            enabled = bool(surface_def.get('enabled', False))
+            hidden = bool(surface_def.get('hidden', False))
+            points = surface_def.get('points', [])
+            
+            # Erstelle Signatur aus enabled, hidden, Punkten und aktiver Surface-ID
+            points_tuple = []
+            for point in points:
+                try:
+                    x = float(point.get('x', 0.0))
+                    y = float(point.get('y', 0.0))
+                    z = float(point.get('z', 0.0))
+                    points_tuple.append((x, y, z))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            
+            surfaces_signature.append((
+                str(surface_id),
+                enabled,
+                hidden,
+                tuple(points_tuple)
+            ))
+        
+        # Füge active_surface_id zur Signatur hinzu, damit Plot aktualisiert wird bei Auswahländerung
+        signature_tuple = (tuple(surfaces_signature), active_surface_id)
+        
+        # Prüfe ob sich etwas geändert hat
+        if self._last_surfaces_state == signature_tuple:
+            return
+        
+        # Lösche alte Surfaces
+        self.clear_category('surfaces')
+        self._last_surfaces_state = signature_tuple
+        
+        # Zeichne alle nicht versteckten Surfaces (enabled und disabled)
+        z_offset = self._planar_z_offset * 2  # Etwas höher als andere Overlays
+        
+        for surface_id, surface_def in surface_definitions.items():
+            enabled = surface_def.get('enabled', False)
+            hidden = surface_def.get('hidden', False)
+            
+            # Überspringe nur versteckte Surfaces
+            if hidden:
+                continue
+            
+            points = surface_def.get('points', [])
+            if len(points) < 3:
+                continue
+            
+            # Prüfe ob dies das aktive Surface ist
+            is_active = (surface_id == active_surface_id)
+            
+            # Hole Farbe aus Surface-Definition oder verwende Standard
+            # Aktives Surface wird rot markiert
+            if is_active:
+                color = '#FF0000'  # Rot für aktives Surface
+            else:
+                color = surface_def.get('color', '#888888')
+                if not isinstance(color, str):
+                    color = '#888888'
+            
+            # Konvertiere Punkte zu numpy-Array
+            try:
+                point_coords = []
+                for point in points:
+                    x = float(point.get('x', 0.0))
+                    y = float(point.get('y', 0.0))
+                    z = float(point.get('z', 0.0)) + z_offset
+                    point_coords.append([x, y, z])
+                
+                if len(point_coords) < 3:
+                    continue
+                
+                # Erstelle geschlossenes Polygon (füge ersten Punkt am Ende hinzu)
+                closed_coords = point_coords + [point_coords[0]]
+                
+                # Erstelle PolyLine aus PyVista
+                polyline = self.pv.PolyData(closed_coords)
+                polyline.lines = [len(closed_coords)] + list(range(len(closed_coords)))
+                
+                # 🎯 Unterscheide zwischen enabled/disabled und aktivem/inaktivem Surface
+                if enabled:
+                    if is_active:
+                        # Aktives enabled Surface: Rote Umrandung, etwas hervorgehoben
+                        self._add_overlay_mesh(
+                            polyline,
+                            color='#FF0000',  # Immer Rot für aktives Surface
+                            line_width=2.5,
+                            opacity=0.95,
+                            category='surfaces',
+                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                        )
+                    else:
+                        # Inaktives enabled Surface: sehr schlanke Linienführung
+                        self._add_overlay_mesh(
+                            polyline,
+                            color=color,
+                            line_width=1.0,
+                            opacity=0.75,
+                            category='surfaces',
+                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                        )
+                else:
+                    # Disabled Surface: "Empty Surface" - gestrichelt und transparent
+                    # Verwende gestrichelte Linie (line_pattern) und reduzierte Opacity
+                    dashed_pattern = 0xAAAA  # Gestricheltes Muster
+                    if is_active:
+                        # Aktives disabled Surface: Rote gestrichelte Umrandung
+                        self._add_overlay_mesh(
+                            polyline,
+                            color='#FF0000',
+                            line_width=2.0,
+                            opacity=0.60,
+                            line_pattern=dashed_pattern,
+                            line_repeat=2,
+                            category='surfaces',
+                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                        )
+                    else:
+                        # Inaktives disabled Surface: Standard gestrichelt, dünn
+                        self._add_overlay_mesh(
+                            polyline,
+                            color=color,
+                            line_width=1.0,
+                            opacity=0.25,
+                            line_pattern=dashed_pattern,
+                            line_repeat=2,
+                            category='surfaces',
+                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                        )
+            except (ValueError, TypeError, AttributeError, Exception):
+                continue
 
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
@@ -905,6 +1052,7 @@ class SPL3DOverlayRenderer:
         cmap: Optional[List[str]] = None,
         edge_color: Optional[str] = None,
         show_edges: bool = False,
+        show_vertices: bool = False,  # Standard: Keine Eckpunkte anzeigen
         line_pattern: Optional[int] = None,
         line_repeat: int = 1,
         category: str = 'generic',
@@ -932,8 +1080,22 @@ class SPL3DOverlayRenderer:
             kwargs['show_edges'] = True
         elif show_edges:
             kwargs['show_edges'] = True
+        
+        # 🎯 Stelle sicher, dass keine Eckpunkte angezeigt werden (nur Linien)
+        if not show_vertices and hasattr(mesh, 'lines') and mesh.lines is not None:
+            # Für PolyLines: Keine Vertices anzeigen
+            kwargs['render_points_as_spheres'] = False
+            kwargs['point_size'] = 0
 
         actor = self.plotter.add_mesh(mesh, **kwargs)
+        
+        # Stelle sicher, dass Vertices nicht angezeigt werden
+        if not show_vertices and hasattr(actor, 'prop') and actor.prop is not None:
+            try:
+                actor.prop.render_points_as_spheres = False
+                actor.prop.point_size = 0
+            except Exception:  # noqa: BLE001
+                pass
         if line_pattern is not None and hasattr(actor, 'prop') and actor.prop is not None:
             try:
                 actor.prop.line_stipple_pattern = line_pattern

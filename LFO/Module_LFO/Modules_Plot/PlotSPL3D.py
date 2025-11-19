@@ -10,7 +10,7 @@ from typing import Iterable, List, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from matplotlib.colors import BoundaryNorm, Normalize, LinearSegmentedColormap
+from matplotlib.colors import BoundaryNorm, Normalize, LinearSegmentedColormap, ListedColormap
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
@@ -45,7 +45,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
     SURFACE_NAME = "spl_surface"
     FLOOR_NAME = "spl_floor"
-    UPSCALE_FACTOR = 12
+    UPSCALE_FACTOR = 3  # Erhöht die Anzahl der Grafikpunkte für schärferen Plot (mit Interpolation)
 
     def __init__(self, parent_widget, settings, colorbar_ax):
         if QtInteractor is None or pv is None:  # pragma: no cover - Laufzeitprüfung
@@ -61,6 +61,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.parent_widget = parent_widget
         self.colorbar_ax = colorbar_ax
         self.settings = settings
+        self.container = None  # Wird bei update_overlays gesetzt
 
         self.plotter = QtInteractor(parent_widget)
         self.widget = self.plotter.interactor
@@ -88,6 +89,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.time_control: Optional[SPLTimeControlBar] = None
         self._time_slider_callback = None
         self._time_mode_active = False
+        self._time_mode_surface_cache: dict | None = None
 
         # Colorbar-Caching: merkt sich den ScalarMappable sowie den Modus,
         # damit wir bei Area-Updates keine neue Colorbar erzeugen müssen.
@@ -207,7 +209,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         colorization_mode: str = "Gradient",
     ):
         """Aktualisiert die SPL-Fläche."""
-
+        print(f"[DEBUG] PlotSPL3D.update_spl_plot() START: colorization_mode={colorization_mode}")
+        
         camera_state = self._camera_state or self._capture_camera()
 
         if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
@@ -300,6 +303,28 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             upscale_factor = self.UPSCALE_FACTOR
         upscale_factor = max(1, upscale_factor)
 
+        # 🎯 Hole Z-Koordinaten aus calculation_spl, falls verfügbar (VOR Upscaling)
+        z_coords = None
+        if self.container is not None and hasattr(self.container, 'calculation_spl'):
+            calc_spl = self.container.calculation_spl
+            if isinstance(calc_spl, dict) and 'sound_field_z' in calc_spl:
+                try:
+                    z_data = calc_spl['sound_field_z']
+                    if z_data is not None:
+                        z_coords = np.asarray(z_data, dtype=float)
+                        # Z-Koordinaten haben die Shape der ursprünglichen Grid-Dimensionen
+                        # (vor Upscaling, falls aktiv)
+                        if z_coords.shape != (len(y), len(x)):
+                            # Versuche Reshape
+                            if z_coords.size == len(y) * len(x):
+                                z_coords = z_coords.reshape(len(y), len(x))
+                            else:
+                                # Shape stimmt nicht - verwende Z=0
+                                z_coords = None
+                except Exception:
+                    z_coords = None
+
+        # Upscaling (falls aktiv)
         if (
             upscale_factor > 1
             and plot_x.size > 1
@@ -311,12 +336,24 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             plot_x = self._expand_axis_for_plot(plot_x, base_resolution, upscale_factor)
             plot_y = self._expand_axis_for_plot(plot_y, base_resolution, upscale_factor)
             plot_values = self._resample_values_to_grid(plot_values, orig_plot_x, orig_plot_y, plot_x, plot_y)
+            
+            # 🎯 Resample auch Z-Koordinaten, wenn Upscaling aktiv ist
+            if z_coords is not None:
+                z_coords = self._resample_values_to_grid(
+                    z_coords,
+                    orig_plot_x,  # Original X-Koordinaten
+                    orig_plot_y,  # Original Y-Koordinaten
+                    plot_x,       # Upscaled X-Koordinaten
+                    plot_y        # Upscaled Y-Koordinaten
+                )
+        
         colorization_mode_used = colorization_mode
         if colorization_mode_used == 'Color step':
             scalars = self._quantize_to_steps(plot_values, cbar_step)
         else:
             scalars = plot_values
-        mesh = self._build_surface_mesh(plot_x, plot_y, scalars)
+        
+        mesh = self._build_surface_mesh(plot_x, plot_y, scalars, z_coords)
 
         if time_mode:
             cmap_object = 'RdBu_r'
@@ -355,6 +392,45 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         self._update_colorbar(colorization_mode_used, tick_step=tick_step)
         self.has_data = True
+        if time_mode and self.surface_mesh is not None:
+            # Prüfe ob Upscaling aktiv ist - wenn ja, deaktiviere schnellen Update-Pfad
+            # da Resampling zu Verzerrungen führen kann
+            requested_upscale = getattr(self.settings, 'plot_upscale_factor', None)
+            if requested_upscale is None:
+                requested_upscale = self.UPSCALE_FACTOR
+            try:
+                upscale_factor = int(requested_upscale)
+            except (TypeError, ValueError):
+                upscale_factor = self.UPSCALE_FACTOR
+            upscale_factor = max(1, upscale_factor)
+            
+            has_upscaling = (
+                upscale_factor > 1
+                and plot_x.size > 1
+                and plot_y.size > 1
+                and (plot_x.size != len(x) or plot_y.size != len(y))
+            )
+            
+            source_shape = tuple(pressure.shape)
+            cache_entry = {
+                'source_shape': source_shape,
+                'source_x': np.asarray(x, dtype=float).copy(),
+                'source_y': np.asarray(y, dtype=float).copy(),
+                'target_x': np.asarray(plot_x, dtype=float).copy(),
+                'target_y': np.asarray(plot_y, dtype=float).copy(),
+                'needs_resample': not (
+                    np.array_equal(plot_x, x) and np.array_equal(plot_y, y)
+                ),
+                'has_upscaling': has_upscaling,
+                'colorbar_range': (cbar_min, cbar_max),
+                'colorization_mode': colorization_mode_used,
+                'color_step': cbar_step,
+                'grid_shape': (len(plot_y), len(plot_x)),
+                'expected_points': self.surface_mesh.n_points,
+            }
+            self._time_mode_surface_cache = cache_entry
+        else:
+            self._time_mode_surface_cache = None
 
         if camera_state is not None:
             self._restore_camera(camera_state)
@@ -362,9 +438,77 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.render()
         self._save_camera_state()
         self._colorbar_override = None
+        print(f"[DEBUG] PlotSPL3D.update_spl_plot() ENDE: Plot aktualisiert, time_mode={time_mode}, phase_mode={phase_mode}")
+
+    def update_time_frame_values(
+        self,
+        sound_field_x: Iterable[float],
+        sound_field_y: Iterable[float],
+        sound_field_pressure: Iterable[float],
+    ) -> bool:
+        """
+        Aktualisiert nur die Skalare für den Zeitmodus, um schnelle Frame-Wechsel zu ermöglichen.
+        
+        DEAKTIVIERT: Verursacht Verzerrungen im Plot. Verwende stattdessen den normalen Update-Pfad.
+        """
+        # Schneller Update-Pfad deaktiviert, da er zu Verzerrungen führt
+        # Der normale update_spl_plot() Pfad wird stattdessen verwendet
+        return False
+
+        x_arr = np.asarray(sound_field_x, dtype=float)
+        y_arr = np.asarray(sound_field_y, dtype=float)
+        if x_arr.shape != cache['source_x'].shape or y_arr.shape != cache['source_y'].shape:
+            return False
+        # Verwende numerische Toleranz statt exakter Gleichheit
+        if not (np.allclose(x_arr, cache['source_x'], rtol=1e-10, atol=1e-12) and 
+                np.allclose(y_arr, cache['source_y'], rtol=1e-10, atol=1e-12)):
+            return False
+
+        pressure = np.asarray(sound_field_pressure, dtype=float)
+        if pressure.ndim != 2 or tuple(pressure.shape) != cache['source_shape']:
+            return False
+
+        pressure = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
+        cbar_min, cbar_max = cache['colorbar_range']
+        pressure = np.clip(pressure, cbar_min, cbar_max)
+
+        # WICHTIG: Resampling muss exakt wie im normalen Pfad funktionieren
+        if cache['needs_resample']:
+            # Verwende die exakt gleichen Koordinaten wie beim ersten Plot
+            pressure = self._resample_values_to_grid(
+                pressure,
+                cache['source_x'],
+                cache['source_y'],
+                cache['target_x'],
+                cache['target_y'],
+            )
+        else:
+            # Kein Resampling nötig, aber sicherstellen dass Shape stimmt
+            if pressure.shape != cache['source_shape']:
+                return False
+
+        if pressure.shape != cache['grid_shape']:
+            return False
+
+        if cache['colorization_mode'] == 'Color step':
+            pressure = self._quantize_to_steps(pressure, cache['color_step'])
+
+        # WICHTIG: Verwende exakt die gleiche Ravel-Ordnung wie beim Mesh-Build
+        flat_scalars = np.asarray(pressure, dtype=float).ravel(order='F')
+        if flat_scalars.size != cache['expected_points']:
+            return False
+
+        if not self._update_surface_scalars(flat_scalars):
+            return False
+
+        self.render()
+        return True
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
+        # Speichere Container-Referenz für Z-Koordinaten-Zugriff
+        self.container = container
+        
         # Wir vergleichen Hash-Signaturen pro Kategorie und zeichnen nur dort neu,
         # wo sich Parameter geändert haben. Das verhindert unnötiges Entfernen
         # und erneutes Hinzufügen zahlreicher PyVista-Actor.
@@ -387,9 +531,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.overlay_helper.DEBUG_ON_TOP = True
             if 'axis' in categories_to_refresh:
                 self.overlay_helper.draw_axis_lines(settings)
-            if 'walls' in categories_to_refresh:
-                self.overlay_helper.clear_category('walls')
-                self.overlay_helper.draw_walls(settings)
+            if 'surfaces' in categories_to_refresh:
+                self.overlay_helper.draw_surfaces(settings)
             if 'speakers' in categories_to_refresh:
                 cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
                 self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
@@ -608,13 +751,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._time_slider_callback = callback
 
     def update_time_control(self, active: bool, frames: int, value: int, simulation_time: float = 0.2):
+        print(f"[DEBUG] PlotSPL3D.update_time_control() aufgerufen: active={active}, frames={frames}, value={value}, simulation_time={simulation_time}")
         if self.time_control is None:
+            print(f"[DEBUG] PlotSPL3D.update_time_control() - time_control ist None, überspringe")
             return
         if not active:
+            print(f"[DEBUG] PlotSPL3D.update_time_control() - active=False, verstecke time_control")
             self.time_control.hide()
             return
+        print(f"[DEBUG] PlotSPL3D.update_time_control() - Konfiguriere time_control mit frames={frames}, value={value}")
         self.time_control.configure(frames, value, simulation_time)
         self.time_control.show()
+        print(f"[DEBUG] PlotSPL3D.update_time_control() - time_control angezeigt")
 
     def _handle_time_slider_change(self, value: int):
         if callable(self._time_slider_callback):
@@ -912,8 +1060,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.plotter.add_mesh(
             plane,
             name=self.FLOOR_NAME,
-            color='#f5f5f5',
-            opacity=0.4,
+            color='#d3d3d3',  # Hellgrau für Empty Plot
+            opacity=0.7,  # Etwas weniger transparent für bessere Sichtbarkeit
             reset_camera=False,
         )
 
@@ -1007,10 +1155,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if levels.size < 2:
                 levels = np.array([cbar_min, cbar_max])
 
+            num_segments = max(1, len(levels) - 1)
             if hasattr(base_cmap, "resampled"):
-                cmap = base_cmap.resampled(max(2, len(levels) - 1))
+                sampled_cmap = base_cmap.resampled(num_segments)
             else:
-                cmap = cm.get_cmap(base_cmap, len(levels) - 1)
+                sampled_cmap = cm.get_cmap(base_cmap, num_segments)
+            sample_points = (np.arange(num_segments, dtype=float) + 0.5) / max(num_segments, 1)
+            color_list = sampled_cmap(sample_points)
+            cmap = ListedColormap(color_list)
             norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
             boundaries = levels
             spacing = 'proportional'
@@ -1122,10 +1274,34 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         return False
 
-    def _build_surface_mesh(self, x: np.ndarray, y: np.ndarray, scalars: np.ndarray) -> "pv.PolyData":
+    def _build_surface_mesh(self, x: np.ndarray, y: np.ndarray, scalars: np.ndarray, z_coords: Optional[np.ndarray] = None) -> "pv.PolyData":
+        """
+        Erstellt ein Surface-Mesh für den 3D-Plot.
+        
+        Args:
+            x: X-Koordinaten (1D-Array)
+            y: Y-Koordinaten (1D-Array)
+            scalars: Skalarwerte für die Farbgebung (2D-Array, Shape: [ny, nx])
+            z_coords: Optional - Z-Koordinaten aus Surface-Interpolation (2D-Array, Shape: [ny, nx])
+                     Wenn None, wird Z=0 verwendet (Standard)
+        """
         xm, ym = np.meshgrid(x, y, indexing='xy')
-        zeros = np.zeros_like(xm)
-        grid = pv.StructuredGrid(xm, ym, zeros)
+        
+        # 🎯 Verwende Z-Koordinaten aus Surfaces, falls verfügbar
+        if z_coords is not None:
+            # Stelle sicher, dass z_coords die richtige Shape hat
+            if z_coords.shape == (len(y), len(x)):
+                zm = z_coords
+            else:
+                # Fallback: Reshape oder verwende Z=0
+                try:
+                    zm = np.asarray(z_coords, dtype=float).reshape(len(y), len(x))
+                except Exception:
+                    zm = np.zeros_like(xm, dtype=float)
+        else:
+            zm = np.zeros_like(xm, dtype=float)
+        
+        grid = pv.StructuredGrid(xm, ym, zm)
 
         flat_scalars = np.asarray(scalars, dtype=float).ravel(order='F')
         grid['plot_scalars'] = flat_scalars
@@ -1325,29 +1501,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             float(getattr(settings, 'width', 0.0)),
         )
 
-        walls_raw = getattr(settings, 'image_walls', []) or []
-        wall_flags = (
-            bool(getattr(settings, 'image_wall_1', False)),
-            bool(getattr(settings, 'image_wall_2', False)),
-            bool(getattr(settings, 'image_wall_3', False)),
-            bool(getattr(settings, 'image_wall_4', False)),
-        )
-        walls_signature: List[tuple] = []
-        for wall in walls_raw:
-            try:
-                (x1, y1), (x2, y2) = wall
-            except Exception:
-                continue
-            walls_signature.append(
-                (
-                    float(x1),
-                    float(y1),
-                    float(x2),
-                    float(y2),
-                )
-            )
-        walls_signature_tuple = (tuple(walls_signature), wall_flags)
-
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
         speakers_signature: List[tuple] = []
         if isinstance(speaker_arrays, dict):
@@ -1400,11 +1553,43 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 continue
         impulse_signature_tuple = tuple(sorted(impulse_signature))
 
+        # Surfaces-Signatur
+        surface_definitions = getattr(settings, 'surface_definitions', {})
+        surfaces_signature: List[tuple] = []
+        if isinstance(surface_definitions, dict):
+            for surface_id in sorted(surface_definitions.keys()):
+                surface_def = surface_definitions[surface_id]
+                enabled = bool(surface_def.get('enabled', False))
+                hidden = bool(surface_def.get('hidden', False))
+                points = surface_def.get('points', [])
+                
+                points_tuple = []
+                for point in points:
+                    try:
+                        x = float(point.get('x', 0.0))
+                        y = float(point.get('y', 0.0))
+                        z = float(point.get('z', 0.0))
+                        points_tuple.append((x, y, z))
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                
+                surfaces_signature.append((
+                    str(surface_id),
+                    enabled,
+                    hidden,
+                    tuple(points_tuple)
+                ))
+        surfaces_signature_tuple = tuple(surfaces_signature)
+        
+        # 🎯 Füge active_surface_id zur Signatur hinzu, damit Auswahländerungen erkannt werden
+        active_surface_id = getattr(settings, 'active_surface_id', None)
+        surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id)
+
         return {
             'axis': axis_signature,
-            'walls': walls_signature_tuple,
             'speakers': speakers_signature_tuple,
             'impulse': impulse_signature_tuple,
+            'surfaces': surfaces_signature_with_active,  # Enthält jetzt active_surface_id
         }
 
 

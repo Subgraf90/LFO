@@ -2353,8 +2353,10 @@ class Sources(ModuleBase):
             # Aktiviere alle Tabs
             for i in range(self.tab_widget.count()):
                 self.tab_widget.setTabEnabled(i, True)
-                
-        self.main_window.update_speaker_array_calculations()
+        
+        # 🎯 Plot aktualisieren nach Array-Erstellung
+        if hasattr(self.main_window, "update_speaker_array_calculations"):
+            self.main_window.update_speaker_array_calculations()
 
     def add_flown(self):
         """Fügt ein neues Flown-Array hinzu"""
@@ -2645,6 +2647,9 @@ class Sources(ModuleBase):
                 if speaker_array:
                     new_name = item.text(0)
                     speaker_array.name = new_name
+                    # 🎯 Plot aktualisieren wenn Array-Name geändert wird
+                    if hasattr(self.main_window, "update_speaker_array_calculations"):
+                        self.main_window.update_speaker_array_calculations()
         except Exception as e:
             print(f"Fehler beim Ändern des Array-Namens: {e}")
 
