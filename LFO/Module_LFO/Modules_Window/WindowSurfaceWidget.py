@@ -107,8 +107,9 @@ class SurfaceTreeWidget(QTreeWidget):
             )
         if handled:
             event.accept()
+            event.setDropAction(Qt.MoveAction)
         else:
-            super().dropEvent(event)
+            event.ignore()
         self._pending_drag_items = []
         self._selection_snapshot = []
 
@@ -294,7 +295,7 @@ class SurfaceDockWidget(QDockWidget):
         self.surface_tree.setAcceptDrops(True)
         self.surface_tree.setDefaultDropAction(Qt.MoveAction)
         self.surface_tree.setDropIndicatorShown(True)
-        self.surface_tree.setDragDropMode(QAbstractItemView.InternalMove)
+        self.surface_tree.setDragDropMode(QAbstractItemView.DragDrop)
         header = self.surface_tree.header()
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.surface_tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -346,6 +347,23 @@ class SurfaceDockWidget(QDockWidget):
     # ---- surface handling -------------------------------------------
 
     def _create_surface_item(self, surface_id: str, data: SurfaceRecord) -> QTreeWidgetItem:
+        # Prüfe, ob bereits ein Item für dieses Surface existiert
+        if surface_id in self._surface_items:
+            existing_item = self._surface_items[surface_id]
+            # Wenn das Item bereits ein Parent hat, entferne es zuerst
+            if existing_item.parent() is not None:
+                parent = existing_item.parent()
+                parent.removeChild(existing_item)
+            # Aktualisiere die Daten des bestehenden Items
+            name = self._surface_get(data, "name", "Surface")
+            existing_item.setText(0, str(name))
+            enabled = bool(self._surface_get(data, "enabled", False))
+            hidden = bool(self._surface_get(data, "hidden", False))
+            existing_item.setCheckState(1, Qt.Checked if enabled else Qt.Unchecked)
+            existing_item.setCheckState(2, Qt.Checked if hidden else Qt.Unchecked)
+            return existing_item
+        
+        # Erstelle ein neues Item
         item = QTreeWidgetItem()
         name = self._surface_get(data, "name", "Surface")
         item.setText(0, str(name))
@@ -370,6 +388,20 @@ class SurfaceDockWidget(QDockWidget):
         return item
 
     def _create_group_item(self, group: SurfaceGroup) -> QTreeWidgetItem:
+        # Prüfe, ob bereits ein Item für diese Gruppe existiert
+        if group.group_id in self._group_items:
+            existing_item = self._group_items[group.group_id]
+            # Wenn das Item bereits ein Parent hat, entferne es zuerst
+            if existing_item.parent() is not None:
+                parent = existing_item.parent()
+                parent.removeChild(existing_item)
+            # Aktualisiere die Daten des bestehenden Items
+            existing_item.setText(0, group.name)
+            existing_item.setCheckState(1, Qt.Checked if group.enabled else Qt.Unchecked)
+            existing_item.setCheckState(2, Qt.Checked if group.hidden else Qt.Unchecked)
+            return existing_item
+        
+        # Erstelle ein neues Item
         item = QTreeWidgetItem()
         item.setText(0, group.name)
         item.setFlags(
@@ -383,6 +415,8 @@ class SurfaceDockWidget(QDockWidget):
         item.setCheckState(1, Qt.Checked if group.enabled else Qt.Unchecked)
         item.setCheckState(2, Qt.Checked if group.hidden else Qt.Unchecked)
         item.setData(0, Qt.UserRole, {"type": self.ITEM_TYPE_GROUP, "id": group.group_id})
+        # Markiere Gruppen-Items immer als expandierbar, auch wenn sie leer sind
+        item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
         self._group_items[group.group_id] = item
         return item
 
@@ -398,6 +432,10 @@ class SurfaceDockWidget(QDockWidget):
             f"with {len(group.child_groups)} child groups and {len(group.surface_ids)} surfaces "
             f"into {location}"
         )
+        if group.surface_ids:
+            print(
+                f"[SurfaceDockWidget] group '{group.group_id}' surface_ids: {group.surface_ids}"
+            )
         for child_group_id in group.child_groups:
             child_group = self._get_surface_group(child_group_id)
             if child_group is None:
@@ -412,16 +450,29 @@ class SurfaceDockWidget(QDockWidget):
         for surface_id in group.surface_ids:
             surface_data = surface_store.get(surface_id)
             if surface_data is None:
+                print(
+                    f"[SurfaceDockWidget] WARNING: surface '{surface_id}' not found in surface_store, skipping"
+                )
                 continue
             surface_item = self._create_surface_item(surface_id, surface_data)
             print(
                 f"[SurfaceDockWidget] add surface '{surface_id}' to "
                 f"{'root' if parent_item is None else group.group_id}"
             )
+            # Stelle sicher, dass das Item nicht bereits ein Parent hat
+            if surface_item.parent() is not None:
+                print(
+                    f"[SurfaceDockWidget] WARNING: surface '{surface_id}' already has parent, removing first"
+                )
+                surface_item.parent().removeChild(surface_item)
             if parent_item is None:
-                self.surface_tree.addTopLevelItem(surface_item)
+                # Prüfe, ob das Item bereits ein Top-Level-Item ist
+                if self.surface_tree.indexOfTopLevelItem(surface_item) < 0:
+                    self.surface_tree.addTopLevelItem(surface_item)
             else:
-                parent_item.addChild(surface_item)
+                # Prüfe, ob das Item bereits ein Child des Parent ist
+                if parent_item.indexOfChild(surface_item) < 0:
+                    parent_item.addChild(surface_item)
 
     def _get_surface_group(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
         if not group_id or not self.surface_manager:
@@ -840,20 +891,41 @@ class SurfaceDockWidget(QDockWidget):
             + f", target={self._get_item_identity(target_item)}, pos={drop_pos}"
         )
 
-        if target_item and drop_pos == QAbstractItemView.OnItem:
+        if target_item:
             target_type, target_id = self._get_item_identity(target_item)
-            if target_type == self.ITEM_TYPE_GROUP:
-                destination_group_id = target_id
-            elif target_type == self.ITEM_TYPE_SURFACE:
+            if drop_pos == QAbstractItemView.OnItem:
+                # Drop direkt auf Item
+                if target_type == self.ITEM_TYPE_GROUP:
+                    destination_group_id = target_id
+                elif target_type == self.ITEM_TYPE_SURFACE:
+                    # Wenn auf Surface gedroppt wird, zur Parent-Gruppe verschieben
+                    parent_group_item = self._find_parent_group_item(target_item)
+                    if parent_group_item:
+                        destination_group_id = self._get_item_identity(parent_group_item)[1]
+                    else:
+                        destination_group_id = root_group_id
+                else:
+                    destination_group_id = root_group_id
+            elif drop_pos in (QAbstractItemView.AboveItem, QAbstractItemView.BelowItem):
+                # Drop oberhalb/unterhalb eines Items - zur Parent-Gruppe des Ziel-Items
+                parent_group_item = self._find_parent_group_item(target_item)
+                if parent_group_item:
+                    destination_group_id = self._get_item_identity(parent_group_item)[1]
+                else:
+                    destination_group_id = root_group_id
+            else:
+                # Unbekannte Position - zur Parent-Gruppe des Ziel-Items
                 parent_group_item = self._find_parent_group_item(target_item)
                 if parent_group_item:
                     destination_group_id = self._get_item_identity(parent_group_item)[1]
                 else:
                     destination_group_id = root_group_id
         elif drop_pos == QAbstractItemView.OnViewport:
+            # Drop auf leeren Bereich - zur Root-Gruppe
             destination_group_id = root_group_id
         else:
-            return False  # Fallback auf Standardverhalten
+            # Unbekannte Position - zur Root-Gruppe
+            destination_group_id = root_group_id
 
         moved = False
         for item in selected_items:
@@ -877,6 +949,9 @@ class SurfaceDockWidget(QDockWidget):
 
         if moved:
             print("[SurfaceDockWidget] drop handler finished with reload")
+            # Struktur sicherstellen, bevor die Oberfläche neu geladen wird
+            if self.surface_manager:
+                self.surface_manager.ensure_surface_group_structure()
             self.load_surfaces()
         else:
             print("[SurfaceDockWidget] drop handler finished without move")

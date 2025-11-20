@@ -244,18 +244,23 @@ class SPL3DOverlayRenderer:
                             opacity=0.95,
                             category='surfaces',
                             show_vertices=False,
-                            render_lines_as_tubes=True,
+                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
                     else:
                         # Inaktives enabled Surface: sehr schlanke Linienführung
+                        polyline_render = polyline
+                        try:
+                            polyline_render = polyline.tube(radius=0.015, n_sides=24, capping=True)
+                        except Exception:
+                            pass
                         self._add_overlay_mesh(
-                            polyline,
+                            polyline_render,
                             color=color,
                             line_width=1.2,
                             opacity=0.75,
                             category='surfaces',
                             show_vertices=False,
-                            render_lines_as_tubes=True,
+                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
                 else:
                     # Disabled Surface: sichtbar mit hellgrauer Farbe
@@ -298,12 +303,17 @@ class SPL3DOverlayRenderer:
                             line_repeat=2,
                             category='surfaces',
                             show_vertices=False,
-                            render_lines_as_tubes=True,
+                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
                     else:
                         # Inaktives disabled Surface: Standard gestrichelt, dünn
+                        polyline_render = polyline
+                        try:
+                            polyline_render = polyline.tube(radius=0.015, n_sides=24, capping=True)
+                        except Exception:
+                            pass
                         self._add_overlay_mesh(
-                            polyline,
+                            polyline_render,
                             color=disabled_color,
                             line_width=1.2,
                             opacity=0.6,
@@ -311,7 +321,7 @@ class SPL3DOverlayRenderer:
                             line_repeat=2,
                             category='surfaces',
                             show_vertices=False,
-                            render_lines_as_tubes=True,
+                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
             except (ValueError, TypeError, AttributeError, Exception):
                 continue

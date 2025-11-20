@@ -467,6 +467,11 @@ class _SurfaceGroupController:
             for surface_id in group.surface_ids:
                 if surface_id not in valid_surface_ids:
                     continue
+                # Prüfe, ob das Surface wirklich zu dieser Gruppe gehört
+                surface = self._ensure_surface_object(surface_id)
+                if surface and surface.group_id and surface.group_id != group_id:
+                    # Surface gehört zu einer anderen Gruppe - entfernen
+                    continue
                 if surface_id in claimed_surface_ids:
                     continue
                 cleaned_surface_ids.append(surface_id)

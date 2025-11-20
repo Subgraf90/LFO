@@ -195,21 +195,14 @@ class SurfaceDataImporter:
         surfaces: Dict[str, SurfaceDefinition] = {}
         id_counters: Dict[str, int] = {}
 
-        for entity in msp:
-            points: List[Dict[str, float]] | None = None
-            dxftype = entity.dxftype()
-
-            if dxftype == "LWPOLYLINE":
-                points = self._extract_lwpolyline_points(entity)
-            elif dxftype == "POLYLINE":
-                points = self._extract_polyline_points(entity)
-            elif dxftype == "3DFACE":
-                points = self._extract_3dface_points(entity)
+        for entity, transform in self._iter_surface_entities(msp):
+            points = self._extract_points_from_entity(entity, transform)
 
             if not points:
                 self._log_skipped_entity(entity)
                 continue
 
+            dxftype = entity.dxftype()
             base_name = getattr(entity.dxf, "layer", None) or dxftype or "DXF_Surface"
             group_name = group_lookup.get(entity.dxf.handle)
             target_group_id = self._ensure_group_for_label(group_name)
@@ -423,4 +416,227 @@ class SurfaceDataImporter:
 
         self._group_cache[key] = group_id
         return group_id
+
+    # ---- Helpers für DXF-Entities ------------------------------------
+
+    def _extract_points_from_entity(self, entity, transform) -> List[Dict[str, float]] | None:
+        dxftype = entity.dxftype()
+        points = None
+        
+        if dxftype == "LWPOLYLINE":
+            points = self._extract_lwpolyline_points(entity)
+        elif dxftype == "POLYLINE":
+            points = self._extract_polyline_points(entity)
+        elif dxftype == "3DFACE":
+            points = self._extract_3dface_points(entity)
+        elif dxftype == "LINE":
+            points = self._extract_line_points(entity)
+        
+        if not points:
+            return None
+        
+        # Wende Transformation an
+        if transform:
+            return [self._apply_transform_to_point(p, transform) for p in points]
+        
+        return points
+
+    def _extract_line_points(self, entity) -> List[Dict[str, float]]:
+        """Extrahiert Punkte aus einer LINE-Entity"""
+        start = getattr(entity.dxf, "start", None)
+        end = getattr(entity.dxf, "end", None)
+        
+        if start is None or end is None:
+            return []
+        
+        points = []
+        points.append(self._make_point(
+            float(start.x) if hasattr(start, 'x') else 0.0,
+            float(start.y) if hasattr(start, 'y') else 0.0,
+            float(start.z) if hasattr(start, 'z') else 0.0
+        ))
+        points.append(self._make_point(
+            float(end.x) if hasattr(end, 'x') else 0.0,
+            float(end.y) if hasattr(end, 'y') else 0.0,
+            float(end.z) if hasattr(end, 'z') else 0.0
+        ))
+        
+        return points
+
+    def _iter_surface_entities(self, layout):
+        for entity in layout:
+            yield from self._resolve_entity(entity, depth=0, transform=None)
+    
+    def _get_identity_transform(self):
+        """Gibt eine Identitäts-Transformation zurück"""
+        return {
+            "translation": (0.0, 0.0, 0.0),
+            "scale": (1.0, 1.0, 1.0),
+            "rotation": 0.0,
+        }
+
+    def _resolve_entity(self, entity, depth: int, transform):
+        if entity.dxftype() == "INSERT":
+            yield from self._expand_insert(entity, depth, transform)
+        else:
+            yield (entity, transform)
+
+    def _expand_insert(self, insert_entity, depth: int, parent_transform):
+        logger = logging.getLogger(__name__)
+        max_depth = 10
+        if depth >= max_depth:
+            logger.warning(
+                "INSERT-Verschachtelungstiefe %d überschreitet das Limit (%d). Handle=%s",
+                depth,
+                max_depth,
+                getattr(insert_entity.dxf, "handle", "n/a"),
+            )
+            return
+        
+        block_name = getattr(insert_entity.dxf, "name", "unbenannt")
+        
+        # Extrahiere Transformationen aus der INSERT-Entity
+        insert_transform = self._extract_insert_transform(insert_entity)
+        
+        # Kombiniere mit Parent-Transformation
+        if parent_transform:
+            combined_transform = self._combine_transforms(parent_transform, insert_transform)
+        else:
+            combined_transform = insert_transform
+        
+        try:
+            virtual_entities = list(insert_entity.virtual_entities())
+            if logger.isEnabledFor(logging.DEBUG):
+                entity_count = len(virtual_entities)
+                logger.debug(
+                    "INSERT '%s' (Tiefe %d) aufgelöst: %d Entities extrahiert",
+                    block_name,
+                    depth,
+                    entity_count,
+                )
+        except Exception as exc:
+            logger.warning(
+                "INSERT '%s' konnte nicht expandiert werden: %s",
+                block_name,
+                exc,
+            )
+            return
+
+        try:
+            for virtual in virtual_entities:
+                yield from self._resolve_entity(virtual, depth + 1, combined_transform)
+        finally:
+            for virtual in virtual_entities:
+                try:
+                    virtual.destroy()
+                except Exception:
+                    pass
+
+    def _extract_insert_transform(self, insert_entity):
+        """Extrahiert Transformation (Position, Skalierung, Rotation) aus INSERT-Entity"""
+        import math
+        
+        # Insertion Point
+        insert_point = getattr(insert_entity.dxf, "insert", None)
+        if insert_point is None:
+            tx, ty, tz = 0.0, 0.0, 0.0
+        else:
+            tx = float(insert_point.x) if hasattr(insert_point, 'x') else 0.0
+            ty = float(insert_point.y) if hasattr(insert_point, 'y') else 0.0
+            tz = float(insert_point.z) if hasattr(insert_point, 'z') else 0.0
+        
+        # Skalierung
+        xscale = float(getattr(insert_entity.dxf, "xscale", 1.0))
+        yscale = float(getattr(insert_entity.dxf, "yscale", 1.0))
+        zscale = float(getattr(insert_entity.dxf, "zscale", 1.0))
+        
+        # Rotation (in Grad)
+        rotation = float(getattr(insert_entity.dxf, "rotation", 0.0))
+        rotation_rad = math.radians(rotation)
+        
+        return {
+            "translation": (tx, ty, tz),
+            "scale": (xscale, yscale, zscale),
+            "rotation": rotation_rad,
+        }
+
+    def _combine_transforms(self, parent, child):
+        """Kombiniert zwei Transformationen"""
+        import math
+        
+        # Parent-Transformation
+        pt = parent["translation"]
+        ps = parent["scale"]
+        pr = parent["rotation"]
+        
+        # Child-Transformation
+        ct = child["translation"]
+        cs = child["scale"]
+        cr = child["rotation"]
+        
+        # Kombinierte Skalierung
+        combined_scale = (ps[0] * cs[0], ps[1] * cs[1], ps[2] * cs[2])
+        
+        # Kombinierte Rotation
+        combined_rotation = pr + cr
+        
+        # Transformiere Child-Translation mit Parent-Transformation
+        # Zuerst skalieren
+        scaled_ct = (ct[0] * ps[0], ct[1] * ps[1], ct[2] * ps[2])
+        
+        # Dann rotieren (um Z-Achse)
+        cos_r = math.cos(pr)
+        sin_r = math.sin(pr)
+        rotated_ct = (
+            scaled_ct[0] * cos_r - scaled_ct[1] * sin_r,
+            scaled_ct[0] * sin_r + scaled_ct[1] * cos_r,
+            scaled_ct[2]
+        )
+        
+        # Dann translatieren
+        combined_translation = (
+            pt[0] + rotated_ct[0],
+            pt[1] + rotated_ct[1],
+            pt[2] + rotated_ct[2]
+        )
+        
+        return {
+            "translation": combined_translation,
+            "scale": combined_scale,
+            "rotation": combined_rotation,
+        }
+
+    def _apply_transform_to_point(self, point: Dict[str, float], transform) -> Dict[str, float]:
+        """Wendet Transformation auf einen Punkt an"""
+        if not transform:
+            return point
+        
+        import math
+        
+        x = point.get("x", 0.0)
+        y = point.get("y", 0.0)
+        z = point.get("z", 0.0)
+        
+        # Skalierung
+        sx, sy, sz = transform["scale"]
+        x *= sx
+        y *= sy
+        z *= sz
+        
+        # Rotation (um Z-Achse)
+        rotation = transform["rotation"]
+        if rotation != 0.0:
+            cos_r = math.cos(rotation)
+            sin_r = math.sin(rotation)
+            x_new = x * cos_r - y * sin_r
+            y_new = x * sin_r + y * cos_r
+            x, y = x_new, y_new
+        
+        # Translation
+        tx, ty, tz = transform["translation"]
+        x += tx
+        y += ty
+        z += tz
+        
+        return {"x": float(x), "y": float(y), "z": float(z)}
 
