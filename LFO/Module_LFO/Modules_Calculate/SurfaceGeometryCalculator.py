@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +24,107 @@ class PlotSurfaceGeometry:
     @property
     def grid_shape(self) -> Tuple[int, int]:
         return (self.plot_y.size, self.plot_x.size)
+
+
+@dataclass
+class SurfaceDefinition:
+    surface_id: str
+    name: str
+    enabled: bool
+    hidden: bool
+    locked: bool
+    points: List[Dict[str, float]] = field(default_factory=list)
+    plane_model: Dict[str, float] | None = None
+    color: str | None = None
+    group_id: str | None = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "surface_id": self.surface_id,
+            "name": self.name,
+            "enabled": self.enabled,
+            "hidden": self.hidden,
+            "locked": self.locked,
+            "points": self.points,
+            "plane_model": self.plane_model,
+            "color": self.color,
+            "group_id": self.group_id,
+        }
+
+    @classmethod
+    def from_dict(cls, surface_id: str, data: Dict[str, Any]) -> "SurfaceDefinition":
+        return cls(
+            surface_id=surface_id,
+            name=str(data.get("name", surface_id)),
+            enabled=bool(data.get("enabled", False)),
+            hidden=bool(data.get("hidden", False)),
+            locked=bool(data.get("locked", False)),
+            points=list(data.get("points", [])),
+            plane_model=data.get("plane_model"),
+            color=data.get("color"),
+            group_id=data.get("group_id") or data.get("group_name"),
+        )
+
+
+@dataclass
+class SurfaceGroup:
+    group_id: str
+    name: str
+    enabled: bool = True
+    hidden: bool = False
+    parent_id: str | None = None
+    child_groups: List[str] = field(default_factory=list)
+    surface_ids: List[str] = field(default_factory=list)
+    locked: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "name": self.name,
+            "enabled": self.enabled,
+            "hidden": self.hidden,
+            "parent_id": self.parent_id,
+            "child_groups": list(self.child_groups),
+            "surface_ids": list(self.surface_ids),
+            "locked": self.locked,
+        }
+
+    @classmethod
+    def from_dict(cls, group_id: str, data: Dict[str, Any]) -> "SurfaceGroup":
+        return cls(
+            group_id=group_id,
+            name=str(data.get("name", group_id)),
+            enabled=bool(data.get("enabled", True)),
+            hidden=bool(data.get("hidden", False)),
+            parent_id=data.get("parent_id"),
+            child_groups=list(data.get("child_groups", [])),
+            surface_ids=list(data.get("surface_ids", [])),
+            locked=bool(data.get("locked", False)),
+        )
+
+    def __getitem__(self, key: str) -> Any:
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if hasattr(self, key):
+            setattr(self, key, value)
+        else:
+            raise KeyError(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def setdefault(self, key: str, default: Any) -> Any:
+        if hasattr(self, key):
+            value = getattr(self, key)
+            if value is None:
+                setattr(self, key, default)
+                return default
+            return value
+        setattr(self, key, default)
+        return default
 
 
 def derive_surface_plane(
@@ -634,9 +735,15 @@ def _debug_surface_info(settings, plot_x, plot_y, mask, source: str) -> None:
     surface_definitions = getattr(settings, "surface_definitions", {})
     if isinstance(surface_definitions, dict):
         for surface_id, surface_def in surface_definitions.items():
-            if surface_def.get("hidden", False):
+            if isinstance(surface_def, SurfaceDefinition):
+                hidden = bool(getattr(surface_def, "hidden", False))
+                enabled = bool(getattr(surface_def, "enabled", False))
+            else:
+                hidden = bool(surface_def.get("hidden", False))
+                enabled = bool(surface_def.get("enabled", False))
+            if hidden:
                 continue
-            if surface_def.get("enabled", False):
+            if enabled:
                 active_ids.append(surface_id)
     mask_info = "None"
     if mask is not None:

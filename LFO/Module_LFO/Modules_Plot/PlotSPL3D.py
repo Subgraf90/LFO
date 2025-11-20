@@ -16,6 +16,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    SurfaceDefinition,
     build_surface_mesh,
     prepare_plot_geometry,
 )
@@ -1406,9 +1407,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         if isinstance(surface_definitions, dict):
             for surface_id in sorted(surface_definitions.keys()):
                 surface_def = surface_definitions[surface_id]
-                enabled = bool(surface_def.get('enabled', False))
-                hidden = bool(surface_def.get('hidden', False))
-                points = surface_def.get('points', [])
+                if isinstance(surface_def, SurfaceDefinition):
+                    enabled = bool(getattr(surface_def, 'enabled', False))
+                    hidden = bool(getattr(surface_def, 'hidden', False))
+                    points = getattr(surface_def, 'points', []) or []
+                else:
+                    enabled = bool(surface_def.get('enabled', False))
+                    hidden = bool(surface_def.get('hidden', False))
+                    points = surface_def.get('points', [])
                 
                 points_tuple = []
                 for point in points:

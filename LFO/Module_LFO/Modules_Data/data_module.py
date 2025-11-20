@@ -2,6 +2,7 @@
 import numpy as np
 import os
 import sys
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
 
 
 class DataContainer:

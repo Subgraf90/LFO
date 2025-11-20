@@ -3,6 +3,7 @@ import numpy as np
 import copy
 
 from Module_LFO.Modules_Calculate.Functions import FunctionToolbox
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition, SurfaceGroup
 
 
 
@@ -48,21 +49,24 @@ class SpeakerArray:
         self.defined_source_gains = [0, -2.9, -9.8, -12.6]
         self.tree_items = []
         self.selected_item = None
-        self.color = self._generate_random_color()
+        self.color = self._generate_random_color()       # Farbe repräsentiert das gesamte SpeakerArray (UI-Farbkästchen, Plots)
         self.default_surface_id = "surface_default"
         self.surfaces = {
-            self.default_surface_id: {
-                "name": "Default Surface",
-                "enabled": False,
-                "hidden": False,
-                "points": [
-                    {"x": 75.0, "y": -50.0, "z": 0.0},
-                    {"x": 75.0, "y": 50.0, "z": 0.0},
-                    {"x": -75.0, "y": 50.0, "z": 0.0},
-                    {"x": -75.0, "y": -50.0, "z": 0.0},
-                ],
-                "locked": True,
-            }
+            self.default_surface_id: SurfaceDefinition.from_dict(
+                self.default_surface_id,
+                {
+                    "name": "Default Surface",
+                    "enabled": False,
+                    "hidden": False,
+                    "points": [
+                        {"x": 75.0, "y": -50.0, "z": 0.0},
+                        {"x": 75.0, "y": 50.0, "z": 0.0},
+                        {"x": -75.0, "y": 50.0, "z": 0.0},
+                        {"x": -75.0, "y": -50.0, "z": 0.0},
+                    ],
+                    "locked": True,
+                },
+            )
         }
 
 
@@ -134,18 +138,32 @@ class SpeakerArray:
     
     
     def to_dict(self):
-        return vars(self)
+        data = vars(self).copy()
+        data["surfaces"] = {
+            sid: surface.to_dict() for sid, surface in self.surfaces.items()
+        }
+        return data
 
     def from_dict(self, data):
         for key, value in data.items():
-            setattr(self, key, value)
+            if key == "surfaces" and isinstance(value, dict):
+                self.surfaces = {
+                    sid: SurfaceDefinition.from_dict(sid, surface)
+                    for sid, surface in value.items()
+                }
+            elif key == "color":
+                self.color = value
+            else:
+                setattr(self, key, value)
 
 
 class Settings:
     DEFAULT_SURFACE_ID = "surface_default"
+    ROOT_SURFACE_GROUP_ID = "surface_group_root"
 
     def __init__(self):
         self.surface_definitions = self._initialize_surface_definitions()
+        self.surface_groups = self._initialize_surface_groups()
         self.active_surface_id = self.DEFAULT_SURFACE_ID
         self.load_custom_defaults()
         self.speaker_arrays = {}
@@ -214,8 +232,26 @@ class Settings:
 
         self.update_surface_dimensions()
 
+    def _ensure_surface_object(self, surface_id: str) -> SurfaceDefinition | None:
+        surface = self.surface_definitions.get(surface_id)
+        if surface is None:
+            return None
+        if isinstance(surface, SurfaceDefinition):
+            return surface
+        obj = SurfaceDefinition.from_dict(surface_id, surface)
+        self.surface_definitions[surface_id] = obj
+        return obj
 
-
+    def _initialize_surface_groups(self):
+        root = SurfaceGroup(
+            group_id=self.ROOT_SURFACE_GROUP_ID,
+            name="Surfaces",
+            enabled=True,
+            hidden=False,
+            parent_id=None,
+            locked=True,
+        )
+        return {root.group_id: root}
 
     def to_dict(self):
         return {
@@ -247,7 +283,18 @@ class Settings:
             'polar_max_db': self.polar_max_db,
             'width': getattr(self, 'width', 0.0),
             'length': getattr(self, 'length', 0.0),
-            'surface_definitions': self.surface_definitions,
+            'surface_definitions': {
+                sid: surface.to_dict()
+                for sid, surface in self.surface_definitions.items()
+            },
+            'surface_groups': {
+                gid: (
+                    group.to_dict()
+                    if isinstance(group, SurfaceGroup)
+                    else group
+                )
+                for gid, group in getattr(self, "surface_groups", {}).items()
+            },
             'active_surface_id': self.active_surface_id,
             'spl_plot_superposition': self.spl_plot_superposition,
             'spl_plot_fem': self.spl_plot_fem,
@@ -274,6 +321,10 @@ class Settings:
         return self.surface_definitions.get(self.active_surface_id)
 
     def add_surface_definition(self, surface_id, surface_data, make_active=False):
+        if not isinstance(surface_data, SurfaceDefinition):
+            surface_data = SurfaceDefinition.from_dict(surface_id, surface_data)
+        if not getattr(surface_data, "group_id", None):
+            surface_data.group_id = self.ROOT_SURFACE_GROUP_ID
         self.surface_definitions[surface_id] = surface_data
         if make_active:
             self.set_active_surface(surface_id)
@@ -296,25 +347,29 @@ class Settings:
                     self.length = 0.0
 
     def update_surface_dimensions(self):
-        surface = self.surface_definitions.get(self.DEFAULT_SURFACE_ID)
+        surface = self._ensure_surface_object(self.DEFAULT_SURFACE_ID)
         if not surface:
             self.width = 0.0
             self.length = 0.0
             return
 
-        width, length = FunctionToolbox.surface_dimensions(surface.get("points", []))
+        width, length = FunctionToolbox.surface_dimensions(surface.points if isinstance(surface, SurfaceDefinition) else surface.get("points", []))
         self.width = width
         self.length = length
 
     def set_surface_enabled(self, surface_id, enabled):
-        surface = self.surface_definitions.get(surface_id)
+        surface = self._ensure_surface_object(surface_id)
         if surface is None:
             raise KeyError(f"Surface with ID '{surface_id}' not found.")
-        surface["enabled"] = bool(enabled)
+        surface.enabled = bool(enabled)
 
     def is_surface_enabled(self, surface_id):
         surface = self.surface_definitions.get(surface_id)
-        return bool(surface and surface.get("enabled"))
+        if surface is None:
+            return False
+        if isinstance(surface, SurfaceDefinition):
+            return bool(surface.enabled)
+        return bool(surface.get("enabled"))
 
     def is_default_surface_enabled(self):
         return self.is_surface_enabled(self.DEFAULT_SURFACE_ID)
@@ -461,8 +516,9 @@ class Settings:
                 self.speaker_array_settings[new_id] = copy.deepcopy(self.speaker_array_settings[original_id])
 
     def _initialize_surface_definitions(self):
-        return {
-            self.DEFAULT_SURFACE_ID: {
+        surface = SurfaceDefinition.from_dict(
+            self.DEFAULT_SURFACE_ID,
+            {
                 "name": "Default Surface",
                 "enabled": True,
                 "hidden": False,
@@ -473,5 +529,6 @@ class Settings:
                     {"x": -75.0, "y": 50.0, "z": 0.0},
                     {"x": -75.0, "y": -50.0, "z": 0.0},
                 ],
-            }
-        }
+            },
+        )
+        return {self.DEFAULT_SURFACE_ID: surface}

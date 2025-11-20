@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import copy
-from typing import Callable, Dict, List, Optional
+import math
+from typing import Any, Callable, Dict, List, Optional
 
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, QPoint
@@ -17,18 +18,23 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QToolButton,
     QLineEdit,
+    QStyle,
+    QInputDialog,
 )
 from PyQt5.QtGui import QFont, QDoubleValidator
 
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    SurfaceDefinition,
+    SurfaceGroup,
     build_planar_model,
     derive_surface_plane,
     evaluate_surface_plane,
 )
+from Module_LFO.Modules_Data.SurfaceDataImporter import SurfaceDataImporter
 
 
-SurfacePoint = Dict[str, float]
-SurfaceDefinition = Dict[str, object]
+SurfacePoint = Dict[str, Any]
+SurfaceRecord = SurfaceDefinition | Dict[str, Any]
 
 
 class PointsTreeWidget(QTreeWidget):
@@ -44,6 +50,30 @@ class PointsTreeWidget(QTreeWidget):
         super().dropEvent(event)
         if self.reorder_callback:
             self.reorder_callback()
+
+
+class SurfaceTreeWidget(QTreeWidget):
+    """
+    TreeWidget für Surface-/Gruppenstruktur mit erweitertem Drag & Drop.
+    """
+
+    def __init__(self, parent=None, drop_callback: Optional[Callable] = None):
+        super().__init__(parent)
+        self._drop_callback = drop_callback
+
+    def dropEvent(self, event):
+        handled = False
+        if self._drop_callback:
+            target = self.itemAt(event.pos())
+            handled = self._drop_callback(
+                self.selectedItems(),
+                target,
+                self.dropIndicatorPosition(),
+            )
+        if handled:
+            event.accept()
+        else:
+            super().dropEvent(event)
 
 
 class PointValueEdit(QLineEdit):
@@ -76,15 +106,21 @@ class SurfaceDockWidget(QDockWidget):
     DEFAULT_SURFACE_ID = "surface_default"
     DEFAULT_SURFACE_NAME = "Default Surface"
 
-    def __init__(self, main_window, settings, container):
+    ITEM_TYPE_SURFACE = "surface"
+    ITEM_TYPE_GROUP = "group"
+
+    def __init__(self, main_window, settings, container, surface_manager):
         super().__init__("Surface", main_window)
         self.main_window = main_window
         self.settings = settings
         self.container = container
+        self.surface_manager = surface_manager
 
         self.current_surface_id: Optional[str] = None
         self._loading_surfaces = False
         self._loading_points = False
+        self._surface_items: Dict[str, QTreeWidgetItem] = {}
+        self._group_items: Dict[str, QTreeWidgetItem] = {}
 
         self.setObjectName("SurfaceDockWidget")
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
@@ -116,13 +152,24 @@ class SurfaceDockWidget(QDockWidget):
         self._loading_surfaces = True
         self.surface_tree.blockSignals(True)
         self.surface_tree.clear()
+        self._surface_items.clear()
+        self._group_items.clear()
 
         surface_store = self._get_surface_store()
         self._ensure_default_surface(surface_store)
+        if self.surface_manager:
+            self.surface_manager.ensure_surface_group_structure()
+        group_store = self.surface_manager.list_surface_groups() if self.surface_manager else None
+        root_group_id = self.surface_manager.get_root_group_id() if self.surface_manager else None
 
-        for surface_id, surface_data in surface_store.items():
-            item = self._create_surface_item(surface_id, surface_data)
-            self.surface_tree.addTopLevelItem(item)
+        if group_store and root_group_id and group_store.get(root_group_id):
+            root_group = self._get_surface_group(root_group_id)
+            if root_group:
+                self._populate_group_contents(None, root_group, surface_store)
+        else:
+            for surface_id, surface_data in surface_store.items():
+                item = self._create_surface_item(surface_id, surface_data)
+                self.surface_tree.addTopLevelItem(item)
 
         self.surface_tree.expandAll()
         self.surface_tree.blockSignals(False)
@@ -137,6 +184,20 @@ class SurfaceDockWidget(QDockWidget):
             self._loading_points = False
 
         self._activate_surface(self.current_surface_id)
+
+    def _on_surface_load_clicked(self) -> None:
+        """
+        Startet den Surface-Importer und aktualisiert bei Erfolg die UI.
+        """
+        importer = SurfaceDataImporter(
+            self,
+            self.settings,
+            self.container,
+            group_manager=self.surface_manager,
+        )
+        result = importer.execute()
+        if result:
+            self.load_surfaces()
 
     # ---- UI setup ---------------------------------------------------
 
@@ -162,6 +223,14 @@ class SurfaceDockWidget(QDockWidget):
         self.toggle_points_button.setStyleSheet("QToolButton { padding: 0px; }")
 
         toggle_layout.addWidget(self.toggle_points_button)
+        
+        self.reload_surfaces_button = QToolButton()
+        self.reload_surfaces_button.setObjectName("toolButtonReloadSurfaces")
+        self.reload_surfaces_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogStart))
+        self.reload_surfaces_button.setToolTip("Flächen erneut laden")
+        self.reload_surfaces_button.clicked.connect(self._on_surface_load_clicked)
+        toggle_layout.addWidget(self.reload_surfaces_button)
+
         toggle_layout.addStretch(1)
         main_layout.addLayout(toggle_layout)
 
@@ -173,17 +242,22 @@ class SurfaceDockWidget(QDockWidget):
         tree_font.setPointSize(11)
 
         # TreeWidget für Flächen
-        self.surface_tree = QTreeWidget()
+        self.surface_tree = SurfaceTreeWidget(drop_callback=self._handle_surface_tree_drop)
         self.surface_tree.setHeaderLabels(["Surface", "Enable", "Hide"])
-        self.surface_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.surface_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.surface_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.surface_tree.setRootIsDecorated(False)
+        self.surface_tree.setRootIsDecorated(True)
         self.surface_tree.setAlternatingRowColors(True)
         self.surface_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.surface_tree.setColumnWidth(0, 95)
         self.surface_tree.setColumnWidth(1, 50)
         self.surface_tree.setColumnWidth(2, 45)
         self.surface_tree.setFont(tree_font)
+        self.surface_tree.setDragEnabled(True)
+        self.surface_tree.setAcceptDrops(True)
+        self.surface_tree.setDefaultDropAction(Qt.MoveAction)
+        self.surface_tree.setDropIndicatorShown(True)
+        self.surface_tree.setDragDropMode(QAbstractItemView.InternalMove)
         header = self.surface_tree.header()
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.surface_tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -237,29 +311,204 @@ class SurfaceDockWidget(QDockWidget):
 
     # ---- surface handling -------------------------------------------
 
-    def _create_surface_item(self, surface_id: str, data: SurfaceDefinition) -> QTreeWidgetItem:
+    def _create_surface_item(self, surface_id: str, data: SurfaceRecord) -> QTreeWidgetItem:
         item = QTreeWidgetItem()
-        item.setText(0, str(data.get("name", "Surface")))
+        name = self._surface_get(data, "name", "Surface")
+        item.setText(0, str(name))
         item.setFlags(
             Qt.ItemIsEnabled
             | Qt.ItemIsSelectable
             | Qt.ItemIsEditable
             | Qt.ItemIsUserCheckable
         )
-        item.setCheckState(1, Qt.Checked if data.get("enabled", False) else Qt.Unchecked)
-        item.setCheckState(2, Qt.Checked if data.get("hidden", False) else Qt.Unchecked)
-        item.setData(0, Qt.UserRole, surface_id)
+        enabled = bool(self._surface_get(data, "enabled", False))
+        hidden = bool(self._surface_get(data, "hidden", False))
+        item.setCheckState(1, Qt.Checked if enabled else Qt.Unchecked)
+        item.setCheckState(2, Qt.Checked if hidden else Qt.Unchecked)
+        item.setData(0, Qt.UserRole, {"type": self.ITEM_TYPE_SURFACE, "id": surface_id})
 
         if surface_id == self.DEFAULT_SURFACE_ID:
             # Default-Fläche: nicht löschbar, aber umbenennbar
             item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
 
+        self._surface_items[surface_id] = item
         return item
+
+    def _create_group_item(self, group: SurfaceGroup) -> QTreeWidgetItem:
+        item = QTreeWidgetItem()
+        item.setText(0, group.name)
+        item.setFlags(
+            Qt.ItemIsEnabled
+            | Qt.ItemIsSelectable
+            | Qt.ItemIsEditable
+            | Qt.ItemIsUserCheckable
+        )
+        item.setCheckState(1, Qt.Checked if group.enabled else Qt.Unchecked)
+        item.setCheckState(2, Qt.Checked if group.hidden else Qt.Unchecked)
+        item.setData(0, Qt.UserRole, {"type": self.ITEM_TYPE_GROUP, "id": group.group_id})
+        self._group_items[group.group_id] = item
+        return item
+
+    def _populate_group_contents(
+        self,
+        parent_item: Optional[QTreeWidgetItem],
+        group: SurfaceGroup,
+        surface_store: Dict[str, SurfaceRecord],
+    ) -> None:
+        for child_group_id in group.child_groups:
+            child_group = self._get_surface_group(child_group_id)
+            if child_group is None:
+                continue
+            child_item = self._create_group_item(child_group)
+            if parent_item is None:
+                self.surface_tree.addTopLevelItem(child_item)
+            else:
+                parent_item.addChild(child_item)
+            self._populate_group_contents(child_item, child_group, surface_store)
+
+        for surface_id in group.surface_ids:
+            surface_data = surface_store.get(surface_id)
+            if surface_data is None:
+                continue
+            surface_item = self._create_surface_item(surface_id, surface_data)
+            if parent_item is None:
+                self.surface_tree.addTopLevelItem(surface_item)
+            else:
+                parent_item.addChild(surface_item)
+
+    def _get_surface_group(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
+        if not group_id or not self.surface_manager:
+            return None
+        return self.surface_manager.get_surface_group(group_id)
+
+    def _get_item_identity(self, item: Optional[QTreeWidgetItem]) -> tuple[Optional[str], Optional[str]]:
+        if item is None:
+            return None, None
+        data = item.data(0, Qt.UserRole)
+        if isinstance(data, dict):
+            return data.get("type"), data.get("id")
+        if isinstance(data, str):
+            return self.ITEM_TYPE_SURFACE, data
+        return None, None
+
+    def _handle_group_item_changed(self, group_id: Optional[str], item: QTreeWidgetItem, column: int) -> None:
+        if not group_id:
+            return
+        group = self._get_surface_group(group_id)
+        if group is None:
+            return
+
+        if column == 0:
+            new_name = item.text(0).strip()
+            if new_name:
+                if self.surface_manager:
+                    self.surface_manager.rename_surface_group(group_id, new_name)
+            else:
+                self._loading_surfaces = True
+                item.setText(0, group.name)
+                self._loading_surfaces = False
+        elif column == 1:
+            enabled = item.checkState(1) == Qt.Checked
+            if self.surface_manager:
+                self.surface_manager.set_surface_group_enabled(group_id, enabled)
+            self._apply_group_check_state(item, column, enabled)
+        elif column == 2:
+            hidden = item.checkState(2) == Qt.Checked
+            if self.surface_manager:
+                self.surface_manager.set_surface_group_hidden(group_id, hidden)
+            self._apply_group_check_state(item, column, hidden)
+
+    def _apply_group_check_state(self, item: QTreeWidgetItem, column: int, state: bool) -> None:
+        previous_loading = self._loading_surfaces
+        self._loading_surfaces = True
+        try:
+            for idx in range(item.childCount()):
+                child = item.child(idx)
+                child.setCheckState(column, Qt.Checked if state else Qt.Unchecked)
+                child_type, _ = self._get_item_identity(child)
+                if child_type == self.ITEM_TYPE_GROUP:
+                    self._apply_group_check_state(child, column, state)
+        finally:
+            self._loading_surfaces = previous_loading
+
+    def _determine_target_group_id(self, reference_item: Optional[QTreeWidgetItem] = None) -> Optional[str]:
+        if reference_item is None:
+            reference_item = self.surface_tree.currentItem()
+        item_type, item_id = self._get_item_identity(reference_item)
+        if item_type == self.ITEM_TYPE_GROUP:
+            return item_id
+        if item_type == self.ITEM_TYPE_SURFACE and item_id:
+            surface = self._get_surface_store().get(item_id)
+            if surface:
+                group_id = self._surface_get(surface, "group_id")
+                if group_id:
+                    return group_id
+        if self.surface_manager:
+            return self.surface_manager.get_root_group_id()
+        return None
+
+    def _prompt_group_selection(self, exclude_group_id: Optional[str] = None) -> Optional[str]:
+        choices = self._collect_group_choices(exclude_group_id=exclude_group_id)
+        if not choices:
+            return None
+
+        labels = [choice["label"] for choice in choices]
+        selected, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            "Select group",
+            "Choose the target group:",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+
+        for choice in choices:
+            if choice["label"] == selected:
+                return choice["id"]
+        return None
+
+    def _collect_group_choices(self, exclude_group_id: Optional[str] = None) -> List[Dict[str, str]]:
+        choices: List[Dict[str, str]] = []
+        if not self.surface_manager:
+            return choices
+
+        for group_id in self.surface_manager.list_surface_groups().keys():
+            if group_id == exclude_group_id:
+                continue
+            group = self._get_surface_group(group_id)
+            if not group:
+                continue
+            choices.append(
+                {
+                    "id": group_id,
+                    "label": self._build_group_label(group),
+                }
+            )
+
+        choices.sort(key=lambda entry: entry["label"].lower())
+        return choices
+
+    def _build_group_label(self, group: SurfaceGroup) -> str:
+        if group.parent_id is None:
+            return group.name
+        parts = [group.name]
+        parent_id = group.parent_id
+        visited = set()
+        while parent_id and parent_id not in visited:
+            visited.add(parent_id)
+            parent = self._get_surface_group(parent_id)
+            if parent is None:
+                break
+            parts.append(parent.name)
+            parent_id = parent.parent_id
+        return " / ".join(reversed(parts))
 
     def _handle_add_surface(self) -> None:
         surface_store = self._get_surface_store()
         surface_id = self._generate_surface_id(surface_store)
-        surface_data: SurfaceDefinition = {
+        surface_data: SurfaceRecord = {
             "name": self._generate_surface_name(surface_store),
             "enabled": False,
             "hidden": False,
@@ -267,11 +516,11 @@ class SurfaceDockWidget(QDockWidget):
         }
 
         self.settings.add_surface_definition(surface_id, surface_data, make_active=True)
-
-        item = self._create_surface_item(surface_id, surface_data)
-        self.surface_tree.addTopLevelItem(item)
-        self.surface_tree.setCurrentItem(item)
-        self.current_surface_id = surface_id
+        parent_group_id = self._determine_target_group_id(self.surface_tree.currentItem())
+        if self.surface_manager:
+            self.surface_manager.assign_surface_to_group(surface_id, parent_group_id, create_missing=True)
+        self.load_surfaces()
+        self._select_surface(surface_id)
         self._set_points_panel_visible(True)
         self._load_points_for_surface(surface_id)
         # 🎯 Trigger Calc/Plot Update: Surface wurde hinzugefügt
@@ -285,7 +534,9 @@ class SurfaceDockWidget(QDockWidget):
         if item is None:
             return
 
-        surface_id = item.data(0, Qt.UserRole)
+        item_type, surface_id = self._get_item_identity(item)
+        if item_type != self.ITEM_TYPE_SURFACE or not surface_id:
+            return
         if surface_id == self.DEFAULT_SURFACE_ID:
             QtWidgets.QMessageBox.information(
                 self,
@@ -296,6 +547,8 @@ class SurfaceDockWidget(QDockWidget):
 
         surface_store = self._get_surface_store()
         if surface_id in surface_store:
+            if self.surface_manager:
+                self.surface_manager.detach_surface_from_group(surface_id)
             self.settings.remove_surface_definition(surface_id)
 
         index = self.surface_tree.indexOfTopLevelItem(item)
@@ -324,14 +577,16 @@ class SurfaceDockWidget(QDockWidget):
             return
 
         surface_store = self._get_surface_store()
-        surface_id = item.data(0, Qt.UserRole)
+        item_type, surface_id = self._get_item_identity(item)
+        if item_type != self.ITEM_TYPE_SURFACE or not surface_id:
+            return
         if surface_id not in surface_store:
             return
 
         original = surface_store[surface_id]
         new_surface_id = self._generate_surface_id(surface_store)
         new_surface_name = self._generate_surface_name(surface_store)
-        duplicated = copy.deepcopy(original)
+        duplicated = self._clone_surface_data(original)
         duplicated["name"] = new_surface_name
         duplicated.pop("locked", None)
         self.settings.add_surface_definition(new_surface_id, duplicated, make_active=True)
@@ -347,21 +602,101 @@ class SurfaceDockWidget(QDockWidget):
             if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
                 self.main_window.draw_plots.update_plots_for_surface_state()
 
+    def _handle_add_group(self, reference_item: Optional[QTreeWidgetItem]) -> None:
+        if not self.surface_manager:
+            return
+        parent_group_id = self._determine_target_group_id(reference_item)
+        name, ok = QInputDialog.getText(self, "Add Group", "Group name:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        group = self.surface_manager.create_surface_group(name, parent_id=parent_group_id)
+        self.load_surfaces()
+        if group and group.group_id in self._group_items:
+            self.surface_tree.setCurrentItem(self._group_items[group.group_id])
+
+    def _handle_move_surface_to_group(self, surface_id: str) -> None:
+        if not self.surface_manager:
+            return
+        target_group_id = self._prompt_group_selection()
+        if not target_group_id:
+            return
+        self.surface_manager.assign_surface_to_group(surface_id, target_group_id)
+        self.load_surfaces()
+        self._select_surface(surface_id)
+
+    def _handle_move_group(self, group_id: str) -> None:
+        if not self.surface_manager:
+            return
+        target_group_id = self._prompt_group_selection(exclude_group_id=group_id)
+        if not target_group_id or target_group_id == group_id:
+            return
+        success = self.surface_manager.move_surface_group(group_id, target_group_id)
+        if not success:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Aktion nicht möglich",
+                "Die Gruppe konnte nicht verschoben werden.",
+            )
+            return
+        self.load_surfaces()
+
+    def _handle_delete_group(self, group_id: str) -> None:
+        if not self.surface_manager:
+            return
+        group = self._get_surface_group(group_id)
+        if not group:
+            return
+        if group.locked:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Aktion nicht möglich",
+                "Diese Gruppe ist geschützt und kann nicht gelöscht werden.",
+            )
+            return
+        try:
+            success = self.surface_manager.remove_surface_group(group_id)
+        except ValueError:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Aktion nicht möglich",
+                "Die Gruppe ist nicht leer und kann daher nicht gelöscht werden.",
+            )
+            return
+        if success:
+            self.load_surfaces()
+
     def _handle_surface_selection_changed(self) -> None:
         if self._loading_surfaces:
             return
 
         item = self.surface_tree.currentItem()
-        surface_id = item.data(0, Qt.UserRole) if item else None
-        self.current_surface_id = surface_id
-        self._load_points_for_surface(surface_id)
-        self._activate_surface(surface_id)
+        item_type, item_id = self._get_item_identity(item)
+        if item_type != self.ITEM_TYPE_SURFACE:
+            self.current_surface_id = None
+            self._loading_points = True
+            self.points_tree.clear()
+            self._loading_points = False
+            return
+
+        self.current_surface_id = item_id
+        self._load_points_for_surface(item_id)
+        self._activate_surface(item_id)
 
     def _handle_surface_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._loading_surfaces:
             return
 
-        surface_id = item.data(0, Qt.UserRole)
+        item_type, identifier = self._get_item_identity(item)
+        if item_type == self.ITEM_TYPE_GROUP:
+            self._handle_group_item_changed(identifier, item, column)
+            return
+        if item_type != self.ITEM_TYPE_SURFACE:
+            return
+
+        surface_id = identifier
         surface_store = self._get_surface_store()
         if surface_id not in surface_store:
             return
@@ -373,17 +708,17 @@ class SurfaceDockWidget(QDockWidget):
             if not new_name:
                 # Leerer Name nicht erlaubt → alten Wert wiederherstellen
                 self._loading_surfaces = True
-                item.setText(0, str(surface_data.get("name", "")))
+                item.setText(0, str(self._surface_get(surface_data, "name", "")))
                 self._loading_surfaces = False
                 return
-            surface_data["name"] = new_name
+            self._surface_set(surface_data, "name", new_name)
             # 🎯 Trigger Calc/Plot Update: Name-Änderung (Name könnte in Visualisierung angezeigt werden)
             if hasattr(self.main_window, "draw_plots"):
                 if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
                     self.main_window.draw_plots.update_plots_for_surface_state()
         elif column == 1:
             enabled = item.checkState(1) == Qt.Checked
-            surface_data["enabled"] = enabled
+            self._surface_set(surface_data, "enabled", enabled)
             self.settings.set_surface_enabled(surface_id, enabled)
             
             # 🎯 Trigger Calc/Plot Update: Enable-Status ändert sich
@@ -393,7 +728,7 @@ class SurfaceDockWidget(QDockWidget):
                     self.main_window.draw_plots.update_plots_for_surface_state()
         elif column == 2:
             hidden = item.checkState(2) == Qt.Checked
-            surface_data["hidden"] = hidden
+            self._surface_set(surface_data, "hidden", hidden)
             
             # 🎯 Trigger Calc/Plot Update: Hide-Status ändert sich
             # (Hide-Status-Änderung kann Berechnung beeinflussen wenn Surface enabled ist, beeinflusst immer Overlay)
@@ -448,52 +783,124 @@ class SurfaceDockWidget(QDockWidget):
             if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
                 self.main_window.draw_plots.update_plots_for_surface_state()
 
+    def _handle_surface_tree_drop(
+        self,
+        selected_items: List[QTreeWidgetItem],
+        target_item: Optional[QTreeWidgetItem],
+        position: int,
+    ) -> bool:
+        if not selected_items or not self.surface_manager:
+            return False
+
+        drop_pos = position
+        root_group_id = self.surface_manager.get_root_group_id()
+        destination_group_id = root_group_id
+
+        if target_item and drop_pos == QAbstractItemView.OnItem:
+            target_type, target_id = self._get_item_identity(target_item)
+            if target_type == self.ITEM_TYPE_GROUP:
+                destination_group_id = target_id
+            elif target_type == self.ITEM_TYPE_SURFACE:
+                parent_group_item = self._find_parent_group_item(target_item)
+                if parent_group_item:
+                    destination_group_id = self._get_item_identity(parent_group_item)[1]
+                else:
+                    destination_group_id = root_group_id
+        elif drop_pos == QAbstractItemView.OnViewport:
+            destination_group_id = root_group_id
+        else:
+            return False  # Fallback auf Standardverhalten
+
+        moved = False
+        for item in selected_items:
+            item_type, item_id = self._get_item_identity(item)
+            if not item_id:
+                continue
+            if item_type == self.ITEM_TYPE_SURFACE:
+                self.surface_manager.assign_surface_to_group(item_id, destination_group_id)
+                moved = True
+            elif item_type == self.ITEM_TYPE_GROUP:
+                if item_id == destination_group_id:
+                    continue
+                success = self.surface_manager.move_surface_group(item_id, destination_group_id)
+                moved = moved or success
+
+        if moved:
+            self.load_surfaces()
+        return moved
+
+    def _find_parent_group_item(self, item: Optional[QTreeWidgetItem]) -> Optional[QTreeWidgetItem]:
+        parent = item.parent() if item else None
+        while parent is not None:
+            parent_type, _ = self._get_item_identity(parent)
+            if parent_type == self.ITEM_TYPE_GROUP:
+                return parent
+            parent = parent.parent()
+        return None
+
     def _show_surface_context_menu(self, position: QPoint) -> None:
         menu = QtWidgets.QMenu(self.surface_tree)
-        add_action = menu.addAction("Add Surface")
+        add_surface_action = menu.addAction("Add Surface")
         duplicate_action = menu.addAction("Duplicate Surface")
         delete_action = menu.addAction("Delete Surface")
+        move_surface_action = menu.addAction("Move Surface to Group...")
+        menu.addSeparator()
+        add_group_action = menu.addAction("Add Group")
+        move_group_action = menu.addAction("Move Group...")
+        delete_group_action = menu.addAction("Delete Group")
 
         item = self.surface_tree.itemAt(position)
         target_item = item if item is not None else self.surface_tree.currentItem()
-
         if item is not None:
             self.surface_tree.setCurrentItem(item)
 
-        if target_item is None:
-            delete_action.setEnabled(False)
+        item_type, item_id = self._get_item_identity(target_item)
+
+        if item_type != self.ITEM_TYPE_SURFACE:
             duplicate_action.setEnabled(False)
+            delete_action.setEnabled(False)
+            move_surface_action.setEnabled(False)
         else:
-            surface_id = target_item.data(0, Qt.UserRole)
-            if surface_id == self.DEFAULT_SURFACE_ID:
+            if item_id == self.DEFAULT_SURFACE_ID:
                 delete_action.setEnabled(False)
-            if surface_id is None:
+            if item_id is None:
                 duplicate_action.setEnabled(False)
+
+        if item_type != self.ITEM_TYPE_GROUP or not item_id:
+            move_group_action.setEnabled(False)
+            delete_group_action.setEnabled(False)
 
         action = menu.exec_(self.surface_tree.viewport().mapToGlobal(position))
 
-        if action == add_action:
+        if action == add_surface_action:
             self._handle_add_surface()
         elif action == duplicate_action:
             self._handle_duplicate_surface(target_item)
         elif action == delete_action:
             self._handle_delete_surface(target_item)
+        elif action == move_surface_action and item_type == self.ITEM_TYPE_SURFACE and item_id:
+            self._handle_move_surface_to_group(item_id)
+        elif action == add_group_action:
+            self._handle_add_group(target_item)
+        elif action == move_group_action and item_type == self.ITEM_TYPE_GROUP and item_id:
+            self._handle_move_group(item_id)
+        elif action == delete_group_action and item_type == self.ITEM_TYPE_GROUP and item_id:
+            self._handle_delete_group(item_id)
 
     # ---- points handling --------------------------------------------
 
     def _select_surface(self, surface_id: Optional[str]) -> None:
-        if surface_id is not None:
-            for idx in range(self.surface_tree.topLevelItemCount()):
-                item = self.surface_tree.topLevelItem(idx)
-                if item.data(0, Qt.UserRole) == surface_id:
-                    self.surface_tree.setCurrentItem(item)
-                    self.current_surface_id = surface_id
-                    return
-
-        if self.surface_tree.topLevelItemCount() > 0:
-            item = self.surface_tree.topLevelItem(0)
+        if surface_id and surface_id in self._surface_items:
+            item = self._surface_items[surface_id]
             self.surface_tree.setCurrentItem(item)
-            self.current_surface_id = item.data(0, Qt.UserRole)
+            self.current_surface_id = surface_id
+            return
+
+        fallback_id = next(iter(self._surface_items.keys()), None)
+        if fallback_id:
+            item = self._surface_items[fallback_id]
+            self.surface_tree.setCurrentItem(item)
+            self.current_surface_id = fallback_id
         else:
             self.surface_tree.setCurrentItem(None)
             self.current_surface_id = None
@@ -515,7 +922,7 @@ class SurfaceDockWidget(QDockWidget):
             self._loading_points = False
             return
 
-        points: List[SurfacePoint] = surface.get("points", [])
+        points: List[SurfacePoint] = self._surface_points(surface)
         for index, point in enumerate(points):
             self._append_point_item(index, point)
 
@@ -538,7 +945,7 @@ class SurfaceDockWidget(QDockWidget):
         item.setData(0, Qt.UserRole, index)
         item.setText(1, f"{float(point.get('x', 0.0)):.2f}")
         item.setText(2, f"{float(point.get('y', 0.0)):.2f}")
-        item.setText(3, f"{float(point.get('z', 0.0)):.2f}")
+        item.setText(3, self._format_z_value(point.get("z")))
 
         self._create_point_editor(item, 1)
         self._create_point_editor(item, 2)
@@ -555,14 +962,16 @@ class SurfaceDockWidget(QDockWidget):
             return
 
         new_point: SurfacePoint = {"x": 0.0, "y": 0.0, "z": 0.0}
-        current_surface.setdefault("points", []).append(new_point)
+        points = self._surface_points(current_surface, create=True)
+        points.append(new_point)
 
-        index = len(current_surface["points"]) - 1
+        index = len(points) - 1
         self._append_point_item(index, new_point)
         self._set_points_panel_visible(True)
         self._renumber_points()
         self._sync_points_order()
-        self._on_surface_geometry_changed(self.current_surface_id)
+        if self._has_complete_z_definition(current_surface):
+            self._on_surface_geometry_changed(self.current_surface_id)
 
     def _handle_delete_point(self) -> None:
         current_surface = self._get_current_surface_definition()
@@ -577,7 +986,7 @@ class SurfaceDockWidget(QDockWidget):
         if not isinstance(index, int):
             return
 
-        points = current_surface.get("points", [])
+        points = self._surface_points(current_surface)
         if 0 <= index < len(points):
             del points[index]
 
@@ -585,7 +994,8 @@ class SurfaceDockWidget(QDockWidget):
         root.removeChild(item)
         self._renumber_points()
         self._sync_points_order()
-        self._on_surface_geometry_changed(self.current_surface_id)
+        if self._has_complete_z_definition(current_surface):
+            self._on_surface_geometry_changed(self.current_surface_id)
 
     def _handle_point_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._loading_points:
@@ -602,22 +1012,29 @@ class SurfaceDockWidget(QDockWidget):
         if not isinstance(index, int):
             return
 
+        points = self._surface_points(surface, create=True)
+        all_zero_before = self._are_all_z_zero(points)
+
         try:
-            value = float(item.text(column))
+            if column == 3:
+                raw_value = item.text(3).strip()
+                value = None if raw_value == "" else float(raw_value.replace(",", "."))
+            else:
+                value = float(item.text(column).replace(",", "."))
         except ValueError:
             # Invalid auf alten Wert zurücksetzen
             self._loading_points = True
-            coords = surface["points"][index]
+            coords = points[index]
             if column == 1:
                 item.setText(1, f"{coords.get('x', 0.0):.2f}")
             elif column == 2:
                 item.setText(2, f"{coords.get('y', 0.0):.2f}")
             else:
-                item.setText(3, f"{coords.get('z', 0.0):.2f}")
+                item.setText(3, self._format_z_value(coords.get("z")))
             self._loading_points = False
             return
 
-        coords = surface["points"][index]
+        coords = points[index]
         previous_coords = coords.copy()
 
         if column == 1:
@@ -628,25 +1045,32 @@ class SurfaceDockWidget(QDockWidget):
             item.setText(2, f"{value:.2f}")
         else:
             coords["z"] = value
-            item.setText(3, f"{value:.2f}")
+            item.setText(3, self._format_z_value(value))
+            if value is not None and all_zero_before and not math.isclose(value, 0.0, abs_tol=1e-9):
+                self._clear_other_z_values(surface, index)
+            self._try_auto_complete_surface_z(surface)
         if not self._enforce_surface_planarity(surface):
-            # Rückgängig machen, falls Modell nicht bestimmt werden konnte
-            self._loading_points = True
-            coords.update(previous_coords)
-            if column == 1:
-                item.setText(1, f"{previous_coords.get('x', 0.0):.2f}")
-            elif column == 2:
-                item.setText(2, f"{previous_coords.get('y', 0.0):.2f}")
+            if column == 3:
+                # Keine planare Fläche möglich → übrige Z-Werte zurücksetzen, Eingabe beibehalten
+                item.setText(3, self._format_z_value(value))
+                self._clear_other_z_values(surface, index)
             else:
-                item.setText(3, f"{previous_coords.get('z', 0.0):.2f}")
-            self._loading_points = False
+                # Für X/Y weiterhin vorherigen Wert wiederherstellen
+                self._loading_points = True
+                coords.update(previous_coords)
+                if column == 1:
+                    item.setText(1, f"{previous_coords.get('x', 0.0):.2f}")
+                elif column == 2:
+                    item.setText(2, f"{previous_coords.get('y', 0.0):.2f}")
+                self._loading_points = False
             return
 
-        self._on_surface_geometry_changed(self.current_surface_id)
+        if self._has_complete_z_definition(surface):
+            self._on_surface_geometry_changed(self.current_surface_id)
 
     # ---- helpers ----------------------------------------------------
 
-    def _get_current_surface_definition(self) -> Optional[SurfaceDefinition]:
+    def _get_current_surface_definition(self) -> Optional[SurfaceRecord]:
         surface_store = self._get_surface_store()
         if not surface_store:
             return None
@@ -655,22 +1079,49 @@ class SurfaceDockWidget(QDockWidget):
         if surface_id is None:
             item = self.surface_tree.currentItem()
             if item is not None:
-                surface_id = item.data(0, Qt.UserRole)
-                self.current_surface_id = surface_id
+                item_type, candidate_id = self._get_item_identity(item)
+                if item_type == self.ITEM_TYPE_SURFACE:
+                    surface_id = candidate_id
+                    self.current_surface_id = surface_id
 
         if surface_id is None:
             return None
 
         return surface_store.get(surface_id)
 
-    def _get_surface_store(self) -> Dict[str, SurfaceDefinition]:
+    def _get_surface_store(self) -> Dict[str, SurfaceRecord]:
         if not hasattr(self.settings, "surface_definitions") or self.settings.surface_definitions is None:
             self.settings.surface_definitions = {}
         return self.settings.surface_definitions
 
+    @staticmethod
+    def _surface_get(surface: SurfaceRecord | None, key: str, default: Any = None) -> Any:
+        if surface is None:
+            return default
+        if isinstance(surface, dict):
+            return surface.get(key, default)
+        return getattr(surface, key, default)
+
+    @staticmethod
+    def _surface_set(surface: SurfaceRecord | None, key: str, value: Any) -> None:
+        if surface is None:
+            return
+        if isinstance(surface, dict):
+            surface[key] = value
+        else:
+            setattr(surface, key, value)
+
+    @staticmethod
+    def _surface_points(surface: SurfaceRecord | None, *, create: bool = False) -> List[SurfacePoint]:
+        points = SurfaceDockWidget._surface_get(surface, "points", None)
+        if points is None and create:
+            points = []
+            SurfaceDockWidget._surface_set(surface, "points", points)
+        return points or []
+
     def _validate_surface_planarity(
         self,
-        surface: Optional[SurfaceDefinition],
+        surface: Optional[SurfaceRecord],
         *,
         show_warning: bool = True,
     ) -> bool:
@@ -680,53 +1131,71 @@ class SurfaceDockWidget(QDockWidget):
         if surface is None:
             return True
 
-        points = surface.get("points", [])
-        model, error = derive_surface_plane(points)
+        points = self._surface_points(surface)
+        numeric_points = self._prepare_numeric_points(points, require_complete=True)
+        if not numeric_points:
+            # Noch nicht vollständig definiert → keine Warnung anzeigen
+            return True
+
+        model, error = derive_surface_plane(numeric_points)
         if model is None:
             if show_warning:
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Ungültige Z-Geometrie",
                     (
-                        f"Die Fläche '{surface.get('name', 'Surface')}' kann nicht gezeichnet werden:\n"
+                        f"Die Fläche '{self._surface_get(surface, 'name', 'Surface')}' kann nicht gezeichnet werden:\n"
                         f"{error}"
                     ),
                 )
             return False
         return True
 
-    def _enforce_surface_planarity(self, surface: SurfaceDefinition) -> bool:
+    def _enforce_surface_planarity(self, surface: SurfaceRecord) -> bool:
         """
         Erzwingt planare Z-Werte, indem die Fläche auf das beste gültige Modell projiziert wird.
         """
         if surface is None:
             return False
 
-        points = surface.get("points", [])
-        model, needs_adjustment = build_planar_model(points)
+        points = self._surface_points(surface)
+        if not points:
+            return False
+
+        valid_points = [point for point in points if self._is_valid_z_value(point.get("z"))]
+        if len(valid_points) < len(points):
+            # Noch unvollständig definierte Flächen – später erneut prüfen
+            return True
+
+        numeric_points = self._prepare_numeric_points(points, require_complete=True)
+        if not numeric_points:
+            return False
+
+        model, _ = build_planar_model(numeric_points)
         if model is None:
             return False
 
-        if needs_adjustment:
-            previous_loading = self._loading_points
-            self._loading_points = True
-            try:
-                for idx, point in enumerate(points):
-                    new_z = evaluate_surface_plane(
-                        model,
-                        float(point.get("x", 0.0)),
-                        float(point.get("y", 0.0)),
-                    )
-                    point["z"] = new_z
-                    item = self.points_tree.topLevelItem(idx)
-                    if item is not None:
-                        item.setText(3, f"{new_z:.2f}")
-            finally:
-                self._loading_points = previous_loading
+        previous_loading = self._loading_points
+        self._loading_points = True
+        try:
+            for idx, point in enumerate(points):
+                numeric_x = float(self._coerce_numeric(point.get("x")) or 0.0)
+                numeric_y = float(self._coerce_numeric(point.get("y")) or 0.0)
+                new_z = evaluate_surface_plane(
+                    model,
+                    numeric_x,
+                    numeric_y,
+                )
+                point["z"] = new_z
+                item = self.points_tree.topLevelItem(idx)
+                if item is not None:
+                    item.setText(3, f"{new_z:.2f}")
+        finally:
+            self._loading_points = previous_loading
 
         return True
 
-    def _ensure_default_surface(self, surface_store: Dict[str, SurfaceDefinition]) -> None:
+    def _ensure_default_surface(self, surface_store: Dict[str, SurfaceRecord]) -> None:
         if self.DEFAULT_SURFACE_ID not in surface_store:
             surface_store[self.DEFAULT_SURFACE_ID] = {
                 "name": self.DEFAULT_SURFACE_NAME,
@@ -736,7 +1205,7 @@ class SurfaceDockWidget(QDockWidget):
                 "locked": True,
             }
 
-    def _generate_surface_id(self, surface_store: Dict[str, SurfaceDefinition]) -> str:
+    def _generate_surface_id(self, surface_store: Dict[str, SurfaceRecord]) -> str:
         existing = set(surface_store.keys())
         index = 1
         while True:
@@ -745,8 +1214,8 @@ class SurfaceDockWidget(QDockWidget):
                 return candidate
             index += 1
 
-    def _generate_surface_name(self, surface_store: Dict[str, SurfaceDefinition]) -> str:
-        existing_names = {data.get("name", "") for data in surface_store.values()}
+    def _generate_surface_name(self, surface_store: Dict[str, SurfaceRecord]) -> str:
+        existing_names = {str(self._surface_get(data, "name", "")) for data in surface_store.values()}
         index = 1
         while True:
             name = f"Surface {index}"
@@ -757,11 +1226,162 @@ class SurfaceDockWidget(QDockWidget):
     @staticmethod
     def _create_default_points() -> List[SurfacePoint]:
         return [
-            {"x": 75.0, "y": -50.0, "z": 0.0},
-            {"x": 75.0, "y": 50.0, "z": 0.0},
-            {"x": -75.0, "y": 50.0, "z": 0.0},
-            {"x": -75.0, "y": -50.0, "z": 0.0},
+            {"x": 0, "y": 0, "z": 0.0},
+            {"x": 0, "y": 0, "z": 0.0},
+            {"x": 0, "y": 0, "z": 0.0},
+            {"x": 0, "y": 0, "z": 0.0},
         ]
+
+    # ---- geometry helpers -------------------------------------------
+
+    @staticmethod
+    def _clone_surface_data(surface: SurfaceRecord) -> Dict[str, Any]:
+        """
+        Gibt eine vollständig kopierbare Dict-Repräsentation eines Surface zurück.
+        Unterstützt sowohl dict-basierte als auch dataclass-basierte Objekte.
+        """
+        if isinstance(surface, dict):
+            cloned = copy.deepcopy(surface)
+        elif hasattr(surface, "to_dict"):
+            cloned = copy.deepcopy(surface.to_dict())
+        else:
+            # Fallback – versuche generisch zu kopieren
+            cloned = copy.deepcopy(dict(surface)) if isinstance(surface, dict) else surface.to_dict()
+
+        cloned.pop("surface_id", None)
+        return cloned
+
+    @staticmethod
+    def _coerce_numeric(value: Any) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+        elif isinstance(value, str):
+            text = value.strip().replace(",", ".")
+            if not text:
+                return None
+            try:
+                numeric = float(text)
+            except ValueError:
+                return None
+        else:
+            return None
+        if math.isnan(numeric):
+            return None
+        return numeric
+
+    @classmethod
+    def _build_numeric_point(cls, point: SurfacePoint) -> Optional[Dict[str, float]]:
+        numeric_z = cls._coerce_numeric(point.get("z"))
+        if numeric_z is None:
+            return None
+        numeric_x = cls._coerce_numeric(point.get("x"))
+        numeric_y = cls._coerce_numeric(point.get("y"))
+        return {
+            "x": float(numeric_x if numeric_x is not None else 0.0),
+            "y": float(numeric_y if numeric_y is not None else 0.0),
+            "z": numeric_z,
+        }
+
+    @classmethod
+    def _prepare_numeric_points(
+        cls,
+        points: List[SurfacePoint],
+        *,
+        indices: Optional[List[int]] = None,
+        require_complete: bool = False,
+    ) -> List[Dict[str, float]]:
+        prepared: List[Dict[str, float]] = []
+        iterable = indices if indices is not None else list(range(len(points)))
+        for idx in iterable:
+            if idx < 0 or idx >= len(points):
+                continue
+            numeric_point = cls._build_numeric_point(points[idx])
+            if numeric_point is None:
+                if require_complete:
+                    return []
+                continue
+            prepared.append(numeric_point)
+        return prepared
+
+    @classmethod
+    def _is_valid_z_value(cls, value: Any) -> bool:
+        return cls._coerce_numeric(value) is not None
+
+    @classmethod
+    def _format_z_value(cls, value: Any) -> str:
+        numeric = cls._coerce_numeric(value)
+        if numeric is None:
+            return ""
+        return f"{numeric:.2f}"
+
+    def _are_all_z_zero(self, points: List[SurfacePoint], *, tol: float = 1e-3) -> bool:
+        if not points:
+            return False
+        for point in points:
+            numeric = self._coerce_numeric(point.get("z"))
+            if numeric is None:
+                return False
+            if not math.isclose(numeric, 0.0, abs_tol=tol):
+                return False
+        return True
+
+    def _clear_other_z_values(self, surface: SurfaceRecord, keep_index: int) -> None:
+        points = self._surface_points(surface)
+        previous_loading = self._loading_points
+        self._loading_points = True
+        try:
+            for idx, point in enumerate(points):
+                if idx == keep_index:
+                    continue
+                point["z"] = None
+                item = self.points_tree.topLevelItem(idx)
+                if item is not None:
+                    item.setText(3, "")
+        finally:
+            self._loading_points = previous_loading
+
+    def _try_auto_complete_surface_z(self, surface: SurfaceRecord) -> bool:
+        points = self._surface_points(surface)
+        if len(points) < 3:
+            return False
+
+        defined_indices = [idx for idx, point in enumerate(points) if self._is_valid_z_value(point.get("z"))]
+        missing_indices = [idx for idx in range(len(points)) if idx not in defined_indices]
+
+        if len(defined_indices) < 3 or len(missing_indices) != 1:
+            return False
+
+        defined_points = self._prepare_numeric_points(points, indices=defined_indices)
+        model, _ = build_planar_model(defined_points)
+        if model is None:
+            return False
+
+        missing_index = missing_indices[0]
+        missing_point = points[missing_index]
+        new_z = evaluate_surface_plane(
+            model,
+            float(self._coerce_numeric(missing_point.get("x")) or 0.0),
+            float(self._coerce_numeric(missing_point.get("y")) or 0.0),
+        )
+
+        previous_loading = self._loading_points
+        self._loading_points = True
+        try:
+            missing_point["z"] = new_z
+            item = self.points_tree.topLevelItem(missing_index)
+            if item is not None:
+                item.setText(3, f"{new_z:.2f}")
+        finally:
+            self._loading_points = previous_loading
+        return True
+
+    def _has_complete_z_definition(self, surface: SurfaceRecord) -> bool:
+        points = self._surface_points(surface)
+        if not points:
+            return False
+        return all(self._is_valid_z_value(point.get("z")) for point in points)
 
     # ---- UI helpers -------------------------------------------------
 
@@ -830,7 +1450,7 @@ class SurfaceDockWidget(QDockWidget):
         if surface is None:
             return
 
-        points = surface.setdefault("points", [])
+        points = self._surface_points(surface, create=True)
         new_order: List[SurfacePoint] = []
         for idx in range(self.points_tree.topLevelItemCount()):
             item = self.points_tree.topLevelItem(idx)
@@ -845,7 +1465,7 @@ class SurfaceDockWidget(QDockWidget):
                 }
                 new_order.append(coords)
 
-        surface["points"] = new_order
+        self._surface_set(surface, "points", new_order)
         self._renumber_points()
         if self._points_panel_visible:
             self._set_points_panel_visible(True, force=True)

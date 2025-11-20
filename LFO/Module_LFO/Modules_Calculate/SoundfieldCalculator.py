@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 
 class SoundFieldCalculator(ModuleBase):
     def __init__(self, settings, data, calculation_spl):
@@ -153,6 +155,25 @@ class SoundFieldCalculator(ModuleBase):
             Z_grid,
             surface_mask,
         ) = self._grid_calculator.create_calculation_grid(enabled_surfaces)
+        surface_meshes = self._grid_calculator.get_surface_meshes()
+        surface_samples = self._grid_calculator.get_surface_sampling_points()
+        grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
+        surface_mask_flat = surface_mask.reshape(-1)
+        surface_field_buffers: Dict[str, np.ndarray] = {}
+        surface_point_buffers: Dict[str, np.ndarray] = {}
+        if surface_samples:
+            for sample in surface_samples:
+                if sample.indices.size > 0:
+                    surface_field_buffers[sample.surface_id] = np.zeros(
+                        sample.indices.shape[0],
+                        dtype=complex,
+                    )
+                sample_coords = np.asarray(sample.coordinates)
+                if sample_coords.size > 0:
+                    surface_point_buffers[sample.surface_id] = np.zeros(
+                        sample_coords.reshape(-1, 3).shape[0],
+                        dtype=complex,
+                    )
         
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
@@ -239,14 +260,10 @@ class SoundFieldCalculator(ModuleBase):
                 # --------------------------------------------------------
                 # 4.1: VEKTORISIERTE GEOMETRIE-BERECHNUNG
                 # --------------------------------------------------------
-                # 🚀 Erstelle 2D-Meshgrid für ALLE Grid-Punkte gleichzeitig
-                # X, Y haben beide die Shape [ny, nx] (z.B. [151, 101])
-                X, Y = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                
                 # Berechne Distanz-Vektoren für ALLE Punkte gleichzeitig
                 # Resultat: 2D-Arrays mit Shape [ny, nx]
-                x_distances = X - source_position_x[isrc]  # Distanz in X-Richtung
-                y_distances = Y - source_position_y[isrc]  # Distanz in Y-Richtung
+                x_distances = X_grid - source_position_x[isrc]  # Distanz in X-Richtung
+                y_distances = Y_grid - source_position_y[isrc]  # Distanz in Y-Richtung
                 
                 # Berechne horizontale Distanz (Pythagoras in 2D)
                 # √(x² + y²) für ALLE Punkte gleichzeitig
@@ -275,20 +292,7 @@ class SoundFieldCalculator(ModuleBase):
                 elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
                 
                 # --------------------------------------------------------
-                # 4.3: MASKEN-ERSTELLUNG (filtert ungültige Punkte)
-                # --------------------------------------------------------
-                # Erstelle Sichtbarkeits-Maske (prüft Abschattung durch Wände)
-                # Distanz-Maske (filtert Punkte zu nah an der Quelle, verhindert Division durch Null)
-                dist_mask = source_dists >= 0.001
-                
-                # 🎯 SURFACE-INTEGRATION: Kombiniere Distanz-Maske mit Surface-Maske
-                # Nur Punkte die BEIDE Bedingungen erfüllen:
-                # 1. Ausreichend weit von der Quelle entfernt (dist_mask)
-                # 2. Innerhalb mindestens eines aktivierten Surfaces (surface_mask)
-                valid_mask = dist_mask & surface_mask
-                
-                # --------------------------------------------------------
-                # 4.4: BATCH-INTERPOLATION (der Performance-Booster! 🚀)
+                # 4.3: BATCH-INTERPOLATION (der Performance-Booster! 🚀)
                 # --------------------------------------------------------
                 # Hole Balloon-Daten für ALLE Punkte in EINEM Aufruf
                 # Input:  azimuths[151, 101], elevations[151, 101]
@@ -309,25 +313,43 @@ class SoundFieldCalculator(ModuleBase):
                     polar_phase_rad = np.radians(polar_phases)
                     
                     # Initialisiere Wellen-Array (gleiches Shape wie Grid)
-                    wave = np.zeros_like(source_dists, dtype=complex)
-                    
-                    # 🚀 KERN-BERECHNUNG: Berechne komplexe Welle für ALLE gültigen Punkte
-                    # Wellenformel: p(r) = (A × G × A₀ / r) × exp(i × Φ)
-                    # Wobei:
-                    #   A = magnitude_linear (Richtcharakteristik)
-                    #   G = source_level (Lautstärke)
-                    #   A₀ = a_source_pa (Referenz-Schalldruck)
-                    #   r = source_dists (Distanz)
-                    #   Φ = wave_number×r + polar_phase + 2π×f×t (Gesamtphase)
-                    wave[valid_mask] = (magnitude_linear[valid_mask] * source_level[isrc] * a_source_pa * 
-                                       np.exp(1j * (wave_number * source_dists[valid_mask] + 
-                                                  polar_phase_rad[valid_mask] + 
-                                                  2 * np.pi * calculate_frequency * source_time[isrc])) / 
-                                       source_dists[valid_mask])
-                    
-                    # Polaritätsinvertierung (180° Phasenverschiebung)
-                    if hasattr(speaker_array, 'source_polarity') and speaker_array.source_polarity[isrc]:
-                        wave = -wave
+                    source_position = np.array(
+                        [
+                            source_position_x[isrc],
+                            source_position_y[isrc],
+                            source_position_z[isrc],
+                        ],
+                        dtype=float,
+                    )
+                    polarity_flag = False
+                    if hasattr(speaker_array, 'source_polarity'):
+                        try:
+                            polarity_flag = bool(speaker_array.source_polarity[isrc])
+                        except (TypeError, IndexError):
+                            polarity_flag = False
+
+                    source_props = {
+                        "magnitude_linear": magnitude_linear.reshape(-1),
+                        "polar_phase_rad": polar_phase_rad.reshape(-1),
+                        "source_level": source_level[isrc],
+                        "a_source_pa": a_source_pa,
+                        "wave_number": wave_number,
+                        "frequency": calculate_frequency,
+                        "source_time": source_time[isrc],
+                        "polarity": polarity_flag,
+                        "distances": source_dists.reshape(-1),
+                    }
+                    mask_options = {
+                        "min_distance": 0.001,
+                        "additional_mask": surface_mask_flat,
+                    }
+                    wave_flat = self._compute_wave_for_points(
+                        grid_points,
+                        source_position,
+                        source_props,
+                        mask_options,
+                    )
+                    wave = wave_flat.reshape(source_dists.shape)
                     
                     # --------------------------------------------------------
                     # 4.6: AKKUMULATION (Interferenz-Überlagerung)
@@ -335,6 +357,60 @@ class SoundFieldCalculator(ModuleBase):
                     # Addiere die Welle dieses Lautsprechers zum Gesamt-Schallfeld
                     # Komplexe Addition → Automatische Interferenz (konstruktiv/destruktiv)
                     sound_field_p += wave
+                    if surface_field_buffers:
+                        for sample in surface_samples:
+                            buffer = surface_field_buffers.get(sample.surface_id)
+                            if buffer is None or sample.indices.size == 0:
+                                continue
+                            rows = sample.indices[:, 0]
+                            cols = sample.indices[:, 1]
+                            buffer += wave[rows, cols]
+                    if surface_point_buffers:
+                        for sample in surface_samples:
+                            point_buffer = surface_point_buffers.get(sample.surface_id)
+                            if point_buffer is None or sample.coordinates.size == 0:
+                                continue
+
+                            coords = np.asarray(sample.coordinates, dtype=float).reshape(-1, 3)
+                            dx = coords[:, 0] - source_position_x[isrc]
+                            dy = coords[:, 1] - source_position_y[isrc]
+                            dz = coords[:, 2] - source_position_z[isrc]
+                            horizontal = np.sqrt(dx**2 + dy**2)
+                            sample_dists = np.sqrt(horizontal**2 + dz**2)
+
+                            sample_azimuths = (np.degrees(np.arctan2(dy, dx)) + np.degrees(source_azimuth[isrc])) % 360
+                            sample_azimuths = (360 - sample_azimuths) % 360
+                            sample_azimuths = (sample_azimuths + 90) % 360
+                            sample_elevations = np.degrees(np.arctan2(dz, horizontal))
+
+                            azimuths_payload = sample_azimuths.reshape(1, -1)
+                            elevations_payload = sample_elevations.reshape(1, -1)
+                            sample_gains, sample_phases = self.get_balloon_data_batch(
+                                speaker_name,
+                                azimuths_payload,
+                                elevations_payload,
+                            )
+                            if sample_gains is None or sample_phases is None:
+                                continue
+
+                            sample_props = {
+                                "magnitude_linear": (10 ** (sample_gains.reshape(-1) / 20)),
+                                "polar_phase_rad": np.radians(sample_phases.reshape(-1)),
+                                "source_level": source_level[isrc],
+                                "a_source_pa": a_source_pa,
+                                "wave_number": wave_number,
+                                "frequency": calculate_frequency,
+                                "source_time": source_time[isrc],
+                                "polarity": polarity_flag,
+                                "distances": sample_dists,
+                            }
+                            sample_wave = self._compute_wave_for_points(
+                                coords,
+                                source_position,
+                                sample_props,
+                                {"min_distance": 0.001},
+                            )
+                            point_buffer += sample_wave
                     if capture_arrays:
                         array_wave += wave
             if capture_arrays and array_wave is not None:
@@ -342,11 +418,138 @@ class SoundFieldCalculator(ModuleBase):
 
         # 🎯 Speichere Z-Grid für Plot-Verwendung
         # Konvertiere Z_grid zu Liste für JSON-Serialisierung
+        surface_fields = {}
+        if surface_field_buffers:
+            for surface_id, buffer in surface_field_buffers.items():
+                surface_fields[surface_id] = buffer.copy()
+        else:
+            surface_fields = self._calculate_surface_mesh_fields(sound_field_p, surface_samples)
+
+        if surface_point_buffers:
+            for surface_id, buffer in surface_point_buffers.items():
+                if buffer.size == 0:
+                    continue
+                surface_fields[surface_id] = buffer.copy()
+
+        sample_payloads = []
+        if surface_samples:
+            for sample in surface_samples:
+                sample_payloads.append(
+                    {
+                        "surface_id": sample.surface_id,
+                        "name": sample.name,
+                        "coordinates": sample.coordinates.tolist(),
+                        "indices": sample.indices.tolist(),
+                        "grid_shape": list(sample.grid_shape),
+                    }
+                )
+
         if isinstance(self.calculation_spl, dict):
             self.calculation_spl['sound_field_z'] = Z_grid.tolist()
             self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()
+            if surface_meshes:
+                self.calculation_spl['surface_meshes'] = [
+                    mesh.to_payload() for mesh in surface_meshes
+                ]
+            self.calculation_spl['surface_samples'] = sample_payloads
+            self.calculation_spl['surface_fields'] = {
+                surface_id: values.tolist()
+                for surface_id, values in surface_fields.items()
+            }
 
         return sound_field_p, sound_field_x, sound_field_y, array_fields
+    
+    def _compute_wave_for_points(
+        self,
+        points: np.ndarray,
+        source_position: np.ndarray,
+        source_props: Dict[str, Any],
+        mask_options: Optional[Dict[str, np.ndarray]] = None,
+    ) -> np.ndarray:
+        """
+        Berechnet das komplexe Wellenfeld für beliebige 3D-Punkte.
+        
+        Args:
+            points: Array der Form (N, 3) mit XYZ-Koordinaten der Zielpunkte.
+            source_position: Array-Like mit (x, y, z) der Quelle.
+            source_props: Parameterpaket mit Richtcharakteristik und Quelleigenschaften.
+            mask_options: Optionale Maskenparameter (z.B. Mindestdistanz, zusätzliche Maske).
+        
+        Returns:
+            np.ndarray: Komplexe Wellenwerte (Shape: N).
+        """
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        if points.size == 0:
+            return np.zeros(0, dtype=complex)
+        
+        source_position = np.asarray(source_position, dtype=float).reshape(3)
+        mask_options = mask_options or {}
+        
+        distances = source_props.get("distances")
+        if distances is not None:
+            distances = np.asarray(distances, dtype=float).reshape(-1)
+        else:
+            deltas = points - source_position
+            distances = np.linalg.norm(deltas, axis=1)
+        
+        min_distance = float(mask_options.get("min_distance", 0.0))
+        valid_mask = distances >= min_distance
+        
+        additional_mask = mask_options.get("additional_mask")
+        if additional_mask is not None:
+            valid_mask &= np.asarray(additional_mask, dtype=bool).reshape(-1)
+        
+        wave = np.zeros(points.shape[0], dtype=complex)
+        if not np.any(valid_mask):
+            return wave
+        
+        magnitude_linear = np.asarray(source_props["magnitude_linear"], dtype=float).reshape(-1)
+        polar_phase_rad = np.asarray(source_props["polar_phase_rad"], dtype=float).reshape(-1)
+        source_level = float(np.asarray(source_props["source_level"], dtype=float).reshape(-1)[0])
+        a_source_pa = float(np.asarray(source_props["a_source_pa"], dtype=float))
+        wave_number = float(np.asarray(source_props["wave_number"], dtype=float))
+        frequency = float(np.asarray(source_props["frequency"], dtype=float))
+        source_time = float(np.asarray(source_props["source_time"], dtype=float))
+        polarity = bool(source_props.get("polarity", False))
+        
+        phase = (
+            wave_number * distances[valid_mask]
+            + polar_phase_rad[valid_mask]
+            + 2 * np.pi * frequency * source_time
+        )
+        wave[valid_mask] = (
+            magnitude_linear[valid_mask]
+            * source_level
+            * a_source_pa
+            * np.exp(1j * phase)
+            / distances[valid_mask]
+        )
+        
+        if polarity:
+            wave = -wave
+        
+        return wave
+
+    def _calculate_surface_mesh_fields(
+        self,
+        sound_field_complex: np.ndarray,
+        surface_samples: List["SurfaceSamplingPoints"],
+    ) -> Dict[str, np.ndarray]:
+        surface_fields: Dict[str, np.ndarray] = {}
+        if sound_field_complex is None or not surface_samples:
+            return surface_fields
+
+        try:
+            for sample in surface_samples:
+                if sample.indices.size == 0:
+                    continue
+                rows = sample.indices[:, 0]
+                cols = sample.indices[:, 1]
+                values = sound_field_complex[rows, cols]
+                surface_fields[sample.surface_id] = values.copy()
+        except Exception:
+            pass
+        return surface_fields
 
     def calculate_sound_field(self):
         """
@@ -369,214 +572,6 @@ class SoundFieldCalculator(ModuleBase):
         _ = 20 * np.log10(sound_field_magnitude + 1e-10)  # +1e-10 verhindert log(0)
         
         return sound_field_magnitude, sound_field_x, sound_field_y
-
-    def calculate_mirror_source_contribution(self, mirror_x, mirror_y, mirror_z, mirror_azimuth, 
-                                        source_x, source_y, source_z, reflecting_wall, speaker_array, isrc, 
-                                        sound_field_x, sound_field_y, sound_field_p,
-                                        active_walls, source_indices):
-        """🚀 OPTIMIERT: Vektorisierte Spiegelquellen-Berechnung"""
-        wall_start, wall_end = reflecting_wall
-        speaker_name = speaker_array.source_polar_pattern[isrc]
-        
-        # 🚀 VEKTORISIERT: Erstelle Meshgrid
-        X, Y = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-        
-        # 1. Prüfe welche Punkte auf gleicher Seite der Wand sind (vektorisiert)
-        wall_vec = (wall_end[0] - wall_start[0], wall_end[1] - wall_start[1])
-        v_points_x = X - wall_start[0]
-        v_points_y = Y - wall_start[1]
-        v_source_x = source_x - wall_start[0]
-        v_source_y = source_y - wall_start[1]
-        
-        cross_points = wall_vec[0] * v_points_y - wall_vec[1] * v_points_x
-        cross_source = wall_vec[0] * v_source_y - wall_vec[1] * v_source_x
-        
-        # Maske für gleiche Seite
-        same_side_mask = (cross_points * cross_source) > 0
-        
-        # Berechne Distanzen für ALLE Punkte (vektorisiert)
-        x_distances = X - mirror_x
-        y_distances = Y - mirror_y
-        horizontal_dists = np.sqrt(x_distances**2 + y_distances**2)
-        z_distance = -mirror_z
-        source_dists = np.sqrt(horizontal_dists**2 + z_distance**2)
-        
-        # Winkelberechnungen (vektorisiert)
-        source_to_point_angles = np.arctan2(y_distances, x_distances)
-        azimuths = (np.degrees(source_to_point_angles) + np.degrees(mirror_azimuth)) % 360
-        azimuths = (360 - azimuths) % 360
-        azimuths = (azimuths + 90) % 360
-        elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
-        
-        # Distanz-Maske
-        dist_mask = source_dists > 0.001
-        
-        # Kombiniere Masken
-        valid_mask = same_side_mask & dist_mask
-        
-        # 🚀 BATCH-OPTIMIERUNG: Sammle alle gültigen Punkte und hole Balloon-Daten in einem Batch
-        valid_points = []
-        for iy in range(len(sound_field_y)):  # ✅ Y zuerst (Zeilen)
-            for ix in range(len(sound_field_x)):  # ✅ X danach (Spalten)
-                if not valid_mask[iy, ix]:
-                    continue
-                
-                point_x = sound_field_x[ix]
-                point_y = sound_field_y[iy]
-                
-                # Berechne Reflexionspunkt
-                reflection_point = self.get_reflection_point(mirror_x, mirror_y, point_x, point_y, reflecting_wall)
-                
-                if reflection_point is not None:
-                    refl_x, refl_y = reflection_point
-                    
-                    # Prüfe Sichtbarkeit
-                    if self.check_line_of_sight(source_x, source_y, refl_x, refl_y, active_walls):
-                        valid_points.append((iy, ix))
-        
-        # Wenn keine gültigen Punkte, return
-        if len(valid_points) == 0:
-            return
-        
-        # 🚀 BATCH: Hole Balloon-Daten für ALLE gültigen Punkte
-        batch_azimuths = np.array([azimuths[iy, ix] for iy, ix in valid_points])
-        batch_elevations = np.array([elevations[iy, ix] for iy, ix in valid_points])
-        
-        polar_gains_batch, polar_phases_batch = self.get_balloon_data_batch(
-            speaker_name, 
-            batch_azimuths.reshape(-1, 1),  # Shape für Batch-Funktion
-            batch_elevations.reshape(-1, 1)
-        )
-        
-        if polar_gains_batch is not None and polar_phases_batch is not None:
-            # Flatten für einfacheren Zugriff
-            polar_gains_batch = polar_gains_batch.flatten()
-            polar_phases_batch = polar_phases_batch.flatten()
-            
-            # Verarbeite alle gültigen Punkte
-            level = self.functions.db2mag(speaker_array.source_level[isrc] + speaker_array.gain)
-            # 🌡️ Temperaturabhängige Schallgeschwindigkeit (wird in UiSettings berechnet)
-            speed_of_sound = self.settings.speed_of_sound
-            wave_number = self.functions.wavenumber(speed_of_sound, self.settings.calculate_frequency)
-            a_source_pa = self.functions.db2spl(self.functions.db2mag(self.settings.a_source_db))
-            time_factor = 2 * np.pi * self.settings.calculate_frequency * (speaker_array.source_time[isrc] + speaker_array.delay) / 1000
-            
-            for idx, (iy, ix) in enumerate(valid_points):
-                polar_gain = polar_gains_batch[idx]
-                polar_phase = polar_phases_batch[idx]
-                source_dist = source_dists[iy, ix]
-                
-                magnitude_linear = 10 ** (polar_gain / 20)
-                polar_phase_rad = np.radians(polar_phase)
-                
-                # Berechne Welle
-                wave = (magnitude_linear * level * a_source_pa * 
-                       np.exp(1j * (wave_number * source_dist + polar_phase_rad + time_factor)) / 
-                       source_dist)
-                
-                # Polaritätsinvertierung (180° Phasenverschiebung)
-                if hasattr(speaker_array, 'source_polarity') and speaker_array.source_polarity[isrc]:
-                    wave = -wave
-                
-                # Addiere zur Summe
-                if np.isscalar(wave):
-                    sound_field_p[iy, ix] += wave
-                elif hasattr(wave, 'item') and hasattr(wave, 'size') and wave.size == 1:
-                    sound_field_p[iy, ix] += wave.item()
-                elif hasattr(wave, '__len__') and len(wave) > 0:
-                    sound_field_p[iy, ix] += wave[0]
-
-    def get_reflection_point(self, mirror_x, mirror_y, point_x, point_y, wall):
-        """
-        Berechnet den Reflexionspunkt auf der Wand
-        """
-        wall_start, wall_end = wall
-        
-        # Geradengleichung der Wand: ax + by + c = 0
-        a = wall_end[1] - wall_start[1]
-        b = wall_start[0] - wall_end[0]
-        c = wall_end[0]*wall_start[1] - wall_start[0]*wall_end[1]
-        
-        # Geradengleichung Spiegelquelle-Punkt
-        dx = point_x - mirror_x
-        dy = point_y - mirror_y
-        
-        # Schnittpunkt berechnen
-        denom = a*dx + b*dy
-        if abs(denom) < 1e-10:  # Parallele Linien
-            return None
-        
-        t = -(a*mirror_x + b*mirror_y + c) / denom
-        
-        # Schnittpunkt
-        x = mirror_x + t*dx
-        y = mirror_y + t*dy
-        
-        # Prüfen ob Schnittpunkt auf Wandsegment liegt
-        if (min(wall_start[0], wall_end[0]) <= x <= max(wall_start[0], wall_end[0]) and
-            min(wall_start[1], wall_end[1]) <= y <= max(wall_start[1], wall_end[1])):
-            return (x, y)
-        
-        return None
-
-    def check_line_of_sight(self, source_x, source_y, point_x, point_y, walls):
-        """
-        Prüft, ob eine direkte Sichtlinie zwischen Quelle und Punkt existiert
-        unter Berücksichtigung ALLER Wände
-        """
-        # Prüfe gegen jede Wand
-        for wall in walls:
-            wall_start, wall_end = wall
-            
-            # Vektoren für Kreuzprodukt
-            v1 = (wall_end[0] - wall_start[0], wall_end[1] - wall_start[1])  # Wandvektor
-            v2 = (point_x - wall_start[0], point_y - wall_start[1])          # Vektor zum Punkt
-            v3 = (source_x - wall_start[0], source_y - wall_start[1])        # Vektor zur Quelle
-            
-            # Kreuzprodukte berechnen
-            cross_point = v1[0]*v2[1] - v1[1]*v2[0]
-            cross_source = v1[0]*v3[1] - v1[1]*v3[0]
-            
-            # Wenn Punkt und Quelle auf verschiedenen Seiten der Wand liegen
-            if cross_point * cross_source < 0:
-                # Prüfe ob der Schnittpunkt im Wandsegment liegt
-                t = ((point_x - source_x)*(wall_start[1] - source_y) - 
-                     (point_y - source_y)*(wall_start[0] - source_x)) / \
-                    ((point_y - source_y)*(wall_end[0] - wall_start[0]) - 
-                     (point_x - source_x)*(wall_end[1] - wall_start[1]))
-                
-                if 0 <= t <= 1:
-                    return False  # Sichtlinie wird von dieser Wand blockiert
-        
-        return True  # Keine Wand blockiert die Sichtlinie
-
-    def reflect_point_across_line(self, source_x, source_y, wall_start, wall_end):
-        """
-        Berechnet die Position der Spiegelquelle durch Spiegelung an einer Wand
-        """
-        # Wandvektor
-        wall_dx = wall_end[0] - wall_start[0]
-        wall_dy = wall_end[1] - wall_start[1]
-        
-        # Normalisierter Normalenvektor der Wand
-        length = np.sqrt(wall_dx**2 + wall_dy**2)
-        normal_x = -wall_dy / length
-        normal_y = wall_dx / length
-        
-        # Vektor von Wandstart zur Quelle
-        source_to_wall_x = source_x - wall_start[0]
-        source_to_wall_y = source_y - wall_start[1]
-        
-        # Projektion auf Normale (doppelter Abstand zur Wand)
-        projection = 2 * (source_to_wall_x * normal_x + source_to_wall_y * normal_y)
-        
-        # Spiegelposition berechnen
-        mirror_x = source_x - projection * normal_x
-        mirror_y = source_y - projection * normal_y
-        
-        return mirror_x, mirror_y
-    
-
     
     def _interpolate_angle_data(self, magnitude, phase, vertical_angles, azimuth, elevation):
         """
@@ -839,31 +834,19 @@ class SoundFieldCalculator(ModuleBase):
         
         enabled = []
         for surface_id, surface_def in self.settings.surface_definitions.items():
-            if surface_def.get('enabled', False) and not surface_def.get('hidden', False):
-                enabled.append((surface_id, surface_def))
+            if hasattr(surface_def, "to_dict"):
+                surface_data = surface_def.to_dict()
+            elif isinstance(surface_def, dict):
+                surface_data = surface_def
+            else:
+                # Fallback: versuche Attribute direkt zu lesen
+                surface_data = {
+                    "enabled": getattr(surface_def, "enabled", False),
+                    "hidden": getattr(surface_def, "hidden", False),
+                    "points": getattr(surface_def, "points", []),
+                    "name": getattr(surface_def, "name", surface_id),
+                }
+            if surface_data.get('enabled', False) and not surface_data.get('hidden', False):
+                enabled.append((surface_id, surface_data))
         
         return enabled
-
-    def calculate_mirror_azimuth(self, source_azimuth, wall):
-        """
-        Berechnet den Azimut der Spiegelquelle
-        """
-        wall_start, wall_end = wall
-        
-        # Wandvektor berechnen
-        wall_dx = wall_end[0] - wall_start[0]
-        wall_dy = wall_end[1] - wall_start[1]
-        
-        # Wandwinkel zur Y-Achse
-        wall_angle = np.degrees(np.arctan2(wall_dx, wall_dy))
-        
-        # Spiegelung: doppelter Wandwinkel minus Quellazimut
-        mirror_azimuth = 2 * wall_angle - source_azimuth
-        
-        # Normalisiere auf -180° bis +180°
-        if mirror_azimuth > 180:
-            mirror_azimuth -= 360
-        elif mirror_azimuth < -180:
-            mirror_azimuth += 360
-        
-        return mirror_azimuth

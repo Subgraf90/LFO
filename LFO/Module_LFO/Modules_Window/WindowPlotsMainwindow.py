@@ -522,8 +522,12 @@ class DrawPlotsMainwindow(ModuleBase):
         hidden_surfaces = []       # Nicht geplottet: hidden
         
         for surface_id, surface_def in surface_definitions.items():
-            enabled = surface_def.get('enabled', False)
-            hidden = surface_def.get('hidden', False)
+            if hasattr(surface_def, "enabled") and hasattr(surface_def, "hidden"):
+                enabled = bool(surface_def.enabled)
+                hidden = bool(surface_def.hidden)
+            else:
+                enabled = bool(surface_def.get('enabled', False)) if isinstance(surface_def, dict) else False
+                hidden = bool(surface_def.get('hidden', False)) if isinstance(surface_def, dict) else False
             
             if hidden:
                 hidden_surfaces.append(surface_id)

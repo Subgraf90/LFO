@@ -5,7 +5,10 @@ from typing import List, Optional, Tuple, Any
 import numpy as np
 from PyQt5 import QtWidgets, QtCore
 
-from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import DEBUG_SURFACE_GEOMETRY
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    DEBUG_SURFACE_GEOMETRY,
+    SurfaceDefinition,
+)
 
 
 class SPL3DOverlayRenderer:
@@ -114,9 +117,14 @@ class SPL3DOverlayRenderer:
         surfaces_signature: List[tuple] = []
         for surface_id in sorted(surface_definitions.keys()):
             surface_def = surface_definitions[surface_id]
-            enabled = bool(surface_def.get('enabled', False))
-            hidden = bool(surface_def.get('hidden', False))
-            points = surface_def.get('points', [])
+            if isinstance(surface_def, SurfaceDefinition):
+                enabled = bool(getattr(surface_def, 'enabled', False))
+                hidden = bool(getattr(surface_def, 'hidden', False))
+                points = getattr(surface_def, 'points', []) or []
+            else:
+                enabled = bool(surface_def.get('enabled', False))
+                hidden = bool(surface_def.get('hidden', False))
+                points = surface_def.get('points', [])
             
             # Erstelle Signatur aus enabled, hidden, Punkten und aktiver Surface-ID
             points_tuple = []
@@ -151,14 +159,21 @@ class SPL3DOverlayRenderer:
         z_offset = self._planar_z_offset * 2  # Etwas höher als andere Overlays
         
         for surface_id, surface_def in surface_definitions.items():
-            enabled = surface_def.get('enabled', False)
-            hidden = surface_def.get('hidden', False)
+            if isinstance(surface_def, SurfaceDefinition):
+                enabled = bool(getattr(surface_def, 'enabled', False))
+                hidden = bool(getattr(surface_def, 'hidden', False))
+                points = getattr(surface_def, 'points', []) or []
+                color_value = getattr(surface_def, 'color', '#888888')
+            else:
+                enabled = surface_def.get('enabled', False)
+                hidden = surface_def.get('hidden', False)
+                points = surface_def.get('points', [])
+                color_value = surface_def.get('color', '#888888')
             
             # Überspringe nur versteckte Surfaces
             if hidden:
                 continue
             
-            points = surface_def.get('points', [])
             if len(points) < 3:
                 continue
             
@@ -170,9 +185,7 @@ class SPL3DOverlayRenderer:
             if is_active:
                 color = '#FF0000'  # Rot für aktives Surface
             else:
-                color = surface_def.get('color', '#888888')
-                if not isinstance(color, str):
-                    color = '#888888'
+                color = color_value if isinstance(color_value, str) else '#888888'
             
             # Konvertiere Punkte zu numpy-Array
             try:

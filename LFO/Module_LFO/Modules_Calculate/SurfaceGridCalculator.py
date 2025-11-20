@@ -6,15 +6,60 @@ Dieses Modul kapselt die gesamte Logik zur Grid-Erstellung für Soundfield-Berec
 - Grid-Koordinaten-Generierung
 - Surface-Masken-Erstellung
 - Z-Koordinaten-Interpolation
+- Extraktion surface-spezifischer Sampling-Grids
 """
 
-import numpy as np
+from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
+import math
+
+import numpy as np
+
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     evaluate_surface_plane,
+    SurfaceDefinition,
 )
+
+
+@dataclass
+class SurfaceGridMesh:
+    surface_id: str
+    name: str
+    x_axis: np.ndarray
+    y_axis: np.ndarray
+    mask: np.ndarray
+    z_grid: np.ndarray
+    plane_model: Dict[str, float] | None
+
+    def to_payload(self) -> Dict[str, List]:
+        return {
+            "surface_id": self.surface_id,
+            "name": self.name,
+            "x": self.x_axis.tolist(),
+            "y": self.y_axis.tolist(),
+            "mask": self.mask.tolist(),
+            "z": self.z_grid.tolist(),
+        }
+
+
+@dataclass
+class SurfaceSamplingPoints:
+    surface_id: str
+    name: str
+    coordinates: np.ndarray  # Shape (N, 3)
+    indices: np.ndarray      # Shape (N, 2) - (row, col) im lokalen Grid
+    grid_shape: Tuple[int, int]
+
+    def to_payload(self) -> Dict[str, List]:
+        return {
+            "surface_id": self.surface_id,
+            "name": self.name,
+            "coordinates": self.coordinates.tolist(),
+            "indices": self.indices.tolist(),
+            "grid_shape": list(self.grid_shape),
+        }
 
 
 class SurfaceGridCalculator(ModuleBase):
@@ -31,6 +76,8 @@ class SurfaceGridCalculator(ModuleBase):
     def __init__(self, settings):
         super().__init__(settings)
         self.settings = settings
+        self._last_surface_meshes: List[SurfaceGridMesh] = []
+        self._last_surface_samples: List[SurfaceSamplingPoints] = []
     
     def create_calculation_grid(
         self,
@@ -113,7 +160,15 @@ class SurfaceGridCalculator(ModuleBase):
         if enabled_surfaces:
             Z_grid = self._interpolate_z_coordinates(X_grid, Y_grid, enabled_surfaces, surface_mask)
         
+        self._last_surface_meshes = self._build_surface_meshes(enabled_surfaces, resolution)
+        self._last_surface_samples = self._build_surface_samples(self._last_surface_meshes)
         return sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask
+
+    def get_surface_meshes(self) -> List[SurfaceGridMesh]:
+        return self._last_surface_meshes
+
+    def get_surface_sampling_points(self) -> List[SurfaceSamplingPoints]:
+        return self._last_surface_samples
     
     def _calculate_bounding_box(
         self,
@@ -249,6 +304,85 @@ class SurfaceGridCalculator(ModuleBase):
                 combined_mask = combined_mask | surface_mask
         
         return combined_mask
+
+    def _build_surface_meshes(
+        self,
+        surfaces: List[Tuple[str, Dict]],
+        resolution: float,
+    ) -> List[SurfaceGridMesh]:
+        meshes: List[SurfaceGridMesh] = []
+        if not surfaces:
+            return meshes
+
+        step = float(resolution or 1.0)
+        for surface_id, definition in surfaces:
+            surface = definition
+            if not isinstance(surface, SurfaceDefinition):
+                surface = SurfaceDefinition.from_dict(surface_id, definition)
+            points = surface.points
+            if len(points) < 3:
+                continue
+
+            xs = [float(pt.get("x", 0.0)) for pt in points]
+            ys = [float(pt.get("y", 0.0)) for pt in points]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            if math.isclose(min_x, max_x) or math.isclose(min_y, max_y):
+                continue
+
+            x_axis = np.arange(min_x, max_x + step, step)
+            y_axis = np.arange(min_y, max_y + step, step)
+            if x_axis.size < 2 or y_axis.size < 2:
+                continue
+
+            X_local, Y_local = np.meshgrid(x_axis, y_axis, indexing="xy")
+            mask = self._points_in_polygon_batch(X_local, Y_local, points)
+            if not np.any(mask):
+                continue
+
+            plane_model = surface.plane_model
+            if plane_model is None:
+                plane_model, _ = derive_surface_plane(points)
+
+            z_grid = self._evaluate_plane_grid(X_local, Y_local, plane_model)
+
+            meshes.append(
+                SurfaceGridMesh(
+                    surface_id=surface_id,
+                    name=surface.name,
+                    x_axis=x_axis,
+                    y_axis=y_axis,
+                    mask=mask,
+                    z_grid=z_grid,
+                    plane_model=plane_model,
+                )
+            )
+        return meshes
+
+    def _build_surface_samples(
+        self,
+        meshes: List[SurfaceGridMesh],
+    ) -> List[SurfaceSamplingPoints]:
+        samples: List[SurfaceSamplingPoints] = []
+        for mesh in meshes:
+            rows, cols = np.where(mesh.mask)
+            if rows.size == 0:
+                continue
+            xs = mesh.x_axis[cols]
+            ys = mesh.y_axis[rows]
+            zs = mesh.z_grid[rows, cols]
+            coords = np.column_stack((xs, ys, zs))
+            indices = np.column_stack((rows, cols))
+            samples.append(
+                SurfaceSamplingPoints(
+                    surface_id=mesh.surface_id,
+                    name=mesh.name,
+                    coordinates=coords,
+                    indices=indices,
+                    grid_shape=mesh.mask.shape,
+                )
+            )
+        return samples
     
     def _interpolate_z_coordinates(
         self,
@@ -440,4 +574,24 @@ class SurfaceGridCalculator(ModuleBase):
         
         # Reshape zurück zu Original-Form
         return inside.reshape(x_coords.shape)
+
+    @staticmethod
+    def _evaluate_plane_grid(
+        x_coords: np.ndarray,
+        y_coords: np.ndarray,
+        plane_model: Optional[Dict[str, float]],
+    ) -> np.ndarray:
+        if plane_model is None:
+            return np.zeros_like(x_coords, dtype=float)
+        mode = plane_model.get("mode")
+        if mode == "x":
+            slope = float(plane_model.get("slope", 0.0))
+            intercept = float(plane_model.get("intercept", 0.0))
+            return slope * x_coords + intercept
+        if mode == "y":
+            slope = float(plane_model.get("slope", 0.0))
+            intercept = float(plane_model.get("intercept", 0.0))
+            return slope * y_coords + intercept
+        base = float(plane_model.get("base", 0.0))
+        return np.full_like(x_coords, base, dtype=float)
 
