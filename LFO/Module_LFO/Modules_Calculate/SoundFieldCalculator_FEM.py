@@ -9,11 +9,12 @@ Hinweise zur Verwendung
 - Erfordert eine funktionierende FEniCSx-Installation (dolfinx, ufl, mpi4py,
   petsc4py). Auf macOS empfiehlt sich die Installation über Conda/Mambaforge
   oder ein Docker-Image, da vorgebaute Wheels nur eingeschränkt verfügbar sind.
-- Die Berechnung läuft im 3D-Setting (Volumen-Simulation) für korrekte
-  sphärische Schallausbreitung (1/r²). Die Visualisierung erfolgt auf einer
-  2D-Ebene (XY-Ebene bei Panel-Höhe) durch Extraktion und Interpolation.
-- Lautsprecher werden als 3D-Flächen modelliert (Höhe und Breite aus Metadaten)
-  mit Dirichlet-Randbedingungen auf der abstrahlenden Membranfläche.
+- Es wird ein vollständiges 3D-Volumen (Box) mit Tetraeder-Elementen gelöst, 
+  um die sphärische Ausbreitung (1/r²) korrekt abzubilden.
+- Die Visualisierung erfolgt auf einer 2D-Ebene (XY-Ebene mit frei wählbarer Höhe)
+  durch Extraktion und Interpolation aus den 3D-DOFs.
+- Lautsprecher/Quellen werden als einfache Punktschallquellen modelliert, 
+  es gibt keine Flächen mit Dirichlet-Randbedingungen mehr.
 - Randbedingungen: Alle Flächen (Boden, Decke, Wände) sind standardmäßig
   absorbierend (Absorptionskoeffizient 1.0) für reinen Direktschall.
   Konfigurierbar über `fem_boundary_absorption_{name}` Settings.
@@ -99,10 +100,9 @@ FEM_SETTING_DEFAULTS: dict[str, object] = {
     "fem_grid_interpolation": True,
     "fem_grid_k_neighbors": DEFAULT_FEM_GRID_K_NEIGHBORS,
     "fem_grid_idw_power": DEFAULT_FEM_GRID_IDW_POWER,
-    "a_source_db": 94,
     "temperature": DEFAULT_TEMPERATURE_CELSIUS,
     "speed_of_sound": None,
-    "listener_height": None,
+    "listener_height": 0.0,
     "use_air_absorption": False,
     "humidity": DEFAULT_HUMIDITY_PERCENT,
     "air_pressure": DEFAULT_AIR_PRESSURE_PA,
@@ -597,8 +597,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 dtype=float,
             )
 
-            a_source_db = float(self._get_setting("a_source_db") or 0.0)
-            level_adjust_db = source_levels + gains + a_source_db
+            level_adjust_db = source_levels + gains
             array_muted = getattr(speaker_array, "mute", False)
 
             # Erstelle Punktschallquellen
@@ -974,12 +973,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
     # ==================================================================
 
     def _build_domain(self, frequencies: list[float]):
-        """Erzeugt das FEM-Mesh auf Basis der Settings.
-
-        - Das Modell arbeitet in der XY-Ebene (2D) mit Dreieckselementen.
-        - Die Auflösung orientiert sich an der höchsten Frequenz & DOF-Limit
-        - Die Funktion speichert Mesh und Funktionsraum für Folgeaufrufe.
-        """
+        """Erzeugt das 3D-FEM-Mesh (Box, Tetraeder) auf Basis der Settings."""
         desired_resolution = self._calculate_fem_mesh_resolution(frequencies)
         if self._mesh is not None:
             current_resolution = getattr(self, "_mesh_resolution", None)
@@ -1361,12 +1355,6 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 - (k ** 2) * ufl.inner(pressure_trial, pressure_test) * dx
                 + boundary_term
             )
-            if self._get_setting("fem_debug_logging"):
-                wavelength = 2.0 * np.pi / k if k > 0 else float("inf")
-                self._log_debug(
-                    f"[Helmholtz] f={frequency:.2f} Hz, k={k:.3f} m⁻¹, "
-                    f"λ={wavelength:.2f} m, c={speed_of_sound:.1f} m/s"
-                )
             L_form, rhs_payload = self._assemble_rhs(
                 V, pressure_test, frequency, allow_complex=True
             )
@@ -1381,6 +1369,14 @@ class SoundFieldCalculatorFEM(ModuleBase):
             L_form, rhs_payload = self._assemble_rhs(
                 V, pressure_test, frequency, allow_complex=False
             )
+
+        if self._get_setting("fem_debug_logging"):
+            wavelength = 2.0 * np.pi / k if k > 0 else float("inf")
+            self._log_debug(
+                f"[Helmholtz] f={frequency:.2f} Hz, k={k:.3f} m⁻¹, "
+                f"λ={wavelength:.2f} m, c={speed_of_sound:.1f} m/s"
+            )
+
         self._raise_if_frequency_cancelled()
 
         bcs: list[fem.DirichletBC] = []
@@ -1397,9 +1393,11 @@ class SoundFieldCalculatorFEM(ModuleBase):
             coords_xyz = self._get_dof_coords_xyz()
             if coords_xyz is not None:
                 for source_id, source_strength, source_position in neumann_loads:
-                    distances = np.linalg.norm(coords_xyz - source_position.reshape(1, 3), axis=1)
+                    distances = np.linalg.norm(
+                        coords_xyz - source_position.reshape(1, 3), axis=1
+                    )
                     nearest_dof_idx = int(np.argmin(distances))
-                    nearest_distance = distances[nearest_dof_idx]
+                    nearest_distance = float(distances[nearest_dof_idx])
                     if nearest_distance < (self._mesh_resolution or 0.1) * 2.0:
                         b.array[nearest_dof_idx] += source_strength
                         if self._get_setting("fem_debug_logging"):
@@ -1420,6 +1418,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             rhs_norm_initial = None
         if rhs_norm_initial is not None:
             self._log_debug(f"[Solve {freq_label}] RHS-Norm vor Quellen: {rhs_norm_initial:.3e}")
+
         self._raise_if_frequency_cancelled()
 
         self._apply_rhs_payload_to_vector(b, rhs_payload, V)
@@ -1429,6 +1428,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             rhs_norm_after = None
         if rhs_norm_after is not None:
             self._log_debug(f"[Solve {freq_label}] RHS-Norm nach Quellen: {rhs_norm_after:.3e}")
+
         self._raise_if_frequency_cancelled()
 
         use_direct_solver = bool(self._get_setting("fem_use_direct_solver"))
@@ -1444,6 +1444,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
             solver.getPC().setType("ilu")
 
         solution = fem.Function(V, name="pressure")
+
         self._raise_if_frequency_cancelled()
 
         solver.solve(b, solution.x.petsc_vec)
@@ -1462,6 +1463,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 raise RuntimeError(
                     f"Iterativer FEM-Solver konvergierte nicht (Grund: {reason})"
                 )
+
         self._raise_if_frequency_cancelled()
 
         return solution
@@ -1673,9 +1675,10 @@ class SoundFieldCalculatorFEM(ModuleBase):
         pressure_sum = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=values.dtype)
         count_grid = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=int)
 
-        coords_xy = points[:, :2]
-        x_coords = np.round(coords_xy[:, 0], decimals=decimals)
-        y_coords = np.round(coords_xy[:, 1], decimals=decimals)
+        coords_xy_all = points[:, :2]
+        x_coords_all = np.round(coords_xy_all[:, 0], decimals=decimals)
+        y_coords_all = np.round(coords_xy_all[:, 1], decimals=decimals)
+        values_all = values
         
         # Filtere nach Z-Ebene für 3D-Mesh
         if points.shape[1] >= 3:
@@ -1692,32 +1695,80 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 f"Eindeutige Z-Werte nahe Ebene: {len(z_near_plane)} ({z_near_plane[:10] if len(z_near_plane) > 0 else 'keine'})"
             )
             
-            mask = np.abs(z_coords - plane_height) <= plane_tol
-            num_masked = int(np.sum(mask))
-            
-            if num_masked == 0:
-                # Fallback: verwende die DOFs, die den Listener-Plane am nächsten liegen
-                z_distances = np.abs(z_coords - plane_height)
-                closest_count = max(1, int(0.1 * len(z_distances)))
-                closest_indices = np.argsort(z_distances)[:closest_count]
-                mask = np.zeros_like(z_coords, dtype=bool)
-                mask[closest_indices] = True
-                num_masked = closest_count
-                self._log_debug(
-                    "[GridMapping] Keine DOFs innerhalb der Ebene gefunden – "
-                    f"verwende {closest_count} nächstgelegene DOFs (max Δz={float(z_distances[closest_indices[-1]]):.3f} m)."
+            effective_plane_height = float(plane_height)
+            fallback_used = False
+            selection_done = False
+            while not selection_done:
+                mask = np.abs(z_coords - effective_plane_height) <= plane_tol
+                num_masked = int(np.sum(mask))
+                
+                interp_weights = None
+                z_lower = z_upper = None
+                if num_masked == 0:
+                    z_sorted = np.sort(z_coords)
+                    lower_mask_sorted = z_sorted <= effective_plane_height
+                    upper_mask_sorted = z_sorted >= effective_plane_height
+                    if np.any(lower_mask_sorted):
+                        z_lower = float(z_sorted[lower_mask_sorted][-1])
+                    if np.any(upper_mask_sorted):
+                        z_upper = float(z_sorted[upper_mask_sorted][0])
+                    if z_lower is None and z_upper is None:
+                        self._log_debug("[GridMapping] WARNUNG: Keine DOFs gefunden – Grid wird leer bleiben!")
+                        return sound_field_x, sound_field_y, np.full((len(sound_field_y), len(sound_field_x)), np.nan, dtype=values.dtype)
+                    if z_lower is None or (z_upper is not None and effective_plane_height <= z_lower):
+                        mask = np.isclose(z_coords, z_upper)
+                        num_masked = int(np.sum(mask))
+                        self._log_debug(
+                            "[GridMapping] Keine DOFs innerhalb der Ebene gefunden – verwende Schicht bei "
+                            f"z={z_upper:.3f} m (nur obere) mit {num_masked} DOFs."
+                        )
+                        effective_plane_height = z_upper
+                    elif z_upper is None or effective_plane_height >= z_upper:
+                        mask = np.isclose(z_coords, z_lower)
+                        num_masked = int(np.sum(mask))
+                        self._log_debug(
+                            "[GridMapping] Keine DOFs innerhalb der Ebene gefunden – verwende Schicht bei "
+                            f"z={z_lower:.3f} m (nur untere) mit {num_masked} DOFs."
+                        )
+                        effective_plane_height = z_lower
+                    else:
+                        lower_mask = np.isclose(z_coords, z_lower)
+                        upper_mask = np.isclose(z_coords, z_upper)
+                        lower_count = int(np.sum(lower_mask))
+                        upper_count = int(np.sum(upper_mask))
+                        self._log_debug(
+                            "[GridMapping] Interpoliere zwischen Schichten "
+                            f"z={z_lower:.3f} m ({lower_count} DOFs) und z={z_upper:.3f} m ({upper_count} DOFs)."
+                        )
+                        alpha = (effective_plane_height - z_lower) / (z_upper - z_lower)
+                        interp_weights = (lower_mask, upper_mask, alpha, z_lower, z_upper)
+                        mask = lower_mask | upper_mask
+                        num_masked = lower_count + upper_count
+                
+                if num_masked == 0:
+                    self._log_debug(
+                        "[GridMapping] WARNUNG: Keine DOFs gefunden – Grid wird leer bleiben!"
                     )
-            
-            if num_masked > 0:
-                # Speichere Z-Koordinaten vor dem Filtern für Debug
-                z_filtered = z_coords[mask] if points.shape[1] >= 3 else np.array([])
+                    return sound_field_x, sound_field_y, np.full((len(sound_field_y), len(sound_field_x)), np.nan, dtype=values.dtype)
                 
-                coords_xy = coords_xy[mask]
-                x_coords = x_coords[mask]
-                y_coords = y_coords[mask]
-                values = values[mask]
+                z_filtered = z_coords[mask]
                 
-                # Debug: Prüfe Werte
+                coords_xy = coords_xy_all[mask]
+                x_coords = x_coords_all[mask]
+                y_coords = y_coords_all[mask]
+                values = values_all[mask]
+                
+                if interp_weights is not None:
+                    lower_mask_full, _, alpha, z_lower, z_upper = interp_weights
+                    selected_lower = lower_mask_full[mask]
+                    weighting = np.where(selected_lower, 1.0 - alpha, alpha)
+                    values = values * weighting
+                    z_filtered = np.full_like(z_filtered, effective_plane_height, dtype=float)
+                    self._log_debug(
+                        f"[GridMapping] Lineare Z-Interpolation: alpha={alpha:.2f}, "
+                        f"lower_weight={1.0 - alpha:.2f}, upper_weight={alpha:.2f}"
+                    )
+                
                 num_nan = int(np.sum(np.isnan(values)))
                 num_finite = int(np.sum(np.isfinite(values)))
                 if num_finite > 0:
@@ -1727,12 +1778,10 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 else:
                     val_min = val_max = val_mean = float('nan')
                 
-                # Debug: Prüfe Z-Koordinaten der gefilterten DOFs
                 z_filtered_min = float(np.min(z_filtered)) if len(z_filtered) > 0 else float('nan')
                 z_filtered_max = float(np.max(z_filtered)) if len(z_filtered) > 0 else float('nan')
                 z_filtered_mean = float(np.mean(z_filtered)) if len(z_filtered) > 0 else float('nan')
                 
-                # Debug: Prüfe X/Y-Verteilung der gefilterten DOFs (verwende bereits gefilterte Arrays)
                 x_filtered_min = float(np.min(coords_xy[:, 0])) if len(coords_xy) > 0 else float('nan')
                 x_filtered_max = float(np.max(coords_xy[:, 0])) if len(coords_xy) > 0 else float('nan')
                 x_filtered_mean = float(np.mean(coords_xy[:, 0])) if len(coords_xy) > 0 else float('nan')
@@ -1740,7 +1789,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
                 y_filtered_max = float(np.max(coords_xy[:, 1])) if len(coords_xy) > 0 else float('nan')
                 y_filtered_mean = float(np.mean(coords_xy[:, 1])) if len(coords_xy) > 0 else float('nan')
                 
-                # Debug: Prüfe Distanz zum Panel (wenn vorhanden)
+                dist_min = dist_max = dist_mean = dist_median = float('nan')
                 if self._point_sources and len(coords_xy) > 0:
                     source_center = self._point_sources[0].position
                     dof_distances = np.sqrt((coords_xy[:, 0] - source_center[0])**2 + (coords_xy[:, 1] - source_center[1])**2)
@@ -1753,7 +1802,7 @@ class SoundFieldCalculatorFEM(ModuleBase):
                         f"min={dist_min:.2f} m, max={dist_max:.2f} m, mean={dist_mean:.2f} m, median={dist_median:.2f} m"
                     )
                 
-                self._log_debug(
+                stats_msg = (
                     f"[GridMapping] {num_masked} DOFs für Grid-Mapping verwendet "
                     f"(von {len(points)} total) | "
                     f"Werte: finite={num_finite}, NaN={num_nan}, "
@@ -1762,11 +1811,30 @@ class SoundFieldCalculatorFEM(ModuleBase):
                     f"X-Bereich: [{x_filtered_min:.3f}, {x_filtered_max:.3f}] m, mean={x_filtered_mean:.3f} m | "
                     f"Y-Bereich: [{y_filtered_min:.3f}, {y_filtered_max:.3f}] m, mean={y_filtered_mean:.3f} m"
                 )
-            else:
-                self._log_debug(
-                    f"[GridMapping] WARNUNG: Keine DOFs gefunden – Grid wird leer bleiben!"
-                )
-                return sound_field_x, sound_field_y, np.full((len(sound_field_y), len(sound_field_x)), np.nan, dtype=values.dtype)
+                self._log_debug(stats_msg)
+
+                base_resolution = float(self._mesh_resolution or resolution)
+                fallback_threshold = max(base_resolution, resolution) * 2.0
+                if (
+                    self._point_sources
+                    and len(coords_xy) > 0
+                    and np.isfinite(dist_min)
+                    and dist_min > fallback_threshold
+                    and not fallback_used
+                    and len(z_unique_sorted) > 0
+                ):
+                    fallback_level = float(z_unique_sorted[np.argmin(np.abs(z_unique_sorted - plane_height))])
+                    if not np.isclose(fallback_level, effective_plane_height):
+                        self._log_debug(
+                            f"[GridMapping] Zu wenige nahe DOFs (min Distanz {dist_min:.2f} m) – "
+                            f"Fallback auf Ebene z={fallback_level:.3f} m."
+                        )
+                        effective_plane_height = fallback_level
+                        fallback_used = True
+                        continue
+                
+                selection_done = True
+
 
         x_start = sound_field_x[0]
         y_start = sound_field_y[0]
@@ -2081,6 +2149,11 @@ class SoundFieldCalculatorFEM(ModuleBase):
             self.calculation_spl["sound_field_x"] = sound_field_x.tolist() if isinstance(sound_field_x, np.ndarray) else sound_field_x
             self.calculation_spl["sound_field_y"] = sound_field_y.tolist() if isinstance(sound_field_y, np.ndarray) else sound_field_y
             self.calculation_spl["sound_field_p"] = sound_field_pressure.tolist() if isinstance(sound_field_pressure, np.ndarray) else sound_field_pressure
+            if isinstance(sound_field_pressure, np.ndarray):
+                surface_mask = np.isfinite(sound_field_pressure)
+                self.calculation_spl["surface_mask"] = surface_mask.tolist()
+            else:
+                self.calculation_spl.pop("surface_mask", None)
             
             # Prüfe ob Daten tatsächlich geschrieben wurden
             has_x = "sound_field_x" in self.calculation_spl and len(self.calculation_spl["sound_field_x"]) > 0
@@ -2295,7 +2368,11 @@ class SoundFieldCalculatorFEM(ModuleBase):
             measured_drop = spl_at_source - spl_at_sample
             self._log_debug(
                 "[SPL Debug] SPL@0m≈{:.2f} dB, SPL@{:.1f}m≈{:.2f} dB, Δ={:.2f} dB (Ideal {:.2f} dB)".format(
-                    spl_at_source, sample_distance, spl_at_sample, measured_drop, expected_drop
+                    spl_at_source,
+                    sample_distance,
+                    spl_at_sample,
+                    measured_drop,
+                    expected_drop,
                 )
             )
         

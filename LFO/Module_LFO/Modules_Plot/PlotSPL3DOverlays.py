@@ -5,6 +5,8 @@ from typing import List, Optional, Tuple, Any
 import numpy as np
 from PyQt5 import QtWidgets, QtCore
 
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import DEBUG_SURFACE_GEOMETRY
+
 
 class SPL3DOverlayRenderer:
     """Verwaltet das Zeichnen und Zurücksetzen der Overlay-Elemente für den SPL-Plot."""
@@ -184,6 +186,9 @@ class SPL3DOverlayRenderer:
                 if len(point_coords) < 3:
                     continue
                 
+                # Für gefüllte Polygone (z. B. disabled Surfaces) ohne doppelten Schluss-Punkt
+                polygon_coords = point_coords.copy()
+
                 # Erstelle geschlossenes Polygon (füge ersten Punkt am Ende hinzu)
                 closed_coords = point_coords + [point_coords[0]]
                 
@@ -192,6 +197,17 @@ class SPL3DOverlayRenderer:
                 polyline.lines = [len(closed_coords)] + list(range(len(closed_coords)))
                 
                 # 🎯 Unterscheide zwischen enabled/disabled und aktivem/inaktivem Surface
+                if DEBUG_SURFACE_GEOMETRY:
+                    y_vals = [p[1] for p in point_coords]
+                    z_vals = [p[2] for p in point_coords]
+                    print(
+                        "[SurfaceOverlay]",
+                        surface_id,
+                        "enabled" if enabled else "disabled",
+                        f"y-range=({min(y_vals):.2f}, {max(y_vals):.2f})",
+                        f"z-range=({min(z_vals):.2f}, {max(z_vals):.2f})",
+                    )
+
                 if enabled:
                     if is_active:
                         # Aktives enabled Surface: Rote Umrandung, etwas hervorgehoben
@@ -214,9 +230,30 @@ class SPL3DOverlayRenderer:
                             show_vertices=False  # Nur Linie, keine Eckpunkte
                         )
                 else:
-                    # Disabled Surface: "Empty Surface" - gestrichelt und transparent
-                    # Verwende gestrichelte Linie (line_pattern) und reduzierte Opacity
+                    # Disabled Surface: sichtbar mit hellgrauer Farbe
                     dashed_pattern = 0xAAAA  # Gestricheltes Muster
+                    disabled_color = '#dcdcdc'
+
+                    # Fülle disabled Surface mit hellem Grau (nur wenn genügend Punkte vorhanden)
+                    try:
+                        poly_points = np.asarray(polygon_coords, dtype=float)
+                        if poly_points.shape[0] >= 3:
+                            faces = np.concatenate(
+                                ([poly_points.shape[0]], np.arange(poly_points.shape[0], dtype=np.int64))
+                            )
+                            polygon = self.pv.PolyData(poly_points, faces)
+                            polygon = polygon.triangulate()
+                            self._add_overlay_mesh(
+                                polygon,
+                                color=disabled_color,
+                                opacity=0.35,
+                                category='surfaces',
+                                edge_color=disabled_color,
+                                show_edges=False,
+                            )
+                    except Exception:
+                        pass
+
                     if is_active:
                         # Aktives disabled Surface: Rote gestrichelte Umrandung
                         self._add_overlay_mesh(
@@ -233,9 +270,9 @@ class SPL3DOverlayRenderer:
                         # Inaktives disabled Surface: Standard gestrichelt, dünn
                         self._add_overlay_mesh(
                             polyline,
-                            color=color,
+                            color=disabled_color,
                             line_width=1.0,
-                            opacity=0.25,
+                            opacity=0.6,
                             line_pattern=dashed_pattern,
                             line_repeat=2,
                             category='surfaces',

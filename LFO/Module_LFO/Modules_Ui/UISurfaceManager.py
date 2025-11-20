@@ -1,5 +1,10 @@
 from PyQt5.QtCore import Qt
 
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    build_planar_model,
+    evaluate_surface_plane,
+)
+
 
 class UISurfaceManager:
     """
@@ -29,6 +34,8 @@ class UISurfaceManager:
             self.surface_dock_widget = SurfaceDockWidget(self.main_window, self.settings, self.container)
             # Automatisches Docking deaktiviert - Widget wird nicht direkt an UI angehängt
 
+        # Vor der Darstellung sicherstellen, dass alle vorhandenen Flächen plan projiziert sind
+        self._ensure_planar_surfaces()
         self.surface_dock_widget.initialize()
         
         # Als schwebendes Fenster setzen und rechts neben dem Hauptfenster positionieren
@@ -108,6 +115,7 @@ class UISurfaceManager:
         if self.surface_dock_widget is None:
             return
 
+        self._ensure_planar_surfaces()
         self.surface_dock_widget.load_surfaces()
 
     def _disconnect_sources_signals(self):
@@ -116,6 +124,38 @@ class UISurfaceManager:
                 self.sources_widget.sources_tree_widget.itemSelectionChanged.disconnect(self._on_sources_selection_changed)
             except (RuntimeError, TypeError):
                 pass
+
+    def _ensure_planar_surfaces(self) -> bool:
+        """
+        Prüft alle gespeicherten Flächen auf Planarität und projiziert abweichende Punkte
+        automatisch auf die dazugehörige Ebene.
+
+        Returns:
+            bool: True, wenn mindestens eine Fläche angepasst wurde.
+        """
+        surface_store = getattr(self.settings, "surface_definitions", None)
+        if not isinstance(surface_store, dict) or not surface_store:
+            return False
+
+        adjusted = False
+        for surface in surface_store.values():
+            points = surface.get("points") or []
+            if len(points) < 4:  # Mindestens vier Punkte für planare Auswertung
+                continue
+
+            model, needs_adjustment = build_planar_model(points)
+            if model is None or not needs_adjustment:
+                continue
+
+            for point in points:
+                point["z"] = evaluate_surface_plane(
+                    model,
+                    float(point.get("x", 0.0)),
+                    float(point.get("y", 0.0)),
+                )
+            adjusted = True
+
+        return adjusted
 
     # ---- docking helpers -------------------------------------------
 

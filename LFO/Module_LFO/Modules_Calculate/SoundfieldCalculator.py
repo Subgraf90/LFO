@@ -344,6 +344,7 @@ class SoundFieldCalculator(ModuleBase):
         # Konvertiere Z_grid zu Liste für JSON-Serialisierung
         if isinstance(self.calculation_spl, dict):
             self.calculation_spl['sound_field_z'] = Z_grid.tolist()
+            self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()
 
         return sound_field_p, sound_field_x, sound_field_y, array_fields
 

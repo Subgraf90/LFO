@@ -15,6 +15,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    build_surface_mesh,
+    prepare_plot_geometry,
+)
 
 DEBUG_SPL_DUMP = bool(int(os.environ.get("LFO_DEBUG_SPL", "0")))
 
@@ -270,6 +274,34 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             pressure_2d = np.nan_to_num(np.abs(pressure), nan=0.0, posinf=0.0, neginf=0.0)
             pressure_2d = np.clip(pressure_2d, 1e-12, None)
             spl_db = self.functions.mag2db(pressure_2d)
+            if getattr(self.settings, "fem_debug_logging", True):
+                try:
+                    p_min = float(np.nanmin(pressure_2d))
+                    p_max = float(np.nanmax(pressure_2d))
+                    p_mean = float(np.nanmean(pressure_2d))
+                    spl_min = float(np.nanmin(spl_db))
+                    spl_max = float(np.nanmax(spl_db))
+                    spl_mean = float(np.nanmean(spl_db))
+                    print(
+                        "[Plot Debug] |p| "
+                        f"[min={p_min:.3e}, max={p_max:.3e}, mean={p_mean:.3e}] | "
+                        f"SPL [min={spl_min:.2f} dB, max={spl_max:.2f} dB, mean={spl_mean:.2f} dB]"
+                    )
+                except Exception:
+                    pass
+                try:
+                    x_idx = int(np.argmin(np.abs(x - 0.0)))
+                    target_distances = (1.0, 2.0, 10.0, 20.0)
+                    for distance in target_distances:
+                        y_idx = int(np.argmin(np.abs(y - distance)))
+                        value = float(spl_db[y_idx, x_idx])
+                        actual_y = float(y[y_idx])
+                        print(
+                            f"[Plot Debug] SPL @ (x=0.0 m, y={actual_y:.2f} m) = {value:.2f} dB"
+                        )
+                except Exception:
+                    pass
+  
             
             finite_mask = np.isfinite(spl_db)
             if not np.any(finite_mask):
@@ -291,61 +323,23 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
 
-        plot_x = x
-        plot_y = y
-
-        requested_upscale = getattr(self.settings, 'plot_upscale_factor', None)
-        if requested_upscale is None:
-            requested_upscale = self.UPSCALE_FACTOR
         try:
-            upscale_factor = int(requested_upscale)
-        except (TypeError, ValueError):
-            upscale_factor = self.UPSCALE_FACTOR
-        upscale_factor = max(1, upscale_factor)
-
-        # 🎯 Hole Z-Koordinaten aus calculation_spl, falls verfügbar (VOR Upscaling)
-        z_coords = None
-        if self.container is not None and hasattr(self.container, 'calculation_spl'):
-            calc_spl = self.container.calculation_spl
-            if isinstance(calc_spl, dict) and 'sound_field_z' in calc_spl:
-                try:
-                    z_data = calc_spl['sound_field_z']
-                    if z_data is not None:
-                        z_coords = np.asarray(z_data, dtype=float)
-                        # Z-Koordinaten haben die Shape der ursprünglichen Grid-Dimensionen
-                        # (vor Upscaling, falls aktiv)
-                        if z_coords.shape != (len(y), len(x)):
-                            # Versuche Reshape
-                            if z_coords.size == len(y) * len(x):
-                                z_coords = z_coords.reshape(len(y), len(x))
-                            else:
-                                # Shape stimmt nicht - verwende Z=0
-                                z_coords = None
-                except Exception:
-                    z_coords = None
-
-        # Upscaling (falls aktiv)
-        if (
-            upscale_factor > 1
-            and plot_x.size > 1
-            and plot_y.size > 1
-        ):
-            base_resolution = float(getattr(self.settings, 'resolution', 0.0) or 0.0)
-            orig_plot_x = plot_x.copy()
-            orig_plot_y = plot_y.copy()
-            plot_x = self._expand_axis_for_plot(plot_x, base_resolution, upscale_factor)
-            plot_y = self._expand_axis_for_plot(plot_y, base_resolution, upscale_factor)
-            plot_values = self._resample_values_to_grid(plot_values, orig_plot_x, orig_plot_y, plot_x, plot_y)
-            
-            # 🎯 Resample auch Z-Koordinaten, wenn Upscaling aktiv ist
-            if z_coords is not None:
-                z_coords = self._resample_values_to_grid(
-                    z_coords,
-                    orig_plot_x,  # Original X-Koordinaten
-                    orig_plot_y,  # Original Y-Koordinaten
-                    plot_x,       # Upscaled X-Koordinaten
-                    plot_y        # Upscaled Y-Koordinaten
-                )
+            geometry = prepare_plot_geometry(
+                x,
+                y,
+                plot_values,
+                settings=self.settings,
+                container=self.container,
+                default_upscale=self.UPSCALE_FACTOR,
+            )
+        except RuntimeError as exc:
+            print(f"[Plot SPL3D] Abbruch: {exc}")
+            self.initialize_empty_scene(preserve_camera=True)
+            return
+        plot_x = geometry.plot_x
+        plot_y = geometry.plot_y
+        plot_values = geometry.plot_values
+        z_coords = geometry.z_coords
         
         colorization_mode_used = colorization_mode
         if colorization_mode_used == 'Color step':
@@ -353,7 +347,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             scalars = plot_values
         
-        mesh = self._build_surface_mesh(plot_x, plot_y, scalars, z_coords)
+        mesh = build_surface_mesh(
+            plot_x,
+            plot_y,
+            scalars,
+            z_coords=z_coords,
+            surface_mask=geometry.surface_mask,
+            pv_module=pv,
+        )
 
         if time_mode:
             cmap_object = 'RdBu_r'
@@ -395,37 +396,19 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         if time_mode and self.surface_mesh is not None:
             # Prüfe ob Upscaling aktiv ist - wenn ja, deaktiviere schnellen Update-Pfad
             # da Resampling zu Verzerrungen führen kann
-            requested_upscale = getattr(self.settings, 'plot_upscale_factor', None)
-            if requested_upscale is None:
-                requested_upscale = self.UPSCALE_FACTOR
-            try:
-                upscale_factor = int(requested_upscale)
-            except (TypeError, ValueError):
-                upscale_factor = self.UPSCALE_FACTOR
-            upscale_factor = max(1, upscale_factor)
-            
-            has_upscaling = (
-                upscale_factor > 1
-                and plot_x.size > 1
-                and plot_y.size > 1
-                and (plot_x.size != len(x) or plot_y.size != len(y))
-            )
-            
             source_shape = tuple(pressure.shape)
             cache_entry = {
                 'source_shape': source_shape,
-                'source_x': np.asarray(x, dtype=float).copy(),
-                'source_y': np.asarray(y, dtype=float).copy(),
-                'target_x': np.asarray(plot_x, dtype=float).copy(),
-                'target_y': np.asarray(plot_y, dtype=float).copy(),
-                'needs_resample': not (
-                    np.array_equal(plot_x, x) and np.array_equal(plot_y, y)
-                ),
-                'has_upscaling': has_upscaling,
+                'source_x': geometry.source_x.copy(),
+                'source_y': geometry.source_y.copy(),
+                'target_x': geometry.plot_x.copy(),
+                'target_y': geometry.plot_y.copy(),
+                'needs_resample': geometry.requires_resample,
+                'has_upscaling': geometry.was_upscaled,
                 'colorbar_range': (cbar_min, cbar_max),
                 'colorization_mode': colorization_mode_used,
                 'color_step': cbar_step,
-                'grid_shape': (len(plot_y), len(plot_x)),
+                'grid_shape': geometry.grid_shape,
                 'expected_points': self.surface_mesh.n_points,
             }
             self._time_mode_surface_cache = cache_entry
@@ -1274,109 +1257,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         return False
 
-    def _build_surface_mesh(self, x: np.ndarray, y: np.ndarray, scalars: np.ndarray, z_coords: Optional[np.ndarray] = None) -> "pv.PolyData":
-        """
-        Erstellt ein Surface-Mesh für den 3D-Plot.
-        
-        Args:
-            x: X-Koordinaten (1D-Array)
-            y: Y-Koordinaten (1D-Array)
-            scalars: Skalarwerte für die Farbgebung (2D-Array, Shape: [ny, nx])
-            z_coords: Optional - Z-Koordinaten aus Surface-Interpolation (2D-Array, Shape: [ny, nx])
-                     Wenn None, wird Z=0 verwendet (Standard)
-        """
-        xm, ym = np.meshgrid(x, y, indexing='xy')
-        
-        # 🎯 Verwende Z-Koordinaten aus Surfaces, falls verfügbar
-        if z_coords is not None:
-            # Stelle sicher, dass z_coords die richtige Shape hat
-            if z_coords.shape == (len(y), len(x)):
-                zm = z_coords
-            else:
-                # Fallback: Reshape oder verwende Z=0
-                try:
-                    zm = np.asarray(z_coords, dtype=float).reshape(len(y), len(x))
-                except Exception:
-                    zm = np.zeros_like(xm, dtype=float)
-        else:
-            zm = np.zeros_like(xm, dtype=float)
-        
-        grid = pv.StructuredGrid(xm, ym, zm)
-
-        flat_scalars = np.asarray(scalars, dtype=float).ravel(order='F')
-        grid['plot_scalars'] = flat_scalars
-
-        # Die SPL-Werte sollen die Fläche nicht mehr in Z-Richtung verformen,
-        # daher verwenden wir direkt die extrahierte Oberfläche ohne Warp.
-        return grid.extract_surface()
-
-    @classmethod
-    def _expand_axis_for_plot(
-        cls,
-        axis: np.ndarray,
-        arg2: float | None = None,
-        arg3: int | None = None,
-    ) -> np.ndarray:
-        axis = np.asarray(axis, dtype=float)
-        if axis.size <= 1:
-            return axis
-
-        # Neuer Modus: Punkte-pro-Meter übergeben (z. B. aus Texture-Resampling)
-        if arg3 is None:
-            points_per_meter = float(arg2 or 0.0)
-            if points_per_meter <= 0:
-                return axis
-
-            start = float(axis[0])
-            end = float(axis[-1])
-            span = end - start
-            if np.isclose(span, 0.0):
-                return axis
-
-            target_points = int(np.ceil(abs(span) * points_per_meter)) + 1
-            if target_points <= axis.size:
-                return axis
-
-            return np.linspace(start, end, target_points, dtype=float)
-
-        # Kompatibilitätsmodus: (axis, base_resolution, upscale_factor)
-        base_resolution = float(arg2 or 0.0)
-        upscale_factor = int(arg3 or 1)
-        if upscale_factor <= 1:
-            return axis
-
-        expanded = [float(axis[0])]
-        for idx in range(1, axis.size):
-            start = float(axis[idx - 1])
-            stop = float(axis[idx])
-            if np.isclose(stop, start):
-                segment = np.full(upscale_factor, start)
-            else:
-                segment = np.linspace(start, stop, upscale_factor + 1, dtype=float)[1:]
-            expanded.extend(segment.tolist())
-
-        return np.asarray(expanded, dtype=float)
-
-    @staticmethod
-    def _expand_scalars_for_plot(values: np.ndarray, factor: int) -> np.ndarray:
-        values = np.asarray(values, dtype=float)
-        if factor <= 1:
-            return values
-        if values.ndim != 2:
-            return values
-
-        expanded_cols = values.copy()
-        if values.shape[1] > 1:
-            repeated_cols = np.repeat(values[:, :-1], factor, axis=1)
-            expanded_cols = np.concatenate((repeated_cols, values[:, -1:].copy()), axis=1)
-
-        expanded_rows = expanded_cols
-        if expanded_cols.shape[0] > 1:
-            repeated_rows = np.repeat(expanded_cols[:-1, :], factor, axis=0)
-            expanded_rows = np.concatenate((repeated_rows, expanded_cols[-1:, :].copy()), axis=0)
-
-        return expanded_rows
-
     def _remove_actor(self, name: str):
         try:
             self.plotter.remove_actor(name)
@@ -1415,39 +1295,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         if array.ndim > 1:
             array = array.reshape(-1)
         return array.astype(float)
-
-    @staticmethod
-    def _resample_values_to_grid(
-        values: np.ndarray,
-        orig_x: np.ndarray,
-        orig_y: np.ndarray,
-        target_x: np.ndarray,
-        target_y: np.ndarray,
-    ) -> np.ndarray:
-        values = np.asarray(values, dtype=float)
-        if values.ndim != 2:
-            return values
-
-        orig_x = np.asarray(orig_x, dtype=float)
-        orig_y = np.asarray(orig_y, dtype=float)
-        target_x = np.asarray(target_x, dtype=float)
-        target_y = np.asarray(target_y, dtype=float)
-
-        if orig_x.size <= 1 or orig_y.size <= 1:
-            return values
-
-        if target_x.size == orig_x.size and target_y.size == orig_y.size:
-            return values
-
-        intermediate = np.empty((values.shape[0], target_x.size), dtype=float)
-        for iy in range(values.shape[0]):
-            intermediate[iy, :] = np.interp(target_x, orig_x, values[iy, :], left=values[iy, 0], right=values[iy, -1])
-
-        resampled = np.empty((target_y.size, target_x.size), dtype=float)
-        for ix in range(intermediate.shape[1]):
-            resampled[:, ix] = np.interp(target_y, orig_y, intermediate[:, ix], left=intermediate[0, ix], right=intermediate[-1, ix])
-
-        return resampled
 
     def _compute_overlay_signatures(self, settings, container) -> dict[str, tuple]:
         """Erzeugt robuste Vergleichs-Signaturen für jede Overlay-Kategorie.

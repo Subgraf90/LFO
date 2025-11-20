@@ -194,41 +194,52 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         omega = 2.0 * math.pi * frequency
         period_s = 1.0 / frequency
         
-        # Simulationszeit auf 200ms begrenzen (vom Benutzer gewünscht)
-        simulation_time = 0.2  # 200ms
+        # Initiale Simulationszeit (wird später angepasst falls Delay-Zeiten vorhanden)
+        simulation_time = 0.2  # 200ms (Standard)
         
         # Warmup entfernt: Frames zeigen die tatsächliche Ausbreitung ab t=0
         # Die Wellenausbreitung startet direkt ab t=0, ohne Warmup-Verschiebung
         warmup_periods = 0  # Kein Warmup mehr
         warmup_time = 0.0
-        total_time = simulation_time
-        total_steps = int(round(total_time / dt))
-        
-        # Frames gleichmäßig über die Simulationszeit verteilen
-        # WICHTIG: Frames zeigen die tatsächliche Ausbreitung ab t=0
-        # Frame 0 = t=0 (nur Quellen, keine Ausbreitung)
-        # Frames 1..frames_per_period = gleichmäßig über simulation_time verteilt (ab t=0)
         warmup_steps = int(round(warmup_time / dt))
-        # Berechne Zeitpunkte für die Frames (gleichmäßig über simulation_time, beginnend bei t=0)
-        # Diese Zeiten sind die tatsächliche Zeit seit Start (ohne Warmup-Verschiebung)
-        frame_times = np.linspace(0.0, simulation_time, frames_per_period + 1)  # +1 für Frame 0
-        # Konvertiere Zeitpunkte zu Step-Indizes
-        # WICHTIG: Frames werden bei den tatsächlichen Zeitpunkten seit Start gesampelt
-        # Das bedeutet: Frame 1 bei t=5.6ms sollte bei Step = 5.6ms/dt sein (nicht warmup_steps + 5.6ms/dt)
-        frame_steps = (frame_times / dt).astype(int)
-        frame_steps = np.clip(frame_steps, 0, total_steps - 1)
-        # Frame 0 bei Step 0, Frame 1..N bei Steps entsprechend ihrer Zeit
-        # Wenn mehrere Frames auf denselben Step fallen, wird der letzte verwendet
-        # (das ist korrekt, da die Zeit-Zuordnung durch frame_times definiert ist)
-        sample_map = {int(step): idx for idx, step in enumerate(frame_steps.tolist())}
         
-        # WICHTIG: Die Wellenausbreitung startet ab t=0, nicht nach dem Warmup
-        # Daher müssen wir sicherstellen, dass die Frames die korrekte Ausbreitung zeigen
-        # Die Simulation läuft von Step 0 bis total_steps, und die Wellenausbreitung
-        # findet während des gesamten Laufs statt, inklusive Warmup
+        # Initiale Frame-Zeiten (werden später angepasst)
+        frame_times = np.linspace(0.0, simulation_time, frames_per_period + 1)  # +1 für Frame 0
+        frame_steps = (frame_times / dt).astype(int)
+        total_steps_initial = int(round(simulation_time / dt))
+        frame_steps = np.clip(frame_steps, 0, total_steps_initial - 1)
+        sample_map_initial = {int(step): idx for idx, step in enumerate(frame_steps.tolist())}
 
         sources = self._collect_sources(frequency, simulation_x, simulation_y, grid_resolution)
         max_distance = math.sqrt((width / 2.0) ** 2 + (length / 2.0) ** 2)
+        
+        # Finde minimale und maximale Delay-Zeiten, um Simulationszeit anzupassen
+        delays = [src.get("delay", 0.0) for src in sources]
+        min_delay_s = min(delays) if delays else 0.0
+        max_delay_s = max(delays) if delays else 0.0
+        
+        # Erweitere Simulationszeit um maximales Delay, damit alle Quellen sichtbar werden
+        # Außerdem: Mindestens eine Wellenausbreitungszeit für die maximale Distanz
+        min_propagation_time = max_distance / c if c > 0 else 0.0
+        # Simulationszeit sollte mindestens sein: max_delay + Ausbreitungszeit + eine Periode für vollständige Welle
+        required_time = max_delay_s + min_propagation_time + period_s
+        # Verwende mindestens 200ms, aber erweitere wenn nötig
+        simulation_time = max(0.2, required_time)
+        # Begrenze auf maximal 500ms (Performance)
+        simulation_time = min(simulation_time, 0.5)
+        
+        print(f"[FDTD] Delay-Bereich: {min_delay_s*1000:.2f}ms bis {max_delay_s*1000:.2f}ms, "
+              f"erweiterte Simulationszeit: {simulation_time*1000:.1f}ms")
+        
+        # Aktualisiere total_time und total_steps mit neuer Simulationszeit
+        total_time = simulation_time
+        total_steps = int(round(total_time / dt))
+        
+        # Aktualisiere frame_times mit neuer Simulationszeit
+        frame_times = np.linspace(0.0, simulation_time, frames_per_period + 1)
+        frame_steps = (frame_times / dt).astype(int)
+        frame_steps = np.clip(frame_steps, 0, total_steps - 1)
+        sample_map = {int(step): idx for idx, step in enumerate(frame_steps.tolist())}
         
         # Debug: Berechne erwartete Ausbreitungsdistanz für Frame 1
         if len(frame_times) > 1:
@@ -250,11 +261,19 @@ class SoundFieldCalculatorFDTD(ModuleBase):
         # +1 für Frame 0 (t=0)
         snapshots_full = np.zeros((frames_per_period + 1, ny, nx), dtype=np.float32)
         
-        # Frame 0: t=0 - nur Quellen, keine Ausbreitung
+        # Frame 0: t=0 - nur Quellen mit delay <= 0, keine Ausbreitung
+        # WICHTIG: Quellen mit positiver Delay-Zeit starten erst später (sind bei t=0 noch stumm)
         time_s_0 = 0.0
         for src in sources:
-            source_value = np.real(src["amplitude"] * np.exp(1j * omega * time_s_0))
-            snapshots_full[0, src["iy"], src["ix"]] = source_value
+            delay_s = src.get("delay", 0.0)  # Delay in Sekunden
+            # Nur Quellen die bereits starten sollten (delay <= 0) oder gerade starten (delay == 0)
+            if delay_s <= time_s_0:
+                # Anregung bei t=0 für Quellen ohne Delay oder mit negativem Delay
+                # p(t) = Re(A · exp(iω(t-delay)))
+                # Bei t=0: p(0) = Re(A · exp(-iω·delay))
+                source_value = np.real(src["amplitude"] * np.exp(1j * omega * (time_s_0 - delay_s)))
+                snapshots_full[0, src["iy"], src["ix"]] = source_value
+            # Quellen mit delay > 0 sind bei t=0 noch stumm (keine Anregung)
 
         # FDTD-Koeffizient: (c·dt/dx)² - muss die tatsächliche Grid-Schrittweite verwenden!
         coeff = (c * dt / grid_resolution) ** 2
@@ -326,14 +345,21 @@ class SoundFieldCalculatorFDTD(ModuleBase):
             )
 
             # Kontinuierliche Quellenanregung: Lautsprecher strahlt Sinus-Welle ab
-            # p_source(t) = Re(A · e^{iωt}) = A_real · cos(ωt) - A_imag · sin(ωt)
-            # Dabei ist A die komplexe Amplitude aus den FEM-Panel-Drives (mit Phase)
+            # p_source(t) = Re(A · e^{iω(t-delay)}) = A_real · cos(ω(t-delay)) - A_imag · sin(ω(t-delay))
+            # Dabei ist A die komplexe Amplitude aus den Balloon-Daten (mit Phase)
+            # delay ist die Delay-Zeit aus Speaker-Array-Einstellungen (Array-Delay + Speaker-Delay)
+            # WICHTIG: Quelle strahlt nur wenn time_s >= delay_s (Quelle hat bereits gestartet)
             time_s = step * dt
             for src in sources:
-                # Realteil der komplexen Amplitude * exp(iωt)
-                # Dies erzeugt eine kontinuierliche Sinus-Welle an der Quellposition
-                source_value = np.real(src["amplitude"] * np.exp(1j * omega * time_s))
-                pressure_next[src["iy"], src["ix"]] += source_value
+                delay_s = src.get("delay", 0.0)  # Delay in Sekunden
+                # Nur Quellen die bereits gestartet haben (time_s >= delay_s)
+                if time_s >= delay_s:
+                    # Realteil der komplexen Amplitude * exp(iω(t-delay))
+                    # Dies erzeugt eine kontinuierliche Sinus-Welle an der Quellposition mit Delay-Korrektur
+                    # Positive Delay = späterer Start, Quelle strahlt erst ab time_s >= delay_s
+                    source_value = np.real(src["amplitude"] * np.exp(1j * omega * (time_s - delay_s)))
+                    pressure_next[src["iy"], src["ix"]] += source_value
+                # Quellen mit delay > time_s sind noch stumm (keine Anregung)
 
             # Absorbierende Randbedingungen: Dämpfung NUR EINMAL pro Schritt anwenden
             # Die Dämpfung wird nach dem Zeitschritt angewendet, um Wellen in der Dämpfungszone zu absorbieren
@@ -463,6 +489,29 @@ class SoundFieldCalculatorFDTD(ModuleBase):
             array_gain = float(getattr(speaker_array, 'gain', 0.0) or 0.0)
             source_level = np.array(speaker_array.source_level) if hasattr(speaker_array, 'source_level') else np.array([0.0])
             
+            # Delay-Zeiten: Array-Delay + individuelle Speaker-Delays
+            array_delay = float(getattr(speaker_array, 'delay', 0.0) or 0.0)  # in ms
+            source_time = getattr(speaker_array, 'source_time', None)
+            if source_time is None:
+                source_time = [0.0] * len(speaker_array.source_polar_pattern)
+            elif isinstance(source_time, (int, float)):
+                source_time = [float(source_time)]
+            else:
+                source_time = [float(t) for t in source_time]
+            
+            # Polarity: Liste von booleschen Werten pro Lautsprecher
+            # True = invertiert (180° Phasenverschiebung), False = normal
+            source_polarity = getattr(speaker_array, 'source_polarity', None)
+            if source_polarity is None:
+                source_polarity = [False] * len(speaker_array.source_polar_pattern)
+            elif isinstance(source_polarity, (bool, int, float)):
+                source_polarity = [bool(source_polarity)]
+            else:
+                source_polarity = [bool(p) if p is not None else False for p in source_polarity]
+            # Stelle sicher, dass die Liste lang genug ist
+            while len(source_polarity) < len(speaker_array.source_polar_pattern):
+                source_polarity.append(False)
+            
             # Iteriere über alle Lautsprecher im Array
             for isrc, speaker_name in enumerate(speaker_array.source_polar_pattern):
                 if isrc >= len(source_position_x) or isrc >= len(source_position_y):
@@ -562,6 +611,18 @@ class SoundFieldCalculatorFDTD(ModuleBase):
                 # Skaliere für FDTD
                 scaled_amplitude = pressure_complex * scale_factor
                 
+                # Polarity-Invertierung (180° Phasenverschiebung): Multipliziere mit -1 wenn Polarity aktiviert
+                # Dies entspricht einer Phasenverschiebung von 180° (exp(i·π) = -1)
+                polarity_inverted = source_polarity[isrc] if isrc < len(source_polarity) else False
+                if polarity_inverted:
+                    scaled_amplitude = -scaled_amplitude  # Invertiere das Signal (180° Phasenverschiebung)
+                
+                # Berechne Gesamt-Delay für diesen Lautsprecher (in Sekunden)
+                # source_time ist in ms, array_delay auch in ms
+                speaker_delay_ms = float(source_time[isrc]) if isrc < len(source_time) else 0.0
+                total_delay_ms = array_delay + speaker_delay_ms
+                total_delay_s = total_delay_ms / 1000.0  # Konvertiere ms -> s
+                
                 # Panel-Dimensionen aus Metadaten (falls verfügbar)
                 try:
                     cabinet_meta = self._data_container.get_cabinet_metadata(speaker_name)
@@ -581,6 +642,7 @@ class SoundFieldCalculatorFDTD(ModuleBase):
                     "iy": iy,
                     "amplitude": scaled_amplitude,
                     "radius": source_radius_pixels,
+                    "delay": total_delay_s,  # Delay in Sekunden
                 })
                 
                 # Füge zusätzliche Quellen in der Nähe hinzu (für bessere Verteilung)
@@ -600,15 +662,31 @@ class SoundFieldCalculatorFDTD(ModuleBase):
                                 "iy": new_iy,
                                 "amplitude": scaled_amplitude * weight,
                                 "radius": 0,
+                                "delay": total_delay_s,  # Delay in Sekunden (gleich wie Hauptquelle)
                             })
 
         if not sources:
             raise RuntimeError("Keine gültigen FDTD-Quellen gefunden.")
         
-        # Debug: Zeige Skalierung
+        # Debug: Zeige Skalierung, Delay- und Polarity-Informationen
         if sources:
             sample_amp = abs(sources[0]["amplitude"])
-            print(f"[FDTD] {len(sources)} Quellen, Beispiel-Amplitude: {sample_amp:.3e} Pa (scale={scale_factor})")
+            sample_delay = sources[0].get("delay", 0.0)
+            # Finde min/max Delay für Übersicht
+            delays = [src.get("delay", 0.0) for src in sources]
+            min_delay_ms = min(delays) * 1000.0
+            max_delay_ms = max(delays) * 1000.0
+            unique_delays = sorted(set(delays))
+            
+            # Prüfe Polarity (durch Vergleich der Phasen: invertierte Quellen haben Phase ±180° verschoben)
+            # Vereinfachung: Wir zählen nicht direkt, aber zeigen die Info wenn vorhanden
+            delay_info = ""
+            if len(unique_delays) == 1:
+                delay_info = f"Delay: {unique_delays[0]*1000:.2f}ms (alle Quellen)"
+            else:
+                delay_info = f"Delay-Bereich: {min_delay_ms:.2f}ms bis {max_delay_ms:.2f}ms ({len(unique_delays)} verschiedene Delays)"
+            
+            print(f"[FDTD] {len(sources)} Quellen, Beispiel-Amplitude: {sample_amp:.3e} Pa (scale={scale_factor}), {delay_info}")
         
         return sources
 
