@@ -1,5 +1,6 @@
 import math
-from typing import Dict, Optional, List
+import weakref
+from typing import Dict, Optional, List, Callable
 
 from PyQt5.QtCore import Qt
 
@@ -16,6 +17,8 @@ class UISurfaceManager:
     Verwaltet das SurfaceDockWidget und synchronisiert es mit dem ausgewählten SpeakerArray.
     """
 
+    PLANAR_Z_TOLERANCE = 1e-4
+
     def __init__(self, main_window, settings, container):
         self.main_window = main_window
         self.settings = settings
@@ -25,6 +28,7 @@ class UISurfaceManager:
         self.snapshot_dock = None
         self._initial_docked = False
         self._snapshot_split_done = False
+        self._sources_tree_widget_ref: Optional[Callable[[], object]] = None
         self._group_controller = _SurfaceGroupController(self.settings)
         self._group_controller.ensure_structure()
 
@@ -47,7 +51,9 @@ class UISurfaceManager:
             # Automatisches Docking deaktiviert - Widget wird nicht direkt an UI angehängt
 
         # Vor der Darstellung sicherstellen, dass alle vorhandenen Flächen plan projiziert sind
-        self._ensure_planar_surfaces()
+        adjustments = self._ensure_planar_surfaces()
+        if adjustments:
+            self._log_debug(f"{adjustments} gespeicherte Fläche(n) neu planprojiziert bevor das Dock geöffnet wurde.")
         self.surface_dock_widget.initialize()
         
         # Als schwebendes Fenster setzen und rechts neben dem Hauptfenster positionieren
@@ -96,6 +102,7 @@ class UISurfaceManager:
             self.surface_dock_widget = None
             self._initial_docked = False
             self._snapshot_split_done = False
+            self._disconnect_sources_signals()
 
     def bind_to_sources_widget(self, sources_widget):
         """
@@ -104,11 +111,17 @@ class UISurfaceManager:
         if sources_widget is None or not hasattr(sources_widget, "sources_tree_widget"):
             return
 
-        if self.sources_widget is not None:
+        if self.sources_widget is not None or self._resolve_sources_tree_widget() is not None:
             self._disconnect_sources_signals()
 
         self.sources_widget = sources_widget
-        self.sources_widget.sources_tree_widget.itemSelectionChanged.connect(self._on_sources_selection_changed)
+        tree_widget = getattr(sources_widget, "sources_tree_widget", None)
+        if tree_widget is None:
+            return
+
+        self._sources_tree_widget_ref = weakref.ref(tree_widget)
+        tree_widget.itemSelectionChanged.connect(self._on_sources_selection_changed)
+        tree_widget.destroyed.connect(self._on_sources_widget_destroyed)
 
         if self.surface_dock_widget is not None:
             self._on_sources_selection_changed()
@@ -174,29 +187,47 @@ class UISurfaceManager:
         if self.surface_dock_widget is None:
             return
 
-        self._ensure_planar_surfaces()
+        adjustments = self._ensure_planar_surfaces()
+        if adjustments:
+            self._log_debug(f"{adjustments} Fläche(n) aufgrund neuer Planprojektion aktualisiert.")
         self.surface_dock_widget.load_surfaces()
 
     def _disconnect_sources_signals(self):
-        if self.sources_widget and hasattr(self.sources_widget, "sources_tree_widget"):
+        tree_widget = self._resolve_sources_tree_widget()
+        if tree_widget:
             try:
-                self.sources_widget.sources_tree_widget.itemSelectionChanged.disconnect(self._on_sources_selection_changed)
+                tree_widget.itemSelectionChanged.disconnect(self._on_sources_selection_changed)
             except (RuntimeError, TypeError):
                 pass
+            try:
+                tree_widget.destroyed.disconnect(self._on_sources_widget_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+        self.sources_widget = None
+        self._sources_tree_widget_ref = None
 
-    def _ensure_planar_surfaces(self) -> bool:
+    def _resolve_sources_tree_widget(self):
+        if self._sources_tree_widget_ref is None:
+            return None
+        return self._sources_tree_widget_ref()
+
+    def _on_sources_widget_destroyed(self, *_):
+        self.sources_widget = None
+        self._sources_tree_widget_ref = None
+
+    def _ensure_planar_surfaces(self) -> int:
         """
         Prüft alle gespeicherten Flächen auf Planarität und projiziert abweichende Punkte
         automatisch auf die dazugehörige Ebene.
 
         Returns:
-            bool: True, wenn mindestens eine Fläche angepasst wurde.
+            int: Anzahl der Flächen, die angepasst wurden.
         """
         surface_store = getattr(self.settings, "surface_definitions", None)
         if not isinstance(surface_store, dict) or not surface_store:
-            return False
+            return 0
 
-        adjusted = False
+        adjustments = 0
         for surface_id, surface in surface_store.items():
             if isinstance(surface, SurfaceDefinition):
                 points = surface.points
@@ -205,20 +236,18 @@ class UISurfaceManager:
             if len(points) < 4:  # Mindestens vier Punkte für planare Auswertung
                 continue
 
-            if not self._surface_has_numeric_z(points):
+            numeric_points, invalid_values = self._extract_numeric_z_points(points)
+            if invalid_values or len(numeric_points) < 3:
                 continue
 
-            model, _ = build_planar_model(points)
+            model, _ = build_planar_model(numeric_points)
             if model is None:
                 continue
 
-            for point in points:
-                point["z"] = evaluate_surface_plane(
-                    model,
-                    float(point.get("x", 0.0)),
-                    float(point.get("y", 0.0)),
-                )
-            adjusted = True
+            if not self._apply_planar_projection(points, model):
+                continue
+
+            adjustments += 1
             if isinstance(surface, SurfaceDefinition):
                 surface.points = points
                 surface.plane_model = model
@@ -226,16 +255,62 @@ class UISurfaceManager:
                 surface["points"] = points
                 surface["plane_model"] = model
 
-        return adjusted
+        return adjustments
 
     @staticmethod
     def _surface_has_numeric_z(points) -> bool:
+        numeric_points, invalid_values = UISurfaceManager._extract_numeric_z_points(points)
+        return not invalid_values and len(numeric_points) >= 3
+
+    @staticmethod
+    def _extract_numeric_z_points(points):
+        numeric_points: List[Dict[str, float]] = []
+        invalid_values = False
         for point in points:
             z_val = point.get("z")
             numeric = UISurfaceManager._safe_float(z_val)
             if numeric is None:
-                return False
-        return True
+                if UISurfaceManager._is_missing_z_value(z_val):
+                    continue
+                invalid_values = True
+                break
+            numeric_points.append(point)
+        return numeric_points, invalid_values
+
+    @staticmethod
+    def _is_missing_z_value(value) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str) and not value.strip():
+            return True
+        return False
+
+    def _apply_planar_projection(self, points, model) -> bool:
+        updated = False
+        for point in points:
+            x_val = self._safe_float(point.get("x"))
+            y_val = self._safe_float(point.get("y"))
+            if x_val is None:
+                x_val = 0.0
+            if y_val is None:
+                y_val = 0.0
+            target_z = evaluate_surface_plane(model, x_val, y_val)
+            current_z = self._safe_float(point.get("z"))
+            if current_z is None or abs(current_z - target_z) > self.PLANAR_Z_TOLERANCE:
+                point["z"] = target_z
+                updated = True
+        return updated
+
+    def _log_debug(self, message: str):
+        logger = getattr(self.settings, "logger", None)
+        if logger is None:
+            logger = getattr(self.main_window, "logger", None)
+        debug_fn = getattr(logger, "debug", None) if logger else None
+        if callable(debug_fn):
+            try:
+                debug_fn(message)
+            except Exception:
+                pass
 
     @staticmethod
     def _safe_float(value) -> Optional[float]:
@@ -354,8 +429,7 @@ class _SurfaceGroupController:
 
     def ensure_structure(self):
         store = self._ensure_group_store()
-        root = self._ensure_group_object(self.root_group_id)
-        if root is None:
+        if self._ensure_group_object(self.root_group_id) is None:
             store[self.root_group_id] = SurfaceGroup(
                 group_id=self.root_group_id,
                 name="Surfaces",
@@ -366,19 +440,54 @@ class _SurfaceGroupController:
             )
 
         surface_store = getattr(self.settings, "surface_definitions", {})
+        valid_surface_ids = set(surface_store.keys())
+        claimed_surface_ids: set[str] = set()
+
         for group_id in list(store.keys()):
             group = self._ensure_group_object(group_id)
-            group.child_groups = [
-                gid for gid in group.child_groups if gid in store and gid != group_id
-            ]
-            group.surface_ids = [
-                sid for sid in group.surface_ids if sid in surface_store
-            ]
+            if group is None:
+                continue
+
+            if group_id == self.root_group_id:
+                group.parent_id = None
+            elif group.parent_id not in store:
+                group.parent_id = self.root_group_id
+
+            parent = self._ensure_group_object(group.parent_id) if group.parent_id else None
+            if parent and group_id not in parent.child_groups:
+                parent.child_groups.append(group_id)
+
+            group.child_groups = self._deduplicate_sequence(
+                gid
+                for gid in group.child_groups
+                if gid in store and gid != group_id
+            )
+
+            cleaned_surface_ids = []
+            for surface_id in group.surface_ids:
+                if surface_id not in valid_surface_ids:
+                    continue
+                if surface_id in claimed_surface_ids:
+                    continue
+                cleaned_surface_ids.append(surface_id)
+                claimed_surface_ids.add(surface_id)
+            group.surface_ids = cleaned_surface_ids
 
         for surface_id in surface_store.keys():
             surface = self._ensure_surface_object(surface_id)
             target_group_id = surface.group_id or self.root_group_id
             self.assign_surface_to_group(surface_id, target_group_id, create_missing=True)
+
+    @staticmethod
+    def _deduplicate_sequence(sequence):
+        seen = set()
+        result = []
+        for item in sequence:
+            if item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+        return result
 
     def reset_storage(self):
         init_surfaces = getattr(self.settings, "_initialize_surface_definitions", None)

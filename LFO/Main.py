@@ -85,6 +85,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.setupUi(self)
         self.settings = settings
         self.container = container
+        array_ids = list(self.settings.get_all_speaker_array_ids())
+        self._last_selected_speaker_array_id: Optional[int] = array_ids[0] if array_ids else None
         
         # Übergeben Sie settings und data_container an andere Klassen
         # self.sources_instance = Sources(self, self.settings, self.container)
@@ -159,6 +161,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.draw_plots.show_empty_polar()
             return
         speaker_array_id = self.get_selected_speaker_array_id()
+        if speaker_array_id is None:
+            array_ids = list(self.settings.get_all_speaker_array_ids())
+            if array_ids:
+                speaker_array_id = array_ids[0]
+                self._last_selected_speaker_array_id = speaker_array_id
+                print(f"[WARN] Main.plot_spl() - keine Auswahl, fallback auf speaker_array_id={speaker_array_id}")
+            else:
+                print("[WARN] Main.plot_spl() - keine Speaker-Arrays verfügbar, zeige leeren Plot")
+                self.draw_plots.show_empty_spl()
+                if update_axes:
+                    self.draw_plots.show_empty_axes()
+                    self.draw_plots.show_empty_polar()
+                return
         print(f"[DEBUG] Main.plot_spl() - Rufe draw_plots.plot_spl() auf mit speaker_array_id={speaker_array_id}")
         self.draw_plots.plot_spl(self.settings, speaker_array_id, update_axes=update_axes, reset_camera=reset_camera)
         print(f"[DEBUG] Main.plot_spl() - draw_plots.plot_spl() abgeschlossen")
@@ -847,8 +862,11 @@ class MainWindow(QtWidgets.QMainWindow):
         Returns:
             int or None: ID des ausgewählten Arrays oder None, wenn keins ausgewählt ist.
         """
+        array_ids = list(self.settings.get_all_speaker_array_ids())
+
         if not hasattr(self, 'sources_instance') or not hasattr(self.sources_instance, 'sources_tree_widget'):
-            array_ids = list(self.settings.get_all_speaker_array_ids())
+            if self._last_selected_speaker_array_id in array_ids:
+                return self._last_selected_speaker_array_id
             return array_ids[0] if array_ids else None
 
         selected_items = self.sources_instance.sources_tree_widget.selectedItems()
@@ -863,9 +881,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 speaker_array = self.settings.get_speaker_array(speaker_array_id)
                 
                 if speaker_array is not None:
+                    self._last_selected_speaker_array_id = speaker_array_id
                     return speaker_array_id
-        
-        return None
+
+        if (
+            self._last_selected_speaker_array_id is not None
+            and self.settings.get_speaker_array(self._last_selected_speaker_array_id) is not None
+        ):
+            return self._last_selected_speaker_array_id
+
+        return array_ids[0] if array_ids else None
 
     def _initialize_default_plot_flags(self) -> None:
         """

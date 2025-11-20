@@ -412,14 +412,37 @@ class SurfaceGridCalculator(ModuleBase):
             return Z_grid
         
         # 🎯 Normalisiere Z-Koordinaten für alle Surfaces
+        def _safe_coord(point_obj, key: str, default: float = 0.0) -> float:
+            if isinstance(point_obj, dict):
+                value = point_obj.get(key, default)
+            else:
+                value = getattr(point_obj, key, default)
+            if value is None:
+                return float(default)
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return float(default)
+
         normalized_surfaces = []
         for surface_id, surface_def in surfaces:
-            points = surface_def.get("points", [])
+            raw_points = surface_def.get("points", [])
+            if not isinstance(raw_points, list):
+                continue
+            points = []
+            for raw_point in raw_points:
+                points.append(
+                    {
+                        "x": _safe_coord(raw_point, "x", 0.0),
+                        "y": _safe_coord(raw_point, "y", 0.0),
+                        "z": _safe_coord(raw_point, "z", 0.0),
+                    }
+                )
             if len(points) < 3:
                 continue
             
             # Extrahiere Z-Werte
-            z_values = [float(p.get('z', 0.0)) for p in points]
+            z_values = [p["z"] for p in points]
             
             # 🎯 Normalisierung: Wenn genau eine Abweichung, setze auf 4.0
             unique_z = sorted(set(z_values))
@@ -512,13 +535,25 @@ class SurfaceGridCalculator(ModuleBase):
         inside = False
         
         j = n - 1
+        boundary_eps = 1e-6
         for i in range(n):
             xi, yi = px[i], py[i]
             xj, yj = px[j], py[j]
             
             # Prüfe ob Strahl von (x,y) nach rechts die Kante schneidet
-            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            if ((yi > y) != (yj > y)) and (x <= (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi + boundary_eps):
                 inside = not inside
+            
+            # Prüfe ob Punkt direkt auf der Kante liegt
+            dx = xj - xi
+            dy = yj - yi
+            segment_len = math.hypot(dx, dy)
+            if segment_len > 0:
+                dist = abs(dy * (x - xi) - dx * (y - yi)) / segment_len
+                if dist <= boundary_eps:
+                    proj = ((x - xi) * dx + (y - yi) * dy) / (segment_len * segment_len)
+                    if -boundary_eps <= proj <= 1 + boundary_eps:
+                        return True
             j = i
         
         return inside
@@ -554,6 +589,8 @@ class SurfaceGridCalculator(ModuleBase):
         
         # Ray Casting für alle Punkte gleichzeitig
         inside = np.zeros(n_points, dtype=bool)
+        on_edge = np.zeros(n_points, dtype=bool)
+        boundary_eps = 1e-6
         n = len(px)
         
         j = n - 1
@@ -565,15 +602,26 @@ class SurfaceGridCalculator(ModuleBase):
             # Bedingung: ((yi > y) != (yj > y)) AND (x < Schnittpunkt-X)
             y_above_edge = (yi > y_flat) != (yj > y_flat)
             intersection_x = (xj - xi) * (y_flat - yi) / (yj - yi + 1e-10) + xi
-            intersects = y_above_edge & (x_flat < intersection_x)
+            intersects = y_above_edge & (x_flat <= intersection_x + boundary_eps)
             
             # XOR-Operation für Winding Number
             inside = inside ^ intersects
             
+            # Prüfe Punkte, die direkt auf der Kante liegen
+            dx = xj - xi
+            dy = yj - yi
+            segment_len = math.hypot(dx, dy)
+            if segment_len > 0:
+                numerator = np.abs(dy * (x_flat - xi) - dx * (y_flat - yi))
+                dist = numerator / (segment_len + 1e-12)
+                proj = ((x_flat - xi) * dx + (y_flat - yi) * dy) / ((segment_len ** 2) + 1e-12)
+                on_edge_segment = (dist <= boundary_eps) & (proj >= -boundary_eps) & (proj <= 1 + boundary_eps)
+                on_edge = on_edge | on_edge_segment
+            
             j = i
         
         # Reshape zurück zu Original-Form
-        return inside.reshape(x_coords.shape)
+        return (inside | on_edge).reshape(x_coords.shape)
 
     @staticmethod
     def _evaluate_plane_grid(

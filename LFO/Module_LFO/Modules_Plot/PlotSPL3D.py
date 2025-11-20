@@ -944,7 +944,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 frame.merge(clean=True),
                 name='scene_frame',
                 color=frame_color,
-                line_width=2.5,
+                line_width=1.2,
                 opacity=1.0,
                 render_lines_as_tubes=True,
                 reset_camera=False,

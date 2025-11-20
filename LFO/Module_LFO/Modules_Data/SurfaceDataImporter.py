@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +17,7 @@ class SurfaceDataImporter:
     Importiert Surface-Definitionen aus externen Dateien und überträgt sie in die Settings.
     """
 
-    FILE_FILTER = "Surface-Dateien (*.json *.surf);;Alle Dateien (*)"
+    FILE_FILTER = "DXF-Dateien (*.dxf)"
 
     def __init__(self, parent_widget, settings, container, group_manager=None):
         self.parent_widget = parent_widget
@@ -186,6 +188,7 @@ class SurfaceDataImporter:
 
         doc = ezdxf.readfile(str(file_path))
         msp = doc.modelspace()
+        self._log_dxf_debug_info(file_path, doc, msp)
         group_lookup = self._build_dxf_group_lookup(doc)
         layer_colors = self._build_layer_color_lookup(doc, ezdxf)
 
@@ -204,6 +207,7 @@ class SurfaceDataImporter:
                 points = self._extract_3dface_points(entity)
 
             if not points:
+                self._log_skipped_entity(entity)
                 continue
 
             base_name = getattr(entity.dxf, "layer", None) or dxftype or "DXF_Surface"
@@ -235,6 +239,61 @@ class SurfaceDataImporter:
             )
 
         return surfaces
+
+    def _log_dxf_debug_info(self, file_path: Path, doc, msp) -> None:
+        logger = logging.getLogger(__name__)
+        try:
+            entity_types = Counter(entity.dxftype() for entity in msp)
+            top_types = ", ".join(
+                f"{etype}:{count}" for etype, count in entity_types.most_common(5)
+            )
+            layers = getattr(doc, "layers", None)
+            groups = getattr(doc, "groups", None)
+            layer_count = len(list(layers)) if layers is not None else 0
+            group_count = len(list(groups)) if groups is not None else 0
+            logger.info(
+                "DXF '%s': %d Entities im Modelspace, %d Layer, %d Gruppen. Häufigste Typen: %s",
+                file_path.name,
+                sum(entity_types.values()),
+                layer_count,
+                group_count,
+                top_types or "keine",
+            )
+            self._log_block_summary(doc, logger)
+        except Exception:
+            logger.exception("DXF-Debug-Auswertung von '%s' fehlgeschlagen", file_path)
+
+    def _log_skipped_entity(self, entity) -> None:
+        logger = logging.getLogger(__name__)
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        try:
+            logger.debug(
+                "DXF-Entity %s auf Layer '%s' wurde übersprungen (keine Punkte). Handle=%s",
+                entity.dxftype(),
+                getattr(entity.dxf, "layer", "unbekannt"),
+                getattr(entity.dxf, "handle", "n/a"),
+            )
+        except Exception:
+            logger.exception("Fehler beim Loggen einer übersprungenen Entity")
+
+    def _log_block_summary(self, doc, logger: logging.Logger) -> None:
+        try:
+            blocks = getattr(doc, "blocks", None)
+            if not blocks:
+                logger.info("DXF: keine Blockdefinitionen gefunden.")
+                return
+            summaries = []
+            for block in blocks:
+                entity_types = Counter(entity.dxftype() for entity in block)
+                top_types = ", ".join(
+                    f"{etype}:{count}" for etype, count in entity_types.most_common(3)
+                ) or "leer"
+                summaries.append(f"{block.name} [{len(entity_types)} Typen] -> {top_types}")
+            if summaries:
+                logger.info("DXF-Blockübersicht (%d Blöcke): %s", len(summaries), " | ".join(summaries))
+        except Exception:
+            logger.exception("DXF-Blockübersicht konnte nicht erstellt werden")
 
     def _extract_lwpolyline_points(self, entity) -> List[Dict[str, float]]:
         points: List[Dict[str, float]] = []

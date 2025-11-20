@@ -208,6 +208,14 @@ class SPL3DOverlayRenderer:
                 # Erstelle PolyLine aus PyVista
                 polyline = self.pv.PolyData(closed_coords)
                 polyline.lines = [len(closed_coords)] + list(range(len(closed_coords)))
+                # Entferne Vertex-Zellen, damit keine Punkte an den Eckpunkten gerendert werden
+                try:
+                    polyline.verts = np.empty(0, dtype=np.int64)
+                except Exception:
+                    try:
+                        polyline.verts = []
+                    except Exception:
+                        pass
                 
                 # 🎯 Unterscheide zwischen enabled/disabled und aktivem/inaktivem Surface
                 if DEBUG_SURFACE_GEOMETRY:
@@ -224,23 +232,30 @@ class SPL3DOverlayRenderer:
                 if enabled:
                     if is_active:
                         # Aktives enabled Surface: Rote Umrandung, etwas hervorgehoben
+                        polyline_render = polyline
+                        try:
+                            polyline_render = polyline.tube(radius=0.02, n_sides=24, capping=True)
+                        except Exception:
+                            pass
                         self._add_overlay_mesh(
-                            polyline,
+                            polyline_render,
                             color='#FF0000',  # Immer Rot für aktives Surface
-                            line_width=2.5,
+                            line_width=1.2,
                             opacity=0.95,
                             category='surfaces',
-                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                            show_vertices=False,
+                            render_lines_as_tubes=True,
                         )
                     else:
                         # Inaktives enabled Surface: sehr schlanke Linienführung
                         self._add_overlay_mesh(
                             polyline,
                             color=color,
-                            line_width=1.0,
+                            line_width=1.2,
                             opacity=0.75,
                             category='surfaces',
-                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                            show_vertices=False,
+                            render_lines_as_tubes=True,
                         )
                 else:
                     # Disabled Surface: sichtbar mit hellgrauer Farbe
@@ -269,27 +284,34 @@ class SPL3DOverlayRenderer:
 
                     if is_active:
                         # Aktives disabled Surface: Rote gestrichelte Umrandung
+                        polyline_render = polyline
+                        try:
+                            polyline_render = polyline.tube(radius=0.02, n_sides=24, capping=True)
+                        except Exception:
+                            pass
                         self._add_overlay_mesh(
-                            polyline,
+                            polyline_render,
                             color='#FF0000',
-                            line_width=2.0,
+                            line_width=1.2,
                             opacity=0.60,
                             line_pattern=dashed_pattern,
                             line_repeat=2,
                             category='surfaces',
-                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                            show_vertices=False,
+                            render_lines_as_tubes=True,
                         )
                     else:
                         # Inaktives disabled Surface: Standard gestrichelt, dünn
                         self._add_overlay_mesh(
                             polyline,
                             color=disabled_color,
-                            line_width=1.0,
+                            line_width=1.2,
                             opacity=0.6,
                             line_pattern=dashed_pattern,
                             line_repeat=2,
                             category='surfaces',
-                            show_vertices=False  # Nur Linie, keine Eckpunkte
+                            show_vertices=False,
+                            render_lines_as_tubes=True,
                         )
             except (ValueError, TypeError, AttributeError, Exception):
                 continue
@@ -1106,6 +1128,7 @@ class SPL3DOverlayRenderer:
         line_pattern: Optional[int] = None,
         line_repeat: int = 1,
         category: str = 'generic',
+        render_lines_as_tubes: Optional[bool] = None,
         ) -> None:
         name = f"overlay_{self.overlay_counter}"
         self.overlay_counter += 1
@@ -1130,6 +1153,9 @@ class SPL3DOverlayRenderer:
             kwargs['show_edges'] = True
         elif show_edges:
             kwargs['show_edges'] = True
+        
+        if render_lines_as_tubes is not None:
+            kwargs['render_lines_as_tubes'] = bool(render_lines_as_tubes)
         
         # 🎯 Stelle sicher, dass keine Eckpunkte angezeigt werden (nur Linien)
         if not show_vertices and hasattr(mesh, 'lines') and mesh.lines is not None:

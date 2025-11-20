@@ -530,7 +530,7 @@ def build_surface_mesh(
         for i in range(nx - 1):
             if mask is not None:
                 cell_mask = mask[j : j + 2, i : i + 2]
-                if not np.all(cell_mask):
+                if not np.any(cell_mask):
                     continue
             idx0 = j * nx + i
             idx1 = idx0 + 1
@@ -546,7 +546,21 @@ def build_surface_mesh(
         # Zu wenig Punkte für Polygone → Einzelpunkte rendern
         mesh = pv_module.PolyData(points)
 
-    mesh["plot_scalars"] = values.ravel()
+    point_scalars = values.ravel()
+    mesh["plot_scalars"] = point_scalars
+    if mask is not None:
+        mask_scalars = mask.astype(float).ravel()
+        if mask_scalars.size == points.shape[0]:
+            mesh["mask_scalar"] = mask_scalars
+            try:
+                mesh = mesh.clip_scalar(
+                    scalars="mask_scalar",
+                    value=0.5 - 1e-6,
+                    invert=False,
+                )
+            finally:
+                if "mask_scalar" in mesh.point_data:
+                    mesh.point_data.pop("mask_scalar")
 
     # Entferne vertikale Seitenflächen (Normale nahezu horizontal)
     try:
