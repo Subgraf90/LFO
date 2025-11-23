@@ -168,6 +168,7 @@ class Settings:
         self.load_custom_defaults()
         self.speaker_arrays = {}
         self.speaker_array_names = {}
+        self.speaker_array_groups = {}  # Dictionary: {group_id: {'name': str, 'mute': bool, 'hide': bool, 'child_array_ids': [int]}}
 
     def load_speaker_defaults(self):
         self.speaker_array = self.speaker_arrays = {}
@@ -309,6 +310,7 @@ class Settings:
             'update_pressure_polarplot': self.update_pressure_polarplot,
             'update_pressure_impulse': self.update_pressure_impulse,
             'fem_compute_particle_velocity': getattr(self, 'fem_compute_particle_velocity', True),
+            'speaker_array_groups': getattr(self, 'speaker_array_groups', {}),
         }
 
     def set_active_surface(self, surface_id):

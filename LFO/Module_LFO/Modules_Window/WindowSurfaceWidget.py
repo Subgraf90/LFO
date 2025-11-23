@@ -210,8 +210,23 @@ class SurfaceDockWidget(QDockWidget):
                 self.surface_tree.addTopLevelItem(item)
 
         self.surface_tree.expandAll()
+        
+        # Stelle sicher, dass alle Items sichtbar sind, bevor wir blockSignals aufheben
+        self._ensure_all_items_visible()
+        
         self.surface_tree.blockSignals(False)
         self._loading_surfaces = False
+        
+        # Explizite Aktualisierung des TreeWidgets, um sicherzustellen, dass alle Items angezeigt werden
+        # Verwende processEvents, um sicherzustellen, dass alle UI-Updates verarbeitet werden
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+        self.surface_tree.update()
+        self.surface_tree.repaint()
+        # Erzwinge eine vollständige Neuzeichnung des TreeWidgets
+        self.surface_tree.viewport().update()
+        # Erzwinge eine vollständige Neuberechnung der Layouts
+        self.surface_tree.doItemsLayout()
 
         target_surface = self.current_surface_id or self.DEFAULT_SURFACE_ID
         self._select_surface(target_surface)
@@ -361,6 +376,8 @@ class SurfaceDockWidget(QDockWidget):
             hidden = bool(self._surface_get(data, "hidden", False))
             existing_item.setCheckState(1, Qt.Checked if enabled else Qt.Unchecked)
             existing_item.setCheckState(2, Qt.Checked if hidden else Qt.Unchecked)
+            # Stelle sicher, dass das Item sichtbar ist
+            existing_item.setHidden(False)
             return existing_item
         
         # Erstelle ein neues Item
@@ -379,6 +396,8 @@ class SurfaceDockWidget(QDockWidget):
         item.setCheckState(1, Qt.Checked if enabled else Qt.Unchecked)
         item.setCheckState(2, Qt.Checked if hidden else Qt.Unchecked)
         item.setData(0, Qt.UserRole, {"type": self.ITEM_TYPE_SURFACE, "id": surface_id})
+        # Stelle sicher, dass das Item sichtbar ist
+        item.setHidden(False)
 
         if surface_id == self.DEFAULT_SURFACE_ID:
             # Default-Fläche: nicht löschbar, aber umbenennbar
@@ -399,6 +418,8 @@ class SurfaceDockWidget(QDockWidget):
             existing_item.setText(0, group.name)
             existing_item.setCheckState(1, Qt.Checked if group.enabled else Qt.Unchecked)
             existing_item.setCheckState(2, Qt.Checked if group.hidden else Qt.Unchecked)
+            # Stelle sicher, dass das Item sichtbar ist
+            existing_item.setHidden(False)
             return existing_item
         
         # Erstelle ein neues Item
@@ -417,6 +438,8 @@ class SurfaceDockWidget(QDockWidget):
         item.setData(0, Qt.UserRole, {"type": self.ITEM_TYPE_GROUP, "id": group.group_id})
         # Markiere Gruppen-Items immer als expandierbar, auch wenn sie leer sind
         item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+        # Stelle sicher, dass das Item sichtbar ist
+        item.setHidden(False)
         self._group_items[group.group_id] = item
         return item
 
@@ -469,10 +492,96 @@ class SurfaceDockWidget(QDockWidget):
                 # Prüfe, ob das Item bereits ein Top-Level-Item ist
                 if self.surface_tree.indexOfTopLevelItem(surface_item) < 0:
                     self.surface_tree.addTopLevelItem(surface_item)
+                    print(f"[SurfaceDockWidget] ✓ surface '{surface_id}' added as top-level item")
+                else:
+                    print(f"[SurfaceDockWidget] ⚠ surface '{surface_id}' already exists as top-level item")
             else:
                 # Prüfe, ob das Item bereits ein Child des Parent ist
                 if parent_item.indexOfChild(surface_item) < 0:
                     parent_item.addChild(surface_item)
+                    print(f"[SurfaceDockWidget] ✓ surface '{surface_id}' added to group '{group.group_id}' (parent has {parent_item.childCount()} children)")
+                    # Stelle sicher, dass der Parent erweitert ist, damit das Item sichtbar ist
+                    if not parent_item.isExpanded():
+                        parent_item.setExpanded(True)
+                    # Aktualisiere das TreeWidget nach jedem Hinzufügen, um Rendering-Probleme zu vermeiden
+                    self.surface_tree.update()
+                else:
+                    print(f"[SurfaceDockWidget] ⚠ surface '{surface_id}' already exists in group '{group.group_id}'")
+        
+        # Nach dem Hinzufügen aller Items zu einer Gruppe, explizit aktualisieren
+        if parent_item is not None and parent_item.childCount() > 0:
+            # Stelle sicher, dass die Gruppe erweitert ist
+            parent_item.setExpanded(True)
+            # Stelle sicher, dass alle Child-Items sichtbar und aktiviert sind
+            for idx in range(parent_item.childCount()):
+                child = parent_item.child(idx)
+                if child:
+                    child.setHidden(False)
+                    # Stelle sicher, dass das Item aktiviert ist
+                    flags = child.flags()
+                    if not (flags & Qt.ItemIsEnabled):
+                        child.setFlags(flags | Qt.ItemIsEnabled)
+                    # Stelle sicher, dass das Item wirklich existiert und Daten hat
+                    child_data = child.data(0, Qt.UserRole)
+                    if child_data is None:
+                        print(f"[SurfaceDockWidget] WARNING: child at index {idx} has no data")
+            
+            # Debug: Prüfe, ob alle Items wirklich vorhanden sind
+            print(f"[SurfaceDockWidget] DEBUG: group '{group.group_id}' has {parent_item.childCount()} children after adding all items")
+            for idx in range(parent_item.childCount()):
+                child = parent_item.child(idx)
+                if child:
+                    child_type, child_id = self._get_item_identity(child)
+                    print(f"[SurfaceDockWidget] DEBUG: child {idx}: {child_type}:{child_id}, hidden={child.isHidden()}, enabled={bool(child.flags() & Qt.ItemIsEnabled)}")
+            
+            # Aktualisiere das TreeWidget, um alle Items anzuzeigen
+            # Verwende processEvents, um sicherzustellen, dass alle UI-Updates verarbeitet werden
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+            # Erzwinge eine vollständige Neuberechnung der Layouts
+            self.surface_tree.doItemsLayout()
+            self.surface_tree.update()
+            self.surface_tree.repaint()
+            # Erzwinge eine vollständige Neuzeichnung des Viewports
+            self.surface_tree.viewport().update()
+            # Scrolle durch alle Items, um sicherzustellen, dass sie gerendert werden
+            # Beginne mit dem letzten Item
+            for idx in range(parent_item.childCount() - 1, -1, -1):
+                child = parent_item.child(idx)
+                if child:
+                    self.surface_tree.scrollToItem(child, QAbstractItemView.EnsureVisible)
+                    QApplication.processEvents()
+            # Scrolle zurück zum ersten Item
+            if parent_item.childCount() > 0:
+                first_child = parent_item.child(0)
+                if first_child:
+                    self.surface_tree.scrollToItem(first_child, QAbstractItemView.PositionAtTop)
+
+    def _ensure_all_items_visible(self):
+        """
+        Stellt sicher, dass alle Items im TreeWidget sichtbar sind.
+        Geht rekursiv durch alle Items und erweitert Gruppen, macht Items sichtbar.
+        """
+        def _process_item(item: QTreeWidgetItem):
+            if item is None:
+                return
+            # Stelle sicher, dass das Item sichtbar ist
+            item.setHidden(False)
+            # Wenn es eine Gruppe ist, erweitere sie
+            item_type, _ = self._get_item_identity(item)
+            if item_type == self.ITEM_TYPE_GROUP:
+                item.setExpanded(True)
+            # Verarbeite alle Kinder rekursiv
+            for idx in range(item.childCount()):
+                child = item.child(idx)
+                if child:
+                    _process_item(child)
+        
+        # Verarbeite alle Top-Level-Items
+        for idx in range(self.surface_tree.topLevelItemCount()):
+            top_item = self.surface_tree.topLevelItem(idx)
+            if top_item:
+                _process_item(top_item)
 
     def _get_surface_group(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
         if not group_id or not self.surface_manager:
@@ -510,11 +619,23 @@ class SurfaceDockWidget(QDockWidget):
             if self.surface_manager:
                 self.surface_manager.set_surface_group_enabled(group_id, enabled)
             self._apply_group_check_state(item, column, enabled)
+            
+            # 🎯 Trigger Calc/Plot Update: Enable-Status der Gruppe ändert sich
+            # (Enable-Status-Änderung einer Gruppe beeinflusst alle Surfaces in der Gruppe)
+            if hasattr(self.main_window, "draw_plots"):
+                if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
         elif column == 2:
             hidden = item.checkState(2) == Qt.Checked
             if self.surface_manager:
                 self.surface_manager.set_surface_group_hidden(group_id, hidden)
             self._apply_group_check_state(item, column, hidden)
+            
+            # 🎯 Trigger Calc/Plot Update: Hide-Status der Gruppe ändert sich
+            # (Hide-Status-Änderung einer Gruppe beeinflusst alle Surfaces in der Gruppe)
+            if hasattr(self.main_window, "draw_plots"):
+                if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _apply_group_check_state(self, item: QTreeWidgetItem, column: int, state: bool) -> None:
         previous_loading = self._loading_surfaces

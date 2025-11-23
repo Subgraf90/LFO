@@ -1,6 +1,6 @@
-from PyQt5.QtWidgets import QComboBox, QDockWidget, QWidget, QVBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QCheckBox, QPushButton, QHBoxLayout, QTabWidget, QSizePolicy, QGridLayout, QLabel, QFrame, QSpacerItem, QLineEdit, QMenu
+from PyQt5.QtWidgets import QComboBox, QDockWidget, QWidget, QVBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QCheckBox, QPushButton, QHBoxLayout, QTabWidget, QSizePolicy, QGridLayout, QLabel, QFrame, QSpacerItem, QLineEdit, QMenu, QAbstractItemView
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIntValidator, QDoubleValidator
+from PyQt5.QtGui import QIntValidator, QDoubleValidator, QDragEnterEvent, QDropEvent
 
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QScrollArea, QCheckBox, QFrame, QGridLayout, QTreeWidgetItem, QComboBox, QDoubleSpinBox, QTabWidget)
@@ -240,6 +240,153 @@ class Sources(ModuleBase):
             # TreeWidget für die Arrays
             self.sources_tree_widget = QTreeWidget()
             self.sources_tree_widget.setHeaderLabels(["Source Name", "Mute", "Hide", ""])
+            
+            # Überschreibe dropEvent für Drag & Drop Funktionalität
+            original_dropEvent = self.sources_tree_widget.dropEvent
+            original_startDrag = self.sources_tree_widget.startDrag
+            _pending_drag_items = []
+            
+            def custom_startDrag(supported_actions):
+                """Speichert die ausgewählten Items vor dem Drag"""
+                _pending_drag_items.clear()
+                _pending_drag_items.extend(self.sources_tree_widget.selectedItems())
+                original_startDrag(supported_actions)
+            
+            def custom_dropEvent(event):
+                """Behandelt Drop-Events für Drag & Drop mit Gruppen"""
+                drop_item = self.sources_tree_widget.itemAt(event.pos())
+                indicator_pos = self.sources_tree_widget.dropIndicatorPosition()
+                
+                # Nur Source Items können verschoben werden (keine Gruppen)
+                dragged_items = [item for item in _pending_drag_items 
+                                if item.data(0, Qt.UserRole + 1) != "group"]
+                
+                if not dragged_items:
+                    event.ignore()
+                    _pending_drag_items.clear()
+                    return
+                
+                # Prüfe, ob auf eine Gruppe gedroppt wird
+                if drop_item and drop_item.data(0, Qt.UserRole + 1) == "group":
+                    # Droppe auf Gruppe - füge Items als Childs hinzu
+                    for item in dragged_items:
+                        # Entferne Item von altem Parent
+                        old_parent = item.parent()
+                        if old_parent:
+                            old_parent.removeChild(item)
+                        else:
+                            index = self.sources_tree_widget.indexOfTopLevelItem(item)
+                            if index != -1:
+                                self.sources_tree_widget.takeTopLevelItem(index)
+                        
+                        # Füge Item zur Gruppe hinzu
+                        drop_item.addChild(item)
+                        drop_item.setExpanded(True)
+                        
+                        # Stelle sicher, dass Checkboxen für das Item existieren
+                        self.ensure_source_checkboxes(item)
+                    
+                    # Verbinde Checkboxen der Gruppe neu
+                    mute_checkbox = self.sources_tree_widget.itemWidget(drop_item, 1)
+                    hide_checkbox = self.sources_tree_widget.itemWidget(drop_item, 2)
+                    if mute_checkbox:
+                        try:
+                            mute_checkbox.stateChanged.disconnect()
+                        except:
+                            pass
+                        mute_checkbox.stateChanged.connect(lambda state, g_item=drop_item: self.on_group_mute_changed(g_item, state))
+                    if hide_checkbox:
+                        try:
+                            hide_checkbox.stateChanged.disconnect()
+                        except:
+                            pass
+                        hide_checkbox.stateChanged.connect(lambda state, g_item=drop_item: self.on_group_hide_changed(g_item, state))
+                    
+                    event.accept()
+                    event.setDropAction(Qt.MoveAction)
+                elif indicator_pos == QAbstractItemView.OnItem and drop_item:
+                    # Droppe auf ein Source Item - füge zur Parent-Gruppe hinzu oder erstelle neue Gruppe
+                    parent = drop_item.parent()
+                    if parent and parent.data(0, Qt.UserRole + 1) == "group":
+                        # Füge zur bestehenden Gruppe hinzu
+                        for item in dragged_items:
+                            old_parent = item.parent()
+                            if old_parent:
+                                old_parent.removeChild(item)
+                            else:
+                                index = self.sources_tree_widget.indexOfTopLevelItem(item)
+                                if index != -1:
+                                    self.sources_tree_widget.takeTopLevelItem(index)
+                            parent.addChild(item)
+                            # Stelle sicher, dass Checkboxen für das Item existieren
+                            self.ensure_source_checkboxes(item)
+                        event.accept()
+                        event.setDropAction(Qt.MoveAction)
+                    else:
+                        # Erstelle neue Gruppe und füge beide Items hinzu
+                        group_count = sum(1 for i in range(self.sources_tree_widget.topLevelItemCount()) 
+                                         if self.sources_tree_widget.topLevelItem(i) and 
+                                         self.sources_tree_widget.topLevelItem(i).data(0, Qt.UserRole + 1) == "group")
+                        group_name = f"Group {group_count + 1}"
+                        group_item = QTreeWidgetItem(self.sources_tree_widget, [group_name])
+                        group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
+                        group_item.setData(0, Qt.UserRole + 1, "group")
+                        group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+                        
+                        # Erstelle Checkboxen für Gruppe
+                        mute_checkbox = QCheckBox()
+                        mute_checkbox.setChecked(False)
+                        hide_checkbox = QCheckBox()
+                        hide_checkbox.setChecked(False)
+                        
+                        # Verbinde Checkboxen
+                        mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
+                        hide_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_hide_changed(g_item, state))
+                        
+                        self.sources_tree_widget.setItemWidget(group_item, 1, mute_checkbox)
+                        self.sources_tree_widget.setItemWidget(group_item, 2, hide_checkbox)
+                        
+                        # Füge alle Items zur neuen Gruppe hinzu
+                        for item in dragged_items:
+                            old_parent = item.parent()
+                            if old_parent:
+                                old_parent.removeChild(item)
+                            else:
+                                index = self.sources_tree_widget.indexOfTopLevelItem(item)
+                                if index != -1:
+                                    self.sources_tree_widget.takeTopLevelItem(index)
+                            group_item.addChild(item)
+                            # Stelle sicher, dass Checkboxen für das Item existieren
+                            self.ensure_source_checkboxes(item)
+                        
+                        # Füge auch das Ziel-Item hinzu, wenn es noch nicht in der Liste ist
+                        if drop_item not in dragged_items:
+                            old_parent = drop_item.parent()
+                            if old_parent:
+                                old_parent.removeChild(drop_item)
+                            else:
+                                index = self.sources_tree_widget.indexOfTopLevelItem(drop_item)
+                                if index != -1:
+                                    self.sources_tree_widget.takeTopLevelItem(index)
+                            group_item.addChild(drop_item)
+                            # Stelle sicher, dass Checkboxen für das Item existieren
+                            self.ensure_source_checkboxes(drop_item)
+                        
+                        group_item.setExpanded(True)
+                        event.accept()
+                        event.setDropAction(Qt.MoveAction)
+                else:
+                    # Standard Drag & Drop Verhalten (zwischen Items)
+                    original_dropEvent(event)
+                
+                # Passe Spaltenbreite an den Inhalt an
+                self.adjust_column_width_to_content()
+                
+                _pending_drag_items.clear()
+            
+            # Überschreibe die Methoden
+            self.sources_tree_widget.startDrag = custom_startDrag
+            self.sources_tree_widget.dropEvent = custom_dropEvent
             # Schriftgröße im TreeWidget auf 11pt setzen
             tree_font = QtGui.QFont()
             tree_font.setPointSize(11)
@@ -253,13 +400,23 @@ class Sources(ModuleBase):
             self.sources_tree_widget.setColumnWidth(2, 35)   # Hide - schmaler
             self.sources_tree_widget.setColumnWidth(3, 20)   # Farb-Quadrat
             header.setStretchLastSection(False)  # Letzte Spalte nicht strecken
-            header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)  # Name streckt sich
+            header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)  # Name kann angepasst werden
             header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)    # Mute bleibt fix
             header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)    # Hide bleibt fix
             header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)    # Color bleibt fix
             
-            # Entferne die Indentation am linken Rand
-            self.sources_tree_widget.setIndentation(0)
+            # Scrollbar aktivieren, wenn Inhalt breiter als Widget
+            self.sources_tree_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            
+            # Indentation für Gruppen aktivieren
+            self.sources_tree_widget.setIndentation(15)
+            
+            # Drag & Drop aktivieren
+            self.sources_tree_widget.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+            self.sources_tree_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            self.sources_tree_widget.setDragEnabled(True)
+            self.sources_tree_widget.setAcceptDrops(True)
+            self.sources_tree_widget.setDropIndicatorShown(True)
             
             self.sources_tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
             self.sources_tree_widget.customContextMenuRequested.connect(self.show_context_menu)
@@ -2051,6 +2208,9 @@ class Sources(ModuleBase):
             self.sources_tree_widget.setCurrentItem(last_selected_item)
             # Aktualisiere den Plot nur einmal am Ende
             self.main_window.update_speaker_array_calculations()
+        
+        # Passe Spaltenbreite an den Inhalt an
+        self.adjust_column_width_to_content()
     
 
     # @measure_time
@@ -2357,6 +2517,9 @@ class Sources(ModuleBase):
         # 🎯 Plot aktualisieren nach Array-Erstellung
         if hasattr(self.main_window, "update_speaker_array_calculations"):
             self.main_window.update_speaker_array_calculations()
+        
+        # Passe Spaltenbreite an den Inhalt an
+        self.adjust_column_width_to_content()
 
     def add_flown(self):
         """Fügt ein neues Flown-Array hinzu"""
@@ -2444,6 +2607,9 @@ class Sources(ModuleBase):
                 self.tab_widget.setTabEnabled(i, False)
                 
         self.main_window.update_speaker_array_calculations()
+        
+        # Passe Spaltenbreite an den Inhalt an
+        self.adjust_column_width_to_content()
 
 
 
@@ -2485,14 +2651,22 @@ class Sources(ModuleBase):
         selected_item = self.sources_tree_widget.selectedItems()
         if selected_item:
             item = selected_item[0]
+            
+            # Prüfe, ob es sich um eine Gruppe handelt
+            if item.data(0, Qt.UserRole + 1) == "group":
+                self.delete_group(item)
+                return
+            
             array_id = item.data(0, Qt.UserRole)
             
-            # Entferne das Item aus dem TreeWidget
-            index = self.sources_tree_widget.indexOfTopLevelItem(item)
-            if index != -1:
-                self.sources_tree_widget.takeTopLevelItem(index)
+            # Entferne das Item aus dem TreeWidget (berücksichtigt Parent-Gruppen)
+            parent = item.parent()
+            if parent:
+                parent.removeChild(item)
             else:
-                item.parent().takeChild(item.parent().indexOfChild(item))
+                index = self.sources_tree_widget.indexOfTopLevelItem(item)
+                if index != -1:
+                    self.sources_tree_widget.takeTopLevelItem(index)
             
             # Entferne das entsprechende speakerspecs-Objekt und Daten
             found_instance = None
@@ -2606,6 +2780,9 @@ class Sources(ModuleBase):
                 
                 # Aktualisiere die Anzeige
                 self.main_window.update_speaker_array_calculations()
+                
+                # Passe Spaltenbreite an den Inhalt an
+                self.adjust_column_width_to_content()
 
 
             
@@ -2650,6 +2827,9 @@ class Sources(ModuleBase):
                     # 🎯 Plot aktualisieren wenn Array-Name geändert wird
                     if hasattr(self.main_window, "update_speaker_array_calculations"):
                         self.main_window.update_speaker_array_calculations()
+                    
+                    # Passe Spaltenbreite an den Inhalt an
+                    self.adjust_column_width_to_content()
         except Exception as e:
             print(f"Fehler beim Ändern des Array-Namens: {e}")
 
@@ -3788,27 +3968,403 @@ class Sources(ModuleBase):
     def show_context_menu(self, position):
         """Zeigt das Kontextmenü an der Mausposition"""
         item = self.sources_tree_widget.itemAt(position)
+        context_menu = QMenu()
+        
         if item:
-            context_menu = QMenu()
+            # Prüfe, ob es sich um eine Gruppe handelt
+            is_group = item.data(0, Qt.UserRole + 1) == "group"  # UserRole+1 als Marker für Gruppen
             
-            # Menüeinträge erstellen
-            duplicate_action = context_menu.addAction("Duplicate")
-            rename_action = context_menu.addAction("Rename")
+            if is_group:
+                # Kontextmenü für Gruppen
+                duplicate_group_action = context_menu.addAction("Duplicate Group")
+                rename_action = context_menu.addAction("Rename")
+                context_menu.addSeparator()
+                delete_group_action = context_menu.addAction("Delete Group")
+                
+                duplicate_group_action.triggered.connect(lambda: self.duplicate_group(item))
+                rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
+                delete_group_action.triggered.connect(lambda: self.delete_group(item))
+            else:
+                # Kontextmenü für Source Items
+                duplicate_action = context_menu.addAction("Duplicate")
+                rename_action = context_menu.addAction("Rename")
+                context_menu.addSeparator()
+                change_color_action = context_menu.addAction("Change Color")
+                context_menu.addSeparator()
+                delete_action = context_menu.addAction("Delete")
+                
+                # Verbinde Aktionen mit Funktionen
+                duplicate_action.triggered.connect(lambda: self.duplicate_array(item))
+                rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
+                change_color_action.triggered.connect(lambda: self.change_array_color(item))
+                delete_action.triggered.connect(lambda: self.delete_array())
+        else:
+            # Kontextmenü für leeren Bereich
+            create_group_action = context_menu.addAction("Create Group")
             context_menu.addSeparator()
-            change_color_action = context_menu.addAction("Change Color")
-            context_menu.addSeparator()
-            delete_action = context_menu.addAction("Delete")
+            create_stack_action = context_menu.addAction("Create Stacked Array")
+            create_flown_action = context_menu.addAction("Create Flown Array")
             
-            # Verbinde Aktionen mit Funktionen
-            duplicate_action.triggered.connect(lambda: self.duplicate_array(item))
-            rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
-            change_color_action.triggered.connect(lambda: self.change_array_color(item))  # Neue Verbindung
-            delete_action.triggered.connect(lambda: self.delete_array())
-            
-            # Zeige Menü an Mausposition
-            context_menu.exec_(self.sources_tree_widget.viewport().mapToGlobal(position))
+            create_group_action.triggered.connect(lambda: self.create_group())
+            create_stack_action.triggered.connect(lambda: self.add_stack())
+            create_flown_action.triggered.connect(lambda: self.add_flown())
+        
+        # Zeige Menü an Mausposition
+        context_menu.exec_(self.sources_tree_widget.viewport().mapToGlobal(position))
 
 
+
+    def ensure_source_checkboxes(self, item):
+        """
+        Stellt sicher, dass Checkboxen für ein Source-Item existieren.
+        Erstellt sie, falls sie noch nicht vorhanden sind.
+        
+        Args:
+            item: Das TreeWidgetItem für das Source-Array
+        """
+        # Prüfe, ob es sich um ein Source-Item handelt (keine Gruppe)
+        if item.data(0, Qt.UserRole + 1) == "group":
+            return
+        
+        array_id = item.data(0, Qt.UserRole)
+        if array_id is None:
+            return
+        
+        # Prüfe, ob Checkboxen bereits existieren
+        mute_checkbox = self.sources_tree_widget.itemWidget(item, 1)
+        hide_checkbox = self.sources_tree_widget.itemWidget(item, 2)
+        
+        # Erstelle Checkboxen, falls sie nicht existieren
+        if not mute_checkbox:
+            mute_checkbox = QCheckBox()
+            speaker_array = self.settings.get_speaker_array(array_id)
+            if speaker_array:
+                mute_checkbox.setChecked(speaker_array.mute)
+            else:
+                mute_checkbox.setChecked(False)
+            mute_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_mute_state(id, state))
+            self.sources_tree_widget.setItemWidget(item, 1, mute_checkbox)
+        
+        if not hide_checkbox:
+            hide_checkbox = QCheckBox()
+            speaker_array = self.settings.get_speaker_array(array_id)
+            if speaker_array:
+                hide_checkbox.setChecked(speaker_array.hide)
+            else:
+                hide_checkbox.setChecked(False)
+            hide_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_hide_state(id, state))
+            self.sources_tree_widget.setItemWidget(item, 2, hide_checkbox)
+        
+        # Stelle sicher, dass auch das Farb-Quadrat existiert
+        color_label = self.sources_tree_widget.itemWidget(item, 3)
+        if not color_label:
+            speaker_array = self.settings.get_speaker_array(array_id)
+            if speaker_array and hasattr(speaker_array, 'color') and speaker_array.color:
+                color_label = QtWidgets.QLabel()
+                color_label.setFixedSize(20, 20)
+                color_label.setStyleSheet(f"background-color: {speaker_array.color}; border: 1px solid gray;")
+                self.sources_tree_widget.setItemWidget(item, 3, color_label)
+    
+    def adjust_column_width_to_content(self):
+        """
+        Passt die Breite der ersten Spalte (Source Name) an den längsten Namen an.
+        Berücksichtigt sowohl Top-Level-Items als auch Child-Items (in Gruppen).
+        """
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return
+        
+        font_metrics = self.sources_tree_widget.fontMetrics()
+        max_width = 0
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            item = self.sources_tree_widget.topLevelItem(i)
+            if item:
+                # Berechne Textbreite für dieses Item
+                text = item.text(0)
+                # Berücksichtige Indentation für Child-Items
+                indent = 0
+                if item.parent():
+                    indent = self.sources_tree_widget.indentation()
+                # Verwende boundingRect für Textbreitenberechnung
+                text_width = font_metrics.boundingRect(text).width() + indent + 20  # 20px Padding
+                max_width = max(max_width, text_width)
+                
+                # Durchlaufe alle Child-Items (in Gruppen)
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    if child:
+                        child_text = child.text(0)
+                        # Child-Items haben zusätzliche Indentation
+                        child_indent = self.sources_tree_widget.indentation() * 2  # Indentation für Parent + Child
+                        child_text_width = font_metrics.boundingRect(child_text).width() + child_indent + 20
+                        max_width = max(max_width, child_text_width)
+        
+        # Setze die Spaltenbreite (mindestens 100px, maximal keine Begrenzung)
+        if max_width > 0:
+            self.sources_tree_widget.setColumnWidth(0, max(max_width, 100))
+
+    def create_group(self):
+        """Erstellt eine neue Gruppe im TreeWidget"""
+        # Zähle bestehende Gruppen
+        group_count = 0
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            item = self.sources_tree_widget.topLevelItem(i)
+            if item and item.data(0, Qt.UserRole + 1) == "group":
+                group_count += 1
+        
+        group_name = f"Group {group_count + 1}"
+        
+        # Erstelle neues Group Item
+        group_item = QTreeWidgetItem(self.sources_tree_widget, [group_name])
+        group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
+        group_item.setData(0, Qt.UserRole + 1, "group")  # Marker für Gruppe
+        group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+        
+        # Erstelle Checkboxen für die Gruppe
+        mute_checkbox = QCheckBox()
+        mute_checkbox.setChecked(False)
+        hide_checkbox = QCheckBox()
+        hide_checkbox.setChecked(False)
+        
+        # Verbinde Checkboxen mit Handler
+        mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
+        hide_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_hide_changed(g_item, state))
+        
+        self.sources_tree_widget.setItemWidget(group_item, 1, mute_checkbox)
+        self.sources_tree_widget.setItemWidget(group_item, 2, hide_checkbox)
+        
+        # Kein Farb-Quadrat für Gruppen
+        group_item.setExpanded(True)
+        
+        # Passe Spaltenbreite an den Inhalt an
+        self.adjust_column_width_to_content()
+        
+        return group_item
+    
+    def delete_group(self, group_item):
+        """Löscht eine Gruppe und alle ihre Childs"""
+        if not group_item:
+            return
+        
+        # Prüfe, ob es wirklich eine Gruppe ist
+        if group_item.data(0, Qt.UserRole + 1) != "group":
+            return
+        
+        # Sammle alle Child-Array-IDs, die gelöscht werden müssen
+        child_array_ids = []
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            array_id = child.data(0, Qt.UserRole)
+            if array_id is not None:
+                child_array_ids.append(array_id)
+        
+        # Entferne alle Childs aus dem TreeWidget
+        while group_item.childCount() > 0:
+            child = group_item.child(0)
+            group_item.removeChild(child)
+        
+        # Entferne die Gruppe selbst
+        parent = group_item.parent()
+        if parent:
+            parent.removeChild(group_item)
+        else:
+            index = self.sources_tree_widget.indexOfTopLevelItem(group_item)
+            if index != -1:
+                self.sources_tree_widget.takeTopLevelItem(index)
+        
+        # Lösche die Arrays aus den Einstellungen
+        for array_id in child_array_ids:
+            # Entferne das entsprechende speakerspecs-Objekt
+            found_instance = None
+            for instance in self.speakerspecs_instance:
+                if instance['id'] == array_id:
+                    found_instance = instance
+                    break
+            
+            if found_instance:
+                self.speakerspecs_instance.remove(found_instance)
+                if 'scroll_area' in found_instance:
+                    found_instance['scroll_area'].setParent(None)
+            
+            # Entferne das Array aus den Einstellungen
+            self.settings.remove_speaker_array(array_id)
+        
+        # Aktualisiere die Berechnungen
+        if child_array_ids:
+            self.main_window.update_speaker_array_calculations()
+        
+        # Passe Spaltenbreite an
+        self.adjust_column_width_to_content()
+    
+    def duplicate_group(self, group_item):
+        """Dupliziert eine Gruppe mit allen ihren Child-Arrays"""
+        if not group_item:
+            return
+        
+        # Prüfe, ob es wirklich eine Gruppe ist
+        if group_item.data(0, Qt.UserRole + 1) != "group":
+            return
+        
+        # Sammle alle Child-Array-IDs
+        child_array_ids = []
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            array_id = child.data(0, Qt.UserRole)
+            if array_id is not None:
+                child_array_ids.append(array_id)
+        
+        if not child_array_ids:
+            return  # Keine Arrays zum Duplizieren
+        
+        # Hole Gruppen-Informationen
+        group_name = group_item.text(0)
+        mute_checkbox = self.sources_tree_widget.itemWidget(group_item, 1)
+        hide_checkbox = self.sources_tree_widget.itemWidget(group_item, 2)
+        group_mute = mute_checkbox.isChecked() if mute_checkbox else False
+        group_hide = hide_checkbox.isChecked() if hide_checkbox else False
+        
+        # Dupliziere alle Arrays in der Gruppe
+        duplicated_array_ids = []
+        duplicated_items = []
+        
+        for array_id in child_array_ids:
+            original_array = self.settings.get_speaker_array(array_id)
+            if not original_array:
+                continue
+            
+            # Erstelle neue Array-ID
+            new_array_id = 1
+            while new_array_id in self.settings.get_all_speaker_array_ids():
+                new_array_id += 1
+            
+            # Dupliziere das Array
+            self.settings.duplicate_speaker_array(array_id, new_array_id)
+            new_array = self.settings.get_speaker_array(new_array_id)
+            new_array.name = f"copy of {original_array.name}"
+            
+            duplicated_array_ids.append(new_array_id)
+            
+            # Erstelle neues TreeWidget Item
+            new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
+            new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
+            new_array_item.setData(0, Qt.UserRole, new_array_id)
+            new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+            
+            # Erstelle Checkboxen
+            mute_checkbox = QCheckBox()
+            mute_checkbox.setChecked(new_array.mute)
+            hide_checkbox = QCheckBox()
+            hide_checkbox.setChecked(new_array.hide)
+            self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
+            self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
+            
+            # Farb-Quadrat
+            if hasattr(new_array, 'color') and new_array.color:
+                color_label = QtWidgets.QLabel()
+                color_label.setFixedSize(20, 20)
+                color_label.setStyleSheet(f"background-color: {new_array.color}; border: 1px solid gray;")
+                self.sources_tree_widget.setItemWidget(new_array_item, 3, color_label)
+            
+            mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
+            hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
+            
+            # Erstelle neue Speakerspecs-Instanz
+            speakerspecs_instance = self.create_speakerspecs_instance(new_array_id)
+            self.init_ui(speakerspecs_instance, self.speaker_tab_layout)
+            self.add_speakerspecs_instance(new_array_id, speakerspecs_instance)
+            
+            duplicated_items.append(new_array_item)
+        
+        # Erstelle neue Gruppe
+        group_count = sum(1 for i in range(self.sources_tree_widget.topLevelItemCount()) 
+                         if self.sources_tree_widget.topLevelItem(i) and 
+                         self.sources_tree_widget.topLevelItem(i).data(0, Qt.UserRole + 1) == "group")
+        new_group_name = f"copy of {group_name}"
+        
+        new_group_item = QTreeWidgetItem(self.sources_tree_widget, [new_group_name])
+        new_group_item.setFlags(new_group_item.flags() | Qt.ItemIsEditable)
+        new_group_item.setData(0, Qt.UserRole + 1, "group")
+        new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+        
+        # Erstelle Checkboxen für neue Gruppe
+        new_mute_checkbox = QCheckBox()
+        new_mute_checkbox.setChecked(group_mute)
+        new_hide_checkbox = QCheckBox()
+        new_hide_checkbox.setChecked(group_hide)
+        
+        # Verbinde Checkboxen
+        new_mute_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_mute_changed(g_item, state))
+        new_hide_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_hide_changed(g_item, state))
+        
+        self.sources_tree_widget.setItemWidget(new_group_item, 1, new_mute_checkbox)
+        self.sources_tree_widget.setItemWidget(new_group_item, 2, new_hide_checkbox)
+        
+        # Füge alle duplizierten Items zur neuen Gruppe hinzu
+        for array_item in duplicated_items:
+            new_group_item.addChild(array_item)
+            # Stelle sicher, dass Checkboxen existieren
+            self.ensure_source_checkboxes(array_item)
+        
+        new_group_item.setExpanded(True)
+        
+        # Passe Spaltenbreite an
+        self.adjust_column_width_to_content()
+        
+        # Aktualisiere Berechnungen
+        self.main_window.update_speaker_array_calculations()
+    
+    def on_group_mute_changed(self, group_item, state):
+        """Handler für Mute-Checkbox von Gruppen - setzt Mute für alle Childs"""
+        if not group_item:
+            return
+        
+        mute_value = (state == Qt.Checked)
+        
+        # Setze Mute für alle Child-Arrays
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            array_id = child.data(0, Qt.UserRole)
+            if array_id is not None:
+                speaker_array = self.settings.get_speaker_array(array_id)
+                if speaker_array:
+                    speaker_array.mute = mute_value
+                    
+                    # Aktualisiere auch die Checkbox im Child
+                    child_mute_checkbox = self.sources_tree_widget.itemWidget(child, 1)
+                    if child_mute_checkbox:
+                        child_mute_checkbox.blockSignals(True)
+                        child_mute_checkbox.setChecked(mute_value)
+                        child_mute_checkbox.blockSignals(False)
+        
+        # Aktualisiere Berechnungen
+        self.main_window.update_speaker_array_calculations()
+    
+    def on_group_hide_changed(self, group_item, state):
+        """Handler für Hide-Checkbox von Gruppen - setzt Hide für alle Childs"""
+        if not group_item:
+            return
+        
+        hide_value = (state == Qt.Checked)
+        
+        # Setze Hide für alle Child-Arrays
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            array_id = child.data(0, Qt.UserRole)
+            if array_id is not None:
+                speaker_array = self.settings.get_speaker_array(array_id)
+                if speaker_array:
+                    speaker_array.hide = hide_value
+                    
+                    # Aktualisiere auch die Checkbox im Child
+                    child_hide_checkbox = self.sources_tree_widget.itemWidget(child, 2)
+                    if child_hide_checkbox:
+                        child_hide_checkbox.blockSignals(True)
+                        child_hide_checkbox.setChecked(hide_value)
+                        child_hide_checkbox.blockSignals(False)
+        
+        # Aktualisiere Berechnungen
+        self.main_window.update_speaker_array_calculations()
 
     def change_array_color(self, item):
         """Ändert die Farbe des ausgewählten Arrays"""
@@ -4083,3 +4639,130 @@ class Sources(ModuleBase):
             print(f"Fehler beim Ändern des Winkels: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    def save_groups_structure(self):
+        """
+        Speichert die Gruppen-Struktur aus dem TreeWidget in settings.speaker_array_groups.
+        """
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return
+        
+        # Lösche alte Gruppen-Struktur
+        self.settings.speaker_array_groups = {}
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            item = self.sources_tree_widget.topLevelItem(i)
+            if item and item.data(0, Qt.UserRole + 1) == "group":
+                # Es ist eine Gruppe
+                group_id = f"group_{i}"  # Eindeutige ID für die Gruppe
+                group_name = item.text(0)
+                
+                # Hole Mute/Hide Status aus den Checkboxen
+                mute_checkbox = self.sources_tree_widget.itemWidget(item, 1)
+                hide_checkbox = self.sources_tree_widget.itemWidget(item, 2)
+                mute = mute_checkbox.isChecked() if mute_checkbox else False
+                hide = hide_checkbox.isChecked() if hide_checkbox else False
+                
+                # Sammle alle Child-Array-IDs
+                child_array_ids = []
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    array_id = child.data(0, Qt.UserRole)
+                    if array_id is not None:
+                        child_array_ids.append(array_id)
+                
+                # Speichere Gruppen-Information
+                self.settings.speaker_array_groups[group_id] = {
+                    'name': group_name,
+                    'mute': mute,
+                    'hide': hide,
+                    'child_array_ids': child_array_ids
+                }
+    
+    def load_groups_structure(self):
+        """
+        Lädt die Gruppen-Struktur aus settings.speaker_array_groups und stellt sie im TreeWidget wieder her.
+        """
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return
+        
+        if not hasattr(self.settings, 'speaker_array_groups') or not self.settings.speaker_array_groups:
+            return
+        
+        # Blockiere Signale während des Ladens
+        self.sources_tree_widget.blockSignals(True)
+        
+        try:
+            # Erstelle Gruppen und füge Childs hinzu
+            for group_id, group_data in self.settings.speaker_array_groups.items():
+                group_name = group_data.get('name', f'Group')
+                child_array_ids = group_data.get('child_array_ids', [])
+                
+                # Erstelle Gruppe
+                group_item = QTreeWidgetItem(self.sources_tree_widget, [group_name])
+                group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
+                group_item.setData(0, Qt.UserRole + 1, "group")
+                group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+                
+                # Erstelle Checkboxen für Gruppe
+                mute_checkbox = QCheckBox()
+                mute_checkbox.setChecked(group_data.get('mute', False))
+                hide_checkbox = QCheckBox()
+                hide_checkbox.setChecked(group_data.get('hide', False))
+                
+                # Verbinde Checkboxen
+                mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
+                hide_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_hide_changed(g_item, state))
+                
+                self.sources_tree_widget.setItemWidget(group_item, 1, mute_checkbox)
+                self.sources_tree_widget.setItemWidget(group_item, 2, hide_checkbox)
+                
+                # Füge Child-Arrays zur Gruppe hinzu
+                for array_id in child_array_ids:
+                    # Prüfe zuerst, ob das Array überhaupt noch existiert
+                    if array_id not in self.settings.speaker_arrays:
+                        continue  # Array wurde gelöscht, überspringe es
+                    
+                    # Suche nach dem Array-Item im TreeWidget (sowohl Top-Level als auch in Gruppen)
+                    array_item = None
+                    for i in range(self.sources_tree_widget.topLevelItemCount()):
+                        item = self.sources_tree_widget.topLevelItem(i)
+                        if item:
+                            # Prüfe Top-Level Item
+                            if item.data(0, Qt.UserRole) == array_id:
+                                array_item = item
+                                break
+                            # Prüfe auch Child-Items (falls bereits in einer anderen Gruppe)
+                            for j in range(item.childCount()):
+                                child = item.child(j)
+                                if child and child.data(0, Qt.UserRole) == array_id:
+                                    array_item = child
+                                    break
+                            if array_item:
+                                break
+                    
+                    if array_item:
+                        # Entferne Item von Top-Level
+                        parent = array_item.parent()
+                        if parent:
+                            parent.removeChild(array_item)
+                        else:
+                            index = self.sources_tree_widget.indexOfTopLevelItem(array_item)
+                            if index != -1:
+                                self.sources_tree_widget.takeTopLevelItem(index)
+                        
+                        # Füge zur Gruppe hinzu
+                        group_item.addChild(array_item)
+                        
+                        # Stelle sicher, dass Checkboxen existieren
+                        self.ensure_source_checkboxes(array_item)
+                
+                group_item.setExpanded(True)
+            
+            # Passe Spaltenbreite an
+            self.adjust_column_width_to_content()
+            
+        finally:
+            # Entsperre Signale
+            self.sources_tree_widget.blockSignals(False)

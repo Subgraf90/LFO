@@ -289,13 +289,9 @@ class SPL3DOverlayRenderer:
 
                     if is_active:
                         # Aktives disabled Surface: Rote gestrichelte Umrandung
-                        polyline_render = polyline
-                        try:
-                            polyline_render = polyline.tube(radius=0.02, n_sides=24, capping=True)
-                        except Exception:
-                            pass
+                        # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
                         self._add_overlay_mesh(
-                            polyline_render,
+                            polyline,
                             color='#FF0000',
                             line_width=1.2,
                             opacity=0.60,
@@ -303,17 +299,13 @@ class SPL3DOverlayRenderer:
                             line_repeat=2,
                             category='surfaces',
                             show_vertices=False,
-                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
+                            render_lines_as_tubes=True,  # Polyline mit Tube-Rendering für gestrichelte Linien
                         )
                     else:
                         # Inaktives disabled Surface: Standard gestrichelt, dünn
-                        polyline_render = polyline
-                        try:
-                            polyline_render = polyline.tube(radius=0.015, n_sides=24, capping=True)
-                        except Exception:
-                            pass
+                        # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
                         self._add_overlay_mesh(
-                            polyline_render,
+                            polyline,
                             color=disabled_color,
                             line_width=1.2,
                             opacity=0.6,
@@ -321,7 +313,7 @@ class SPL3DOverlayRenderer:
                             line_repeat=2,
                             category='surfaces',
                             show_vertices=False,
-                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
+                            render_lines_as_tubes=True,  # Polyline mit Tube-Rendering für gestrichelte Linien
                         )
             except (ValueError, TypeError, AttributeError, Exception):
                 continue
@@ -1175,6 +1167,9 @@ class SPL3DOverlayRenderer:
 
         actor = self.plotter.add_mesh(mesh, **kwargs)
         
+        # Prüfe ob Mesh ein Tube-Mesh ist: render_lines_as_tubes=None bedeutet bereits konvertiertes Tube-Mesh
+        is_tube_mesh = render_lines_as_tubes is None
+        
         # Stelle sicher, dass Vertices nicht angezeigt werden
         if not show_vertices and hasattr(actor, 'prop') and actor.prop is not None:
             try:
@@ -1182,10 +1177,19 @@ class SPL3DOverlayRenderer:
                 actor.prop.point_size = 0
             except Exception:  # noqa: BLE001
                 pass
-        if line_pattern is not None and hasattr(actor, 'prop') and actor.prop is not None:
+        
+        # line_pattern nur bei echten Polylines anwenden, nicht bei Tube-Meshes
+        if line_pattern is not None and not is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
             try:
                 actor.prop.line_stipple_pattern = line_pattern
                 actor.prop.line_stipple_repeat_factor = max(1, int(line_repeat))
+            except Exception:  # noqa: BLE001
+                pass
+        elif is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
+            # Für Tube-Meshes: Explizit durchgezogene Linie setzen (kein Stipple-Pattern)
+            try:
+                actor.prop.line_stipple_pattern = 0xFFFF  # Durchgezogen
+                actor.prop.line_stipple_repeat_factor = 1
             except Exception:  # noqa: BLE001
                 pass
         self.overlay_actor_names.append(name)

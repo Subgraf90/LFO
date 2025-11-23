@@ -525,11 +525,17 @@ def build_surface_mesh(
     points = np.column_stack((xm.ravel(), ym.ravel(), zm.ravel()))
 
     # Definiere Quad-Zellen (nur horizontale Deckfläche)
+    # 🎯 CLIPPING: Rendere nur Zellen, die vollständig in der leicht erweiterten Plot-Maske liegen
+    # Die leicht erweiterte Maske erfasst Randpunkte → glatte Ränder ohne Zacken
+    # Strikte Zellprüfung verhindert Überhänge über die Surface-Grenzen hinaus
     face_list: List[int] = []
     for j in range(ny - 1):
         for i in range(nx - 1):
             if mask is not None:
                 cell_mask = mask[j : j + 2, i : i + 2]
+                # 🎯 STRICTE PRÜFUNG: Nur Zellen, die vollständig in der leicht erweiterten Maske liegen
+                # Die leicht erweiterte Maske (1 Pixel Dilatation der strikten Maske) erfasst Randpunkte
+                # für glatte Ränder, ohne über die Surface-Grenzen hinauszugehen
                 if not np.all(cell_mask):
                     continue
             idx0 = j * nx + i
@@ -674,23 +680,81 @@ def _extract_plot_z_coordinates(container, len_y: int, len_x: int) -> Optional[n
 
 
 def _extract_surface_mask(container, len_y: int, len_x: int) -> Optional[np.ndarray]:
+    """
+    🎯 Extrahiert und erweitert die strikte Surface-Maske minimal für glatte Plot-Ränder.
+    Erstellt eine leicht erweiterte Plot-Maske (1 Pixel Dilatation) aus der strikten Maske,
+    um Randzellen zu erfassen, ohne über die Surface-Grenzen hinauszugehen.
+    """
     if container is None or not hasattr(container, "calculation_spl"):
         return None
     calc_spl = getattr(container, "calculation_spl", None)
     if not isinstance(calc_spl, dict):
         return None
-    mask = calc_spl.get("surface_mask")
-    if mask is None:
+    
+    # 🎯 Hole strikte Maske als Basis
+    mask_strict = calc_spl.get("surface_mask_strict")
+    if mask_strict is None:
+        # Fallback auf erweiterte Maske falls strikte nicht verfügbar
+        mask_strict = calc_spl.get("surface_mask")
+    
+    if mask_strict is None:
         return None
+    
     try:
-        mask_arr = np.asarray(mask, dtype=bool)
-        if mask_arr.shape == (len_y, len_x):
-            return mask_arr
-        if mask_arr.size == len_y * len_x:
-            return mask_arr.reshape(len_y, len_x)
+        mask_arr = np.asarray(mask_strict, dtype=bool)
+        if mask_arr.shape != (len_y, len_x):
+            if mask_arr.size == len_y * len_x:
+                mask_arr = mask_arr.reshape(len_y, len_x)
+            else:
+                return None
+        
+        # 🎯 MINIMALE ERWEITERUNG: Erweitere strikte Maske um 1 Pixel für glatte Ränder
+        # Dies erfasst Randzellen, ohne über die Surface-Grenzen hinauszugehen
+        # (die erweiterte Berechnungsmaske ist stärker erweitert)
+        try:
+            from scipy import ndimage
+            # Strukturelement: 3x3-Kreis (erfasst alle 8 Nachbarn)
+            structure = np.array([[1, 1, 1],
+                                  [1, 1, 1],
+                                  [1, 1, 1]], dtype=bool)
+            plot_mask = ndimage.binary_dilation(mask_arr, structure=structure)
+        except ImportError:
+            # Fallback: Manuelle minimale Erweiterung
+            plot_mask = _dilate_mask_minimal(mask_arr)
+        
+        return plot_mask
     except Exception:
         return None
-    return None
+
+
+def _dilate_mask_minimal(mask: np.ndarray) -> np.ndarray:
+    """
+    Manuelle minimale morphologische Dilatation (Fallback wenn scipy nicht verfügbar).
+    Erweitert die Maske um 1 Pixel in alle Richtungen.
+    """
+    dilated = mask.copy()
+    ny, nx = mask.shape
+    
+    # Erweitere in alle 8 Richtungen
+    for di in [-1, 0, 1]:
+        for dj in [-1, 0, 1]:
+            if di == 0 and dj == 0:
+                continue
+            # Verschiebe Maske und kombiniere
+            shifted = np.zeros_like(mask)
+            i_start = max(0, -di)
+            i_end = min(nx, nx - di)
+            j_start = max(0, -dj)
+            j_end = min(ny, ny - dj)
+            
+            if i_start < i_end and j_start < j_end:
+                shifted[j_start:j_end, i_start:i_end] = mask[
+                    j_start + dj:j_end + dj,
+                    i_start + di:i_end + di
+                ]
+            dilated = dilated | shifted
+    
+    return dilated
 
 
 def _expand_axis_for_plot(

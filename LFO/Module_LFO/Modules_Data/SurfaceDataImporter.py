@@ -25,6 +25,7 @@ class SurfaceDataImporter:
         self._container = container  # Reserviert für künftige Integrationen
         self.group_manager = group_manager
         self._group_cache: Dict[str, str] = {}
+        self._block_tag_map: Dict[str, str] = {}  # Mapping von Block-Namen zu Tags
 
     def execute(self) -> bool | None:
         """
@@ -191,21 +192,170 @@ class SurfaceDataImporter:
         self._log_dxf_debug_info(file_path, doc, msp)
         group_lookup = self._build_dxf_group_lookup(doc)
         layer_colors = self._build_layer_color_lookup(doc, ezdxf)
+        
+        # Analysiere Tags/Attribute in der DXF-Datei
+        self._analyze_dxf_tags(doc, msp)
 
         surfaces: Dict[str, SurfaceDefinition] = {}
         id_counters: Dict[str, int] = {}
+        
+        logger = logging.getLogger(__name__)
+        entity_count = 0
+        processed_count = 0
+        skipped_count = 0
+        entity_type_stats = Counter()  # Statistik welche Entity-Typen verarbeitet werden
 
         for entity, transform in self._iter_surface_entities(msp):
+            entity_count += 1
+            dxftype = entity.dxftype()
+            layer = getattr(entity.dxf, "layer", "unbekannt")
+            
             points = self._extract_points_from_entity(entity, transform)
 
             if not points:
+                logger.debug(
+                    "Entity %d: %s auf Layer '%s' übersprungen (keine Punkte extrahiert)",
+                    entity_count, dxftype, layer
+                )
+                entity_type_stats[f"{dxftype}_keine_punkte"] += 1
+                skipped_count += 1
                 self._log_skipped_entity(entity)
                 continue
+            
+            # LINE-Entities haben nur 2 Punkte - keine Fläche, überspringen
+            if dxftype == "LINE" and len(points) == 2:
+                start = points[0]
+                end = points[1]
+                logger.info(
+                    "Entity %d: LINE auf Layer '%s' übersprungen (nur 2 Punkte, keine Fläche)",
+                    entity_count, layer
+                )
+                logger.info(
+                    "  Start: (%.3f, %.3f, %.3f) -> Ende: (%.3f, %.3f, %.3f)",
+                    start.get("x", 0), start.get("y", 0), start.get("z", 0),
+                    end.get("x", 0), end.get("y", 0), end.get("z", 0)
+                )
+                entity_type_stats["LINE_übersprungen"] += 1
+                skipped_count += 1
+                continue
+            
+            # Mindestens 3 Punkte für eine Fläche erforderlich
+            # (Auch offene Polylines können als Flächen verwendet werden)
+            if len(points) < 3:
+                logger.info(
+                    "Entity %d: %s auf Layer '%s' übersprungen (nur %d Punkte, mindestens 3 erforderlich)",
+                    entity_count, dxftype, layer, len(points)
+                )
+                entity_type_stats[f"{dxftype}_zu_wenig_punkte"] += 1
+                skipped_count += 1
+                continue
+            
+            # Prüfe ob geschlossen (für Polylines)
+            is_closed = self._is_entity_closed(entity, points)
+            
+            # Prüfe auch, ob die Fläche nahezu geschlossen ist (erster und letzter Punkt sehr nah)
+            if not is_closed and len(points) >= 3:
+                first = points[0]
+                last = points[-1]
+                tolerance = 0.01  # 1cm Toleranz für nahezu geschlossene Flächen
+                dx = abs(first.get("x", 0) - last.get("x", 0))
+                dy = abs(first.get("y", 0) - last.get("y", 0))
+                dz = abs(first.get("z", 0) - last.get("z", 0))
+                distance = (dx**2 + dy**2 + dz**2)**0.5
+                if distance < tolerance:
+                    is_closed = True
+                    logger.info(
+                        "Entity %d: %s auf Layer '%s' als nahezu geschlossen erkannt (Abstand: %.4f)",
+                        entity_count, dxftype, layer, distance
+                    )
+            
+            # Wenn geschlossen, aber erster und letzter Punkt nicht identisch, schließe die Fläche
+            if is_closed and len(points) >= 3:
+                first = points[0]
+                last = points[-1]
+                tolerance = 1e-6
+                dx = abs(first.get("x", 0) - last.get("x", 0))
+                dy = abs(first.get("y", 0) - last.get("y", 0))
+                dz = abs(first.get("z", 0) - last.get("z", 0))
+                if dx >= tolerance or dy >= tolerance or dz >= tolerance:
+                    # Füge ersten Punkt am Ende hinzu, um zu schließen
+                    points.append(first.copy())
+            
+            processed_count += 1
+            entity_type_stats[f"{dxftype}_verarbeitet"] += 1
+            
+            # Detaillierte Koordinaten-Ausgabe
+            logger.info(
+                "Entity %d: %s auf Layer '%s' verarbeitet - %d Punkte, geschlossen=%s",
+                entity_count, dxftype, layer, len(points), is_closed
+            )
+            
+            # Zeige erste und letzte Koordinaten
+            if points:
+                first = points[0]
+                last = points[-1]
+                logger.info(
+                    "  Erster Punkt: (%.3f, %.3f, %.3f)",
+                    first.get("x", 0), first.get("y", 0), first.get("z", 0)
+                )
+                if len(points) > 1:
+                    logger.info(
+                        "  Letzter Punkt: (%.3f, %.3f, %.3f)",
+                        last.get("x", 0), last.get("y", 0), last.get("z", 0)
+                    )
+                if len(points) <= 10:
+                    # Zeige alle Punkte wenn nicht zu viele
+                    logger.info("  Alle Punkte:")
+                    for i, p in enumerate(points):
+                        logger.info(
+                            "    P%d: (%.3f, %.3f, %.3f)",
+                            i+1, p.get("x", 0), p.get("y", 0), p.get("z", 0)
+                        )
+                else:
+                    # Zeige nur erste 3 und letzte 3 Punkte
+                    logger.info("  Erste 3 Punkte:")
+                    for i in range(min(3, len(points))):
+                        p = points[i]
+                        logger.info(
+                            "    P%d: (%.3f, %.3f, %.3f)",
+                            i+1, p.get("x", 0), p.get("y", 0), p.get("z", 0)
+                        )
+                    logger.info("  ... (%d weitere Punkte) ...", len(points) - 6)
+                    logger.info("  Letzte 3 Punkte:")
+                    for i in range(max(0, len(points)-3), len(points)):
+                        p = points[i]
+                        logger.info(
+                            "    P%d: (%.3f, %.3f, %.3f)",
+                            i+1, p.get("x", 0), p.get("y", 0), p.get("z", 0)
+                        )
+            
+            # Spezielle Info für MESH-Entities
+            if dxftype in ("MESH", "POLYLINE") and hasattr(entity, "is_mesh"):
+                logger.info(
+                    "  -> MESH-Entity erkannt (is_mesh=%s)",
+                    getattr(entity, "is_mesh", False)
+                )
 
             dxftype = entity.dxftype()
             base_name = getattr(entity.dxf, "layer", None) or dxftype or "DXF_Surface"
-            group_name = group_lookup.get(entity.dxf.handle)
-            target_group_id = self._ensure_group_for_label(group_name)
+            
+            # Extrahiere Tag/Attribut aus Entity (z.B. "WOOD", "BETON")
+            tag = self._extract_tag_from_entity(entity, doc)
+            
+            # Verwende Tag als Gruppierung, falls vorhanden
+            if tag:
+                logger.info(
+                    "Entity %d: Tag '%s' gefunden für %s auf Layer '%s'",
+                    entity_count, tag, dxftype, layer
+                )
+                target_group_id = self._ensure_group_for_label(tag)
+                # Verwende Tag als Basis-Name, falls Layer nicht aussagekräftig
+                if not base_name or base_name == dxftype:
+                    base_name = tag
+            else:
+                # Fallback auf normale Gruppen-Logik
+                group_name = group_lookup.get(entity.dxf.handle)
+                target_group_id = self._ensure_group_for_label(group_name)
 
             safe_label = base_name.replace(" ", "_")
             id_counters[safe_label] = id_counters.get(safe_label, 0) + 1
@@ -231,6 +381,35 @@ class SurfaceDataImporter:
                 payload,
             )
 
+        # Zusammenfassung
+        logger.info("=" * 80)
+        logger.info("DXF-IMPORT-ZUSAMMENFASSUNG")
+        logger.info("=" * 80)
+        logger.info("Entities gesamt: %d", entity_count)
+        logger.info("Entities verarbeitet: %d", processed_count)
+        logger.info("Entities übersprungen: %d", skipped_count)
+        logger.info("Surfaces erstellt: %d", len(surfaces))
+        
+        # Entity-Typ-Statistik
+        if entity_type_stats:
+            logger.info("\nEntity-Typ-Statistik:")
+            for stat_type, count in sorted(entity_type_stats.items()):
+                logger.info("  %s: %d", stat_type, count)
+        
+        # Zeige welche Entity-Typen geladen wurden
+        if surfaces:
+            logger.info("\nErstellte Surfaces:")
+            for surface_id, surface in surfaces.items():
+                points = getattr(surface, "points", [])
+                group_id = getattr(surface, "group_id", None)
+                name = getattr(surface, "name", surface_id)
+                logger.info(
+                    "  - %s (ID: %s): %d Punkte, Gruppe: %s",
+                    name, surface_id, len(points), group_id or "keine"
+                )
+        
+        logger.info("=" * 80)
+        
         return surfaces
 
     def _log_dxf_debug_info(self, file_path: Path, doc, msp) -> None:
@@ -252,9 +431,173 @@ class SurfaceDataImporter:
                 group_count,
                 top_types or "keine",
             )
+            
+            # Detaillierte Analyse aller Entity-Typen
+            if logger.isEnabledFor(logging.DEBUG):
+                all_types = Counter()
+                for entity in msp:
+                    all_types[entity.dxftype()] += 1
+                logger.debug(
+                    "Alle Entity-Typen im Modelspace: %s",
+                    dict(all_types)
+                )
+            
             self._log_block_summary(doc, logger)
+            
+            # Analysiere geschlossene Polylines in Blöcken
+            self._log_closed_polylines_in_blocks(doc, logger)
+            
+            # Detaillierte Struktur-Analyse
+            self._analyze_dxf_structure(doc, msp, logger)
         except Exception:
             logger.exception("DXF-Debug-Auswertung von '%s' fehlgeschlagen", file_path)
+    
+    def _analyze_dxf_structure(self, doc, msp, logger: logging.Logger) -> None:
+        """Analysiert und erklärt die DXF-Struktur detailliert"""
+        logger.info("=" * 80)
+        logger.info("DXF-STRUKTUR-ANALYSE")
+        logger.info("=" * 80)
+        
+        # 1. Modelspace-Struktur
+        logger.info("\n1. MODELSPACE (Hauptebene):")
+        logger.info("   - Enthält direkte Entities oder INSERT-Referenzen zu Blöcken")
+        insert_count = 0
+        for entity in msp:
+            if entity.dxftype() == "INSERT":
+                insert_count += 1
+                block_name = getattr(entity.dxf, "name", "unbekannt")
+                layer = getattr(entity.dxf, "layer", "unbekannt")
+                insert_point = getattr(entity.dxf, "insert", None)
+                logger.info(f"   - INSERT: Block '{block_name}' auf Layer '{layer}'")
+                if insert_point:
+                    logger.info(f"     Position: ({insert_point.x:.2f}, {insert_point.y:.2f}, {insert_point.z:.2f})")
+        logger.info(f"   Gesamt: {insert_count} INSERT-Entities (Block-Referenzen)")
+        
+        # 2. Block-Struktur
+        logger.info("\n2. BLÖCKE (Block-Definitionen):")
+        blocks = getattr(doc, "blocks", None)
+        if blocks:
+            for block in blocks:
+                if block.name.startswith("*"):  # System-Blöcke überspringen
+                    continue
+                
+                logger.info(f"\n   Block: '{block.name}'")
+                
+                # Analysiere Entities im Block
+                entity_types_in_block = Counter()
+                polyline_count = 0
+                line_count = 0
+                closed_polylines = 0
+                
+                for entity in block:
+                    etype = entity.dxftype()
+                    entity_types_in_block[etype] += 1
+                    
+                    if etype == "POLYLINE":
+                        polyline_count += 1
+                        if hasattr(entity, "is_closed") and entity.is_closed:
+                            closed_polylines += 1
+                        # Zähle Vertices
+                        try:
+                            vertex_count = len(list(entity.vertices))
+                            logger.info(f"     - POLYLINE: {vertex_count} Vertices, geschlossen={entity.is_closed}")
+                        except:
+                            logger.info(f"     - POLYLINE: (Vertices nicht lesbar)")
+                    
+                    elif etype == "LWPOLYLINE":
+                        polyline_count += 1
+                        is_closed = getattr(entity, "closed", False)
+                        if is_closed:
+                            closed_polylines += 1
+                        try:
+                            point_count = len(list(entity.get_points("xy")))
+                            logger.info(f"     - LWPOLYLINE: {point_count} Punkte, geschlossen={is_closed}")
+                        except:
+                            logger.info(f"     - LWPOLYLINE: (Punkte nicht lesbar)")
+                    
+                    elif etype == "LINE":
+                        line_count += 1
+                
+                logger.info(f"     Zusammenfassung: {dict(entity_types_in_block)}")
+                logger.info(f"     Polylines: {polyline_count} (davon {closed_polylines} geschlossen)")
+                logger.info(f"     Linien: {line_count}")
+                
+                # Prüfe Layer der Entities
+                layers_in_block = set()
+                for entity in block:
+                    layer = getattr(entity.dxf, "layer", None)
+                    if layer:
+                        layers_in_block.add(layer)
+                if layers_in_block:
+                    logger.info(f"     Layer: {', '.join(sorted(layers_in_block))}")
+        
+        # 3. Tag-Zuordnung
+        logger.info("\n3. TAG-ZUORDNUNG (Flächen-Kategorisierung):")
+        logger.info("   Tags werden aus folgenden Quellen extrahiert:")
+        logger.info("   a) Layer-Namen (z.B. Layer 'BETON' oder 'WOOD')")
+        logger.info("   b) Block-Namen (wenn Block-Name ein Tag ist)")
+        logger.info("   c) Block-Attribute (ATTRIB-Entities in INSERT-Blöcken)")
+        logger.info("   d) XDATA/AppData (erweiterte Daten)")
+        
+        # 4. Flächen-Definition
+        logger.info("\n4. FLÄCHEN-DEFINITION:")
+        logger.info("   Flächen werden durch folgende Entity-Typen definiert:")
+        logger.info("   - POLYLINE: Geschlossene oder offene Polylinie mit Vertices")
+        logger.info("   - LWPOLYLINE: Leichtgewichtige Polylinie (2D, kann geschlossen sein)")
+        logger.info("   - 3DFACE: Dreieckige Fläche mit 3-4 Eckpunkten")
+        logger.info("   - MESH: Polygon-Mesh mit Vertices und Faces")
+        logger.info("   - SOLID: Gefüllte Fläche (wird als 4-Punkt-Fläche behandelt)")
+        logger.info("\n   Mindestanforderungen für eine Fläche:")
+        logger.info("   - Mindestens 3 Punkte erforderlich")
+        logger.info("   - Geschlossene Polylines werden bevorzugt")
+        logger.info("   - Offene Polylines mit >= 3 Punkten werden auch akzeptiert")
+        
+        # 5. Transformationen
+        logger.info("\n5. TRANSFORMATIONEN (bei INSERT-Entities):")
+        logger.info("   INSERT-Entities können transformiert werden:")
+        logger.info("   - Insertion Point (Verschiebung)")
+        logger.info("   - Skalierung (X, Y, Z)")
+        logger.info("   - Rotation (um Z-Achse)")
+        logger.info("   - Verschachtelte Transformationen werden kombiniert")
+        
+        logger.info("\n" + "=" * 80)
+    
+    def _log_closed_polylines_in_blocks(self, doc, logger: logging.Logger) -> None:
+        """Analysiert geschlossene Polylines in Blöcken"""
+        try:
+            blocks = getattr(doc, "blocks", None)
+            if not blocks:
+                return
+            
+            closed_count = 0
+            open_count = 0
+            line_count = 0
+            
+            for block in blocks:
+                if block.name.startswith("*"):  # System-Blöcke überspringen
+                    continue
+                for entity in block:
+                    dxftype = entity.dxftype()
+                    if dxftype == "LWPOLYLINE":
+                        if getattr(entity, "closed", False):
+                            closed_count += 1
+                        else:
+                            open_count += 1
+                    elif dxftype == "POLYLINE":
+                        if hasattr(entity, "is_closed") and entity.is_closed:
+                            closed_count += 1
+                        else:
+                            open_count += 1
+                    elif dxftype == "LINE":
+                        line_count += 1
+            
+            if closed_count > 0 or open_count > 0 or line_count > 0:
+                logger.info(
+                    "DXF-Blöcke: %d geschlossene Polylines, %d offene Polylines, %d Linien",
+                    closed_count, open_count, line_count
+                )
+        except Exception:
+            logger.exception("Fehler beim Analysieren geschlossener Polylines")
 
     def _log_skipped_entity(self, entity) -> None:
         logger = logging.getLogger(__name__)
@@ -292,10 +635,24 @@ class SurfaceDataImporter:
         points: List[Dict[str, float]] = []
         elevation = float(getattr(entity.dxf, "elevation", 0.0))
         # entity.get_points("xyb") -> (x, y, bulge)
-        for x, y, *_ in entity.get_points("xyb"):
-            points.append(self._make_point(x, y, elevation))
+        try:
+            for x, y, *_ in entity.get_points("xyb"):
+                points.append(self._make_point(x, y, elevation))
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning("Fehler beim Extrahieren von LWPOLYLINE-Punkten: %s", e)
+            return []
 
-        if getattr(entity, "closed", False) and points and points[0] != points[-1]:
+        # Prüfe auf geschlossen - verschiedene Attribute möglich
+        is_closed = False
+        if hasattr(entity, "closed"):
+            is_closed = bool(entity.closed)
+        elif hasattr(entity.dxf, "flags"):
+            # Bit 1 = closed flag
+            flags = getattr(entity.dxf, "flags", 0)
+            is_closed = bool(flags & 1)
+        
+        if is_closed and points and points[0] != points[-1]:
             points.append(points[0].copy())
         return points
 
@@ -381,20 +738,173 @@ class SurfaceDataImporter:
 
     def _extract_polyline_points(self, entity) -> List[Dict[str, float]]:
         points: List[Dict[str, float]] = []
-        for vertex in entity.vertices:
-            x = float(vertex.dxf.x)
-            y = float(vertex.dxf.y)
-            z = float(vertex.dxf.z)
-            points.append(self._make_point(x, y, z))
+        logger = logging.getLogger(__name__)
+        try:
+            # Methode 1: Verwende vertices_with_points() falls verfügbar (ezdxf 0.18+)
+            if hasattr(entity, 'vertices_with_points'):
+                try:
+                    for vertex, point in entity.vertices_with_points():
+                        x, y, z = point
+                        points.append(self._make_point(float(x), float(y), float(z)))
+                except Exception:
+                    pass
+            
+            # Methode 2: Direkt über vertices mit location
+            if not points:
+                try:
+                    elevation = float(getattr(entity.dxf, 'elevation', 0.0))
+                    for vertex in entity.vertices:
+                        # Versuche location-Attribut
+                        if hasattr(vertex.dxf, 'location'):
+                            loc = vertex.dxf.location
+                            x = float(loc.x) if hasattr(loc, 'x') else 0.0
+                            y = float(loc.y) if hasattr(loc, 'y') else 0.0
+                            z = float(loc.z) if hasattr(loc, 'z') else elevation
+                            points.append(self._make_point(x, y, z))
+                        # Fallback: Versuche einzelne Attribute
+                        elif hasattr(vertex, 'dxf'):
+                            x = float(getattr(vertex.dxf, 'x', 0.0))
+                            y = float(getattr(vertex.dxf, 'y', 0.0))
+                            z = float(getattr(vertex.dxf, 'z', elevation))
+                            points.append(self._make_point(x, y, z))
+                except Exception as e1:
+                    logger.debug("Methode 2 fehlgeschlagen: %s", e1)
+            
+            # Methode 3: Verwende flattening() falls verfügbar
+            if not points and hasattr(entity, 'flattening'):
+                try:
+                    flattened = entity.flattening(0.01)  # Toleranz für Kurven
+                    for point in flattened:
+                        if isinstance(point, (tuple, list)) and len(point) >= 2:
+                            x = float(point[0])
+                            y = float(point[1])
+                            z = float(point[2]) if len(point) >= 3 else float(getattr(entity.dxf, 'elevation', 0.0))
+                            points.append(self._make_point(x, y, z))
+                except Exception as e2:
+                    logger.debug("Methode 3 fehlgeschlagen: %s", e2)
+            
+            # Methode 4: Versuche über points() Methode
+            if not points and hasattr(entity, 'points'):
+                try:
+                    for point in entity.points():
+                        if isinstance(point, (tuple, list)) and len(point) >= 2:
+                            x = float(point[0])
+                            y = float(point[1])
+                            z = float(point[2]) if len(point) >= 3 else float(getattr(entity.dxf, 'elevation', 0.0))
+                            points.append(self._make_point(x, y, z))
+                except Exception as e3:
+                    logger.debug("Methode 4 fehlgeschlagen: %s", e3)
 
-        if entity.is_closed and points and points[0] != points[-1]:
-            points.append(points[0].copy())
+            if not points:
+                logger.warning(
+                    "POLYLINE-Entity konnte nicht extrahiert werden - keine Punkte gefunden"
+                )
+            elif entity.is_closed and points and points[0] != points[-1]:
+                points.append(points[0].copy())
+                
+        except Exception as e:
+            logger.warning(
+                "Fehler beim Extrahieren von POLYLINE-Punkten: %s",
+                e
+            )
         return points
 
     def _extract_3dface_points(self, entity) -> List[Dict[str, float]]:
         points: List[Dict[str, float]] = []
-        for x, y, z in entity.points():
-            points.append(self._make_point(x, y, z))
+        try:
+            for x, y, z in entity.points():
+                points.append(self._make_point(x, y, z))
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning("Fehler beim Extrahieren von 3DFACE-Punkten: %s", e)
+        return points
+
+    def _extract_mesh_points(self, entity) -> List[Dict[str, float]]:
+        """Extrahiert Punkte aus einem MESH oder POLYLINE-Mesh"""
+        points: List[Dict[str, float]] = []
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Versuche verschiedene Methoden, um Mesh-Vertices zu extrahieren
+            # Methode 1: Direkt über vertices
+            if hasattr(entity, "vertices"):
+                for vertex in entity.vertices:
+                    try:
+                        if hasattr(vertex, "dxf") and hasattr(vertex.dxf, "location"):
+                            loc = vertex.dxf.location
+                            x = float(loc.x) if hasattr(loc, 'x') else 0.0
+                            y = float(loc.y) if hasattr(loc, 'y') else 0.0
+                            z = float(loc.z) if hasattr(loc, 'z') else 0.0
+                            points.append(self._make_point(x, y, z))
+                        elif hasattr(vertex, "dxf"):
+                            x = float(getattr(vertex.dxf, "x", 0.0))
+                            y = float(getattr(vertex.dxf, "y", 0.0))
+                            z = float(getattr(vertex.dxf, "z", 0.0))
+                            points.append(self._make_point(x, y, z))
+                    except Exception as e:
+                        logger.debug("Fehler beim Extrahieren eines Mesh-Vertices: %s", e)
+                        continue
+            
+            # Methode 2: Über get_mesh_vertex_cache falls vorhanden
+            if not points and hasattr(entity, "get_mesh_vertex_cache"):
+                try:
+                    vertex_cache = entity.get_mesh_vertex_cache()
+                    if vertex_cache:
+                        for vertex in vertex_cache:
+                            if hasattr(vertex, "location"):
+                                loc = vertex.location
+                                x = float(loc.x) if hasattr(loc, 'x') else 0.0
+                                y = float(loc.y) if hasattr(loc, 'y') else 0.0
+                                z = float(loc.z) if hasattr(loc, 'z') else 0.0
+                                points.append(self._make_point(x, y, z))
+                except Exception as e:
+                    logger.debug("Fehler bei get_mesh_vertex_cache: %s", e)
+            
+            # Methode 3: Für POLYLINE-Mesh, versuche über faces
+            if not points and hasattr(entity, "faces"):
+                # Extrahiere eindeutige Vertices aus Faces
+                vertex_set = set()
+                try:
+                    for face in entity.faces:
+                        if hasattr(face, "indices"):
+                            for idx in face.indices:
+                                vertex_set.add(idx)
+                        elif hasattr(face, "vertices"):
+                            for v in face.vertices:
+                                if hasattr(v, "location"):
+                                    loc = v.location
+                                    x = float(loc.x) if hasattr(loc, 'x') else 0.0
+                                    y = float(loc.y) if hasattr(loc, 'y') else 0.0
+                                    z = float(loc.z) if hasattr(loc, 'z') else 0.0
+                                    points.append(self._make_point(x, y, z))
+                except Exception as e:
+                    logger.debug("Fehler beim Extrahieren von Mesh-Faces: %s", e)
+            
+            # Wenn wir Indices haben, aber noch keine Punkte, versuche über Block-Vertices
+            if not points and hasattr(entity, "get_mesh_vertex_cache"):
+                try:
+                    # Versuche alternative Methode
+                    if hasattr(entity, "mesh_vertex_cache"):
+                        cache = entity.mesh_vertex_cache
+                        if cache:
+                            for vertex in cache:
+                                if hasattr(vertex, "location"):
+                                    loc = vertex.location
+                                    x = float(loc.x) if hasattr(loc, 'x') else 0.0
+                                    y = float(loc.y) if hasattr(loc, 'y') else 0.0
+                                    z = float(loc.z) if hasattr(loc, 'z') else 0.0
+                                    points.append(self._make_point(x, y, z))
+                except Exception as e:
+                    logger.debug("Fehler bei alternativer Mesh-Extraktion: %s", e)
+            
+            if not points:
+                logger.warning(
+                    "MESH-Entity konnte nicht extrahiert werden - keine Vertices gefunden"
+                )
+                
+        except Exception as e:
+            logger.warning("Fehler beim Extrahieren von MESH-Punkten: %s", e)
+        
         return points
 
     @staticmethod
@@ -412,12 +922,259 @@ class SurfaceDataImporter:
 
         group_id = None
         if self.group_manager:
-            group_id = self.group_manager.ensure_group_path(key)
+            # Suche zuerst nach existierender Gruppe mit diesem Namen
+            existing_group = self.group_manager.find_surface_group_by_name(key)
+            if existing_group:
+                group_id = existing_group.group_id
+            else:
+                # Erstelle neue Gruppe mit Tag-Namen
+                new_group = self.group_manager.create_surface_group(key)
+                if new_group:
+                    group_id = new_group.group_id
 
         self._group_cache[key] = group_id
         return group_id
 
+    # ---- Tag/Attribut-Extraktion -------------------------------------
+
+    def _analyze_dxf_tags(self, doc, msp) -> None:
+        """Analysiert die DXF-Datei auf Tags/Attribute"""
+        logger = logging.getLogger(__name__)
+        tags_found = set()
+        
+        # Analysiere INSERT-Entities im Modelspace, um Block-Tag-Mappings zu erstellen
+        for entity in msp:
+            if entity.dxftype() == "INSERT":
+                block_name = getattr(entity.dxf, "name", None)
+                if block_name:
+                    tag = self._extract_tag_from_insert(entity, doc)
+                    if tag:
+                        self._block_tag_map[block_name] = tag
+                        tags_found.add(tag)
+        
+        # Analysiere alle Entities im Modelspace und in Blöcken
+        for entity, _ in self._iter_surface_entities(msp):
+            tag = self._extract_tag_from_entity(entity, doc)
+            if tag:
+                tags_found.add(tag)
+        
+        # Analysiere auch Blöcke direkt
+        blocks = getattr(doc, "blocks", None)
+        if blocks:
+            for block in blocks:
+                if block.name.startswith("*"):  # System-Blöcke überspringen
+                    continue
+                
+                # Prüfe Block-Namen
+                block_name_upper = block.name.upper()
+                if block_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                    self._block_tag_map[block.name] = block_name_upper
+                    tags_found.add(block_name_upper)
+                
+                # Prüfe Entities im Block
+                for entity in block:
+                    tag = self._extract_tag_from_entity(entity, doc)
+                    if tag:
+                        tags_found.add(tag)
+        
+        if tags_found:
+            logger.info(
+                "DXF-Tags gefunden: %s",
+                ", ".join(sorted(tags_found))
+            )
+        if self._block_tag_map:
+            logger.info(
+                "DXF-Block-Tag-Mappings: %s",
+                ", ".join(f"{k} -> {v}" for k, v in self._block_tag_map.items())
+            )
+
+    def _extract_tag_from_entity(self, entity, doc) -> Optional[str]:
+        """Extrahiert Tag/Attribut aus einer DXF-Entity"""
+        logger = logging.getLogger(__name__)
+        
+        # Methode 1: Prüfe Layer-Name (wenn Layer "WOOD" oder "BETON" heißt)
+        layer_name = getattr(entity.dxf, "layer", None)
+        if layer_name:
+            layer_name_upper = layer_name.upper()
+            # Prüfe ob Layer-Name einem bekannten Tag entspricht
+            if layer_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                return layer_name_upper
+        
+        # Methode 1b: Prüfe Block-Name (wenn Entity Teil eines Blocks ist)
+        # Dies wird in _expand_insert behandelt, aber wir können auch hier prüfen
+        if hasattr(entity, "dxf") and hasattr(entity.dxf, "name"):
+            block_name = entity.dxf.name
+            if block_name:
+                block_name_upper = block_name.upper()
+                if block_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                    return block_name_upper
+        
+        # Methode 2: Prüfe Block-Attribute (für INSERT-Entities)
+        if entity.dxftype() == "INSERT":
+            tag = self._extract_tag_from_insert(entity, doc)
+            if tag:
+                return tag
+        
+        # Methode 3: Prüfe XDATA (Extended Data)
+        tag = self._extract_tag_from_xdata(entity)
+        if tag:
+            return tag
+        
+        # Methode 4: Prüfe AppData
+        tag = self._extract_tag_from_appdata(entity)
+        if tag:
+            return tag
+        
+        # Methode 5: Prüfe Objektdaten
+        tag = self._extract_tag_from_object_data(entity, doc)
+        if tag:
+            return tag
+        
+        return None
+
+    def _extract_tag_from_insert(self, insert_entity, doc) -> Optional[str]:
+        """Extrahiert Tag aus INSERT-Entity über Block-Attribute"""
+        try:
+            block_name = getattr(insert_entity.dxf, "name", None)
+            if not block_name:
+                return None
+            
+            # Prüfe ob Block-Name selbst ein Tag ist
+            block_name_upper = block_name.upper()
+            if block_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                return block_name_upper
+            
+            # Suche Block-Definition
+            blocks = getattr(doc, "blocks", None)
+            if not blocks:
+                return None
+            
+            block = blocks.get(block_name)
+            if not block:
+                return None
+            
+            # Suche nach ATTRIB-Entities im Block
+            for entity in block:
+                if entity.dxftype() == "ATTRIB":
+                    tag = getattr(entity.dxf, "text", None)
+                    if tag and tag.strip():
+                        # Prüfe ob es ein bekannter Tag ist
+                        tag_upper = tag.strip().upper()
+                        if tag_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                            return tag_upper
+                        # Oder verwende den Tag-Text direkt, wenn er aussagekräftig ist
+                        if len(tag.strip()) > 0 and not tag.strip().isdigit():
+                            return tag.strip()
+            
+            # Prüfe Layer-Namen der Entities im Block
+            for entity in block:
+                layer_name = getattr(entity.dxf, "layer", None)
+                if layer_name:
+                    layer_name_upper = layer_name.upper()
+                    if layer_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                        return layer_name_upper
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.debug("Fehler beim Extrahieren von Tag aus INSERT: %s", e)
+        
+        return None
+
+    def _extract_tag_from_xdata(self, entity) -> Optional[str]:
+        """Extrahiert Tag aus XDATA (Extended Data)"""
+        try:
+            if not hasattr(entity, "xdata"):
+                return None
+            
+            xdata = entity.xdata
+            if not xdata:
+                return None
+            
+            # Suche nach Tag in XDATA
+            for app_name, data in xdata.items():
+                if isinstance(data, (list, tuple)):
+                    for item in data:
+                        if isinstance(item, str):
+                            item_upper = item.upper()
+                            if item_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                                return item_upper
+        except Exception:
+            pass
+        
+        return None
+
+    def _extract_tag_from_appdata(self, entity) -> Optional[str]:
+        """Extrahiert Tag aus AppData"""
+        try:
+            if not hasattr(entity, "appdata"):
+                return None
+            
+            appdata = entity.appdata
+            if not appdata:
+                return None
+            
+            # Suche nach Tag in AppData
+            for app_name, data in appdata.items():
+                if isinstance(data, (list, tuple)):
+                    for item in data:
+                        if isinstance(item, str):
+                            item_upper = item.upper()
+                            if item_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                                return item_upper
+        except Exception:
+            pass
+        
+        return None
+
+    def _extract_tag_from_object_data(self, entity, doc) -> Optional[str]:
+        """Extrahiert Tag aus Objektdaten"""
+        try:
+            # Prüfe ob Entity Objektdaten hat
+            if hasattr(entity, "get_xdata"):
+                xdata = entity.get_xdata("ACAD")
+                if xdata:
+                    for item in xdata:
+                        if isinstance(item, str):
+                            item_upper = item.upper()
+                            if item_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                                return item_upper
+        except Exception:
+            pass
+        
+        return None
+
     # ---- Helpers für DXF-Entities ------------------------------------
+
+    def _is_entity_closed(self, entity, points: List[Dict[str, float]]) -> bool:
+        """Prüft ob eine Entity geschlossen ist"""
+        dxftype = entity.dxftype()
+        
+        # Für LWPOLYLINE: Prüfe verschiedene Attribute
+        if dxftype == "LWPOLYLINE":
+            if hasattr(entity, "closed"):
+                return bool(entity.closed)
+            if hasattr(entity.dxf, "flags"):
+                # Bit 1 = closed flag
+                flags = getattr(entity.dxf, "flags", 0)
+                return bool(flags & 1)
+        
+        # Für POLYLINE: Prüfe is_closed Attribut
+        if dxftype == "POLYLINE":
+            if hasattr(entity, "is_closed"):
+                return bool(entity.is_closed)
+            if hasattr(entity, "closed"):
+                return bool(entity.closed)
+        
+        # Prüfe ob erster und letzter Punkt identisch sind (mit Toleranz)
+        if len(points) >= 3:
+            first = points[0]
+            last = points[-1]
+            tolerance = 1e-6
+            dx = abs(first.get("x", 0) - last.get("x", 0))
+            dy = abs(first.get("y", 0) - last.get("y", 0))
+            dz = abs(first.get("z", 0) - last.get("z", 0))
+            return dx < tolerance and dy < tolerance and dz < tolerance
+        
+        return False
 
     def _extract_points_from_entity(self, entity, transform) -> List[Dict[str, float]] | None:
         dxftype = entity.dxftype()
@@ -426,11 +1183,25 @@ class SurfaceDataImporter:
         if dxftype == "LWPOLYLINE":
             points = self._extract_lwpolyline_points(entity)
         elif dxftype == "POLYLINE":
-            points = self._extract_polyline_points(entity)
+            # Prüfe ob es ein Mesh ist
+            is_mesh = False
+            if hasattr(entity, "is_mesh"):
+                is_mesh = bool(entity.is_mesh)
+            elif hasattr(entity.dxf, "flags"):
+                # Bit 16 = mesh flag
+                flags = getattr(entity.dxf, "flags", 0)
+                is_mesh = bool(flags & 16)
+            
+            if is_mesh:
+                points = self._extract_mesh_points(entity)
+            else:
+                points = self._extract_polyline_points(entity)
         elif dxftype == "3DFACE":
             points = self._extract_3dface_points(entity)
         elif dxftype == "LINE":
             points = self._extract_line_points(entity)
+        elif dxftype == "MESH":
+            points = self._extract_mesh_points(entity)
         
         if not points:
             return None
@@ -495,6 +1266,18 @@ class SurfaceDataImporter:
         
         block_name = getattr(insert_entity.dxf, "name", "unbenannt")
         
+        # Extrahiere Tag aus INSERT-Entity und speichere Mapping
+        # (wird später verwendet, wenn Entities aus diesem Block expandiert werden)
+        try:
+            import ezdxf
+            doc = getattr(insert_entity, "doc", None)
+            if doc:
+                tag = self._extract_tag_from_insert(insert_entity, doc)
+                if tag:
+                    self._block_tag_map[block_name] = tag
+        except Exception:
+            pass
+        
         # Extrahiere Transformationen aus der INSERT-Entity
         insert_transform = self._extract_insert_transform(insert_entity)
         
@@ -506,13 +1289,25 @@ class SurfaceDataImporter:
         
         try:
             virtual_entities = list(insert_entity.virtual_entities())
-            if logger.isEnabledFor(logging.DEBUG):
-                entity_count = len(virtual_entities)
-                logger.debug(
-                    "INSERT '%s' (Tiefe %d) aufgelöst: %d Entities extrahiert",
+            entity_count = len(virtual_entities)
+            entity_types = {}
+            for ve in virtual_entities:
+                ve_type = ve.dxftype()
+                entity_types[ve_type] = entity_types.get(ve_type, 0) + 1
+            
+            type_summary = ", ".join(f"{k}:{v}" for k, v in entity_types.items())
+            logger.info(
+                "INSERT '%s' (Tiefe %d) aufgelöst: %d Entities extrahiert [%s]",
+                block_name,
+                depth,
+                entity_count,
+                type_summary
+            )
+            if entity_count == 0:
+                logger.warning(
+                    "INSERT '%s' (Tiefe %d) enthält keine Entities",
                     block_name,
                     depth,
-                    entity_count,
                 )
         except Exception as exc:
             logger.warning(
@@ -523,7 +1318,14 @@ class SurfaceDataImporter:
             return
 
         try:
-            for virtual in virtual_entities:
+            logger = logging.getLogger(__name__)
+            for idx, virtual in enumerate(virtual_entities):
+                vtype = virtual.dxftype()
+                vlayer = getattr(virtual.dxf, "layer", "unbekannt")
+                logger.debug(
+                    "  Block '%s' Entity %d/%d: %s auf Layer '%s'",
+                    block_name, idx+1, len(virtual_entities), vtype, vlayer
+                )
                 yield from self._resolve_entity(virtual, depth + 1, combined_transform)
         finally:
             for virtual in virtual_entities:

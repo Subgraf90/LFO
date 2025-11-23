@@ -28,6 +28,12 @@ class UiFile:
             self.settings.impulse_points.clear()
             self.container.clear_impulse_points()
             
+            # Initialisiere speaker_array_groups
+            if not hasattr(self.settings, 'speaker_array_groups'):
+                self.settings.speaker_array_groups = {}
+            else:
+                self.settings.speaker_array_groups.clear()
+            
             # Lösche gespeicherte Speaker-Position-Hashes
             if hasattr(self.main_window, 'calculation_handler'):
                 self.main_window.calculation_handler.clear_speaker_position_hashes()
@@ -85,6 +91,10 @@ class UiFile:
 
     def _save_data(self, file_path):
         try:
+            # Speichere Gruppen-Struktur vor dem Speichern
+            if hasattr(self.main_window, 'sources_instance') and self.main_window.sources_instance:
+                if hasattr(self.main_window.sources_instance, 'save_groups_structure'):
+                    self.main_window.sources_instance.save_groups_structure()
             
             file_data = {
                 'settings': {
@@ -103,7 +113,9 @@ class UiFile:
                 'snapshots': {
                     key: value for key, value in self.container.calculation_axes.items()
                     if key != "aktuelle_simulation"
-                }
+                },
+                # Speichere speaker_array_groups
+                'speaker_array_groups': getattr(self.settings, 'speaker_array_groups', {})
             }
             self._check_picklable(file_data)
             
@@ -260,7 +272,27 @@ class UiFile:
                     # Frequenzen auf ganze Zahlen runden
                     if k in ['upper_calculate_frequency', 'lower_calculate_frequency', 'fem_calculate_frequency']:
                         v = int(round(float(v)))
+                    # Überspringe speaker_array_groups hier - wird separat behandelt
+                    if k == 'speaker_array_groups':
+                        continue
                     setattr(self.settings, k, v)  # explizit ins Objekt schreiben
+            
+            # Lade speaker_array_groups (falls vorhanden) - prüfe sowohl in loaded_data als auch in settings
+            speaker_array_groups_loaded = False
+            if 'speaker_array_groups' in loaded_data:
+                groups_data = loaded_data['speaker_array_groups']
+                if groups_data is not None and isinstance(groups_data, dict):
+                    self.settings.speaker_array_groups = groups_data
+                    speaker_array_groups_loaded = True
+            elif 'settings' in loaded_data and 'speaker_array_groups' in loaded_data['settings']:
+                groups_data = loaded_data['settings']['speaker_array_groups']
+                if groups_data is not None and isinstance(groups_data, dict):
+                    self.settings.speaker_array_groups = groups_data
+                    speaker_array_groups_loaded = True
+            
+            # Initialisiere speaker_array_groups, falls nicht vorhanden oder None
+            if not speaker_array_groups_loaded or not hasattr(self.settings, 'speaker_array_groups') or self.settings.speaker_array_groups is None:
+                self.settings.speaker_array_groups = {}
 
         except Exception as e:
             QMessageBox.critical(
@@ -324,6 +356,10 @@ class UiFile:
 
             sources_tree.setUpdatesEnabled(updates_enabled)
             del tree_blocker
+            
+            # Lade Gruppen-Struktur nach dem Laden der Arrays
+            if hasattr(sources_instance, 'load_groups_structure'):
+                sources_instance.load_groups_structure()
 
             self.main_window.blockSignals(False)
 

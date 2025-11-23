@@ -145,10 +145,11 @@ class SurfaceGridCalculator(ModuleBase):
                 print(f"[SurfaceGridCalculator] {warning}")
         
         # ============================================================
-        # SCHRITT 5: Surface-Maske erstellen
+        # SCHRITT 5: Surface-Maske erstellen (ERWEITERT für Berechnung)
         # ============================================================
         if enabled_surfaces:
-            surface_mask = self._create_surface_mask(X_grid, Y_grid, enabled_surfaces)
+            # 🎯 ERWEITERTE MASKE: Erfasst auch Randpunkte für vollständige Berechnung
+            surface_mask = self._create_surface_mask(X_grid, Y_grid, enabled_surfaces, include_edges=True)
         else:
             # Keine Surfaces → alle Punkte sind gültig
             surface_mask = np.ones_like(X_grid, dtype=bool)
@@ -276,6 +277,7 @@ class SurfaceGridCalculator(ModuleBase):
         x_coords: np.ndarray,
         y_coords: np.ndarray,
         surfaces: List[Tuple[str, Dict]],
+        include_edges: bool = True,
     ) -> np.ndarray:
         """
         🚀 Erstellt eine kombinierte Maske für alle gegebenen Surfaces.
@@ -285,6 +287,7 @@ class SurfaceGridCalculator(ModuleBase):
             x_coords: 2D-Array von X-Koordinaten (Shape: [ny, nx])
             y_coords: 2D-Array von Y-Koordinaten (Shape: [ny, nx])
             surfaces: Liste von (surface_id, surface_definition) Tupeln
+            include_edges: Wenn True, werden auch Punkte nahe den Rändern erfasst (für Berechnung)
             
         Returns:
             2D-Boolean-Array (Shape: [ny, nx]) - True wenn Punkt in mindestens einem Surface liegt
@@ -303,7 +306,51 @@ class SurfaceGridCalculator(ModuleBase):
                 surface_mask = self._points_in_polygon_batch(x_coords, y_coords, points)
                 combined_mask = combined_mask | surface_mask
         
+        # 🎯 ERWEITERE MASKE FÜR BERECHNUNG: Erfasse auch Randpunkte
+        if include_edges:
+            # Morphologische Dilatation: Erweitere die Maske um 1 Pixel in alle Richtungen
+            # Dies erfasst auch Punkte, die direkt auf den Rändern liegen
+            try:
+                from scipy import ndimage
+                # Strukturelement: 3x3-Kreis (erfasst alle 8 Nachbarn)
+                structure = np.array([[1, 1, 1],
+                                      [1, 1, 1],
+                                      [1, 1, 1]], dtype=bool)
+                combined_mask = ndimage.binary_dilation(combined_mask, structure=structure)
+            except ImportError:
+                # Fallback: Manuelle Erweiterung wenn scipy nicht verfügbar
+                combined_mask = self._dilate_mask_manual(combined_mask)
+        
         return combined_mask
+    
+    def _dilate_mask_manual(self, mask: np.ndarray) -> np.ndarray:
+        """
+        Manuelle morphologische Dilatation (Fallback wenn scipy nicht verfügbar).
+        Erweitert die Maske um 1 Pixel in alle Richtungen.
+        """
+        dilated = mask.copy()
+        ny, nx = mask.shape
+        
+        # Erweitere in alle 8 Richtungen
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == 0 and dj == 0:
+                    continue
+                # Verschiebe Maske und kombiniere
+                shifted = np.zeros_like(mask)
+                i_start = max(0, -di)
+                i_end = min(nx, nx - di)
+                j_start = max(0, -dj)
+                j_end = min(ny, ny - dj)
+                
+                if i_start < i_end and j_start < j_end:
+                    shifted[j_start:j_end, i_start:i_end] = mask[
+                        j_start + dj:j_end + dj,
+                        i_start + di:i_end + di
+                    ]
+                dilated = dilated | shifted
+        
+        return dilated
 
     def _build_surface_meshes(
         self,

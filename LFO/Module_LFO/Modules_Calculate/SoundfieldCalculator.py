@@ -446,7 +446,17 @@ class SoundFieldCalculator(ModuleBase):
 
         if isinstance(self.calculation_spl, dict):
             self.calculation_spl['sound_field_z'] = Z_grid.tolist()
+            # 🎯 Speichere erweiterte Maske für Berechnung
             self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()
+            # 🎯 Berechne und speichere strikte Maske für Plot (ohne Erweiterung)
+            enabled_surfaces = self._get_enabled_surfaces()
+            if enabled_surfaces:
+                surface_mask_strict = self._grid_calculator._create_surface_mask(
+                    X_grid, Y_grid, enabled_surfaces, include_edges=False
+                )
+                self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
+            else:
+                self.calculation_spl['surface_mask_strict'] = surface_mask.astype(bool).tolist()
             if surface_meshes:
                 self.calculation_spl['surface_meshes'] = [
                     mesh.to_payload() for mesh in surface_meshes
