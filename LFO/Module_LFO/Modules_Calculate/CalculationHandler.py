@@ -76,6 +76,14 @@ class CalculationHandler:
         if hasattr(speaker_array, 'source_position_z_flown'):
             params.append(_array_to_string(speaker_array.source_position_z_flown))
         
+        # Array-Positionen (fixe Offset-Positionen für Stack, absolute Positionen für Flown)
+        if hasattr(speaker_array, 'array_position_x'):
+            params.append(f"{float(speaker_array.array_position_x):.6f}")
+        if hasattr(speaker_array, 'array_position_y'):
+            params.append(f"{float(speaker_array.array_position_y):.6f}")
+        if hasattr(speaker_array, 'array_position_z'):
+            params.append(f"{float(speaker_array.array_position_z):.6f}")
+        
         # Orientierung
         if hasattr(speaker_array, 'source_azimuth'):
             params.append(_array_to_string(speaker_array.source_azimuth))

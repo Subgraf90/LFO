@@ -27,16 +27,9 @@ class BeamSteering(ModuleBase):
         source_polar_pattern = speaker_array.source_polar_pattern
         source_length = speaker_array.source_length
         arc_angle = speaker_array.arc_angle
-        source_position_x = getattr(
-            speaker_array,
-            'source_position_calc_x',
-            speaker_array.source_position_x,
-        )
-        source_position_y = getattr(
-            speaker_array,
-            'source_position_calc_y',
-            speaker_array.source_position_y,
-        )
+        # Verwende nur Speaker-Positionen ohne Array-Offset für Beamsteering-Berechnungen
+        source_position_x = getattr(speaker_array, 'source_position_x', None)
+        source_position_y = getattr(speaker_array, 'source_position_y', None)
         
         # 🌡️ Temperaturabhängige Schallgeschwindigkeit (wird in UiSettings berechnet)
         speed_of_sound = self.settings.speed_of_sound

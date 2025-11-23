@@ -740,60 +740,176 @@ class SurfaceDataImporter:
         points: List[Dict[str, float]] = []
         logger = logging.getLogger(__name__)
         try:
+            # Debug: Prüfe Entity-Attribute
+            logger.info("POLYLINE-Extraktion: Prüfe Entity-Attribute")
+            logger.info("  hasattr(entity, 'vertices'): %s", hasattr(entity, 'vertices'))
+            logger.info("  hasattr(entity, 'vertices_with_points'): %s", hasattr(entity, 'vertices_with_points'))
+            logger.info("  hasattr(entity, 'flattening'): %s", hasattr(entity, 'flattening'))
+            logger.info("  hasattr(entity, 'points'): %s", hasattr(entity, 'points'))
+            
+            if hasattr(entity, 'vertices'):
+                try:
+                    vertices_list = list(entity.vertices)
+                    logger.info("  Anzahl Vertices: %d", len(vertices_list))
+                    if len(vertices_list) > 0:
+                        first_vertex = vertices_list[0]
+                        logger.info("  Erster Vertex-Typ: %s", type(first_vertex).__name__)
+                        logger.info("  Erster Vertex hat 'dxf': %s", hasattr(first_vertex, 'dxf'))
+                        if hasattr(first_vertex, 'dxf'):
+                            logger.info("  Erster Vertex.dxf hat 'location': %s", hasattr(first_vertex.dxf, 'location'))
+                except Exception as e:
+                    logger.info("  Fehler beim Zählen der Vertices: %s", e)
+            
             # Methode 1: Verwende vertices_with_points() falls verfügbar (ezdxf 0.18+)
             if hasattr(entity, 'vertices_with_points'):
                 try:
+                    logger.info("  Versuche Methode 1: vertices_with_points()")
                     for vertex, point in entity.vertices_with_points():
                         x, y, z = point
                         points.append(self._make_point(float(x), float(y), float(z)))
-                except Exception:
-                    pass
+                    logger.info("  Methode 1 erfolgreich: %d Punkte extrahiert", len(points))
+                except Exception as e1:
+                    logger.info("  Methode 1 fehlgeschlagen: %s", e1)
             
             # Methode 2: Direkt über vertices mit location
             if not points:
                 try:
+                    logger.info("  Versuche Methode 2: vertices mit location")
                     elevation = float(getattr(entity.dxf, 'elevation', 0.0))
+                    logger.info("  Elevation: %f", elevation)
+                    vertex_count = 0
                     for vertex in entity.vertices:
-                        # Versuche location-Attribut
+                        vertex_count += 1
+                        # Versuche location-Attribut (ist ein Vec3-Objekt)
                         if hasattr(vertex.dxf, 'location'):
                             loc = vertex.dxf.location
-                            x = float(loc.x) if hasattr(loc, 'x') else 0.0
-                            y = float(loc.y) if hasattr(loc, 'y') else 0.0
-                            z = float(loc.z) if hasattr(loc, 'z') else elevation
-                            points.append(self._make_point(x, y, z))
+                            # loc ist ein Vec3, versuche verschiedene Zugriffsmethoden
+                            try:
+                                # Methode 1: Versuche als Tuple zu konvertieren (Vec3 kann in Tuple konvertiert werden)
+                                try:
+                                    loc_tuple = tuple(loc)
+                                    if len(loc_tuple) >= 2:
+                                        x = float(loc_tuple[0])
+                                        y = float(loc_tuple[1])
+                                        z = float(loc_tuple[2]) if len(loc_tuple) >= 3 else elevation
+                                        points.append(self._make_point(x, y, z))
+                                    else:
+                                        logger.info("    Vertex %d: location tuple hat zu wenige Elemente: %d", vertex_count, len(loc_tuple))
+                                except (TypeError, ValueError) as tuple_err:
+                                    # Methode 2: Versuche Index-Zugriff direkt
+                                    try:
+                                        x = float(loc[0])
+                                        y = float(loc[1])
+                                        z = float(loc[2]) if len(loc) >= 3 else elevation
+                                        points.append(self._make_point(x, y, z))
+                                    except (IndexError, TypeError) as idx_err:
+                                        # Methode 3: Versuche direkte Attribute (falls x, y, z numerisch sind)
+                                        if hasattr(loc, 'x') and hasattr(loc, 'y'):
+                                            x_val = loc.x
+                                            y_val = loc.y
+                                            z_val = loc.z if hasattr(loc, 'z') and loc.z is not None else elevation
+                                            
+                                            # Prüfe ob die Werte selbst Vec3 sind (unwahrscheinlich, aber möglich)
+                                            if hasattr(x_val, '__getitem__'):
+                                                x = float(x_val[0])
+                                                y = float(y_val[0]) if hasattr(y_val, '__getitem__') else float(y_val)
+                                                z = float(z_val[0]) if hasattr(z_val, '__getitem__') else float(z_val)
+                                            else:
+                                                x = float(x_val)
+                                                y = float(y_val)
+                                                z = float(z_val)
+                                            points.append(self._make_point(x, y, z))
+                                        else:
+                                            logger.info("    Vertex %d: location hat unerwartetes Format: %s", vertex_count, type(loc))
+                            except Exception as loc_err:
+                                logger.info("    Vertex %d: Fehler beim Extrahieren aus location: %s (loc type: %s, loc repr: %s)", vertex_count, loc_err, type(loc), repr(loc))
                         # Fallback: Versuche einzelne Attribute
                         elif hasattr(vertex, 'dxf'):
                             x = float(getattr(vertex.dxf, 'x', 0.0))
                             y = float(getattr(vertex.dxf, 'y', 0.0))
                             z = float(getattr(vertex.dxf, 'z', elevation))
                             points.append(self._make_point(x, y, z))
-                except Exception as e1:
-                    logger.debug("Methode 2 fehlgeschlagen: %s", e1)
+                    logger.info("  Methode 2: %d Vertices verarbeitet, %d Punkte extrahiert", vertex_count, len(points))
+                except Exception as e2:
+                    logger.info("  Methode 2 fehlgeschlagen: %s", e2)
             
             # Methode 3: Verwende flattening() falls verfügbar
             if not points and hasattr(entity, 'flattening'):
                 try:
+                    logger.info("  Versuche Methode 3: flattening()")
                     flattened = entity.flattening(0.01)  # Toleranz für Kurven
+                    elevation = float(getattr(entity.dxf, 'elevation', 0.0))
                     for point in flattened:
-                        if isinstance(point, (tuple, list)) and len(point) >= 2:
-                            x = float(point[0])
-                            y = float(point[1])
-                            z = float(point[2]) if len(point) >= 3 else float(getattr(entity.dxf, 'elevation', 0.0))
-                            points.append(self._make_point(x, y, z))
-                except Exception as e2:
-                    logger.debug("Methode 3 fehlgeschlagen: %s", e2)
+                        try:
+                            # Prüfe ob point ein Vec3-Objekt ist
+                            if hasattr(point, 'x') and hasattr(point, 'y'):
+                                x = float(point.x)
+                                y = float(point.y)
+                                z = float(point.z) if hasattr(point, 'z') and point.z is not None else elevation
+                                points.append(self._make_point(x, y, z))
+                            # Oder ein Tuple/List
+                            elif isinstance(point, (tuple, list)) and len(point) >= 2:
+                                x = float(point[0])
+                                y = float(point[1])
+                                z = float(point[2]) if len(point) >= 3 else elevation
+                                points.append(self._make_point(x, y, z))
+                        except Exception as point_err:
+                            logger.info("    Fehler beim Verarbeiten eines flattening-Punktes: %s", point_err)
+                    logger.info("  Methode 3 erfolgreich: %d Punkte extrahiert", len(points))
+                except Exception as e3:
+                    logger.info("  Methode 3 fehlgeschlagen: %s", e3)
             
             # Methode 4: Versuche über points() Methode
             if not points and hasattr(entity, 'points'):
                 try:
+                    logger.info("  Versuche Methode 4: points()")
+                    elevation = float(getattr(entity.dxf, 'elevation', 0.0))
                     for point in entity.points():
-                        if isinstance(point, (tuple, list)) and len(point) >= 2:
-                            x = float(point[0])
-                            y = float(point[1])
-                            z = float(point[2]) if len(point) >= 3 else float(getattr(entity.dxf, 'elevation', 0.0))
-                            points.append(self._make_point(x, y, z))
-                except Exception as e3:
-                    logger.debug("Methode 4 fehlgeschlagen: %s", e3)
+                        try:
+                            # Methode 1: Versuche als Tuple zu konvertieren (Vec3 kann in Tuple konvertiert werden)
+                            try:
+                                point_tuple = tuple(point)
+                                if len(point_tuple) >= 2:
+                                    x = float(point_tuple[0])
+                                    y = float(point_tuple[1])
+                                    z = float(point_tuple[2]) if len(point_tuple) >= 3 else elevation
+                                    points.append(self._make_point(x, y, z))
+                                else:
+                                    logger.info("    Punkt tuple hat zu wenige Elemente: %d", len(point_tuple))
+                            except (TypeError, ValueError) as tuple_err:
+                                # Methode 2: Versuche Index-Zugriff direkt
+                                try:
+                                    if hasattr(point, '__getitem__'):
+                                        x = float(point[0])
+                                        y = float(point[1])
+                                        z = float(point[2]) if len(point) >= 3 else elevation
+                                        points.append(self._make_point(x, y, z))
+                                    else:
+                                        raise IndexError("Kein Index-Zugriff möglich")
+                                except (IndexError, TypeError) as idx_err:
+                                    # Methode 3: Versuche direkte Attribute (falls x, y, z numerisch sind)
+                                    if hasattr(point, 'x') and hasattr(point, 'y'):
+                                        x_val = point.x
+                                        y_val = point.y
+                                        z_val = point.z if hasattr(point, 'z') and point.z is not None else elevation
+                                        
+                                        # Prüfe ob die Werte selbst Vec3 sind (unwahrscheinlich, aber möglich)
+                                        if hasattr(x_val, '__getitem__'):
+                                            x = float(x_val[0])
+                                            y = float(y_val[0]) if hasattr(y_val, '__getitem__') else float(y_val)
+                                            z = float(z_val[0]) if hasattr(z_val, '__getitem__') else float(z_val)
+                                        else:
+                                            x = float(x_val)
+                                            y = float(y_val)
+                                            z = float(z_val)
+                                        points.append(self._make_point(x, y, z))
+                                    else:
+                                        logger.info("    Unerwartetes Punkt-Format: %s", type(point))
+                        except Exception as point_err:
+                            logger.info("    Fehler beim Verarbeiten eines Punktes: %s (point type: %s, point repr: %s)", point_err, type(point), repr(point))
+                    logger.info("  Methode 4 erfolgreich: %d Punkte extrahiert", len(points))
+                except Exception as e4:
+                    logger.info("  Methode 4 fehlgeschlagen: %s", e4)
 
             if not points:
                 logger.warning(
@@ -807,6 +923,8 @@ class SurfaceDataImporter:
                 "Fehler beim Extrahieren von POLYLINE-Punkten: %s",
                 e
             )
+            import traceback
+            logger.info("Traceback: %s", traceback.format_exc())
         return points
 
     def _extract_3dface_points(self, entity) -> List[Dict[str, float]]:

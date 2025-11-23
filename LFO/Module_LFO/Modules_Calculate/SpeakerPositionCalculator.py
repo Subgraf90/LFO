@@ -153,13 +153,54 @@ class SpeakerPositionCalculator:
             )
             speaker_array.source_position_x = existing_values + [0.0] * (speaker_array.number_of_sources - len(existing_values))
 
+        # Hole Array-Positionen (fixe Offset-Positionen)
+        array_pos_x = getattr(speaker_array, 'array_position_x', 0.0)
+        array_pos_y = getattr(speaker_array, 'array_position_y', 0.0)
+        array_pos_z = getattr(speaker_array, 'array_position_z', 0.0)
+        
+        # Prüfe, ob es sich um ein Flown-System handelt
+        configuration = getattr(speaker_array, 'configuration', None)
+        is_flown = configuration is not None and str(configuration).lower() == "flown"
+        
         speaker_array.source_position_calc_x = list(
             speaker_array.source_position_x[:speaker_array.number_of_sources]
         )
         
+        # Stelle sicher, dass source_position_calc_y die richtige Länge hat
+        if not hasattr(speaker_array, 'source_position_calc_y') or speaker_array.source_position_calc_y is None:
+            speaker_array.source_position_calc_y = [0.0] * speaker_array.number_of_sources
+        elif len(speaker_array.source_position_calc_y) != speaker_array.number_of_sources:
+            existing_values = list(
+                speaker_array.source_position_calc_y[:min(len(speaker_array.source_position_calc_y), speaker_array.number_of_sources)]
+            )
+            speaker_array.source_position_calc_y = existing_values + [0.0] * (speaker_array.number_of_sources - len(existing_values))
+        
+        # Stelle sicher, dass source_position_calc_z die richtige Länge hat
+        if not hasattr(speaker_array, 'source_position_calc_z') or speaker_array.source_position_calc_z is None:
+            speaker_array.source_position_calc_z = [0.0] * speaker_array.number_of_sources
+        elif len(speaker_array.source_position_calc_z) != speaker_array.number_of_sources:
+            existing_values = list(
+                speaker_array.source_position_calc_z[:min(len(speaker_array.source_position_calc_z), speaker_array.number_of_sources)]
+            )
+            speaker_array.source_position_calc_z = existing_values + [0.0] * (speaker_array.number_of_sources - len(existing_values))
+        
         # Rufe die entsprechenden Methoden auf
         self.calculate_stack_z_center(speaker_array)
         self.calculate_flown_z_center(speaker_array)
+        
+        # Addiere Array-Positionen zu den berechneten Positionen
+        # Bei Flown-Systemen sind die Array-Positionen bereits in source_position_x/y/z_flown enthalten,
+        # daher werden sie hier nicht nochmal hinzuaddiert
+        # Bei Stack-Systemen (oder wenn configuration None ist) werden sie hinzuaddiert
+        if not is_flown:
+            # Stelle sicher, dass alle Arrays die richtige Länge haben
+            if len(speaker_array.source_position_calc_x) == speaker_array.number_of_sources and \
+               len(speaker_array.source_position_calc_y) == speaker_array.number_of_sources and \
+               len(speaker_array.source_position_calc_z) == speaker_array.number_of_sources:
+                for i in range(speaker_array.number_of_sources):
+                    speaker_array.source_position_calc_x[i] += array_pos_x
+                    speaker_array.source_position_calc_y[i] += array_pos_y
+                    speaker_array.source_position_calc_z[i] += array_pos_z
 
 
     def calculate_stack_z_center(self, speaker_array):
@@ -176,6 +217,10 @@ class SpeakerPositionCalculator:
             
         # Prüfe, ob source_position_z_stack existiert
         if not hasattr(speaker_array, 'source_position_z_stack') or speaker_array.source_position_z_stack is None:
+            # Wenn source_position_z_stack nicht existiert, verwende source_position_z
+            if hasattr(speaker_array, 'source_position_z') and speaker_array.source_position_z is not None:
+                # Initialisiere source_position_calc_z aus source_position_z
+                speaker_array.source_position_calc_z = list(speaker_array.source_position_z[:speaker_array.number_of_sources])
             return
         
         # Zurücksetzen von source_position_calc_z

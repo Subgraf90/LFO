@@ -233,7 +233,11 @@ class PolarPlotCalculator(ModuleBase):
                         speaker_indices.append(0)
                 
                 source_indices = np.array(speaker_indices)
-                source_position_x = speaker_array.source_position_x
+                source_position_x = getattr(
+                    speaker_array,
+                    'source_position_calc_x',
+                    speaker_array.source_position_x,
+                )
                 source_position_y = getattr(
                     speaker_array,
                     'source_position_calc_y',

@@ -26,6 +26,10 @@ class SpeakerArray:
             
         self.source_polar_pattern = np.array([default_speaker], dtype=object)
         self.source_length = 0
+        # Fixe Array-Position (wird zu allen Source-Positionen addiert)
+        self.array_position_x = 0.0
+        self.array_position_y = 0.0
+        self.array_position_z = 0.0
         self.source_position_x = np.array([0.0])
         self.source_position_y = np.array([0.0])
         self.source_position_z = np.array([0.0])

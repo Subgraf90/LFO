@@ -338,8 +338,14 @@ class SPL3DOverlayRenderer:
             configuration = getattr(speaker_array, 'configuration', '')
             config_lower = configuration.lower() if isinstance(configuration, str) else ''
 
-            xs = self._to_float_array(getattr(speaker_array, 'source_position_x', None))
+            # Hole Array-Positionen
+            array_pos_x = getattr(speaker_array, 'array_position_x', 0.0)
+            array_pos_y = getattr(speaker_array, 'array_position_y', 0.0)
+            array_pos_z = getattr(speaker_array, 'array_position_z', 0.0)
+
             if config_lower == 'flown':
+                # Für Flown: Array-Positionen sind bereits in source_position_x/y/z_flown enthalten (absolute Positionen)
+                xs = self._to_float_array(getattr(speaker_array, 'source_position_x', None))
                 ys = self._to_float_array(
                     getattr(
                         speaker_array,
@@ -349,8 +355,25 @@ class SPL3DOverlayRenderer:
                 )
                 zs = self._to_float_array(getattr(speaker_array, 'source_position_z_flown', None))
             else:
-                ys = self._to_float_array(getattr(speaker_array, 'source_position_y', None))
-                zs = self._to_float_array(getattr(speaker_array, 'source_position_z_stack', None))
+                # Für Stack: Gehäusenullpunkt = Array-Position + Speaker-Position
+                # source_position_calc_x/y/z ist nur für Berechnungen, nicht für den Plot
+                xs_raw = self._to_float_array(getattr(speaker_array, 'source_position_x', None))
+                ys_raw = self._to_float_array(getattr(speaker_array, 'source_position_y', None))
+                zs_raw = self._to_float_array(getattr(speaker_array, 'source_position_z_stack', None))
+                
+                # Addiere Array-Positionen zu den Speaker-Positionen
+                if xs_raw.size > 0:
+                    xs = xs_raw + array_pos_x
+                else:
+                    xs = xs_raw
+                if ys_raw.size > 0:
+                    ys = ys_raw + array_pos_y
+                else:
+                    ys = ys_raw
+                if zs_raw.size > 0:
+                    zs = zs_raw + array_pos_z
+                else:
+                    zs = zs_raw
 
             min_len = min(xs.size, ys.size, zs.size)
             if min_len == 0:
@@ -677,6 +700,8 @@ class SPL3DOverlayRenderer:
         if config_lower == 'flown':
             reference_array = getattr(speaker_array, 'source_position_z_flown', None)
         else:
+            # Für Stack: source_position_z_stack ist die ursprüngliche Speaker Z-Position (ohne Array-Offset)
+            # z_reference ist die Plot-Position (Array Z-Position + Speaker Z-Position)
             reference_array = getattr(speaker_array, 'source_position_z_stack', None)
         source_top_array = getattr(speaker_array, 'source_position_z_flown', None)
         speaker_count = 0
@@ -942,9 +967,15 @@ class SPL3DOverlayRenderer:
                 front_y_world = y + y_offset
                 y_max = front_y_world
                 y_min = front_y_world - depth
-                reference_value = self._array_value(reference_array, entry.get('source_index', index))
-                if reference_value is None:
+                # Für Stack: z_reference ist die Plot-Position (Array Z-Position + Speaker Z-Position)
+                # reference_array (source_position_z_stack) wird nur als Fallback verwendet
+                if config_lower != 'flown' and z_reference is not None:
+                    # Für Stack-Systeme: z_reference ist die Plot-Position (bereits Array Z-Position + Speaker Z-Position)
                     reference_value = z_reference
+                else:
+                    reference_value = self._array_value(reference_array, entry.get('source_index', index))
+                    if reference_value is None:
+                        reference_value = z_reference
                 base_world = float(reference_value) + z_offset + stack_offset
                 z_min = base_world
                 z_max = base_world + height

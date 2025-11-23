@@ -1356,27 +1356,61 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 array = speaker_arrays[name]
                 configuration = str(getattr(array, 'configuration', '') or '').lower()
                 hide = bool(getattr(array, 'hide', False))
-                xs = _to_tuple(getattr(array, 'source_position_x', None))
-                ys = _to_tuple(
-                    getattr(
-                        array,
-                        'source_position_calc_y',
-                        getattr(array, 'source_position_y', None),
+                
+                # Hole Array-Positionen
+                array_pos_x = getattr(array, 'array_position_x', 0.0)
+                array_pos_y = getattr(array, 'array_position_y', 0.0)
+                array_pos_z = getattr(array, 'array_position_z', 0.0)
+                
+                # Für die Signatur verwenden wir die Plot-Positionen:
+                # Stack: Gehäusenullpunkt = Array-Position + Speaker-Position
+                # Flown: Absolute Positionen (bereits in source_position_x/y/z_flown enthalten)
+                if configuration == 'flown':
+                    # Für Flown: Array-Positionen sind bereits in source_position_x/y/z_flown enthalten
+                    xs = _to_tuple(getattr(array, 'source_position_x', None))
+                    ys = _to_tuple(
+                        getattr(
+                            array,
+                            'source_position_calc_y',
+                            getattr(array, 'source_position_y', None),
+                        )
                     )
-                )
-                zs_stack = _to_tuple(getattr(array, 'source_position_z_stack', None))
-                zs_flown = _to_tuple(getattr(array, 'source_position_z_flown', None))
+                    zs_stack = None
+                    zs_flown = _to_tuple(getattr(array, 'source_position_z_flown', None))
+                else:
+                    # Für Stack: Gehäusenullpunkt = Array-Position + Speaker-Position
+                    xs_raw = _to_tuple(getattr(array, 'source_position_x', None))
+                    ys_raw = _to_tuple(getattr(array, 'source_position_y', None))
+                    zs_raw = _to_tuple(getattr(array, 'source_position_z_stack', None))
+                    
+                    # Addiere Array-Positionen zu den Speaker-Positionen
+                    if xs_raw and array_pos_x != 0.0:
+                        xs = tuple(x + array_pos_x for x in xs_raw)
+                    else:
+                        xs = xs_raw
+                    if ys_raw and array_pos_y != 0.0:
+                        ys = tuple(y + array_pos_y for y in ys_raw)
+                    else:
+                        ys = ys_raw
+                    if zs_raw and array_pos_z != 0.0:
+                        zs_stack = tuple(z + array_pos_z for z in zs_raw)
+                    else:
+                        zs_stack = zs_raw
+                    zs_flown = None
+                
                 azimuth = _to_tuple(getattr(array, 'source_azimuth', None))
                 angles = _to_tuple(getattr(array, 'source_angle', None))
                 polar_pattern = _to_str_tuple(getattr(array, 'source_polar_pattern', None))
                 source_types = _to_str_tuple(getattr(array, 'source_type', None))
+                
                 sources = (
-                    tuple(xs),
-                    tuple(ys),
-                    tuple(zs_stack),
-                    tuple(zs_flown),
-                    tuple(azimuth),
-                    tuple(angles),
+                    tuple(xs) if xs else tuple(),
+                    tuple(ys) if ys else tuple(),
+                    tuple(zs_stack) if zs_stack is not None else tuple(),
+                    tuple(zs_flown) if zs_flown is not None else tuple(),
+                    tuple(azimuth) if azimuth else tuple(),
+                    tuple(angles) if angles else tuple(),
+                    (round(float(array_pos_x), 4), round(float(array_pos_y), 4), round(float(array_pos_z), 4)),
                 )
                 speakers_signature.append(
                     (

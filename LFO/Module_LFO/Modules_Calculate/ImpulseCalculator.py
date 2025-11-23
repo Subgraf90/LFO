@@ -292,7 +292,7 @@ class ImpulseCalculator(ModuleBase):
 
                     source_position_x = getattr(
                         speaker_array,
-                        'source_position_x',
+                        'source_position_calc_x',
                         speaker_array.source_position_x,
                     )
                     x_distance = point_x - source_position_x[i]

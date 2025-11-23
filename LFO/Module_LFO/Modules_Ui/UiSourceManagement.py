@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QComboBox, QDockWidget, QWidget, QVBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QCheckBox, QPushButton, QHBoxLayout, QTabWidget, QSizePolicy, QGridLayout, QLabel, QFrame, QSpacerItem, QLineEdit, QMenu, QAbstractItemView
+from PyQt5.QtWidgets import QComboBox, QDockWidget, QWidget, QVBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QCheckBox, QPushButton, QHBoxLayout, QTabWidget, QSizePolicy, QGridLayout, QLabel, QFrame, QSpacerItem, QLineEdit, QMenu, QAbstractItemView, QGroupBox
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIntValidator, QDoubleValidator, QDragEnterEvent, QDropEvent
 
@@ -155,6 +155,7 @@ class Sources(ModuleBase):
         instance['scroll_area'] = QScrollArea(self.main_window)
         instance['scroll_area'].setWidgetResizable(True)
         instance['scroll_area'].setMaximumHeight(190)  # Maximale Höhe für kompaktes Rechteck
+        instance['scroll_area'].setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # Horizontale Scrollbar bei Bedarf
         instance['scroll_content'] = QWidget()
         instance['scroll_layout'] = QVBoxLayout(instance['scroll_content'])
         # Mehr Außenabstand für bessere Lesbarkeit
@@ -285,6 +286,9 @@ class Sources(ModuleBase):
                         
                         # Stelle sicher, dass Checkboxen für das Item existieren
                         self.ensure_source_checkboxes(item)
+                        
+                        # Speichere ursprüngliche Positionen für die Gruppe
+                        self.save_original_positions_for_group(drop_item)
                     
                     # Verbinde Checkboxen der Gruppe neu
                     mute_checkbox = self.sources_tree_widget.itemWidget(drop_item, 1)
@@ -305,10 +309,11 @@ class Sources(ModuleBase):
                     event.accept()
                     event.setDropAction(Qt.MoveAction)
                 elif indicator_pos == QAbstractItemView.OnItem and drop_item:
-                    # Droppe auf ein Source Item - füge zur Parent-Gruppe hinzu oder erstelle neue Gruppe
+                    # Droppe auf ein Source Item
+                    # Prüfe, ob das Ziel-Item in einer Gruppe ist
                     parent = drop_item.parent()
                     if parent and parent.data(0, Qt.UserRole + 1) == "group":
-                        # Füge zur bestehenden Gruppe hinzu
+                        # Ziel-Item ist bereits in einer Gruppe - füge zur bestehenden Gruppe hinzu
                         for item in dragged_items:
                             old_parent = item.parent()
                             if old_parent:
@@ -320,64 +325,21 @@ class Sources(ModuleBase):
                             parent.addChild(item)
                             # Stelle sicher, dass Checkboxen für das Item existieren
                             self.ensure_source_checkboxes(item)
+                            
+                            # Speichere ursprüngliche Positionen für die Gruppe
+                            self.save_original_positions_for_group(parent)
                         event.accept()
                         event.setDropAction(Qt.MoveAction)
                     else:
-                        # Erstelle neue Gruppe und füge beide Items hinzu
-                        group_count = sum(1 for i in range(self.sources_tree_widget.topLevelItemCount()) 
-                                         if self.sources_tree_widget.topLevelItem(i) and 
-                                         self.sources_tree_widget.topLevelItem(i).data(0, Qt.UserRole + 1) == "group")
-                        group_name = f"Group {group_count + 1}"
-                        group_item = QTreeWidgetItem(self.sources_tree_widget, [group_name])
-                        group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
-                        group_item.setData(0, Qt.UserRole + 1, "group")
-                        group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
-                        
-                        # Erstelle Checkboxen für Gruppe
-                        mute_checkbox = QCheckBox()
-                        mute_checkbox.setChecked(False)
-                        hide_checkbox = QCheckBox()
-                        hide_checkbox.setChecked(False)
-                        
-                        # Verbinde Checkboxen
-                        mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
-                        hide_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_hide_changed(g_item, state))
-                        
-                        self.sources_tree_widget.setItemWidget(group_item, 1, mute_checkbox)
-                        self.sources_tree_widget.setItemWidget(group_item, 2, hide_checkbox)
-                        
-                        # Füge alle Items zur neuen Gruppe hinzu
-                        for item in dragged_items:
-                            old_parent = item.parent()
-                            if old_parent:
-                                old_parent.removeChild(item)
-                            else:
-                                index = self.sources_tree_widget.indexOfTopLevelItem(item)
-                                if index != -1:
-                                    self.sources_tree_widget.takeTopLevelItem(index)
-                            group_item.addChild(item)
-                            # Stelle sicher, dass Checkboxen für das Item existieren
-                            self.ensure_source_checkboxes(item)
-                        
-                        # Füge auch das Ziel-Item hinzu, wenn es noch nicht in der Liste ist
-                        if drop_item not in dragged_items:
-                            old_parent = drop_item.parent()
-                            if old_parent:
-                                old_parent.removeChild(drop_item)
-                            else:
-                                index = self.sources_tree_widget.indexOfTopLevelItem(drop_item)
-                                if index != -1:
-                                    self.sources_tree_widget.takeTopLevelItem(index)
-                            group_item.addChild(drop_item)
-                            # Stelle sicher, dass Checkboxen für das Item existieren
-                            self.ensure_source_checkboxes(drop_item)
-                        
-                        group_item.setExpanded(True)
-                        event.accept()
-                        event.setDropAction(Qt.MoveAction)
+                        # Droppe auf ein Source Item, das nicht in einer Gruppe ist
+                        # Source Items dürfen nicht auf andere Source Items gezogen werden
+                        event.ignore()
                 else:
                     # Standard Drag & Drop Verhalten (zwischen Items)
                     original_dropEvent(event)
+                
+                # Validiere alle Checkboxen nach Drag & Drop
+                self.validate_all_checkboxes()
                 
                 # Passe Spaltenbreite an den Inhalt an
                 self.adjust_column_width_to_content()
@@ -395,9 +357,9 @@ class Sources(ModuleBase):
             header = self.sources_tree_widget.header()
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             
-            # Spaltenbreiten konfigurieren - kompakte Darstellung
-            self.sources_tree_widget.setColumnWidth(1, 35)   # Mute - schmaler
-            self.sources_tree_widget.setColumnWidth(2, 35)   # Hide - schmaler
+            # Spaltenbreiten konfigurieren - kompakte Darstellung (angepasst für kleinere Checkboxen)
+            self.sources_tree_widget.setColumnWidth(1, 25)   # Mute - kleiner für 18x18 Checkboxen
+            self.sources_tree_widget.setColumnWidth(2, 25)   # Hide - kleiner für 18x18 Checkboxen
             self.sources_tree_widget.setColumnWidth(3, 20)   # Farb-Quadrat
             header.setStretchLastSection(False)  # Letzte Spalte nicht strecken
             header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)  # Name kann angepasst werden
@@ -431,6 +393,7 @@ class Sources(ModuleBase):
             self.sources_tree_widget.itemSelectionChanged.connect(self.display_selected_speakerspecs)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_sources_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_source_length_input_fields)
+            self.sources_tree_widget.itemSelectionChanged.connect(self.update_array_position_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_beamsteering_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_windowing_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_gain_delay_input_fields)
@@ -522,6 +485,7 @@ class Sources(ModuleBase):
             self.update_input_fields(instance)
         self.update_sources_input_fields()
         self.update_source_length_input_fields()
+        self.update_array_position_input_fields()
         self.update_beamsteering_input_fields()
         self.update_windowing_input_fields()
         self.update_gain_delay_input_fields()
@@ -590,6 +554,55 @@ class Sources(ModuleBase):
         line2.setFixedHeight(10)
         speaker_grid_layout.addWidget(line2, 3, 0, 1, 2)
         
+        # Array X-Position
+        array_x_label = QLabel("Array X (m)")
+        array_x_label.setFont(font)
+        self.array_x_edit = QLineEdit()
+        self.array_x_edit.setFont(font)
+        self.array_x_edit.setFixedHeight(18)
+        self.array_x_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.array_x_edit.setText("0.00")
+        self.array_x_edit.editingFinished.connect(self.on_ArrayX_changed)
+        array_x_label.setFixedWidth(150)
+        self.array_x_edit.setFixedWidth(40)
+        speaker_grid_layout.addWidget(array_x_label, 4, 0)
+        speaker_grid_layout.addWidget(self.array_x_edit, 4, 1)
+        
+        # Array Y-Position
+        array_y_label = QLabel("Array Y (m)")
+        array_y_label.setFont(font)
+        self.array_y_edit = QLineEdit()
+        self.array_y_edit.setFont(font)
+        self.array_y_edit.setFixedHeight(18)
+        self.array_y_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.array_y_edit.setText("0.00")
+        self.array_y_edit.editingFinished.connect(self.on_ArrayY_changed)
+        array_y_label.setFixedWidth(150)
+        self.array_y_edit.setFixedWidth(40)
+        speaker_grid_layout.addWidget(array_y_label, 5, 0)
+        speaker_grid_layout.addWidget(self.array_y_edit, 5, 1)
+        
+        # Array Z-Position
+        array_z_label = QLabel("Array Z (m)")
+        array_z_label.setFont(font)
+        self.array_z_edit = QLineEdit()
+        self.array_z_edit.setFont(font)
+        self.array_z_edit.setFixedHeight(18)
+        self.array_z_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.array_z_edit.setText("0.00")
+        self.array_z_edit.editingFinished.connect(self.on_ArrayZ_changed)
+        array_z_label.setFixedWidth(150)
+        self.array_z_edit.setFixedWidth(40)
+        speaker_grid_layout.addWidget(array_z_label, 6, 0)
+        speaker_grid_layout.addWidget(self.array_z_edit, 6, 1)
+        
+        # Trennlinie
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.HLine)
+        line3.setFrameShadow(QFrame.Sunken)
+        line3.setFixedHeight(10)
+        speaker_grid_layout.addWidget(line3, 7, 0, 1, 2)
+        
         # Delay
         delay_label = QLabel("Delay (ms)")
         delay_label.setFont(font)
@@ -601,8 +614,8 @@ class Sources(ModuleBase):
         self.delay_edit.editingFinished.connect(self.on_Delay_changed)
         delay_label.setFixedWidth(150)
         self.delay_edit.setFixedWidth(40)
-        speaker_grid_layout.addWidget(delay_label, 4, 0)
-        speaker_grid_layout.addWidget(self.delay_edit, 4, 1)
+        speaker_grid_layout.addWidget(delay_label, 8, 0)
+        speaker_grid_layout.addWidget(self.delay_edit, 8, 1)
         
         # Gain
         gain_label = QLabel("Gain (dB)")
@@ -615,13 +628,13 @@ class Sources(ModuleBase):
         self.gain_edit.editingFinished.connect(self.on_Gain_changed)
         gain_label.setFixedWidth(150)
         self.gain_edit.setFixedWidth(40)
-        speaker_grid_layout.addWidget(gain_label, 5, 0)
-        speaker_grid_layout.addWidget(self.gain_edit, 5, 1)
+        speaker_grid_layout.addWidget(gain_label, 9, 0)
+        speaker_grid_layout.addWidget(self.gain_edit, 9, 1)
         
         # Spacer zwischen Gain und Polarity für größeren Abstand
         self.spacer_gain_polarity = QLabel("")
         self.spacer_gain_polarity.setFixedHeight(5)
-        speaker_grid_layout.addWidget(self.spacer_gain_polarity, 6, 0)
+        speaker_grid_layout.addWidget(self.spacer_gain_polarity, 10, 0)
         
         # Polarity inverted
         polarity_label = QLabel("Polarity inverted")
@@ -630,13 +643,13 @@ class Sources(ModuleBase):
         self.polarity_checkbox.setChecked(False)
         self.polarity_checkbox.stateChanged.connect(self.on_Polarity_changed)
         polarity_label.setFixedWidth(150)
-        speaker_grid_layout.addWidget(polarity_label, 7, 0)
-        speaker_grid_layout.addWidget(self.polarity_checkbox, 7, 1)
+        speaker_grid_layout.addWidget(polarity_label, 11, 0)
+        speaker_grid_layout.addWidget(self.polarity_checkbox, 11, 1)
         
         # Spacer zwischen Polarity und Symmetric für größeren Abstand
         self.spacer_label = QLabel("")
         self.spacer_label.setFixedHeight(3)
-        speaker_grid_layout.addWidget(self.spacer_label, 8, 0)
+        speaker_grid_layout.addWidget(self.spacer_label, 12, 0)
         
         # Symmetric Checkbox
         self.symmetric_label = QLabel("Symmetric")
@@ -644,20 +657,20 @@ class Sources(ModuleBase):
         self.symmetric_checkbox = QCheckBox()
         self.symmetric_checkbox.setChecked(False)
         self.symmetric_label.setFixedWidth(150)
-        speaker_grid_layout.addWidget(self.symmetric_label, 9, 0)
-        speaker_grid_layout.addWidget(self.symmetric_checkbox, 9, 1)
+        speaker_grid_layout.addWidget(self.symmetric_label, 13, 0)
+        speaker_grid_layout.addWidget(self.symmetric_checkbox, 13, 1)
         
         # Spacer zwischen Symmetric und Trennlinie für größeren Abstand
         self.spacer_symmetric_line = QLabel("")
         self.spacer_symmetric_line.setFixedHeight(5)
-        speaker_grid_layout.addWidget(self.spacer_symmetric_line, 10, 0)
+        speaker_grid_layout.addWidget(self.spacer_symmetric_line, 14, 0)
         
         # Trennlinie
         line4 = QFrame()
         line4.setFrameShape(QFrame.HLine)
         line4.setFrameShadow(QFrame.Sunken)
         line4.setFixedHeight(10)
-        speaker_grid_layout.addWidget(line4, 11, 0, 1, 2)
+        speaker_grid_layout.addWidget(line4, 15, 0, 1, 2)
         
         # Autosplay Button
         self.autosplay_button = QPushButton("Autosplay")
@@ -665,13 +678,30 @@ class Sources(ModuleBase):
         self.autosplay_button.setFixedWidth(100)
         self.autosplay_button.setFixedHeight(24)
         self.autosplay_button.clicked.connect(self.on_autosplay_changed)
-        speaker_grid_layout.addWidget(self.autosplay_button, 12, 0, 1, 2)
+        speaker_grid_layout.addWidget(self.autosplay_button, 16, 0, 1, 2)
         
         # Füge einen vertikalen Spacer hinzu, damit alles nach oben gedrückt wird
         verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
-        speaker_grid_layout.addItem(verticalSpacer, 13, 0, 1, 2)
+        speaker_grid_layout.addItem(verticalSpacer, 17, 0, 1, 2)
         
-        self.speaker_tab_layout.addLayout(speaker_grid_layout)
+        # Erstelle Container-Widget für das Grid-Layout
+        grid_container = QWidget()
+        grid_container.setLayout(speaker_grid_layout)
+        # Setze minimale Breite basierend auf Label (150) + Eingabefeld (40) + Padding
+        grid_container.setMinimumWidth(250)
+        grid_container.setMaximumWidth(250)
+        
+        # Erstelle ScrollArea für scrollbares Layout
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(grid_container)
+        scroll_area.setWidgetResizable(False)  # Nicht automatisch anpassen
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Keine horizontale Scrollbar
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setMinimumWidth(250)
+        scroll_area.setMaximumWidth(250)
+        
+        self.speaker_tab_layout.addWidget(scroll_area)
     
 
 
@@ -713,50 +743,47 @@ class Sources(ModuleBase):
         line1.setFixedHeight(10)
         speaker_grid_layout.addWidget(line1, 1, 0, 1, 2)
         
-        # X-Position für alle Quellen
-        position_x_label = QLabel("X Position (m)")
-        position_x_label.setFont(font)
-        self.position_x_edit = QLineEdit()
-        self.position_x_edit.setFont(font)
-        self.position_x_edit.setFixedHeight(18)
-        self.position_x_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
-        self.position_x_edit.setText("0.00")
-        self.position_x_edit.editingFinished.connect(self.on_flown_x_position_changed)
+        # Array X-Position (ersetzt die alten X/Y/Z Position Felder)
+        array_x_label = QLabel("Array X (m)")
+        array_x_label.setFont(font)
+        self.array_x_edit = QLineEdit()
+        self.array_x_edit.setFont(font)
+        self.array_x_edit.setFixedHeight(18)
+        self.array_x_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.array_x_edit.setText("0.00")
+        self.array_x_edit.editingFinished.connect(self.on_ArrayX_changed)
+        array_x_label.setFixedWidth(150)
+        self.array_x_edit.setFixedWidth(40)
+        speaker_grid_layout.addWidget(array_x_label, 2, 0)
+        speaker_grid_layout.addWidget(self.array_x_edit, 2, 1)
         
-        position_x_label.setFixedWidth(150)
-        self.position_x_edit.setFixedWidth(40)
-        speaker_grid_layout.addWidget(position_x_label, 2, 0)
-        speaker_grid_layout.addWidget(self.position_x_edit, 2, 1)
+        # Array Y-Position
+        array_y_label = QLabel("Array Y (m)")
+        array_y_label.setFont(font)
+        self.array_y_edit = QLineEdit()
+        self.array_y_edit.setFont(font)
+        self.array_y_edit.setFixedHeight(18)
+        self.array_y_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.array_y_edit.setText("0.00")
+        self.array_y_edit.editingFinished.connect(self.on_ArrayY_changed)
+        array_y_label.setFixedWidth(150)
+        self.array_y_edit.setFixedWidth(40)
+        speaker_grid_layout.addWidget(array_y_label, 3, 0)
+        speaker_grid_layout.addWidget(self.array_y_edit, 3, 1)
         
-        # Y-Position für alle Quellen
-        position_y_label = QLabel("Y Position (m)")
-        position_y_label.setFont(font)
-        self.position_y_edit = QLineEdit()
-        self.position_y_edit.setFont(font)
-        self.position_y_edit.setFixedHeight(18)
-        self.position_y_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
-        self.position_y_edit.setText("0.00")
-        self.position_y_edit.editingFinished.connect(self.on_flown_y_position_changed)
-        
-        position_y_label.setFixedWidth(150)
-        self.position_y_edit.setFixedWidth(40)
-        speaker_grid_layout.addWidget(position_y_label, 3, 0)
-        speaker_grid_layout.addWidget(self.position_y_edit, 3, 1)
-        
-        # Z-Position für alle Quellen
-        position_z_label = QLabel("Z Position (m)")
-        position_z_label.setFont(font)
-        self.position_z_edit = QLineEdit()
-        self.position_z_edit.setFont(font)
-        self.position_z_edit.setFixedHeight(18)
-        self.position_z_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
-        self.position_z_edit.setText("0.00")
-        self.position_z_edit.editingFinished.connect(self.on_flown_z_position_changed)
-        
-        position_z_label.setFixedWidth(150)
-        self.position_z_edit.setFixedWidth(40)
-        speaker_grid_layout.addWidget(position_z_label, 4, 0)
-        speaker_grid_layout.addWidget(self.position_z_edit, 4, 1)
+        # Array Z-Position
+        array_z_label = QLabel("Array Z (m)")
+        array_z_label.setFont(font)
+        self.array_z_edit = QLineEdit()
+        self.array_z_edit.setFont(font)
+        self.array_z_edit.setFixedHeight(18)
+        self.array_z_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.array_z_edit.setText("0.00")
+        self.array_z_edit.editingFinished.connect(self.on_ArrayZ_changed)
+        array_z_label.setFixedWidth(150)
+        self.array_z_edit.setFixedWidth(40)
+        speaker_grid_layout.addWidget(array_z_label, 4, 0)
+        speaker_grid_layout.addWidget(self.array_z_edit, 4, 1)
 
         position_site_label = QLabel("Site (°)")
         position_site_label.setFont(font)
@@ -870,7 +897,24 @@ class Sources(ModuleBase):
         verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
         speaker_grid_layout.addItem(verticalSpacer, 16, 0, 1, 2)
         
-        self.speaker_tab_layout.addLayout(speaker_grid_layout)
+        # Erstelle Container-Widget für das Grid-Layout
+        grid_container = QWidget()
+        grid_container.setLayout(speaker_grid_layout)
+        # Setze minimale Breite basierend auf Label (150) + Eingabefeld (40) + Padding
+        grid_container.setMinimumWidth(250)
+        grid_container.setMaximumWidth(250)
+        
+        # Erstelle ScrollArea für scrollbares Layout
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(grid_container)
+        scroll_area.setWidgetResizable(False)  # Nicht automatisch anpassen
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Keine horizontale Scrollbar
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setMinimumWidth(250)
+        scroll_area.setMaximumWidth(250)
+        
+        self.speaker_tab_layout.addWidget(scroll_area)
 
 
     # ---- Windowing - Beamsteering ----
@@ -1650,7 +1694,7 @@ class Sources(ModuleBase):
                     speaker_type_combo.setObjectName(f"speaker_type_combo_{source_index + 1}")  # Wichtig: Setze einen eindeutigen Namen
                     speaker_type_combo.setFont(font)
                     speaker_type_combo.blockSignals(True)  # Blockiere Signale während der Konfiguration
-                    speaker_type_combo.setFixedWidth(100)  # Setze feste Breite auf 100
+                    speaker_type_combo.setFixedWidth(80)  # Schmaler für kompaktere Darstellung
                     speaker_type_combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
                     
                     # Füge alle gefilterten Items auf einmal hinzu (effizienter)
@@ -1678,7 +1722,7 @@ class Sources(ModuleBase):
                     speaker_type_combo.setObjectName(f"speaker_type_combo_{source_index + 1}")  # Wichtig: Setze einen eindeutigen Namen
                     speaker_type_combo.setFont(font)
                     speaker_type_combo.blockSignals(True)  # Blockiere Signale während der Konfiguration
-                    speaker_type_combo.setFixedWidth(110)  # Setze feste Breite auf 100
+                    speaker_type_combo.setFixedWidth(80)  # Schmaler für kompaktere Darstellung
                     speaker_type_combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
                     
                     # Füge alle gefilterten Items auf einmal hinzu (effizienter)
@@ -1700,7 +1744,7 @@ class Sources(ModuleBase):
                     angle_combo.setObjectName(f"angle_combo_{source_index + 1}")  # Wichtig: Setze einen eindeutigen Namen
                     angle_combo.setFont(font)
                     angle_combo.blockSignals(True)  # Blockiere Signale während der Konfiguration
-                    angle_combo.setFixedWidth(110)  # Setze feste Breite auf 100
+                    angle_combo.setFixedWidth(80)  # Schmaler für kompaktere Darstellung
                     angle_combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
                     
                     # Hole die verfügbaren Winkel für diesen Lautsprecher
@@ -1820,7 +1864,7 @@ class Sources(ModuleBase):
                 position_x_input.setObjectName(f"position_x_input_{source_index + 1}")
                 position_x_input.setFont(font)
                 position_x_input.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
-                position_x_input.setFixedWidth(90)
+                position_x_input.setFixedWidth(70)
                 position_x_input.setText(f"{speaker_array.source_position_x[source_index]:.2f}")
                 # Deaktiviere im symmetrischen Modus die zweite Hälfte
                 if instance['state'] and source_index >= (len(speaker_array.source_position_x) + 1) // 2:
@@ -1835,7 +1879,7 @@ class Sources(ModuleBase):
                 position_y_input.setObjectName(f"position_y_input_{source_index + 1}")
                 position_y_input.setFont(font)
                 position_y_input.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
-                position_y_input.setFixedWidth(90)
+                position_y_input.setFixedWidth(70)
                 position_y_input.setText(f"{speaker_array.source_position_y[source_index]:.2f}")
                 if instance['state'] and source_index >= (len(speaker_array.source_position_y) + 1) // 2:
                     position_y_input.setEnabled(False)
@@ -1849,7 +1893,7 @@ class Sources(ModuleBase):
                 position_z_input.setObjectName(f"position_z_input_{source_index + 1}")
                 position_z_input.setFont(font)
                 position_z_input.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
-                position_z_input.setFixedWidth(90)
+                position_z_input.setFixedWidth(70)
                 
                 # Prüfe, ob source_position_z existiert und initialisiere es bei Bedarf
                 if not hasattr(speaker_array, 'source_position_z_stack') or speaker_array.source_position_z_stack is None:
@@ -1871,7 +1915,7 @@ class Sources(ModuleBase):
                 azimuth_input.setObjectName(f"azimuth_input_{source_index + 1}")
                 azimuth_input.setFont(font)
                 azimuth_input.setValidator(QDoubleValidator(-180, 180, 1))
-                azimuth_input.setFixedWidth(90)
+                azimuth_input.setFixedWidth(70)
                 azimuth_input.setText(f"{speaker_array.source_azimuth[source_index]:.1f}")
                 if instance['state'] and source_index >= (len(speaker_array.source_azimuth) + 1) // 2:
                     azimuth_input.setEnabled(False)
@@ -1885,7 +1929,7 @@ class Sources(ModuleBase):
                 delay_input.setObjectName(f"delay_input_{source_index + 1}")
                 delay_input.setFont(font)
                 delay_input.setValidator(QDoubleValidator(0, float('inf'), 2))
-                delay_input.setFixedWidth(90)
+                delay_input.setFixedWidth(70)
                 delay_input.setText(f"{speaker_array.source_time[source_index]:.2f}")
                 instance['gridLayout_sources'].addWidget(delay_input, 5, source_index + 3)
                 delay_input.editingFinished.connect(
@@ -1897,7 +1941,7 @@ class Sources(ModuleBase):
                 gain_input.setObjectName(f"gain_input_{source_index + 1}")
                 gain_input.setFont(font)
                 gain_input.setValidator(QDoubleValidator(-60, 10, 2))
-                gain_input.setFixedWidth(90)
+                gain_input.setFixedWidth(70)
                 gain_input.setText(f"{speaker_array.source_level[source_index]:.2f}")
                 instance['gridLayout_sources'].addWidget(gain_input, 6, source_index + 3)
                 gain_input.editingFinished.connect(
@@ -1919,7 +1963,7 @@ class Sources(ModuleBase):
                 number_label = QtWidgets.QLabel(f"{source_index + 1}", self.main_window)
                 number_label.setFont(font)
                 number_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                number_label.setMaximumWidth(90)
+                number_label.setMaximumWidth(30)
                 instance['gridLayout_sources'].addWidget(number_label, source_index + 1, 2)  # Nummerierung in Spalte 2
                 
                 # Stelle sicher, dass source_time existiert und die richtige Größe hat
@@ -1936,7 +1980,7 @@ class Sources(ModuleBase):
                 delay_input.setObjectName(f"delay_input_{source_index + 1}")
                 delay_input.setFont(font)
                 delay_input.setValidator(QDoubleValidator(0, float('inf'), 2))
-                delay_input.setFixedWidth(90)
+                delay_input.setFixedWidth(70)
                 delay_input.setText(f"{speaker_array.source_time[source_index]:.2f}")
                 instance['gridLayout_sources'].addWidget(delay_input, source_index + 1, 5)  # Delay in Spalte 5
                 delay_input.editingFinished.connect(
@@ -1957,7 +2001,7 @@ class Sources(ModuleBase):
                 gain_input.setObjectName(f"gain_input_{source_index + 1}")
                 gain_input.setFont(font)
                 gain_input.setValidator(QDoubleValidator(-60, 10, 2))
-                gain_input.setFixedWidth(90)
+                gain_input.setFixedWidth(70)
                 gain_input.setText(f"{speaker_array.source_level[source_index]:.2f}")
                 instance['gridLayout_sources'].addWidget(gain_input, source_index + 1, 6)  # Gain in Spalte 6
                 gain_input.editingFinished.connect(
@@ -2161,10 +2205,8 @@ class Sources(ModuleBase):
                 new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                 
                 # Setze Checkboxen
-                mute_checkbox = QCheckBox()
-                mute_checkbox.setChecked(speaker_array.mute)
-                hide_checkbox = QCheckBox()
-                hide_checkbox.setChecked(speaker_array.hide)
+                mute_checkbox = self.create_checkbox(speaker_array.mute)
+                hide_checkbox = self.create_checkbox(speaker_array.hide)
                 self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
                 self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
                 
@@ -2209,6 +2251,9 @@ class Sources(ModuleBase):
             # Aktualisiere den Plot nur einmal am Ende
             self.main_window.update_speaker_array_calculations()
         
+        # Validiere alle Checkboxen nach Initialisierung
+        self.validate_all_checkboxes()
+        
         # Passe Spaltenbreite an den Inhalt an
         self.adjust_column_width_to_content()
     
@@ -2244,6 +2289,14 @@ class Sources(ModuleBase):
 
         if not selected_item:
             print("Kein Lautsprecherarray ausgewählt")
+            return
+        
+        # Prüfe, ob es sich um eine Gruppe handelt
+        is_group = selected_item.data(0, Qt.UserRole + 1) == "group"
+        
+        if is_group:
+            # Zeige Gruppen-UI
+            self.create_group_tab(selected_item)
             return
             
         speaker_array_id = selected_item.data(0, Qt.UserRole)
@@ -2304,9 +2357,367 @@ class Sources(ModuleBase):
             # Aktualisiere auch die anderen Eingabefelder
             self.update_sources_input_fields()
             self.update_source_length_input_fields()
+            self.update_array_position_input_fields()
             self.update_beamsteering_input_fields()
             self.update_windowing_input_fields()
             self.update_gain_delay_input_fields()
+
+    def create_group_tab(self, group_item):
+        """Erstellt die UI für Gruppen-Einstellungen"""
+        # Entferne alle vorhandenen Tabs
+        if hasattr(self, 'tab_widget') and self.tab_widget is not None:
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
+        
+        # Erstelle neuen Tab
+        group_tab = QWidget()
+        self.tab_widget.addTab(group_tab, "Group Settings")
+        
+        # Hauptlayout
+        main_layout = QVBoxLayout(group_tab)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Schriftgröße
+        font = QtGui.QFont()
+        font.setPointSize(11)
+        
+        # ScrollArea für den gesamten Inhalt
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumWidth(250)
+        scroll_area.setMaximumWidth(250)
+        
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(5, 5, 5, 5)
+        scroll_layout.setSpacing(10)
+        
+        # Bereich 1: Change relative position
+        relative_position_group = QGroupBox("Change relative position")
+        relative_position_group.setFont(font)
+        relative_position_layout = QGridLayout()
+        relative_position_layout.setVerticalSpacing(3)
+        relative_position_layout.setContentsMargins(5, 10, 5, 5)
+        
+        # Relative X-Position
+        rel_x_label = QLabel("Relative X (m)")
+        rel_x_label.setFont(font)
+        self.group_rel_x_edit = QLineEdit()
+        self.group_rel_x_edit.setFont(font)
+        self.group_rel_x_edit.setFixedHeight(18)
+        self.group_rel_x_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_rel_x_edit.setText("0.00")
+        rel_x_label.setFixedWidth(150)
+        self.group_rel_x_edit.setFixedWidth(40)
+        relative_position_layout.addWidget(rel_x_label, 0, 0)
+        relative_position_layout.addWidget(self.group_rel_x_edit, 0, 1)
+        
+        # Relative Y-Position
+        rel_y_label = QLabel("Relative Y (m)")
+        rel_y_label.setFont(font)
+        self.group_rel_y_edit = QLineEdit()
+        self.group_rel_y_edit.setFont(font)
+        self.group_rel_y_edit.setFixedHeight(18)
+        self.group_rel_y_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_rel_y_edit.setText("0.00")
+        rel_y_label.setFixedWidth(150)
+        self.group_rel_y_edit.setFixedWidth(40)
+        relative_position_layout.addWidget(rel_y_label, 1, 0)
+        relative_position_layout.addWidget(self.group_rel_y_edit, 1, 1)
+        
+        # Relative Z-Position
+        rel_z_label = QLabel("Relative Z (m)")
+        rel_z_label.setFont(font)
+        self.group_rel_z_edit = QLineEdit()
+        self.group_rel_z_edit.setFont(font)
+        self.group_rel_z_edit.setFixedHeight(18)
+        self.group_rel_z_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_rel_z_edit.setText("0.00")
+        rel_z_label.setFixedWidth(150)
+        self.group_rel_z_edit.setFixedWidth(40)
+        relative_position_layout.addWidget(rel_z_label, 2, 0)
+        relative_position_layout.addWidget(self.group_rel_z_edit, 2, 1)
+        
+        relative_position_group.setLayout(relative_position_layout)
+        scroll_layout.addWidget(relative_position_group)
+        
+        # Bereich 2: Change source settings
+        source_settings_group = QGroupBox("Change source settings")
+        source_settings_group.setFont(font)
+        source_settings_layout = QGridLayout()
+        source_settings_layout.setVerticalSpacing(3)
+        source_settings_layout.setContentsMargins(5, 10, 5, 5)
+        
+        # Delay
+        delay_label = QLabel("Delay (ms)")
+        delay_label.setFont(font)
+        self.group_delay_edit = QLineEdit()
+        self.group_delay_edit.setFont(font)
+        self.group_delay_edit.setFixedHeight(18)
+        self.group_delay_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_delay_edit.setText("0.00")
+        delay_label.setFixedWidth(150)
+        self.group_delay_edit.setFixedWidth(40)
+        source_settings_layout.addWidget(delay_label, 0, 0)
+        source_settings_layout.addWidget(self.group_delay_edit, 0, 1)
+        
+        # Gain
+        gain_label = QLabel("Gain (dB)")
+        gain_label.setFont(font)
+        self.group_gain_edit = QLineEdit()
+        self.group_gain_edit.setFont(font)
+        self.group_gain_edit.setFixedHeight(18)
+        self.group_gain_edit.setValidator(QDoubleValidator(-60, 10, 1))
+        self.group_gain_edit.setText("0.0")
+        gain_label.setFixedWidth(150)
+        self.group_gain_edit.setFixedWidth(40)
+        source_settings_layout.addWidget(gain_label, 1, 0)
+        source_settings_layout.addWidget(self.group_gain_edit, 1, 1)
+        
+        source_settings_group.setLayout(source_settings_layout)
+        scroll_layout.addWidget(source_settings_group)
+        
+        # Spacer
+        scroll_layout.addStretch()
+        
+        # Apply Changes Button
+        apply_button = QPushButton("Apply Changes")
+        apply_button.setFont(font)
+        apply_button.setFixedHeight(30)
+        apply_button.clicked.connect(lambda: self.apply_group_changes(group_item))
+        scroll_layout.addWidget(apply_button)
+        
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area)
+        
+        # Lade aktuelle Werte aus der Gruppe
+        self.load_group_values(group_item)
+
+    def save_original_positions_for_group(self, group_item):
+        """Speichert die ursprünglichen Positionen für alle Arrays in einer Gruppe"""
+        if not group_item:
+            return
+        
+        # Finde die Gruppen-ID
+        group_name = group_item.text(0)
+        group_id = None
+        for gid, gdata in self.settings.speaker_array_groups.items():
+            if gdata.get('name') == group_name:
+                group_id = gid
+                break
+        
+        if group_id is None:
+            # Erstelle neue Gruppen-ID
+            import uuid
+            group_id = str(uuid.uuid4())
+            self.settings.speaker_array_groups[group_id] = {
+                'name': group_name,
+                'mute': False,
+                'hide': False,
+                'child_array_ids': []
+            }
+        
+        # Hole oder erstelle ursprüngliche Positionen
+        original_positions = self.settings.speaker_array_groups[group_id].get('original_array_positions', {})
+        
+        # Speichere ursprüngliche Positionen für alle Child-Arrays
+        child_count = group_item.childCount()
+        for i in range(child_count):
+            child_item = group_item.child(i)
+            child_array_id = child_item.data(0, Qt.UserRole)
+            
+            if isinstance(child_array_id, dict):
+                child_array_id = child_array_id.get('id')
+            
+            if child_array_id is not None and child_array_id not in original_positions:
+                speaker_array = self.settings.get_speaker_array(child_array_id)
+                if speaker_array:
+                    original_positions[child_array_id] = {
+                        'x': getattr(speaker_array, 'array_position_x', 0.0),
+                        'y': getattr(speaker_array, 'array_position_y', 0.0),
+                        'z': getattr(speaker_array, 'array_position_z', 0.0),
+                        'delay': getattr(speaker_array, 'delay', 0.0),
+                        'gain': getattr(speaker_array, 'gain', 0.0)
+                    }
+        
+        # Speichere aktualisierte ursprüngliche Positionen
+        self.settings.speaker_array_groups[group_id]['original_array_positions'] = original_positions
+
+    def load_group_values(self, group_item):
+        """Lädt die aktuellen Werte der Gruppe in die Eingabefelder"""
+        if not group_item:
+            return
+        
+        # Finde die Gruppen-ID
+        group_name = group_item.text(0)
+        group_id = None
+        for gid, gdata in self.settings.speaker_array_groups.items():
+            if gdata.get('name') == group_name:
+                group_id = gid
+                break
+        
+        if group_id is None:
+            # Initialisiere mit Standardwerten
+            self.group_rel_x_edit.setText("0.00")
+            self.group_rel_y_edit.setText("0.00")
+            self.group_rel_z_edit.setText("0.00")
+            self.group_delay_edit.setText("0.00")
+            self.group_gain_edit.setText("0.0")
+            return
+        
+        group_data = self.settings.speaker_array_groups[group_id]
+        
+        # Lade relative Positionen
+        rel_pos = group_data.get('relative_position', {'x': 0.0, 'y': 0.0, 'z': 0.0})
+        self.group_rel_x_edit.setText(f"{rel_pos.get('x', 0.0):.2f}")
+        self.group_rel_y_edit.setText(f"{rel_pos.get('y', 0.0):.2f}")
+        self.group_rel_z_edit.setText(f"{rel_pos.get('z', 0.0):.2f}")
+        
+        # Lade Delay und Gain
+        self.group_delay_edit.setText(f"{group_data.get('relative_delay', 0.0):.2f}")
+        self.group_gain_edit.setText(f"{group_data.get('relative_gain', 0.0):.1f}")
+
+    def apply_group_changes(self, group_item):
+        """Wendet die Gruppen-Änderungen auf alle Child-Sources an"""
+        if not group_item:
+            return
+        
+        # Hole die eingegebenen Werte
+        try:
+            rel_x = float(self.group_rel_x_edit.text())
+            rel_y = float(self.group_rel_y_edit.text())
+            rel_z = float(self.group_rel_z_edit.text())
+            rel_delay = float(self.group_delay_edit.text())
+            rel_gain = float(self.group_gain_edit.text())
+        except ValueError:
+            print("Fehler: Ungültige Eingabewerte")
+            return
+        
+        # Finde die Gruppen-ID
+        group_name = group_item.text(0)
+        group_id = None
+        for gid, gdata in self.settings.speaker_array_groups.items():
+            if gdata.get('name') == group_name:
+                group_id = gid
+                break
+        
+        if group_id is None:
+            # Erstelle neue Gruppen-ID
+            import uuid
+            group_id = str(uuid.uuid4())
+            self.settings.speaker_array_groups[group_id] = {
+                'name': group_name,
+                'mute': False,
+                'hide': False,
+                'child_array_ids': []
+            }
+        
+        # Speichere die relativen Werte in der Gruppe
+        self.settings.speaker_array_groups[group_id]['relative_position'] = {
+            'x': rel_x,
+            'y': rel_y,
+            'z': rel_z
+        }
+        self.settings.speaker_array_groups[group_id]['relative_delay'] = rel_delay
+        self.settings.speaker_array_groups[group_id]['relative_gain'] = rel_gain
+        
+        # Hole ursprüngliche Array-Positionen (sollten bereits beim Hinzufügen zur Gruppe gespeichert sein)
+        original_positions = self.settings.speaker_array_groups[group_id].get('original_array_positions', {})
+        
+        # Sammle alle Child-Array-IDs
+        child_count = group_item.childCount()
+        child_array_ids = []
+        for i in range(child_count):
+            child_item = group_item.child(i)
+            child_array_id = child_item.data(0, Qt.UserRole)
+            
+            if isinstance(child_array_id, dict):
+                child_array_id = child_array_id.get('id')
+            
+            if child_array_id is not None:
+                child_array_ids.append(child_array_id)
+                
+                # Falls ursprüngliche Positionen noch nicht gespeichert sind, speichere sie jetzt
+                if child_array_id not in original_positions:
+                    speaker_array = self.settings.get_speaker_array(child_array_id)
+                    if speaker_array:
+                        original_positions[child_array_id] = {
+                            'x': getattr(speaker_array, 'array_position_x', 0.0),
+                            'y': getattr(speaker_array, 'array_position_y', 0.0),
+                            'z': getattr(speaker_array, 'array_position_z', 0.0),
+                            'delay': getattr(speaker_array, 'delay', 0.0),
+                            'gain': getattr(speaker_array, 'gain', 0.0)
+                        }
+        
+        # Speichere aktualisierte ursprüngliche Positionen (nur für neue Arrays)
+        if original_positions:
+            self.settings.speaker_array_groups[group_id]['original_array_positions'] = original_positions
+        
+        # Wende die Änderungen auf alle Child-Sources an
+        # WICHTIG: Die relativen Werte werden zu den AKTUELLEN Array-Werten hinzugefügt (relativ),
+        # nicht zu den ursprünglichen Werten. Dies ermöglicht mehrfaches "Apply" mit kumulativen Effekten.
+        for child_array_id in child_array_ids:
+            speaker_array = self.settings.get_speaker_array(child_array_id)
+            if speaker_array:
+                # Prüfe, ob es sich um ein Flown-System handelt
+                is_flown = hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown"
+                
+                # Addiere relative Positionen zu den aktuellen Array-Positionen
+                speaker_array.array_position_x = getattr(speaker_array, 'array_position_x', 0.0) + rel_x
+                speaker_array.array_position_y = getattr(speaker_array, 'array_position_y', 0.0) + rel_y
+                speaker_array.array_position_z = getattr(speaker_array, 'array_position_z', 0.0) + rel_z
+                
+                # Bei Flown-Systemen: Addiere relative Positionen auch zu source_position_x/y/z_flown
+                # (wie in on_ArrayX/Y/Z_changed für Flown-Systeme)
+                if is_flown:
+                    # Stelle sicher, dass source_position_x/y existieren und die richtige Länge haben
+                    if not hasattr(speaker_array, 'source_position_x') or speaker_array.source_position_x is None:
+                        speaker_array.source_position_x = np.zeros(speaker_array.number_of_sources, dtype=float)
+                    elif len(speaker_array.source_position_x) != speaker_array.number_of_sources:
+                        speaker_array.source_position_x = np.full(speaker_array.number_of_sources, speaker_array.array_position_x, dtype=float)
+                    else:
+                        speaker_array.source_position_x = speaker_array.source_position_x + rel_x
+                    
+                    if not hasattr(speaker_array, 'source_position_y') or speaker_array.source_position_y is None:
+                        speaker_array.source_position_y = np.zeros(speaker_array.number_of_sources, dtype=float)
+                    elif len(speaker_array.source_position_y) != speaker_array.number_of_sources:
+                        speaker_array.source_position_y = np.full(speaker_array.number_of_sources, speaker_array.array_position_y, dtype=float)
+                    else:
+                        speaker_array.source_position_y = speaker_array.source_position_y + rel_y
+                    
+                    if not hasattr(speaker_array, 'source_position_z_flown') or speaker_array.source_position_z_flown is None:
+                        speaker_array.source_position_z_flown = np.zeros(speaker_array.number_of_sources, dtype=float)
+                    elif len(speaker_array.source_position_z_flown) != speaker_array.number_of_sources:
+                        speaker_array.source_position_z_flown = np.full(speaker_array.number_of_sources, speaker_array.array_position_z, dtype=float)
+                    else:
+                        speaker_array.source_position_z_flown = speaker_array.source_position_z_flown + rel_z
+                
+                # Addiere relativen Delay zu dem aktuellen Array-Delay-Wert
+                current_delay = getattr(speaker_array, 'delay', 0.0)
+                speaker_array.delay = current_delay + rel_delay
+                self.settings.update_speaker_array_delay(child_array_id, speaker_array.delay)
+                
+                # Addiere relativen Gain zu dem aktuellen Array-Gain-Wert
+                current_gain = getattr(speaker_array, 'gain', 0.0)
+                speaker_array.gain = current_gain + rel_gain
+                self.settings.update_speaker_array_gain(child_array_id, speaker_array.gain)
+        
+        # Aktualisiere Berechnungen für alle Arrays in der Gruppe
+        # WICHTIG: Leere alle Position-Hashes, damit alle Arrays neu berechnet werden
+        self.main_window.calculation_handler.clear_speaker_position_hashes()
+        
+        # Stelle sicher, dass die Berechnungen für alle Arrays in der Gruppe ausgelöst werden
+        # Die Soundfield-Berechnungen berücksichtigen automatisch alle nicht-muted/nicht-hidden Arrays
+        # Aber wir müssen sicherstellen, dass die Positionen für alle Arrays in der Gruppe neu berechnet werden
+        for child_array_id in child_array_ids:
+            speaker_array = self.settings.get_speaker_array(child_array_id)
+            if speaker_array:
+                # Berechne Positionen für jedes Array in der Gruppe
+                self.main_window.speaker_position_calculator(speaker_array)
+        
+        # Aktualisiere die Soundfield-Berechnungen (berücksichtigt alle Arrays)
+        self.main_window.update_speaker_array_calculations()
 
     # @measure_time
     def update_beamsteering_input_fields(self):
@@ -2342,6 +2753,13 @@ class Sources(ModuleBase):
                 speaker_array_id = speaker_array_id.get('id')
             elif not isinstance(speaker_array_id, (int, str)):
                 return
+
+            # Führe die Beamsteering-Berechnung durch, damit virtuelle Positionen korrekt sind (ohne Array-Offset)
+            speaker_array = self.settings.get_speaker_array(speaker_array_id)
+            if speaker_array:
+                from Module_LFO.Modules_Calculate.BeamSteering import BeamSteering
+                beamsteering = BeamSteering(speaker_array, self.container.data, self.settings)
+                beamsteering.calculate(speaker_array_id)
 
             if self.beamsteering_plot:
                 self.beamsteering_plot.beamsteering_plot(speaker_array_id)
@@ -2380,6 +2798,63 @@ class Sources(ModuleBase):
                 self.array_length_edit.blockSignals(True)
                 self.array_length_edit.setText(str(speaker_array.source_length))
                 self.array_length_edit.blockSignals(False)
+    
+    def update_array_position_input_fields(self):
+        """Aktualisiert die Array-Positions-Eingabefelder"""
+        selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+        speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+        
+        if speaker_array:
+            # Prüfe, ob es sich um ein Flown-System handelt
+            is_flown = hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown"
+            
+            # Initialisiere Array-Positionen, falls nicht vorhanden
+            if not hasattr(speaker_array, 'array_position_x'):
+                speaker_array.array_position_x = 0.0
+            if not hasattr(speaker_array, 'array_position_y'):
+                speaker_array.array_position_y = 0.0
+            if not hasattr(speaker_array, 'array_position_z'):
+                speaker_array.array_position_z = 0.0
+            
+            # Bei Flown-Systemen: Lese die Werte aus den Source-Positionen (da sie dort direkt gesetzt werden)
+            if is_flown:
+                # X-Position: aus source_position_x[0]
+                if hasattr(speaker_array, 'source_position_x') and len(speaker_array.source_position_x) > 0:
+                    array_x = float(speaker_array.source_position_x[0])
+                    speaker_array.array_position_x = array_x
+                else:
+                    array_x = speaker_array.array_position_x
+                
+                # Y-Position: aus source_position_y[0]
+                if hasattr(speaker_array, 'source_position_y') and len(speaker_array.source_position_y) > 0:
+                    array_y = float(speaker_array.source_position_y[0])
+                    speaker_array.array_position_y = array_y
+                else:
+                    array_y = speaker_array.array_position_y
+                
+                # Z-Position: aus source_position_z_flown[0]
+                if hasattr(speaker_array, 'source_position_z_flown') and speaker_array.source_position_z_flown is not None and len(speaker_array.source_position_z_flown) > 0:
+                    array_z = float(speaker_array.source_position_z_flown[0])
+                    speaker_array.array_position_z = array_z
+                else:
+                    array_z = speaker_array.array_position_z
+            else:
+                # Bei Stack-Systemen: Verwende die Array-Positionen direkt
+                array_x = speaker_array.array_position_x
+                array_y = speaker_array.array_position_y
+                array_z = speaker_array.array_position_z
+            
+            self.array_x_edit.blockSignals(True)
+            self.array_x_edit.setText(f"{array_x:.2f}")
+            self.array_x_edit.blockSignals(False)
+            
+            self.array_y_edit.blockSignals(True)
+            self.array_y_edit.setText(f"{array_y:.2f}")
+            self.array_y_edit.blockSignals(False)
+            
+            self.array_z_edit.blockSignals(True)
+            self.array_z_edit.setText(f"{array_z:.2f}")
+            self.array_z_edit.blockSignals(False)
                         
     def update_windowing_input_fields(self):
         selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
@@ -2480,8 +2955,8 @@ class Sources(ModuleBase):
         new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
     
         # Checkboxen erstellen und verbinden
-        mute_checkbox = QCheckBox()
-        hide_checkbox = QCheckBox()
+        mute_checkbox = self.create_checkbox(False)
+        hide_checkbox = self.create_checkbox(False)
         self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
         self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
         
@@ -2517,6 +2992,9 @@ class Sources(ModuleBase):
         # 🎯 Plot aktualisieren nach Array-Erstellung
         if hasattr(self.main_window, "update_speaker_array_calculations"):
             self.main_window.update_speaker_array_calculations()
+        
+        # Validiere alle Checkboxen nach dem Hinzufügen
+        self.validate_all_checkboxes()
         
         # Passe Spaltenbreite an den Inhalt an
         self.adjust_column_width_to_content()
@@ -2569,8 +3047,8 @@ class Sources(ModuleBase):
         new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
     
         # Checkboxen erstellen und verbinden
-        mute_checkbox = QCheckBox()
-        hide_checkbox = QCheckBox()
+        mute_checkbox = self.create_checkbox(False)
+        hide_checkbox = self.create_checkbox(False)
         self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
         self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
         
@@ -2607,6 +3085,9 @@ class Sources(ModuleBase):
                 self.tab_widget.setTabEnabled(i, False)
                 
         self.main_window.update_speaker_array_calculations()
+        
+        # Validiere alle Checkboxen nach dem Hinzufügen
+        self.validate_all_checkboxes()
         
         # Passe Spaltenbreite an den Inhalt an
         self.adjust_column_width_to_content()
@@ -2755,8 +3236,8 @@ class Sources(ModuleBase):
                 new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                 
                 # Erstelle Checkboxen
-                mute_checkbox = QCheckBox()
-                hide_checkbox = QCheckBox()
+                mute_checkbox = self.create_checkbox(new_array.mute)
+                hide_checkbox = self.create_checkbox(new_array.hide)
                 self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
                 self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
                 
@@ -2780,6 +3261,9 @@ class Sources(ModuleBase):
                 
                 # Aktualisiere die Anzeige
                 self.main_window.update_speaker_array_calculations()
+                
+                # Validiere alle Checkboxen nach Duplizierung
+                self.validate_all_checkboxes()
                 
                 # Passe Spaltenbreite an den Inhalt an
                 self.adjust_column_width_to_content()
@@ -2818,18 +3302,156 @@ class Sources(ModuleBase):
 
     def on_speakerspecs_item_text_changed(self, item, column):
         try:
-            speaker_array_id = item.data(0, Qt.UserRole)
-            if speaker_array_id is not None:
-                speaker_array = self.settings.get_speaker_array(speaker_array_id)
-                if speaker_array:
-                    new_name = item.text(0)
-                    speaker_array.name = new_name
-                    # 🎯 Plot aktualisieren wenn Array-Name geändert wird
-                    if hasattr(self.main_window, "update_speaker_array_calculations"):
-                        self.main_window.update_speaker_array_calculations()
+            # Prüfe, ob es sich um eine Gruppe handelt
+            is_group = item.data(0, Qt.UserRole + 1) == "group"
+            
+            if is_group:
+                # Gruppen-Name wurde geändert
+                new_name = item.text(0)
+                
+                # Stelle sicher, dass die Gruppen-Struktur aktuell ist
+                self.save_groups_structure()
+                
+                # Finde die Gruppen-ID durch Vergleich der Child-Arrays
+                group_id = None
+                old_name = None
+                
+                # Sammle die IDs der Child-Arrays dieser Gruppe
+                child_array_ids = []
+                for i in range(item.childCount()):
+                    child_item = item.child(i)
+                    child_array_id = child_item.data(0, Qt.UserRole)
+                    if isinstance(child_array_id, dict):
+                        child_array_id = child_array_id.get('id')
+                    if child_array_id is not None:
+                        child_array_ids.append(child_array_id)
+                
+                # Finde die Gruppe, die diese Child-Arrays enthält
+                for gid, gdata in self.settings.speaker_array_groups.items():
+                    saved_child_ids = gdata.get('child_array_ids', [])
+                    if set(saved_child_ids) == set(child_array_ids):
+                        group_id = gid
+                        old_name = gdata.get('name')
+                        break
+                
+                # Falls nicht gefunden durch Child-Arrays, versuche es durch Vergleich mit allen Gruppen
+                # und verwende den Namen, der nicht dem neuen entspricht
+                if group_id is None or old_name is None:
+                    # Durchsuche alle Top-Level-Items und finde die Position dieser Gruppe
+                    group_index = -1
+                    for i in range(self.sources_tree_widget.topLevelItemCount()):
+                        top_item = self.sources_tree_widget.topLevelItem(i)
+                        if top_item == item:
+                            group_index = i
+                            break
                     
-                    # Passe Spaltenbreite an den Inhalt an
-                    self.adjust_column_width_to_content()
+                    # Wenn wir die Position gefunden haben, durchsuche alle Gruppen
+                    # und finde die, die an dieser Position sein sollte
+                    if group_index >= 0:
+                        # Zähle Gruppen bis zu dieser Position
+                        group_count = 0
+                        for i in range(group_index + 1):
+                            top_item = self.sources_tree_widget.topLevelItem(i)
+                            if top_item and top_item.data(0, Qt.UserRole + 1) == "group":
+                                if i == group_index:
+                                    # Dies ist die geänderte Gruppe
+                                    # Finde die entsprechende Gruppe in den gespeicherten Daten
+                                    group_keys = list(self.settings.speaker_array_groups.keys())
+                                    if group_count < len(group_keys):
+                                        group_id = group_keys[group_count]
+                                        old_name = self.settings.speaker_array_groups[group_id].get('name')
+                                        break
+                                group_count += 1
+                
+                if group_id is None or old_name is None:
+                    # Falls wir die Gruppe immer noch nicht finden können, 
+                    # verwende einen Fallback: Suche nach einer Gruppe, die noch nicht den neuen Namen hat
+                    for gid, gdata in self.settings.speaker_array_groups.items():
+                        saved_name = gdata.get('name')
+                        if saved_name != new_name:
+                            # Verwende diese Gruppe als Fallback
+                            group_id = gid
+                            old_name = saved_name
+                            break
+                
+                if group_id is None or old_name is None:
+                    # Falls wir die Gruppe immer noch nicht finden können, 
+                    # erstelle eine neue Gruppe oder verwende einen Standard-Namen
+                    print(f"Warnung: Gruppe konnte nicht gefunden werden. Name '{new_name}' wird nicht gespeichert.")
+                    # Setze auf einen Standard-Namen zurück
+                    item.blockSignals(True)
+                    item.setText(0, "Group")
+                    item.blockSignals(False)
+                    return
+                
+                # Prüfe, ob der neue Name bereits von einem Array verwendet wird
+                name_exists = False
+                for array_id, array in self.settings.speaker_arrays.items():
+                    if array.name == new_name:
+                        name_exists = True
+                        break
+                
+                # Prüfe auch in anderen Gruppen
+                if not name_exists:
+                    for gid, gdata in self.settings.speaker_array_groups.items():
+                        if gid != group_id and gdata.get('name') == new_name:
+                            name_exists = True
+                            break
+                
+                if name_exists:
+                    # Name bereits vorhanden: Setze auf vorherigen Namen zurück
+                    item.blockSignals(True)
+                    item.setText(0, old_name)
+                    item.blockSignals(False)
+                    print(f"Name '{new_name}' wird bereits verwendet. Zurückgesetzt auf '{old_name}'.")
+                    return
+                
+                # Name ist eindeutig: Speichere den neuen Namen
+                self.settings.speaker_array_groups[group_id]['name'] = new_name
+                
+                # Passe Spaltenbreite an den Inhalt an
+                self.adjust_column_width_to_content()
+                
+            else:
+                # Array-Name wurde geändert
+                speaker_array_id = item.data(0, Qt.UserRole)
+                if speaker_array_id is not None:
+                    speaker_array = self.settings.get_speaker_array(speaker_array_id)
+                    if speaker_array:
+                        new_name = item.text(0)
+                        old_name = speaker_array.name
+                        
+                        # Prüfe, ob der neue Name bereits von einem anderen Array verwendet wird
+                        name_exists = False
+                        for array_id, array in self.settings.speaker_arrays.items():
+                            if array_id != speaker_array_id and array.name == new_name:
+                                name_exists = True
+                                break
+                        
+                        # Prüfe auch in Gruppen
+                        if not name_exists:
+                            for group_data in self.settings.speaker_array_groups.values():
+                                if group_data.get('name') == new_name:
+                                    name_exists = True
+                                    break
+                        
+                        if name_exists:
+                            # Name bereits vorhanden: Setze auf vorherigen Namen zurück
+                            item.blockSignals(True)
+                            item.setText(0, old_name)
+                            item.blockSignals(False)
+                            print(f"Name '{new_name}' wird bereits verwendet. Zurückgesetzt auf '{old_name}'.")
+                            return
+                        
+                        # Name ist eindeutig: Speichere den neuen Namen
+                        speaker_array.name = new_name
+                        
+                        # 🎯 Plot aktualisieren wenn Array-Name geändert wird
+                        if hasattr(self.main_window, "update_speaker_array_calculations"):
+                            self.main_window.update_speaker_array_calculations()
+                        
+                        # Passe Spaltenbreite an den Inhalt an
+                        self.adjust_column_width_to_content()
         except Exception as e:
             print(f"Fehler beim Ändern des Array-Namens: {e}")
 
@@ -3236,12 +3858,31 @@ class Sources(ModuleBase):
             if hasattr(self, 'autosplay_button'):
                 self.autosplay_button.blockSignals(True)
             
-            # Lineare Verteilung der X-Positionen
+            # Prüfe, ob es sich um ein Stack-System handelt
+            configuration = getattr(speaker_array, 'configuration', None)
+            is_stack = configuration is None or str(configuration).lower() == "stack"
+            
+            # Hole Array X-Position (Mittelpunkt für Autosplay)
+            array_pos_x = getattr(speaker_array, 'array_position_x', 0.0)
+            
+            # Bei Stack-Systemen: Entferne Array X-Position von source_position_x, damit um 0 zentriert wird
+            if is_stack:
+                # Entferne Array X-Position von source_position_x (falls vorhanden)
+                if hasattr(speaker_array, 'source_position_x') and speaker_array.source_position_x is not None:
+                    speaker_array.source_position_x = np.asarray(speaker_array.source_position_x) - array_pos_x
+            
+            # Lineare Verteilung der X-Positionen (um 0 zentriert)
             speaker_array.source_position_x = self.functions.linear_distribution(
                 speaker_array.source_position_x,
                 speaker_array.source_length,
                 speaker_array.source_polar_pattern,
             )
+            
+            # Bei Stack-Systemen: Array X-Position wird später in calculate_stack_center hinzuaddiert
+            # Bei Flown-Systemen: Array X-Position wird direkt in source_position_x gesetzt
+            if not is_stack and hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown":
+                # Bei Flown: Setze Array X-Position direkt
+                speaker_array.source_position_x = speaker_array.source_position_x + array_pos_x
 
             # Führe die Beamsteering-Berechnung durch
             beamsteering = BeamSteering(speaker_array, self.container.data, self.settings)
@@ -3410,6 +4051,144 @@ class Sources(ModuleBase):
 
         except ValueError:
             pass
+    
+    def on_ArrayX_changed(self):
+        """Handler für Änderungen der Array X-Position"""
+        try:
+            value = round(float(self.array_x_edit.text()) if self.array_x_edit.text() else 0.0, 2)
+            selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+            if selected_speaker_array_id is None:
+                return
+            
+            speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+            if not speaker_array:
+                return
+            
+            # Initialisiere, falls nicht vorhanden
+            if not hasattr(speaker_array, 'array_position_x'):
+                speaker_array.array_position_x = 0.0
+            
+            # Prüfe ob sich der Wert geändert hat
+            if speaker_array.array_position_x == value:
+                self.array_x_edit.setText(f"{value:.2f}")
+                return
+            
+            speaker_array.array_position_x = value
+            
+            # Bei Flown-Systemen: Setze die absolute Position für alle Quellen (wie die alten Felder)
+            if hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown":
+                speaker_array.source_position_x = np.full(speaker_array.number_of_sources, value, dtype=float)
+            
+            self.array_x_edit.setText(f"{value:.2f}")
+            
+            # Lösche Hash-Cache für dieses Array, damit Neuberechnung ausgelöst wird
+            if hasattr(self.main_window, 'calculation_handler'):
+                array_id = speaker_array.id
+                if array_id in self.main_window.calculation_handler._speaker_position_hashes:
+                    del self.main_window.calculation_handler._speaker_position_hashes[array_id]
+            
+            # Aktualisiere Berechnungen
+            self.main_window.update_speaker_array_calculations()
+            
+        except ValueError:
+            if hasattr(self, 'main_window'):
+                selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+                if selected_speaker_array_id:
+                    speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+                    if speaker_array and hasattr(speaker_array, 'array_position_x'):
+                        self.array_x_edit.setText(f"{speaker_array.array_position_x:.2f}")
+    
+    def on_ArrayY_changed(self):
+        """Handler für Änderungen der Array Y-Position"""
+        try:
+            value = round(float(self.array_y_edit.text()) if self.array_y_edit.text() else 0.0, 2)
+            selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+            if selected_speaker_array_id is None:
+                return
+            
+            speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+            if not speaker_array:
+                return
+            
+            # Initialisiere, falls nicht vorhanden
+            if not hasattr(speaker_array, 'array_position_y'):
+                speaker_array.array_position_y = 0.0
+            
+            # Prüfe ob sich der Wert geändert hat
+            if speaker_array.array_position_y == value:
+                self.array_y_edit.setText(f"{value:.2f}")
+                return
+            
+            speaker_array.array_position_y = value
+            
+            # Bei Flown-Systemen: Setze die absolute Position für alle Quellen (wie die alten Felder)
+            if hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown":
+                speaker_array.source_position_y = np.full(speaker_array.number_of_sources, value, dtype=float)
+            
+            self.array_y_edit.setText(f"{value:.2f}")
+            
+            # Lösche Hash-Cache für dieses Array, damit Neuberechnung ausgelöst wird
+            if hasattr(self.main_window, 'calculation_handler'):
+                array_id = speaker_array.id
+                if array_id in self.main_window.calculation_handler._speaker_position_hashes:
+                    del self.main_window.calculation_handler._speaker_position_hashes[array_id]
+            
+            # Aktualisiere Berechnungen
+            self.main_window.update_speaker_array_calculations()
+            
+        except ValueError:
+            if hasattr(self, 'main_window'):
+                selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+                if selected_speaker_array_id:
+                    speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+                    if speaker_array and hasattr(speaker_array, 'array_position_y'):
+                        self.array_y_edit.setText(f"{speaker_array.array_position_y:.2f}")
+    
+    def on_ArrayZ_changed(self):
+        """Handler für Änderungen der Array Z-Position"""
+        try:
+            value = round(float(self.array_z_edit.text()) if self.array_z_edit.text() else 0.0, 2)
+            selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+            if selected_speaker_array_id is None:
+                return
+            
+            speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+            if not speaker_array:
+                return
+            
+            # Initialisiere, falls nicht vorhanden
+            if not hasattr(speaker_array, 'array_position_z'):
+                speaker_array.array_position_z = 0.0
+            
+            # Prüfe ob sich der Wert geändert hat
+            if speaker_array.array_position_z == value:
+                self.array_z_edit.setText(f"{value:.2f}")
+                return
+            
+            speaker_array.array_position_z = value
+            
+            # Bei Flown-Systemen: Setze die absolute Position für alle Quellen (wie die alten Felder)
+            if hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown":
+                speaker_array.source_position_z_flown = np.full(speaker_array.number_of_sources, value, dtype=float)
+            
+            self.array_z_edit.setText(f"{value:.2f}")
+            
+            # Lösche Hash-Cache für dieses Array, damit Neuberechnung ausgelöst wird
+            if hasattr(self.main_window, 'calculation_handler'):
+                array_id = speaker_array.id
+                if array_id in self.main_window.calculation_handler._speaker_position_hashes:
+                    del self.main_window.calculation_handler._speaker_position_hashes[array_id]
+            
+            # Aktualisiere Berechnungen
+            self.main_window.update_speaker_array_calculations()
+            
+        except ValueError:
+            if hasattr(self, 'main_window'):
+                selected_speaker_array_id = self.main_window.get_selected_speaker_array_id()
+                if selected_speaker_array_id:
+                    speaker_array = self.settings.get_speaker_array(selected_speaker_array_id)
+                    if speaker_array and hasattr(speaker_array, 'array_position_z'):
+                        self.array_z_edit.setText(f"{speaker_array.array_position_z:.2f}")
 
 
     def on_Gain_changed(self):
@@ -4014,6 +4793,55 @@ class Sources(ModuleBase):
 
 
 
+    def create_checkbox(self, checked=False):
+        """
+        Erstellt eine Checkbox mit kleinerer Größe.
+        
+        Args:
+            checked: Initialer Checked-Zustand
+            
+        Returns:
+            QCheckBox: Die erstellte Checkbox
+        """
+        checkbox = QCheckBox()
+        checkbox.setChecked(checked)
+        # Kleinere Checkboxen: 18x18 Pixel
+        checkbox.setFixedSize(18, 18)
+        return checkbox
+    
+    def ensure_group_checkboxes(self, item):
+        """
+        Stellt sicher, dass Checkboxen für eine Gruppe existieren.
+        Erstellt sie, falls sie noch nicht vorhanden sind.
+        
+        Args:
+            item: Das TreeWidgetItem für die Gruppe
+        """
+        # Prüfe, ob es sich um eine Gruppe handelt
+        if item.data(0, Qt.UserRole + 1) != "group":
+            return
+        
+        # Prüfe, ob Checkboxen bereits existieren
+        mute_checkbox = self.sources_tree_widget.itemWidget(item, 1)
+        hide_checkbox = self.sources_tree_widget.itemWidget(item, 2)
+        
+        # Erstelle Checkboxen, falls sie nicht existieren
+        if not mute_checkbox:
+            mute_checkbox = self.create_checkbox(False)
+            mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
+            self.sources_tree_widget.setItemWidget(item, 1, mute_checkbox)
+        else:
+            # Stelle sicher, dass die Checkbox die richtige Größe hat
+            mute_checkbox.setFixedSize(18, 18)
+        
+        if not hide_checkbox:
+            hide_checkbox = self.create_checkbox(False)
+            hide_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_hide_changed(g_item, state))
+            self.sources_tree_widget.setItemWidget(item, 2, hide_checkbox)
+        else:
+            # Stelle sicher, dass die Checkbox die richtige Größe hat
+            hide_checkbox.setFixedSize(18, 18)
+    
     def ensure_source_checkboxes(self, item):
         """
         Stellt sicher, dass Checkboxen für ein Source-Item existieren.
@@ -4036,24 +4864,24 @@ class Sources(ModuleBase):
         
         # Erstelle Checkboxen, falls sie nicht existieren
         if not mute_checkbox:
-            mute_checkbox = QCheckBox()
             speaker_array = self.settings.get_speaker_array(array_id)
-            if speaker_array:
-                mute_checkbox.setChecked(speaker_array.mute)
-            else:
-                mute_checkbox.setChecked(False)
+            checked = speaker_array.mute if speaker_array else False
+            mute_checkbox = self.create_checkbox(checked)
             mute_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_mute_state(id, state))
             self.sources_tree_widget.setItemWidget(item, 1, mute_checkbox)
+        else:
+            # Stelle sicher, dass die Checkbox die richtige Größe hat
+            mute_checkbox.setFixedSize(18, 18)
         
         if not hide_checkbox:
-            hide_checkbox = QCheckBox()
             speaker_array = self.settings.get_speaker_array(array_id)
-            if speaker_array:
-                hide_checkbox.setChecked(speaker_array.hide)
-            else:
-                hide_checkbox.setChecked(False)
+            checked = speaker_array.hide if speaker_array else False
+            hide_checkbox = self.create_checkbox(checked)
             hide_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_hide_state(id, state))
             self.sources_tree_widget.setItemWidget(item, 2, hide_checkbox)
+        else:
+            # Stelle sicher, dass die Checkbox die richtige Größe hat
+            hide_checkbox.setFixedSize(18, 18)
         
         # Stelle sicher, dass auch das Farb-Quadrat existiert
         color_label = self.sources_tree_widget.itemWidget(item, 3)
@@ -4064,6 +4892,30 @@ class Sources(ModuleBase):
                 color_label.setFixedSize(20, 20)
                 color_label.setStyleSheet(f"background-color: {speaker_array.color}; border: 1px solid gray;")
                 self.sources_tree_widget.setItemWidget(item, 3, color_label)
+    
+    def validate_all_checkboxes(self):
+        """
+        Überprüft alle Items im TreeWidget und stellt sicher, dass Checkboxen vorhanden sind.
+        Wird nach Änderungen am TreeWidget aufgerufen.
+        """
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            item = self.sources_tree_widget.topLevelItem(i)
+            if item:
+                # Prüfe, ob es eine Gruppe oder ein Source-Item ist
+                if item.data(0, Qt.UserRole + 1) == "group":
+                    self.ensure_group_checkboxes(item)
+                else:
+                    self.ensure_source_checkboxes(item)
+                
+                # Durchlaufe alle Child-Items (in Gruppen)
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    if child:
+                        self.ensure_source_checkboxes(child)
     
     def adjust_column_width_to_content(self):
         """
@@ -4122,10 +4974,8 @@ class Sources(ModuleBase):
         group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
         
         # Erstelle Checkboxen für die Gruppe
-        mute_checkbox = QCheckBox()
-        mute_checkbox.setChecked(False)
-        hide_checkbox = QCheckBox()
-        hide_checkbox.setChecked(False)
+        mute_checkbox = self.create_checkbox(False)
+        hide_checkbox = self.create_checkbox(False)
         
         # Verbinde Checkboxen mit Handler
         mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
@@ -4194,6 +5044,9 @@ class Sources(ModuleBase):
         if child_array_ids:
             self.main_window.update_speaker_array_calculations()
         
+        # Validiere alle Checkboxen nach dem Löschen
+        self.validate_all_checkboxes()
+        
         # Passe Spaltenbreite an
         self.adjust_column_width_to_content()
     
@@ -4252,10 +5105,8 @@ class Sources(ModuleBase):
             new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
             
             # Erstelle Checkboxen
-            mute_checkbox = QCheckBox()
-            mute_checkbox.setChecked(new_array.mute)
-            hide_checkbox = QCheckBox()
-            hide_checkbox.setChecked(new_array.hide)
+            mute_checkbox = self.create_checkbox(new_array.mute)
+            hide_checkbox = self.create_checkbox(new_array.hide)
             self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
             self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
             
@@ -4288,10 +5139,8 @@ class Sources(ModuleBase):
         new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
         
         # Erstelle Checkboxen für neue Gruppe
-        new_mute_checkbox = QCheckBox()
-        new_mute_checkbox.setChecked(group_mute)
-        new_hide_checkbox = QCheckBox()
-        new_hide_checkbox.setChecked(group_hide)
+        new_mute_checkbox = self.create_checkbox(group_mute)
+        new_hide_checkbox = self.create_checkbox(group_hide)
         
         # Verbinde Checkboxen
         new_mute_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_mute_changed(g_item, state))
@@ -4307,6 +5156,9 @@ class Sources(ModuleBase):
             self.ensure_source_checkboxes(array_item)
         
         new_group_item.setExpanded(True)
+        
+        # Validiere alle Checkboxen nach Duplizierung der Gruppe
+        self.validate_all_checkboxes()
         
         # Passe Spaltenbreite an
         self.adjust_column_width_to_content()
@@ -4673,11 +5525,16 @@ class Sources(ModuleBase):
                         child_array_ids.append(array_id)
                 
                 # Speichere Gruppen-Information
+                # Behalte vorhandene relative Positionen und Delay/Gain Werte
+                existing_data = self.settings.speaker_array_groups.get(group_id, {})
                 self.settings.speaker_array_groups[group_id] = {
                     'name': group_name,
                     'mute': mute,
                     'hide': hide,
-                    'child_array_ids': child_array_ids
+                    'child_array_ids': child_array_ids,
+                    'relative_position': existing_data.get('relative_position', {'x': 0.0, 'y': 0.0, 'z': 0.0}),
+                    'relative_delay': existing_data.get('relative_delay', 0.0),
+                    'relative_gain': existing_data.get('relative_gain', 0.0)
                 }
     
     def load_groups_structure(self):
@@ -4706,10 +5563,8 @@ class Sources(ModuleBase):
                 group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                 
                 # Erstelle Checkboxen für Gruppe
-                mute_checkbox = QCheckBox()
-                mute_checkbox.setChecked(group_data.get('mute', False))
-                hide_checkbox = QCheckBox()
-                hide_checkbox.setChecked(group_data.get('hide', False))
+                mute_checkbox = self.create_checkbox(group_data.get('mute', False))
+                hide_checkbox = self.create_checkbox(group_data.get('hide', False))
                 
                 # Verbinde Checkboxen
                 mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
@@ -4759,6 +5614,9 @@ class Sources(ModuleBase):
                         self.ensure_source_checkboxes(array_item)
                 
                 group_item.setExpanded(True)
+            
+            # Validiere alle Checkboxen nach dem Laden
+            self.validate_all_checkboxes()
             
             # Passe Spaltenbreite an
             self.adjust_column_width_to_content()
