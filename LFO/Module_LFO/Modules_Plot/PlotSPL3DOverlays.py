@@ -28,7 +28,7 @@ class SPL3DOverlayRenderer:
         self._box_face_cache: dict[tuple[float, float, float], Tuple[Optional[int], Optional[int]]] = {}
         # Kleinster Z-Offset, um Z-Fighting mit Boden/Surface zu vermeiden
         # (insbesondere bei Draufsicht sollen Linien klar sichtbar bleiben).
-        self._planar_z_offset = 0.02
+        self._planar_z_offset = 0.0
         self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
         self._speaker_geometry_cache: dict[str, List[Tuple[Any, Optional[int]]]] = {}  # Cache für transformierte Geometrien
         self._geometry_cache_max_size = 100  # Maximale Anzahl gecachter Geometrien
@@ -156,7 +156,7 @@ class SPL3DOverlayRenderer:
         self._last_surfaces_state = signature_tuple
         
         # Zeichne alle nicht versteckten Surfaces (enabled und disabled)
-        z_offset = self._planar_z_offset * 2  # Etwas höher als andere Overlays
+        z_offset = self._planar_z_offset
         
         for surface_id, surface_def in surface_definitions.items():
             if isinstance(surface_def, SurfaceDefinition):
@@ -263,58 +263,23 @@ class SPL3DOverlayRenderer:
                             render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
                 else:
-                    # Disabled Surface: sichtbar mit hellgrauer Farbe
+                    # Disabled Surface: nur Rahmen (gestrichelte Linien), keine Füllung
                     dashed_pattern = 0xAAAA  # Gestricheltes Muster
-                    disabled_color = '#dcdcdc'
+                    line_color = '#000000'  # Schwarze Linien für alle disabled Surfaces
+                    opacity = 0.7 if is_active else 0.6
 
-                    # Fülle disabled Surface mit hellem Grau (nur wenn genügend Punkte vorhanden)
-                    try:
-                        poly_points = np.asarray(polygon_coords, dtype=float)
-                        if poly_points.shape[0] >= 3:
-                            faces = np.concatenate(
-                                ([poly_points.shape[0]], np.arange(poly_points.shape[0], dtype=np.int64))
-                            )
-                            polygon = self.pv.PolyData(poly_points, faces)
-                            polygon = polygon.triangulate()
-                            self._add_overlay_mesh(
-                                polygon,
-                                color=disabled_color,
-                                opacity=0.35,
-                                category='surfaces',
-                                edge_color=disabled_color,
-                                show_edges=False,
-                            )
-                    except Exception:
-                        pass
-
-                    if is_active:
-                        # Aktives disabled Surface: Rote gestrichelte Umrandung
-                        # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
-                        self._add_overlay_mesh(
-                            polyline,
-                            color='#FF0000',
-                            line_width=1.2,
-                            opacity=0.60,
-                            line_pattern=dashed_pattern,
-                            line_repeat=2,
-                            category='surfaces',
-                            show_vertices=False,
-                            render_lines_as_tubes=True,  # Polyline mit Tube-Rendering für gestrichelte Linien
-                        )
-                    else:
-                        # Inaktives disabled Surface: Standard gestrichelt, dünn
-                        # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
-                        self._add_overlay_mesh(
-                            polyline,
-                            color=disabled_color,
-                            line_width=1.2,
-                            opacity=0.6,
-                            line_pattern=dashed_pattern,
-                            line_repeat=2,
-                            category='surfaces',
-                            show_vertices=False,
-                            render_lines_as_tubes=True,  # Polyline mit Tube-Rendering für gestrichelte Linien
-                        )
+                    # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
+                    self._add_overlay_mesh(
+                        polyline,
+                        color=line_color,
+                        line_width=1.2,
+                        opacity=opacity,
+                        line_pattern=dashed_pattern,
+                        line_repeat=2,
+                        category='surfaces',
+                        show_vertices=False,
+                        render_lines_as_tubes=True,
+                    )
             except (ValueError, TypeError, AttributeError, Exception):
                 continue
 

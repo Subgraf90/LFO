@@ -50,7 +50,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
     SURFACE_NAME = "spl_surface"
     FLOOR_NAME = "spl_floor"
-    UPSCALE_FACTOR = 3  # Erhöht die Anzahl der Grafikpunkte für schärferen Plot (mit Interpolation)
+    UPSCALE_FACTOR = 24  # Erhöht die Anzahl der Grafikpunkte für schärferen Plot (mit Interpolation)
 
     def __init__(self, parent_widget, settings, colorbar_ax):
         if QtInteractor is None or pv is None:  # pragma: no cover - Laufzeitprüfung
@@ -110,6 +110,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         self._configure_plotter()
         self.initialize_empty_scene(preserve_camera=False)
+        # Erzwinge beim UI-Start eine definierte Top-Down-Ansicht.
+        self.set_view_top()
         self._setup_view_controls()
         self._setup_time_control()
 
@@ -187,7 +189,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._last_overlay_signatures = {}
 
         self._configure_plotter()
-        self._add_floor_plane()
+        # Grundfläche entfernt, damit keine zusätzliche Fläche gerendert wird
         self._add_scene_frame()
 
         if camera_state is not None:
@@ -1031,23 +1033,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except Exception:  # noqa: BLE001
             pass
         self.plotter.camera_position = 'iso'
-
-    def _add_floor_plane(self):
-        width = getattr(self.settings, 'width', 50)
-        length = getattr(self.settings, 'length', 50)
-        plane = pv.Plane(
-            center=(0.0, 0.0, -0.05),
-            direction=(0.0, 0.0, 1.0),
-            i_size=width,
-            j_size=length,
-        )
-        self.plotter.add_mesh(
-            plane,
-            name=self.FLOOR_NAME,
-            color='#d3d3d3',  # Hellgrau für Empty Plot
-            opacity=0.7,  # Etwas weniger transparent für bessere Sichtbarkeit
-            reset_camera=False,
-        )
 
     def _get_colorbar_params(self, phase_mode: bool) -> dict[str, float]:
         if self._colorbar_override:

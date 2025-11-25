@@ -517,31 +517,29 @@ def build_surface_mesh(
     points = np.column_stack((xm.ravel(), ym.ravel(), zm.ravel()))
 
     # Definiere Quad-Zellen (nur horizontale Deckfläche)
-    # 🎯 RENDERE NUR STRIKTE ZELLEN: Eine Zelle wird nur gerendert, wenn alle 4 Eckpunkte
-    # innerhalb der strikten Surface-Maske liegen. Damit wird der Plot exakt an den
-    # Surface-Grenzen beschnitten.
+    # 🎯 RENDERE ALLE ZELLEN: Alle Zellen werden gerendert, aber SPL-Werte außerhalb
+    # der Surface-Maske werden auf NaN gesetzt, damit sie nicht angezeigt werden.
     face_list: List[int] = []
-    cell_mask = None
     point_mask = None
     if surface_mask is not None:
         mask_arr = np.asarray(surface_mask, dtype=bool)
         if mask_arr.shape == (ny - 1, nx - 1):
             cell_mask = mask_arr
-        elif mask_arr.shape == (ny, nx):
-            point_mask = mask_arr
         elif mask_arr.size == (ny - 1) * (nx - 1):
             cell_mask = mask_arr.reshape(ny - 1, nx - 1)
+        elif mask_arr.shape == (ny, nx):
+            point_mask = mask_arr
         elif mask_arr.size == ny * nx:
             point_mask = mask_arr.reshape(ny, nx)
 
+    # Rendere nur Zellen, deren Pixelzentrum innerhalb der Surface liegt
     for j in range(ny - 1):
         for i in range(nx - 1):
             if cell_mask is not None:
                 if not cell_mask[j, i]:
                     continue
             elif point_mask is not None:
-                points_sub = point_mask[j : j + 2, i : i + 2]
-                if not np.all(points_sub):
+                if not np.all(point_mask[j:j+2, i:i+2]):
                     continue
             idx0 = j * nx + i
             idx1 = idx0 + 1
@@ -557,8 +555,7 @@ def build_surface_mesh(
         # Zu wenig Punkte für Polygone → Einzelpunkte rendern
         mesh = pv_module.PolyData(points)
 
-    point_scalars = values.ravel()
-    mesh["plot_scalars"] = point_scalars
+    mesh["plot_scalars"] = values.ravel()
 
     # Entferne vertikale Seitenflächen (Normale nahezu horizontal)
     try:
@@ -641,7 +638,7 @@ def prepare_plot_geometry(
         plot_y = expanded_y
 
     plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings)
-    if plot_mask is None:
+    if plot_mask is None and surface_mask is not None:
         plot_mask = _convert_point_mask_to_cell_mask(surface_mask)
     if plot_mask is None:
         print("[SurfaceGeometry] Fehler: Keine gültige Surface-Maske – breche Rendering ab.")
@@ -767,6 +764,7 @@ def _build_plot_surface_mask(
     if plot_x.size < 2 or plot_y.size < 2:
         return None
 
+    # 🎯 Erzeuge Zellmaske (ny-1, nx-1) basierend auf Pixelzentren
     cell_x = 0.5 * (plot_x[:-1] + plot_x[1:])
     cell_y = 0.5 * (plot_y[:-1] + plot_y[1:])
     X, Y = np.meshgrid(cell_x, cell_y, indexing="xy")

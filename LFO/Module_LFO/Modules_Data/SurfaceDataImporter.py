@@ -116,8 +116,8 @@ class SurfaceDataImporter:
         imported_count = self._store_surfaces(surfaces)
         QMessageBox.information(
             self.parent_widget,
-            "Surface-Import erfolgreich",
-            f"{imported_count} Flächen wurden importiert.",
+            "Surface Import Successful",
+            f"{imported_count} surface(s) imported successfully.",
         )
         return True
 
@@ -283,8 +283,15 @@ class SurfaceDataImporter:
         return label.strip()
 
     def _store_surfaces(self, surfaces: Dict[str, SurfaceDefinition]) -> int:
+        logger = logging.getLogger(__name__)
         imported = 0
         for surface_id, surface in surfaces.items():
+            logger.debug(
+                "Store surface %s (%s) group=%s",
+                surface_id,
+                getattr(surface, "name", surface_id),
+                getattr(surface, "group_id", None),
+            )
             if hasattr(self.settings, "add_surface_definition"):
                 self.settings.add_surface_definition(surface_id, surface, make_active=False)
             else:
@@ -294,8 +301,31 @@ class SurfaceDataImporter:
                 surface_store[surface_id] = surface
                 setattr(self.settings, "surface_definitions", surface_store)
             imported += 1
+
+            # Weise Surface direkt einer Gruppe zu (inkl. Erstellung)
+            if self.group_manager:
+                group_id = getattr(surface, "group_id", None)
+                if group_id:
+                    self.group_manager.assign_surface_to_group(
+                        surface_id,
+                        group_id,
+                        create_missing=True,
+                    )
         if self.group_manager:
             self.group_manager.ensure_surface_group_structure()
+
+        final_store = getattr(self.settings, "surface_definitions", {})
+        logger.info(
+            "Surface store now contains %d entries: %s",
+            len(final_store),
+            ", ".join(list(final_store.keys())),
+        )
+        if self.group_manager:
+            groups = self.group_manager.list_groups() if hasattr(self.group_manager, "list_groups") else {}
+            logger.info(
+                "Current groups after import: %s",
+                ", ".join(f"{gid}:{grp.name}" for gid, grp in groups.items()) if groups else "none",
+            )
         return imported
 
     # ---- user confirmation ------------------------------------------

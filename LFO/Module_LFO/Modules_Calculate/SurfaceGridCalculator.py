@@ -12,6 +12,7 @@ Dieses Modul kapselt die gesamte Logik zur Grid-Erstellung für Soundfield-Berec
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import math
+import os
 
 import numpy as np
 
@@ -60,6 +61,9 @@ class SurfaceSamplingPoints:
             "indices": self.indices.tolist(),
             "grid_shape": list(self.grid_shape),
         }
+
+
+DEBUG_SURFACE_GRID = bool(int(os.environ.get("LFO_DEBUG_SURFACE_GRID", "0")))
 
 
 class SurfaceGridCalculator(ModuleBase):
@@ -488,42 +492,21 @@ class SurfaceGridCalculator(ModuleBase):
             if len(points) < 3:
                 continue
             
-            # Extrahiere Z-Werte
-            z_values = [p["z"] for p in points]
-            
-            # 🎯 Normalisierung: Wenn genau eine Abweichung, setze auf 4.0
-            unique_z = sorted(set(z_values))
-            if len(unique_z) == 2:  # Genau zwei unterschiedliche Z-Werte
-                z_common = unique_z[0]
-                z_deviation = unique_z[1]
-                count_common = z_values.count(z_common)
-                count_deviation = z_values.count(z_deviation)
-                
-                # Wenn nur ein Punkt abweicht, normalisiere Abweichung auf 4.0
-                if (count_common == 1 and count_deviation == len(z_values) - 1) or \
-                   (count_deviation == 1 and count_common == len(z_values) - 1):
-                    # Normalisiere: X/Y bleiben fest, Z-Abweichung wird auf 4.0 gesetzt
-                    normalized_z = z_common + (4.0 if z_deviation > z_common else -4.0)
-                    
-                    # Erstelle normalisierte Punkte (X/Y bleiben unverändert!)
-                    normalized_points = []
-                    for i, point in enumerate(points):
-                        normalized_point = point.copy()
-                        if abs(z_values[i] - z_deviation) < 0.001:  # Kleine Toleranz
-                            normalized_point['z'] = normalized_z
-                        else:
-                            normalized_point['z'] = z_common
-                        normalized_points.append(normalized_point)
-                    points = normalized_points
-            
             # Erstelle Surface-Modell mit normalisierten Punkten
             model, error = derive_surface_plane(points)
+            name = surface_def.get("name", surface_id)
             if model is None:
-                name = surface_def.get("name", surface_id)
                 print(
                     f"[SurfaceGridCalculator] Surface '{name}' wird ignoriert: {error}"
                 )
                 continue
+            if DEBUG_SURFACE_GRID:
+                print(
+                    "[SurfaceGridCalculator] plane",
+                    name,
+                    f"mode={model.get('mode')}",
+                    f"params={model}",
+                )
             normalized_surfaces.append((points, model, surface_def.get("name", surface_id)))
         
         if not normalized_surfaces:

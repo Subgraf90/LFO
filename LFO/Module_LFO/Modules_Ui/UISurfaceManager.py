@@ -17,6 +17,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
     SurfaceGroup,
 )
+import logging
 
 
 class UISurfaceManager(ModuleBase):
@@ -244,8 +245,9 @@ class UISurfaceManager(ModuleBase):
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             
             # Spaltenbreiten konfigurieren
-            self.surface_tree_widget.setColumnWidth(1, 25)   # Enable
-            self.surface_tree_widget.setColumnWidth(2, 25)   # Hide
+            self.surface_tree_widget.setColumnWidth(0, 180)  # Surface Name - Mindestbreite
+            self.surface_tree_widget.setColumnWidth(1, 35)   # Enable
+            self.surface_tree_widget.setColumnWidth(2, 35)   # Hide
             header.setStretchLastSection(False)
             header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
             header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
@@ -270,7 +272,7 @@ class UISurfaceManager(ModuleBase):
             # Setze die SizePolicy
             self.surface_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             self.surface_tree_widget.setMinimumHeight(235)
-            self.surface_tree_widget.setFixedWidth(200)
+            self.surface_tree_widget.setFixedWidth(260)
             
             # Verbinde Signale mit Slots
             self.surface_tree_widget.itemSelectionChanged.connect(self.show_surfaces_tab)
@@ -360,6 +362,7 @@ class UISurfaceManager(ModuleBase):
         if not hasattr(self, 'surface_tree_widget'):
             return
         
+        logger = logging.getLogger(__name__)
         self.surface_tree_widget.blockSignals(True)
         self.surface_tree_widget.clear()
         
@@ -370,6 +373,16 @@ class UISurfaceManager(ModuleBase):
         default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
         surface_store = getattr(self.settings, 'surface_definitions', {})
         root_group_id = self._group_controller.root_group_id
+
+        logger.debug(
+            "load_surfaces: %d surfaces im Store (Default=%s)",
+            len(surface_store),
+            default_surface_id if default_surface_id in surface_store else "none",
+        )
+        for surface_id, surface in surface_store.items():
+            name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name')
+            group_id = surface.group_id if isinstance(surface, SurfaceDefinition) else surface.get('group_id')
+            logger.debug("  Surface %s (%s) -> group %s", surface_id, name, group_id)
         
         # Lade Default-Fläche als Top-Level-Item ganz oben (wenn sie existiert)
         if default_surface_id in surface_store:
@@ -391,6 +404,18 @@ class UISurfaceManager(ModuleBase):
         
         # Lade manuelle Gruppen (ohne Root-Gruppe)
         group_store = self._group_controller.list_groups()
+        logger.debug("load_surfaces: %d Gruppen (root=%s)", len(group_store), root_group_id)
+        for group_id, group in group_store.items():
+            if not group:
+                continue
+            logger.debug(
+                "  Gruppe %s (%s): parent=%s, children=%d, surfaces=%d",
+                group_id,
+                group.name,
+                group.parent_id,
+                len(group.child_groups),
+                len(group.surface_ids),
+            )
         
         # Lade alle Gruppen außer der Root-Gruppe
         for group_id, group in group_store.items():
@@ -759,6 +784,11 @@ class UISurfaceManager(ModuleBase):
             # Lade TreeWidget neu
             self.load_surfaces()
             
+            # Explizites Update des TreeWidgets
+            if hasattr(self, 'surface_tree_widget'):
+                self.surface_tree_widget.update()
+                self.surface_tree_widget.expandAll()
+            
             # Aktualisiere Berechnungen
             if hasattr(self.main_window, 'update_speaker_array_calculations'):
                 self.main_window.update_speaker_array_calculations()
@@ -904,16 +934,23 @@ class UISurfaceManager(ModuleBase):
         
         # TreeWidget für Koordinaten
         self.points_tree = QTreeWidget()
-        self.points_tree.setHeaderLabels(["Point", "X (m)", "Y (m)", "Z (m)"])
+        self.points_tree.setHeaderLabels(["Point", "X (m)", "Y (m)", "Z (m)", ""])
         self.points_tree.setRootIsDecorated(False)
         self.points_tree.setAlternatingRowColors(True)
         self.points_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.points_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.points_tree.setUniformRowHeights(True)
         self.points_tree.setColumnWidth(0, 55)
-        self.points_tree.setColumnWidth(1, 80)
-        self.points_tree.setColumnWidth(2, 80)
-        self.points_tree.setColumnWidth(3, 80)
+        self.points_tree.setColumnWidth(1, 85)
+        self.points_tree.setColumnWidth(2, 85)
+        self.points_tree.setColumnWidth(3, 85)
+        self.points_tree.setColumnWidth(4, 10)
+        header_points = self.points_tree.header()
+        header_points.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+        header_points.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        header_points.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        header_points.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+        header_points.setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
         self.points_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.points_tree.setFont(font)
         self.points_tree.setContextMenuPolicy(Qt.CustomContextMenu)
