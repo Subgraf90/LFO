@@ -254,7 +254,7 @@ class Sources(ModuleBase):
     
             # TreeWidget für die Arrays
             self.sources_tree_widget = QTreeWidget()
-            self.sources_tree_widget.setHeaderLabels(["Source Name", "Mute", "Hide", ""])
+            self.sources_tree_widget.setHeaderLabels(["Source Name", "M", "H", ""])
             
             # Überschreibe dropEvent für Drag & Drop Funktionalität
             original_dropEvent = self.sources_tree_widget.dropEvent
@@ -2226,13 +2226,7 @@ class Sources(ModuleBase):
                 hide_checkbox = self.create_checkbox(speaker_array.hide)
                 self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
                 self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
-                
-                # Farb-Quadrat in der vierten Spalte (wie beim Snapshot Widget)
-                if hasattr(speaker_array, 'color') and speaker_array.color:
-                    color_label = QtWidgets.QLabel()
-                    color_label.setFixedSize(20, 20)
-                    color_label.setStyleSheet(f"background-color: {speaker_array.color}; border: 1px solid gray;")
-                    self.sources_tree_widget.setItemWidget(new_array_item, 3, color_label)
+                self._update_color_indicator(new_array_item, speaker_array)
                 
                 # Verbinde Signale mit verzögerter Ausführung
                 mute_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_mute_state(id, state))
@@ -2976,14 +2970,8 @@ class Sources(ModuleBase):
         hide_checkbox = self.create_checkbox(False)
         self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
         self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
+        self._update_color_indicator(new_array_item, new_array)
         
-        # Farb-Quadrat in der vierten Spalte (wie beim Snapshot Widget)
-        if hasattr(new_array, 'color') and new_array.color:
-            color_label = QtWidgets.QLabel()
-            color_label.setFixedSize(20, 20)
-            color_label.setStyleSheet(f"background-color: {new_array.color}; border: 1px solid gray;")
-            self.sources_tree_widget.setItemWidget(new_array_item, 3, color_label)
-    
         new_array.mute = False
         new_array.hide = False
     
@@ -3068,14 +3056,8 @@ class Sources(ModuleBase):
         hide_checkbox = self.create_checkbox(False)
         self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
         self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
+        self._update_color_indicator(new_array_item, new_array)
         
-        # Farb-Quadrat in der vierten Spalte (wie beim Snapshot Widget)
-        if hasattr(new_array, 'color') and new_array.color:
-            color_label = QtWidgets.QLabel()
-            color_label.setFixedSize(20, 20)
-            color_label.setStyleSheet(f"background-color: {new_array.color}; border: 1px solid gray;")
-            self.sources_tree_widget.setItemWidget(new_array_item, 3, color_label)
-    
         new_array.mute = False
         new_array.hide = False
     
@@ -3257,13 +3239,7 @@ class Sources(ModuleBase):
                 hide_checkbox = self.create_checkbox(new_array.hide)
                 self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
                 self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
-                
-                # Farb-Quadrat in der vierten Spalte (wie beim Snapshot Widget)
-                if hasattr(new_array, 'color') and new_array.color:
-                    color_label = QtWidgets.QLabel()
-                    color_label.setFixedSize(20, 20)
-                    color_label.setStyleSheet(f"background-color: {new_array.color}; border: 1px solid gray;")
-                    self.sources_tree_widget.setItemWidget(new_array_item, 3, color_label)
+                self._update_color_indicator(new_array_item, new_array)
                 
                 mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
                 hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
@@ -4900,15 +4876,8 @@ class Sources(ModuleBase):
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             hide_checkbox.setFixedSize(18, 18)
         
-        # Stelle sicher, dass auch das Farb-Quadrat existiert
-        color_label = self.sources_tree_widget.itemWidget(item, 3)
-        if not color_label:
-            speaker_array = self.settings.get_speaker_array(array_id)
-            if speaker_array and hasattr(speaker_array, 'color') and speaker_array.color:
-                color_label = QtWidgets.QLabel()
-                color_label.setFixedSize(20, 20)
-                color_label.setStyleSheet(f"background-color: {speaker_array.color}; border: 1px solid gray;")
-                self.sources_tree_widget.setItemWidget(item, 3, color_label)
+        speaker_array = self.settings.get_speaker_array(array_id)
+        self._update_color_indicator(item, speaker_array)
     
     def validate_all_checkboxes(self):
         """
@@ -4973,6 +4942,30 @@ class Sources(ModuleBase):
         if max_width > 0:
             self.sources_tree_widget.setColumnWidth(0, max(max_width, 100))
 
+    def _apply_group_item_style(self, item):
+        """Setzt gemeinsame Formatierung für Gruppen-Items."""
+        if not item:
+            return
+        font = item.font(0)
+        if not font.bold():
+            font.setBold(True)
+        item.setFont(0, font)
+
+    def _update_color_indicator(self, item, speaker_array):
+        """Erstellt oder aktualisiert das Farb-Quadrat eines Source-Items."""
+        if not item or not hasattr(self, "sources_tree_widget"):
+            return
+        color = getattr(speaker_array, "color", None) if speaker_array else None
+        if not color:
+            return
+        color_label = self.sources_tree_widget.itemWidget(item, 3)
+        if color_label is None:
+            color_label = QtWidgets.QLabel()
+            color_label.setFixedSize(20, 20)
+            color_label.setToolTip("Array-Farbe")
+            self.sources_tree_widget.setItemWidget(item, 3, color_label)
+        color_label.setStyleSheet(f"background-color: {color}; border: 1px solid gray;")
+
     def create_group(self):
         """Erstellt eine neue Gruppe im TreeWidget"""
         # Zähle bestehende Gruppen
@@ -4989,6 +4982,7 @@ class Sources(ModuleBase):
         group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
         group_item.setData(0, Qt.UserRole + 1, "group")  # Marker für Gruppe
         group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+        self._apply_group_item_style(group_item)
         
         # Erstelle Checkboxen für die Gruppe
         mute_checkbox = self.create_checkbox(False)
@@ -5126,13 +5120,7 @@ class Sources(ModuleBase):
             hide_checkbox = self.create_checkbox(new_array.hide)
             self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
             self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
-            
-            # Farb-Quadrat
-            if hasattr(new_array, 'color') and new_array.color:
-                color_label = QtWidgets.QLabel()
-                color_label.setFixedSize(20, 20)
-                color_label.setStyleSheet(f"background-color: {new_array.color}; border: 1px solid gray;")
-                self.sources_tree_widget.setItemWidget(new_array_item, 3, color_label)
+            self._update_color_indicator(new_array_item, new_array)
             
             mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
             hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
@@ -5154,6 +5142,7 @@ class Sources(ModuleBase):
         new_group_item.setFlags(new_group_item.flags() | Qt.ItemIsEditable)
         new_group_item.setData(0, Qt.UserRole + 1, "group")
         new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+        self._apply_group_item_style(new_group_item)
         
         # Erstelle Checkboxen für neue Gruppe
         new_mute_checkbox = self.create_checkbox(group_mute)
@@ -5245,16 +5234,7 @@ class Sources(ModuleBase):
                 new_color = speaker_array._generate_random_color()
                 speaker_array.color = new_color
                 
-                # Aktualisiere das Farb-Quadrat in der vierten Spalte
-                color_label = self.sources_tree_widget.itemWidget(item, 3)
-                if color_label:
-                    color_label.setStyleSheet(f"background-color: {new_color}; border: 1px solid gray;")
-                else:
-                    # Falls noch kein Farb-Quadrat existiert, erstelle eines
-                    color_label = QtWidgets.QLabel()
-                    color_label.setFixedSize(20, 20)
-                    color_label.setStyleSheet(f"background-color: {new_color}; border: 1px solid gray;")
-                    self.sources_tree_widget.setItemWidget(item, 3, color_label)
+                self._update_color_indicator(item, speaker_array)
                 
                 # Aktualisiere die Anzeige
                 self.main_window.update_speaker_array_calculations()
@@ -5578,6 +5558,7 @@ class Sources(ModuleBase):
                 group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
                 group_item.setData(0, Qt.UserRole + 1, "group")
                 group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+                self._apply_group_item_style(group_item)
                 
                 # Erstelle Checkboxen für Gruppe
                 mute_checkbox = self.create_checkbox(group_data.get('mute', False))

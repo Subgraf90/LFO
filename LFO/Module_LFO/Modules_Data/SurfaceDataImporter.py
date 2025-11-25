@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from collections import Counter
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -27,7 +28,7 @@ class SurfaceDataImporter:
     Importiert Surface-Definitionen aus externen Dateien und überträgt sie in die Settings.
     """
 
-    FILE_FILTER = "DXF-Dateien (*.dxf)"
+    FILE_FILTER = "DXF-Dateien (*.dxf);;Surface-Text (*.txt)"
 
     def __init__(self, parent_widget, settings, container, group_manager=None):
         self.parent_widget = parent_widget
@@ -47,7 +48,7 @@ class SurfaceDataImporter:
         """
         file_path, _ = QFileDialog.getOpenFileName(
             self.parent_widget,
-            "Surface-Datei laden",
+            "Surface-Datei importieren",
             "",
             self.FILE_FILTER,
         )
@@ -57,7 +58,8 @@ class SurfaceDataImporter:
 
         path = Path(file_path)
 
-        if path.suffix.lower() == ".dxf":
+        suffix = path.suffix.lower()
+        if suffix == ".dxf":
             try:
                 surfaces = self._load_dxf_surfaces(path)
             except ImportError:
@@ -78,6 +80,19 @@ class SurfaceDataImporter:
             else:
                 if surfaces and self._ask_clear_existing_surfaces():
                     self._clear_existing_surfaces()
+        elif suffix == ".txt":
+            try:
+                surfaces = self._load_txt_surfaces(path)
+            except ValueError as exc:
+                QMessageBox.warning(
+                    self.parent_widget,
+                    "Surface-Import fehlgeschlagen",
+                    f"Die TXT-Datei konnte nicht verarbeitet werden:\n{exc}",
+                )
+                return False
+            else:
+                if surfaces and self._ask_clear_existing_surfaces():
+                    self._clear_existing_surfaces()
         else:
             try:
                 payload = self._load_payload(path)
@@ -93,8 +108,8 @@ class SurfaceDataImporter:
         if not surfaces:
             QMessageBox.information(
                 self.parent_widget,
-                "Keine gültigen Flächen",
-                "In der ausgewählten Datei wurden keine gültigen Surface-Definitionen gefunden.",
+                "No valid surfaces",
+                "The selected file does not contain any valid surface definitions.",
             )
             return False
 
@@ -139,6 +154,133 @@ class SurfaceDataImporter:
             surfaces[normalized_id] = surface
 
         return surfaces
+
+    def _load_txt_surfaces(self, file_path: Path) -> Dict[str, SurfaceDefinition]:
+        """
+        Lädt Flächen aus einem SketchUp-ähnlichen TXT-Export:
+        - Abschnitte starten mit einer Label-Zeile ("Label","BETON 1")
+        - Danach folgen Koordinatenzeilen (x,y,z)
+        - Einfache Zeile mit ';' oder '";"' beendet den Abschnitt
+        - Alle Flächen mit gleichem Labelpräfix (z.B. BETON) werden zu einer Gruppe zusammengefasst
+        """
+        logger = logging.getLogger(__name__)
+        surfaces: Dict[str, SurfaceDefinition] = {}
+        current_label: Optional[str] = None
+        current_points: List[Dict[str, float]] = []
+        id_counters: Dict[str, int] = {}
+
+        def finalize_current_surface():
+            nonlocal current_label, current_points
+            if not current_label:
+                current_points = []
+                return
+            if len(current_points) < 3:
+                logger.info(
+                    "TXT-Surface '%s' übersprungen: nur %d Punkte vorhanden",
+                    current_label,
+                    len(current_points),
+                )
+                current_label = None
+                current_points = []
+                return
+
+            # Stelle sicher, dass Polygon geschlossen ist
+            first = current_points[0]
+            last = current_points[-1]
+            if first != last:
+                current_points.append(first.copy())
+
+            safe_label = self._make_safe_identifier(current_label) or "surface"
+            id_counters[safe_label] = id_counters.get(safe_label, 0) + 1
+            suffix = f"_{id_counters[safe_label]}" if id_counters[safe_label] > 1 else ""
+            surface_id = f"{safe_label}{suffix}"
+
+            group_label = self._derive_group_label(current_label)
+            group_id = self._ensure_group_for_label(group_label)
+
+            payload = {
+                "name": current_label,
+                "enabled": False,
+                "hidden": False,
+                "locked": False,
+                "points": list(current_points),
+            }
+            if group_id:
+                payload["group_id"] = group_id
+
+            surfaces[surface_id] = SurfaceDefinition.from_dict(surface_id, payload)
+            logger.info(
+                "TXT-Surface '%s' importiert (%d Punkte, Gruppe=%s)",
+                current_label,
+                len(current_points),
+                group_label or "keine",
+            )
+            current_label = None
+            current_points = []
+
+        with file_path.open("r", encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                stripped = line.strip()
+                if stripped.startswith(";") or stripped.startswith('";'):
+                    if stripped in ('";"', '" ;"', ";", '";', '"'):
+                        finalize_current_surface()
+                    continue
+
+                if line.lower().startswith('"label"') or line.lower().startswith("label"):
+                    finalize_current_surface()
+                    label = self._extract_label_value(line, line_number)
+                    current_label = label
+                    current_points = []
+                    continue
+
+                # Koordinatenzeilen
+                point = self._parse_txt_point(line, line_number)
+                if point:
+                    current_points.append(point)
+
+        finalize_current_surface()
+        return surfaces
+
+    def _extract_label_value(self, line: str, line_number: int) -> str:
+        try:
+            _, label_part = line.split(",", 1)
+        except ValueError as exc:
+            raise ValueError(f"Ungültige Label-Zeile (Zeile {line_number}): {line}") from exc
+        label = label_part.strip().strip('"').strip()
+        if not label:
+            raise ValueError(f"Leeres Label in Zeile {line_number}")
+        return label
+
+    def _parse_txt_point(self, line: str, line_number: int) -> Dict[str, float]:
+        try:
+            parts = [p.strip() for p in line.split(",") if p.strip()]
+            if len(parts) < 3:
+                raise ValueError
+            x, y, z = map(float, parts[:3])
+        except ValueError:
+            raise ValueError(f"Ungültige Koordinaten in Zeile {line_number}: {line}")
+        return self._make_point(x, y, z)
+
+    @staticmethod
+    def _make_safe_identifier(label: str) -> str:
+        text = label.strip()
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"[^0-9A-Za-z_]+", "", text)
+        return text.lower()
+
+    @staticmethod
+    def _derive_group_label(label: Optional[str]) -> Optional[str]:
+        if not label:
+            return None
+        match = re.match(r"([A-Za-zÄÖÜäöüß\s_-]+)", label.strip())
+        if match:
+            base = match.group(1).strip()
+            return base or label.strip()
+        return label.strip()
 
     def _store_surfaces(self, surfaces: Dict[str, SurfaceDefinition]) -> int:
         imported = 0
@@ -828,7 +970,8 @@ class SurfaceDataImporter:
             if not points:
                 try:
                     logger.info("  Versuche Methode 2: vertices mit location")
-                    elevation = float(getattr(entity.dxf, 'elevation', 0.0))
+                    raw_elevation = getattr(entity.dxf, 'elevation', 0.0)
+                    elevation = self._extract_float_from_vec3(raw_elevation, 0.0)
                     logger.info("  Elevation: %f", elevation)
                     vertex_count = 0
                     for vertex in entity.vertices:
@@ -872,7 +1015,8 @@ class SurfaceDataImporter:
                 try:
                     logger.info("  Versuche Methode 3: flattening()")
                     flattened = entity.flattening(0.01)  # Toleranz für Kurven
-                    elevation = float(getattr(entity.dxf, 'elevation', 0.0))
+                    raw_elevation = getattr(entity.dxf, 'elevation', 0.0)
+                    elevation = self._extract_float_from_vec3(raw_elevation, 0.0)
                     for point in flattened:
                         try:
                             # Prüfe ob point ein Vec3-Objekt ist
@@ -897,7 +1041,8 @@ class SurfaceDataImporter:
             if not points and hasattr(entity, 'points'):
                 try:
                     logger.info("  Versuche Methode 4: points()")
-                    elevation = float(getattr(entity.dxf, 'elevation', 0.0))
+                    raw_elevation = getattr(entity.dxf, 'elevation', 0.0)
+                    elevation = self._extract_float_from_vec3(raw_elevation, 0.0)
                     for point in entity.points():
                         try:
                             # Verwende Hilfsfunktion für rekursive Vec3-Extraktion

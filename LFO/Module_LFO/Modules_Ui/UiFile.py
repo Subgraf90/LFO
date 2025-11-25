@@ -308,6 +308,13 @@ class UiFile:
             self.main_window.ui_settings.update_ui_from_settings()
             self.main_window.show_sources_dock_widget()
 
+            # Stelle sicher, dass der Surface Manager existiert und sein TreeWidget aktualisiert wird
+            if hasattr(self.main_window, "_ensure_surface_manager"):
+                surface_manager = self.main_window._ensure_surface_manager()
+                if surface_manager:
+                    surface_manager.load_surfaces()
+                    surface_manager.show_surfaces_tab()
+
             if not hasattr(self.main_window, 'sources_instance') or self.main_window.sources_instance is None:
                 self.main_window.blockSignals(False)
                 return None

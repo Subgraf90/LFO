@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -513,30 +514,34 @@ def build_surface_mesh(
     else:
         zm = np.zeros_like(xm, dtype=float)
 
-    mask = None
-    if surface_mask is not None:
-        mask = np.asarray(surface_mask, dtype=bool)
-        if mask.shape != (ny, nx):
-            if mask.size == nx * ny:
-                mask = mask.reshape(ny, nx)
-            else:
-                mask = None
-
     points = np.column_stack((xm.ravel(), ym.ravel(), zm.ravel()))
 
     # Definiere Quad-Zellen (nur horizontale Deckfläche)
-    # 🎯 CLIPPING: Rendere nur Zellen, die vollständig in der leicht erweiterten Plot-Maske liegen
-    # Die leicht erweiterte Maske erfasst Randpunkte → glatte Ränder ohne Zacken
-    # Strikte Zellprüfung verhindert Überhänge über die Surface-Grenzen hinaus
+    # 🎯 RENDERE NUR STRIKTE ZELLEN: Eine Zelle wird nur gerendert, wenn alle 4 Eckpunkte
+    # innerhalb der strikten Surface-Maske liegen. Damit wird der Plot exakt an den
+    # Surface-Grenzen beschnitten.
     face_list: List[int] = []
+    cell_mask = None
+    point_mask = None
+    if surface_mask is not None:
+        mask_arr = np.asarray(surface_mask, dtype=bool)
+        if mask_arr.shape == (ny - 1, nx - 1):
+            cell_mask = mask_arr
+        elif mask_arr.shape == (ny, nx):
+            point_mask = mask_arr
+        elif mask_arr.size == (ny - 1) * (nx - 1):
+            cell_mask = mask_arr.reshape(ny - 1, nx - 1)
+        elif mask_arr.size == ny * nx:
+            point_mask = mask_arr.reshape(ny, nx)
+
     for j in range(ny - 1):
         for i in range(nx - 1):
-            if mask is not None:
-                cell_mask = mask[j : j + 2, i : i + 2]
-                # 🎯 STRICTE PRÜFUNG: Nur Zellen, die vollständig in der leicht erweiterten Maske liegen
-                # Die leicht erweiterte Maske (1 Pixel Dilatation der strikten Maske) erfasst Randpunkte
-                # für glatte Ränder, ohne über die Surface-Grenzen hinauszugehen
-                if not np.all(cell_mask):
+            if cell_mask is not None:
+                if not cell_mask[j, i]:
+                    continue
+            elif point_mask is not None:
+                points_sub = point_mask[j : j + 2, i : i + 2]
+                if not np.all(points_sub):
                     continue
             idx0 = j * nx + i
             idx1 = idx0 + 1
@@ -614,6 +619,8 @@ def prepare_plot_geometry(
     z_coords = _extract_plot_z_coordinates(container, len(source_y), len(source_x))
     surface_mask = _extract_surface_mask(container, len(source_y), len(source_x))
 
+    surface_mask = None
+
     if (
         upscale_factor > 1
         and plot_x.size > 1
@@ -633,10 +640,13 @@ def prepare_plot_geometry(
         plot_x = expanded_x
         plot_y = expanded_y
 
-    if surface_mask is None:
-        print("[SurfaceGeometry] Fehler: Keine Surface-Maske vorhanden – breche Rendering ab.")
-        raise RuntimeError("Surface mask missing in calculation data.")
-    _debug_surface_info(settings, plot_x, plot_y, surface_mask, "calculation mask")
+    plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings)
+    if plot_mask is None:
+        plot_mask = _convert_point_mask_to_cell_mask(surface_mask)
+    if plot_mask is None:
+        print("[SurfaceGeometry] Fehler: Keine gültige Surface-Maske – breche Rendering ab.")
+        raise RuntimeError("Surface mask missing for plot geometry.")
+    _debug_surface_info(settings, plot_x, plot_y, plot_mask, "plot mask")
 
     requires_resample = not (
         np.array_equal(plot_x, source_x) and np.array_equal(plot_y, source_y)
@@ -648,7 +658,7 @@ def prepare_plot_geometry(
         plot_y=plot_y,
         plot_values=plot_vals,
         z_coords=z_coords,
-        surface_mask=surface_mask,
+        surface_mask=plot_mask,
         source_x=source_x,
         source_y=source_y,
         requires_resample=requires_resample,
@@ -681,9 +691,9 @@ def _extract_plot_z_coordinates(container, len_y: int, len_x: int) -> Optional[n
 
 def _extract_surface_mask(container, len_y: int, len_x: int) -> Optional[np.ndarray]:
     """
-    🎯 Extrahiert und erweitert die strikte Surface-Maske minimal für glatte Plot-Ränder.
-    Erstellt eine leicht erweiterte Plot-Maske (1 Pixel Dilatation) aus der strikten Maske,
-    um Randzellen zu erfassen, ohne über die Surface-Grenzen hinauszugehen.
+    🎯 Extrahiert die strikte Surface-Maske zum Clipping der Plot-Geometrie.
+    Die Maske wird unverändert übernommen, damit der Plot exakt an den
+    Surface-Grenzen endet.
     """
     if container is None or not hasattr(container, "calculation_spl"):
         return None
@@ -691,10 +701,8 @@ def _extract_surface_mask(container, len_y: int, len_x: int) -> Optional[np.ndar
     if not isinstance(calc_spl, dict):
         return None
     
-    # 🎯 Hole strikte Maske als Basis
     mask_strict = calc_spl.get("surface_mask_strict")
     if mask_strict is None:
-        # Fallback auf erweiterte Maske falls strikte nicht verfügbar
         mask_strict = calc_spl.get("surface_mask")
     
     if mask_strict is None:
@@ -707,54 +715,181 @@ def _extract_surface_mask(container, len_y: int, len_x: int) -> Optional[np.ndar
                 mask_arr = mask_arr.reshape(len_y, len_x)
             else:
                 return None
-        
-        # 🎯 MINIMALE ERWEITERUNG: Erweitere strikte Maske um 1 Pixel für glatte Ränder
-        # Dies erfasst Randzellen, ohne über die Surface-Grenzen hinauszugehen
-        # (die erweiterte Berechnungsmaske ist stärker erweitert)
+        # Fülle kleine Lücken, damit die Plot-Maske keine Löcher enthält
         try:
             from scipy import ndimage
-            # Strukturelement: 3x3-Kreis (erfasst alle 8 Nachbarn)
-            structure = np.array([[1, 1, 1],
-                                  [1, 1, 1],
-                                  [1, 1, 1]], dtype=bool)
-            plot_mask = ndimage.binary_dilation(mask_arr, structure=structure)
+            structure = np.array(
+                [
+                    [1, 1, 1],
+                    [1, 1, 1],
+                    [1, 1, 1],
+                ],
+                dtype=bool,
+            )
+            mask_arr = ndimage.binary_closing(mask_arr, structure=structure)
         except ImportError:
-            # Fallback: Manuelle minimale Erweiterung
-            plot_mask = _dilate_mask_minimal(mask_arr)
-        
-        return plot_mask
+            mask_arr = _binary_closing_minimal(mask_arr)
+        return mask_arr
     except Exception:
         return None
 
 
+def _build_plot_surface_mask(
+    plot_x: np.ndarray,
+    plot_y: np.ndarray,
+    settings,
+) -> Optional[np.ndarray]:
+    """
+    Baut eine Maske im Plot-Raster basierend auf den aktiven Surfaces.
+    """
+    if settings is None or plot_x.size == 0 or plot_y.size == 0:
+        return None
+
+    surface_definitions = getattr(settings, "surface_definitions", {})
+    if not isinstance(surface_definitions, dict):
+        return None
+
+    polygons: List[List[Dict[str, float]]] = []
+    for surface_def in surface_definitions.values():
+        data = surface_def
+        if hasattr(surface_def, "to_dict"):
+            data = surface_def.to_dict()
+        enabled = bool(data.get("enabled", False))
+        hidden = bool(data.get("hidden", False))
+        points = data.get("points", []) or []
+        if not enabled or hidden or len(points) < 3:
+            continue
+        polygons.append(points)
+
+    if not polygons:
+        return None
+
+    if plot_x.size < 2 or plot_y.size < 2:
+        return None
+
+    cell_x = 0.5 * (plot_x[:-1] + plot_x[1:])
+    cell_y = 0.5 * (plot_y[:-1] + plot_y[1:])
+    X, Y = np.meshgrid(cell_x, cell_y, indexing="xy")
+    combined_mask = np.zeros_like(X, dtype=bool)
+    for polygon in polygons:
+        mask = _points_in_polygon_batch_plot(X, Y, polygon)
+        if mask is not None:
+            combined_mask |= mask
+
+    if not np.any(combined_mask):
+        return None
+    return combined_mask
+
+
+def _points_in_polygon_batch_plot(
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    polygon_points: List[Dict[str, float]],
+) -> Optional[np.ndarray]:
+    if len(polygon_points) < 3:
+        return None
+
+    px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
+    py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
+
+    x_flat = x_coords.flatten()
+    y_flat = y_coords.flatten()
+    inside = np.zeros_like(x_flat, dtype=bool)
+    on_edge = np.zeros_like(x_flat, dtype=bool)
+    boundary_eps = 1e-6
+    n = len(px)
+
+    j = n - 1
+    for i in range(n):
+        xi, yi = px[i], py[i]
+        xj, yj = px[j], py[j]
+
+        y_above_edge = (yi > y_flat) != (yj > y_flat)
+        denominator = (yj - yi) + 1e-12
+        intersection_x = (xj - xi) * (y_flat - yi) / denominator + xi
+        intersects = y_above_edge & (x_flat <= intersection_x + boundary_eps)
+        inside ^= intersects
+
+        dx = xj - xi
+        dy = yj - yi
+        segment_len = math.hypot(dx, dy)
+        if segment_len > 0:
+            numerator = np.abs(dy * (x_flat - xi) - dx * (y_flat - yi))
+            dist = numerator / (segment_len + 1e-12)
+            proj = ((x_flat - xi) * dx + (y_flat - yi) * dy) / (
+                (segment_len**2) + 1e-12
+            )
+            on_edge_segment = (
+                (dist <= boundary_eps)
+                & (proj >= -boundary_eps)
+                & (proj <= 1 + boundary_eps)
+            )
+            on_edge |= on_edge_segment
+        j = i
+
+    mask = (inside | on_edge).reshape(x_coords.shape)
+    return mask
+
+
+def _binary_closing_minimal(mask: np.ndarray) -> np.ndarray:
+    """
+    Füllt kleine Lücken durch Dilatation + Erosion mit einem 3x3-Kernel.
+    """
+    dilated = _dilate_mask_minimal(mask)
+    return _erode_mask_minimal(dilated)
+
+
 def _dilate_mask_minimal(mask: np.ndarray) -> np.ndarray:
-    """
-    Manuelle minimale morphologische Dilatation (Fallback wenn scipy nicht verfügbar).
-    Erweitert die Maske um 1 Pixel in alle Richtungen.
-    """
-    dilated = mask.copy()
+    kernel = np.array(
+        [
+            [1, 1, 1],
+            [1, 1, 1],
+            [1, 1, 1],
+        ],
+        dtype=bool,
+    )
     ny, nx = mask.shape
-    
-    # Erweitere in alle 8 Richtungen
-    for di in [-1, 0, 1]:
-        for dj in [-1, 0, 1]:
-            if di == 0 and dj == 0:
-                continue
-            # Verschiebe Maske und kombiniere
-            shifted = np.zeros_like(mask)
-            i_start = max(0, -di)
-            i_end = min(nx, nx - di)
-            j_start = max(0, -dj)
-            j_end = min(ny, ny - dj)
-            
-            if i_start < i_end and j_start < j_end:
-                shifted[j_start:j_end, i_start:i_end] = mask[
-                    j_start + dj:j_end + dj,
-                    i_start + di:i_end + di
-                ]
-            dilated = dilated | shifted
-    
+    padded = np.pad(mask, ((1, 1), (1, 1)), mode="edge")
+    dilated = np.zeros_like(mask, dtype=bool)
+    for i in range(ny):
+        for j in range(nx):
+            region = padded[i : i + 3, j : j + 3]
+            dilated[i, j] = np.any(region & kernel)
     return dilated
+
+
+def _erode_mask_minimal(mask: np.ndarray) -> np.ndarray:
+    kernel = np.array(
+        [
+            [1, 1, 1],
+            [1, 1, 1],
+            [1, 1, 1],
+        ],
+        dtype=bool,
+    )
+    ny, nx = mask.shape
+    padded = np.pad(mask, ((1, 1), (1, 1)), mode="edge")
+    eroded = np.zeros_like(mask, dtype=bool)
+    for i in range(ny):
+        for j in range(nx):
+            region = padded[i : i + 3, j : j + 3]
+            eroded[i, j] = np.all(region[kernel])
+    return eroded
+
+
+def _convert_point_mask_to_cell_mask(mask: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if mask is None:
+        return None
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 2 or mask.shape[0] < 2 or mask.shape[1] < 2:
+        return None
+    cell_mask = (
+        mask[:-1, :-1]
+        | mask[1:, :-1]
+        | mask[:-1, 1:]
+        | mask[1:, 1:]
+    )
+    return cell_mask
 
 
 def _expand_axis_for_plot(

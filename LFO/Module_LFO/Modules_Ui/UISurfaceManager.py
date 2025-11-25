@@ -85,7 +85,7 @@ class UISurfaceManager(ModuleBase):
             
             # TreeWidget für Surfaces und Gruppen
             self.surface_tree_widget = QTreeWidget()
-            self.surface_tree_widget.setHeaderLabels(["Surface Name", "Enable", "Hide", ""])
+            self.surface_tree_widget.setHeaderLabels(["Surface Name", "E", "H"])
             
             # Drag & Drop Funktionalität (identisch zu SourceManagement)
             original_dropEvent = self.surface_tree_widget.dropEvent
@@ -121,8 +121,8 @@ class UISurfaceManager(ModuleBase):
                     for group_item in dragged_groups:
                         group_id = group_item.data(0, Qt.UserRole)
                         
-                        # Bestimme Ziel-Gruppe
-                        target_group_id = self._group_controller.root_group_id
+                        # Bestimme Ziel-Gruppe (None = Top-Level)
+                        target_group_id = None
                         if drop_item:
                             drop_type = drop_item.data(0, Qt.UserRole + 1)
                             if drop_type == "group":
@@ -134,7 +134,10 @@ class UISurfaceManager(ModuleBase):
                                 if parent:
                                     target_group_id = parent.data(0, Qt.UserRole)
                         
-                        # Prüfe, ob Ziel-Gruppe nicht die Root-Gruppe ist (Root kann nicht verschoben werden)
+                        # Prüfe, ob Ziel-Gruppe nicht die Root-Gruppe ist
+                        if target_group_id == self._group_controller.root_group_id:
+                            target_group_id = None
+                        
                         if group_id != target_group_id:
                             # Prüfe, ob Ziel-Gruppe nicht ein Child der zu verschiebenden Gruppe ist
                             target_group = self._group_controller.get_group(target_group_id)
@@ -155,6 +158,25 @@ class UISurfaceManager(ModuleBase):
                 
                 # Behandle Surface-Verschiebung
                 if dragged_surfaces:
+                    default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
+                    
+                    # Prüfe, ob Default-Fläche verschoben werden soll (verhindern)
+                    for item in dragged_surfaces:
+                        surface_id = item.data(0, Qt.UserRole)
+                        if isinstance(surface_id, dict):
+                            surface_id = surface_id.get('id')
+                        if surface_id == default_surface_id:
+                            # Default-Fläche darf nicht verschoben werden
+                            from PyQt5.QtWidgets import QMessageBox
+                            QMessageBox.information(
+                                self.surface_dockWidget,
+                                "Action not possible",
+                                "The default surface cannot be moved to a group."
+                            )
+                            event.ignore()
+                            _pending_drag_items.clear()
+                            return
+                    
                     # Prüfe, ob auf eine Gruppe gedroppt wird
                     if drop_item and drop_item.data(0, Qt.UserRole + 1) == "group":
                         # Droppe auf Gruppe - füge Surfaces als Childs hinzu
@@ -180,12 +202,13 @@ class UISurfaceManager(ModuleBase):
                                 self._group_controller.assign_surface_to_group(surface_id, target_group_id, create_missing=False)
                                 handled = True
                     elif indicator_pos in (QAbstractItemView.AboveItem, QAbstractItemView.BelowItem):
-                        # Droppe oberhalb/unterhalb - entferne aus Gruppe (zur Root-Gruppe)
+                        # Droppe oberhalb/unterhalb - entferne aus Gruppe (als Top-Level-Item)
                         for item in dragged_surfaces:
                             surface_id = item.data(0, Qt.UserRole)
                             if isinstance(surface_id, dict):
                                 surface_id = surface_id.get('id')
-                            self._group_controller.assign_surface_to_group(surface_id, self._group_controller.root_group_id, create_missing=False)
+                            # Entferne aus Gruppe (setze group_id auf None)
+                            self._group_controller.assign_surface_to_group(surface_id, None, create_missing=False)
                             handled = True
                 
                 if handled:
@@ -223,12 +246,10 @@ class UISurfaceManager(ModuleBase):
             # Spaltenbreiten konfigurieren
             self.surface_tree_widget.setColumnWidth(1, 25)   # Enable
             self.surface_tree_widget.setColumnWidth(2, 25)   # Hide
-            self.surface_tree_widget.setColumnWidth(3, 20)   # Farb-Quadrat
             header.setStretchLastSection(False)
             header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
             header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
             header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-            header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
             
             # Scrollbar aktivieren
             self.surface_tree_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -264,15 +285,15 @@ class UISurfaceManager(ModuleBase):
             buttons_layout.setSpacing(5)
             buttons_layout.setAlignment(Qt.AlignLeft)
             self.pushbutton_add_surface = QPushButton("Add Surface")
-            self.pushbutton_add_surface.setFixedWidth(100)
+            self.pushbutton_add_surface.setFixedWidth(120)
             btn_font = QtGui.QFont()
             btn_font.setPointSize(11)
             self.pushbutton_add_surface.setFont(btn_font)
             self.pushbutton_add_surface.setFixedHeight(24)
             buttons_layout.addWidget(self.pushbutton_add_surface)
             
-            self.pushbutton_load_dxf = QPushButton("Load DXF")
-            self.pushbutton_load_dxf.setFixedWidth(100)
+            self.pushbutton_load_dxf = QPushButton("Import Surface")
+            self.pushbutton_load_dxf.setFixedWidth(120)
             self.pushbutton_load_dxf.setFont(btn_font)
             self.pushbutton_load_dxf.setFixedHeight(24)
             buttons_layout.addWidget(self.pushbutton_load_dxf)
@@ -345,39 +366,70 @@ class UISurfaceManager(ModuleBase):
         # Stelle sicher, dass die Gruppen-Struktur aktuell ist
         self._group_controller.ensure_structure()
         
-        # Lade Gruppen-Struktur
-        group_store = self._group_controller.list_groups()
+        # Hole Default-Fläche ID
+        default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
+        surface_store = getattr(self.settings, 'surface_definitions', {})
         root_group_id = self._group_controller.root_group_id
         
-        if root_group_id and root_group_id in group_store:
-            root_group = self._group_controller.get_group(root_group_id)
-            if root_group:
-                self._populate_group_tree(None, root_group)
+        # Lade Default-Fläche als Top-Level-Item ganz oben (wenn sie existiert)
+        if default_surface_id in surface_store:
+            default_surface = surface_store[default_surface_id]
+            # Entferne Default-Fläche aus Gruppe, falls sie in einer ist
+            if isinstance(default_surface, SurfaceDefinition):
+                if default_surface.group_id:
+                    self._group_controller.detach_surface(default_surface_id)
+                    default_surface.group_id = None
+            else:
+                if default_surface.get('group_id'):
+                    self._group_controller.detach_surface(default_surface_id)
+                    default_surface['group_id'] = None
+            
+            # Füge Default-Fläche als Top-Level-Item ganz oben hinzu
+            default_item = self._create_surface_item(default_surface_id, default_surface)
+            self.surface_tree_widget.insertTopLevelItem(0, default_item)
+            self.ensure_surface_checkboxes(default_item)
         
-        # Stelle sicher, dass alle Surfaces einer Gruppe zugeordnet sind
-        surface_store = getattr(self.settings, 'surface_definitions', {})
-        needs_reload = False
+        # Lade manuelle Gruppen (ohne Root-Gruppe)
+        group_store = self._group_controller.list_groups()
+        
+        # Lade alle Gruppen außer der Root-Gruppe
+        for group_id, group in group_store.items():
+            if group_id != root_group_id:
+                # Nur Top-Level-Gruppen (ohne Parent oder Parent ist Root)
+                if not group.parent_id or group.parent_id == root_group_id:
+                    self._populate_group_tree(None, group)
+        
+        # Lade Surfaces ohne Gruppe als Top-Level-Items
         for surface_id, surface in surface_store.items():
+            # Überspringe Default-Fläche, die bereits oben hinzugefügt wurde
+            if surface_id == default_surface_id:
+                continue
+            
             # Prüfe, ob Surface eine Gruppe hat
             if isinstance(surface, SurfaceDefinition):
                 group_id = surface.group_id
             else:
                 group_id = surface.get('group_id')
             
-            # Wenn keine Gruppe, ordne zur Root-Gruppe zu
-            if not group_id:
-                self._group_controller.assign_surface_to_group(surface_id, root_group_id, create_missing=False)
-                needs_reload = True
-        
-        # Wenn Surfaces zugeordnet wurden, aktualisiere Struktur und lade neu
-        if needs_reload:
-            self._group_controller.ensure_structure()
-            # Lade erneut, um die Änderungen zu reflektieren
-            self.surface_tree_widget.blockSignals(False)
-            self.load_surfaces()
-            return
+            # Wenn keine Gruppe oder Root-Gruppe, zeige als Top-Level-Item
+            if not group_id or group_id == root_group_id:
+                # Entferne aus Root-Gruppe, falls vorhanden
+                if group_id == root_group_id:
+                    self._group_controller.detach_surface(surface_id)
+                    if isinstance(surface, SurfaceDefinition):
+                        surface.group_id = None
+                    else:
+                        surface['group_id'] = None
+                
+                # Füge als Top-Level-Item hinzu
+                surface_item = self._create_surface_item(surface_id, surface)
+                # Füge nach Default-Fläche, aber vor Gruppen hinzu
+                insert_index = 1 if default_surface_id in surface_store else 0
+                self.surface_tree_widget.insertTopLevelItem(insert_index, surface_item)
+                self.ensure_surface_checkboxes(surface_item)
         
         self.surface_tree_widget.expandAll()
+        self.validate_all_checkboxes()
         self.surface_tree_widget.blockSignals(False)
     
     def _populate_group_tree(self, parent_item, group):
@@ -424,17 +476,23 @@ class UISurfaceManager(ModuleBase):
         item.setData(0, Qt.UserRole, surface_id)
         item.setData(0, Qt.UserRole + 1, "surface")
         
-        # Flags
-        item.setFlags(
-            Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable |
-            Qt.ItemIsDragEnabled | Qt.ItemIsUserCheckable
-        )
+        # Flags - Default-Fläche darf nicht per Drag & Drop verschoben werden
+        default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
+        if surface_id == default_surface_id:
+            # Default-Fläche: kein Drag & Drop
+            item.setFlags(
+                Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable |
+                Qt.ItemIsUserCheckable
+            )
+        else:
+            # Normale Surfaces: mit Drag & Drop
+            item.setFlags(
+                Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable |
+                Qt.ItemIsDragEnabled | Qt.ItemIsUserCheckable
+            )
         
         # Checkboxen für Enable und Hide
         self.ensure_surface_checkboxes(item)
-        
-        # Farb-Quadrat (Spalte 3)
-        self._add_color_indicator(item, surface_id, surface_data)
         
         return item
     
@@ -444,6 +502,9 @@ class UISurfaceManager(ModuleBase):
         item.setText(0, group.name)
         item.setData(0, Qt.UserRole, group.group_id)
         item.setData(0, Qt.UserRole + 1, "group")
+        bold_font = item.font(0)
+        bold_font.setBold(True)
+        item.setFont(0, bold_font)
         
         # Flags
         item.setFlags(
@@ -532,10 +593,23 @@ class UISurfaceManager(ModuleBase):
             )
             self.surface_tree_widget.setItemWidget(item, 2, hide_checkbox)
     
-    def _add_color_indicator(self, item, surface_id, surface_data):
-        """Fügt ein Farb-Quadrat für das Surface hinzu"""
-        # TODO: Implementiere Farb-Anzeige ähnlich wie in SourceManagement
-        pass
+    def _update_group_child_checkboxes(self, group_item, column, checked):
+        """Aktualisiert rekursiv die Checkboxen aller Child-Surfaces/-Gruppen einer Gruppe."""
+        if not group_item:
+            return
+        
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            child_type = child.data(0, Qt.UserRole + 1)
+            checkbox = self.surface_tree_widget.itemWidget(child, column)
+            if checkbox:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(checked)
+                checkbox.blockSignals(False)
+            
+            if child_type == "group":
+                self._update_group_child_checkboxes(child, column, checked)
+    
     
     def create_checkbox(self, checked=False):
         """Erstellt eine Checkbox mit Standard-Style"""
@@ -546,8 +620,23 @@ class UISurfaceManager(ModuleBase):
     
     def validate_all_checkboxes(self):
         """Validiert alle Checkboxen im TreeWidget"""
-        # TODO: Implementiere Validierung
-        pass
+        if not hasattr(self, 'surface_tree_widget') or not self.surface_tree_widget:
+            return
+        
+        def _ensure_item(item):
+            if not item:
+                return
+            item_type = item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                self.ensure_group_checkboxes(item)
+            elif item_type == "surface":
+                self.ensure_surface_checkboxes(item)
+            
+            for idx in range(item.childCount()):
+                _ensure_item(item.child(idx))
+        
+        for i in range(self.surface_tree_widget.topLevelItemCount()):
+            _ensure_item(self.surface_tree_widget.topLevelItem(i))
     
     def adjust_column_width_to_content(self):
         """Passt Spaltenbreiten an den Inhalt an"""
@@ -567,21 +656,24 @@ class UISurfaceManager(ModuleBase):
             index += 1
         surface_id = f"surface_{index}"
         
-        # Bestimme Ziel-Gruppe (ausgewähltes Item oder Root)
-        target_group_id = self._group_controller.root_group_id
+        # Bestimme Ziel-Gruppe (ausgewähltes Item oder None für Top-Level)
+        target_group_id = None
         selected_item = self.surface_tree_widget.currentItem()
         if selected_item:
             item_type = selected_item.data(0, Qt.UserRole + 1)
             if item_type == "group":
                 target_group_id = selected_item.data(0, Qt.UserRole)
+                # Wenn Root-Gruppe, setze auf None
+                if target_group_id == self._group_controller.root_group_id:
+                    target_group_id = None
             elif item_type == "surface":
                 # Surface - finde Parent-Gruppe
                 parent = selected_item.parent()
                 if parent:
                     target_group_id = parent.data(0, Qt.UserRole)
-                else:
-                    # Surface ist Top-Level - verwende Root-Gruppe
-                    target_group_id = self._group_controller.root_group_id
+                    # Wenn Root-Gruppe, setze auf None
+                    if target_group_id == self._group_controller.root_group_id:
+                        target_group_id = None
         
         # Erstelle neues Surface mit korrekter group_id
         new_surface = SurfaceDefinition(
@@ -707,20 +799,15 @@ class UISurfaceManager(ModuleBase):
     def on_group_enable_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert"""
         group_id = group_item.data(0, Qt.UserRole)
-        self._group_controller.set_surface_group_enabled(group_id, state == Qt.Checked)
+        checked = (state == Qt.Checked)
+        self._group_controller.set_surface_group_enabled(group_id, checked)
+        
+        # Speichere Status in lokalem Cache
+        if group_id in self.surface_groups:
+            self.surface_groups[group_id]['enabled'] = checked
         
         # Aktualisiere alle Child-Checkboxen
-        for i in range(group_item.childCount()):
-            child = group_item.child(i)
-            child_type = child.data(0, Qt.UserRole + 1)
-            if child_type == "surface":
-                checkbox = self.surface_tree_widget.itemWidget(child, 1)
-                if checkbox:
-                    checkbox.setChecked(state == Qt.Checked)
-            elif child_type == "group":
-                checkbox = self.surface_tree_widget.itemWidget(child, 1)
-                if checkbox:
-                    checkbox.setChecked(state == Qt.Checked)
+        self._update_group_child_checkboxes(group_item, 1, checked)
         
         # Aktualisiere Berechnungen
         if hasattr(self.main_window, 'update_speaker_array_calculations'):
@@ -729,20 +816,15 @@ class UISurfaceManager(ModuleBase):
     def on_group_hide_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert"""
         group_id = group_item.data(0, Qt.UserRole)
-        self._group_controller.set_surface_group_hidden(group_id, state == Qt.Checked)
+        checked = (state == Qt.Checked)
+        self._group_controller.set_surface_group_hidden(group_id, checked)
+        
+        # Speichere Status in lokalem Cache
+        if group_id in self.surface_groups:
+            self.surface_groups[group_id]['hidden'] = checked
         
         # Aktualisiere alle Child-Checkboxen
-        for i in range(group_item.childCount()):
-            child = group_item.child(i)
-            child_type = child.data(0, Qt.UserRole + 1)
-            if child_type == "surface":
-                checkbox = self.surface_tree_widget.itemWidget(child, 2)
-                if checkbox:
-                    checkbox.setChecked(state == Qt.Checked)
-            elif child_type == "group":
-                checkbox = self.surface_tree_widget.itemWidget(child, 2)
-                if checkbox:
-                    checkbox.setChecked(state == Qt.Checked)
+        self._update_group_child_checkboxes(group_item, 2, checked)
         
         # Aktualisiere Berechnungen
         if hasattr(self.main_window, 'update_speaker_array_calculations'):
@@ -1363,7 +1445,25 @@ class UISurfaceManager(ModuleBase):
         """Fügt eine neue Gruppe hinzu"""
         from PyQt5.QtWidgets import QInputDialog
         
-        name, ok = QInputDialog.getText(self.surface_dockWidget, "Add Group", "Group name:")
+        # Finde die nächste verfügbare Gruppennummer
+        existing_group_names = set()
+        group_store = self._group_controller.list_groups()
+        for group in group_store.values():
+            existing_group_names.add(group.name)
+        
+        # Finde die nächste verfügbare Zahl
+        group_number = 1
+        while f"Group {group_number}" in existing_group_names:
+            group_number += 1
+        
+        default_name = f"Group {group_number}"
+        
+        name, ok = QInputDialog.getText(
+            self.surface_dockWidget, 
+            "Add Group", 
+            "Group name:",
+            text=default_name
+        )
         if not ok or not name.strip():
             return
         
@@ -1379,10 +1479,7 @@ class UISurfaceManager(ModuleBase):
                 if parent:
                     parent_group_id = parent.data(0, Qt.UserRole)
         
-        if not parent_group_id:
-            parent_group_id = self._group_controller.root_group_id
-        
-        # Erstelle Gruppe
+        # Erstelle Gruppe (ohne Root-Gruppe als Parent)
         group = self._group_controller.create_surface_group(name.strip(), parent_id=parent_group_id)
         
         # Lade TreeWidget neu
@@ -1427,14 +1524,18 @@ class UISurfaceManager(ModuleBase):
                 else:
                     target_group_id = surface.get('group_id')
                 
-                if not target_group_id:
-                    target_group_id = self._group_controller.root_group_id
+                # Wenn Root-Gruppe, setze auf None (keine Gruppe)
+                if target_group_id == self._group_controller.root_group_id:
+                    target_group_id = None
+                
+                # Hole Original-Namen
+                original_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', 'Surface')
                 
                 # Kopiere Surface
                 if isinstance(surface, SurfaceDefinition):
                     new_surface = SurfaceDefinition(
                         surface_id=new_surface_id,
-                        name=f"{surface.name} Copy",
+                        name=f"copy of {original_name}",
                         enabled=surface.enabled,
                         hidden=surface.hidden,
                         locked=False,
@@ -1445,7 +1546,7 @@ class UISurfaceManager(ModuleBase):
                     )
                 else:
                     new_surface = copy.deepcopy(surface)
-                    new_surface['name'] = f"{surface.get('name', 'Surface')} Copy"
+                    new_surface['name'] = f"copy of {original_name}"
                     new_surface['group_id'] = target_group_id
                 
                 # Verwende Settings-Methode für konsistente Behandlung
@@ -1484,8 +1585,8 @@ class UISurfaceManager(ModuleBase):
                 from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.information(
                     self.surface_dockWidget,
-                    "Aktion nicht möglich",
-                    "Die Standardfläche kann nicht gelöscht werden."
+                    "Action not possible",
+                    "The default surface cannot be deleted."
                 )
                 return
             
@@ -1544,40 +1645,47 @@ class _SurfaceGroupController:
     def ensure_structure(self):
         """Stellt sicher, dass die Gruppen-Struktur korrekt ist"""
         store = self._ensure_group_store()
-        if self._ensure_group_object(self.root_group_id) is None:
-            store[self.root_group_id] = SurfaceGroup(
-                group_id=self.root_group_id,
-                name="Surfaces",
-                enabled=True,
-                hidden=False,
-                parent_id=None,
-                locked=True,
-            )
+        
+        # Entferne Root-Gruppe, falls sie existiert (wird nicht mehr benötigt)
+        if self.root_group_id in store:
+            root_group = store.get(self.root_group_id)
+            if root_group:
+                # Entferne alle Surfaces aus Root-Gruppe
+                for surface_id in list(root_group.surface_ids):
+                    self.detach_surface(surface_id)
+                # Entferne Root-Gruppe selbst
+                del store[self.root_group_id]
         
         surface_store = getattr(self.settings, "surface_definitions", {})
         valid_surface_ids = set(surface_store.keys())
         claimed_surface_ids: set[str] = set()
         
+        # Bereinige nur manuelle Gruppen (ohne Root-Gruppe)
         for group_id in list(store.keys()):
+            if group_id == self.root_group_id:
+                continue  # Überspringe Root-Gruppe
+            
             group = self._ensure_group_object(group_id)
             if group is None:
                 continue
             
-            if group_id == self.root_group_id:
+            # Wenn Parent nicht existiert oder Root-Gruppe ist, entferne Parent
+            if group.parent_id and (group.parent_id not in store or group.parent_id == self.root_group_id):
                 group.parent_id = None
-            elif group.parent_id not in store:
-                group.parent_id = self.root_group_id
             
-            parent = self._ensure_group_object(group.parent_id) if group.parent_id else None
-            if parent and group_id not in parent.child_groups:
-                parent.child_groups.append(group_id)
+            # Aktualisiere Parent-Child-Beziehungen
+            if group.parent_id:
+                parent = self._ensure_group_object(group.parent_id)
+                if parent and group_id not in parent.child_groups:
+                    parent.child_groups.append(group_id)
             
             group.child_groups = self._deduplicate_sequence(
                 gid
                 for gid in group.child_groups
-                if gid in store and gid != group_id
+                if gid in store and gid != group_id and gid != self.root_group_id
             )
             
+            # Bereinige Surface-IDs in Gruppen
             cleaned_surface_ids = []
             for surface_id in group.surface_ids:
                 if surface_id not in valid_surface_ids:
@@ -1591,10 +1699,30 @@ class _SurfaceGroupController:
                 claimed_surface_ids.add(surface_id)
             group.surface_ids = cleaned_surface_ids
         
+        # Entferne Root-Gruppe-Referenzen von Surfaces
         for surface_id in surface_store.keys():
             surface = self._ensure_surface_object(surface_id)
-            target_group_id = surface.group_id or self.root_group_id
-            self.assign_surface_to_group(surface_id, target_group_id, create_missing=True)
+            if surface and surface.group_id == self.root_group_id:
+                surface.group_id = None
+
+    def ensure_surface_group_structure(self):
+        """Stellt sicher, dass die Gruppen-Struktur korrekt ist (Alias für ensure_structure)"""
+        self.ensure_structure()
+
+    def reset_surface_storage(self):
+        """Setzt alle Surface- und Gruppen-Definitionen zurück"""
+        if hasattr(self.settings, "surface_definitions"):
+            initializer = getattr(self.settings, "_initialize_surface_definitions", None)
+            if callable(initializer):
+                self.settings.surface_definitions = initializer()
+            else:
+                self.settings.surface_definitions = {}
+        if hasattr(self.settings, "surface_groups"):
+            initializer = getattr(self.settings, "_initialize_surface_groups", None)
+            if callable(initializer):
+                self.settings.surface_groups = initializer()
+            else:
+                self.settings.surface_groups = {}
     
     @staticmethod
     def _deduplicate_sequence(sequence):
@@ -1621,15 +1749,20 @@ class _SurfaceGroupController:
         if surface is None:
             return
         
-        if not target_group_id:
-            target_group_id = self.root_group_id
+        # Wenn keine Gruppe angegeben oder Root-Gruppe, entferne aus Gruppe
+        if not target_group_id or target_group_id == self.root_group_id:
+            previous_group_id = surface.group_id or self._find_surface_group_id(surface_id)
+            if previous_group_id:
+                self._remove_surface_from_group(surface_id, previous_group_id)
+            surface.group_id = None
+            return
         
         group = self._ensure_group_object(target_group_id)
         if group is None and create_missing:
-            group = self.create_surface_group(target_group_id, parent_id=self.root_group_id, group_id=target_group_id)
+            group = self.create_surface_group(target_group_id, parent_id=None, group_id=target_group_id)
         elif group is None:
-            target_group_id = self.root_group_id
-            group = self._ensure_group_object(target_group_id)
+            # Gruppe existiert nicht und soll nicht erstellt werden
+            return
         
         previous_group_id = surface.group_id or self._find_surface_group_id(surface_id)
         if previous_group_id and previous_group_id != target_group_id:
@@ -1639,13 +1772,42 @@ class _SurfaceGroupController:
             # Füge am Anfang hinzu (neue Surfaces erscheinen oben)
             group.surface_ids.insert(0, surface_id)
         surface.group_id = target_group_id
+
+    def find_surface_group_by_name(self, name: str) -> Optional[SurfaceGroup]:
+        target = (name or "").strip().lower()
+        if not target:
+            return None
+        for group_id in list(self._ensure_group_store().keys()):
+            group = self._ensure_group_object(group_id)
+            if not group:
+                continue
+            if (group.name or "").strip().lower() == target:
+                return group
+        return None
+
+    def ensure_group_path(self, path: str) -> Optional[str]:
+        segments = [segment.strip() for segment in (path or "").split("/") if segment.strip()]
+        if not segments:
+            return None
+
+        parent_id = None
+        last_group_id = None
+        for segment in segments:
+            group = self._find_group_by_name_in_parent(segment, parent_id)
+            if group is None:
+                group = self.create_surface_group(segment, parent_id=parent_id)
+            if group is None:
+                return last_group_id
+            last_group_id = group.group_id
+            parent_id = group.group_id
+        return last_group_id
     
     def create_surface_group(self, name: str, parent_id: Optional[str] = None, *, group_id: Optional[str] = None, locked: bool = False) -> SurfaceGroup:
-        parent_id = parent_id or self.root_group_id
-        parent = self._ensure_group_object(parent_id)
-        if parent is None:
-            parent_id = self.root_group_id
-            parent = self._ensure_group_object(parent_id)
+        # Wenn parent_id nicht angegeben oder Root-Gruppe, setze auf None (Top-Level-Gruppe)
+        if parent_id == self.root_group_id:
+            parent_id = None
+        
+        parent = self._ensure_group_object(parent_id) if parent_id else None
         
         if group_id is None:
             group_id = self._generate_surface_group_id()
@@ -1669,6 +1831,36 @@ class _SurfaceGroupController:
             parent.child_groups.insert(0, group_id)
         
         return group
+    
+    def move_surface_group(self, group_id: str, target_parent_id: Optional[str]) -> bool:
+        """Verschiebt eine Gruppe zu einer anderen Parent-Gruppe (oder None für Top-Level)"""
+        group = self._ensure_group_object(group_id)
+        if not group or group.locked:
+            return False
+        
+        # Wenn target_parent_id die Root-Gruppe ist, setze auf None
+        if target_parent_id == self.root_group_id:
+            target_parent_id = None
+        
+        # Prüfe, ob Ziel-Parent existiert (wenn angegeben)
+        if target_parent_id:
+            target_parent = self._ensure_group_object(target_parent_id)
+            if not target_parent:
+                return False
+        
+        # Entferne Gruppe von altem Parent
+        old_parent = self._ensure_group_object(group.parent_id) if group.parent_id else None
+        if old_parent and group_id in old_parent.child_groups:
+            old_parent.child_groups.remove(group_id)
+        
+        # Füge Gruppe zu neuem Parent hinzu
+        group.parent_id = target_parent_id
+        if target_parent_id:
+            new_parent = self._ensure_group_object(target_parent_id)
+            if new_parent and group_id not in new_parent.child_groups:
+                new_parent.child_groups.insert(0, group_id)
+        
+        return True
     
     def remove_surface_group(self, group_id: str) -> bool:
         group = self._ensure_group_object(group_id)
@@ -1729,16 +1921,8 @@ class _SurfaceGroupController:
         return store
     
     def _create_default_group_store(self) -> Dict[str, SurfaceGroup]:
-        return {
-            self.root_group_id: SurfaceGroup(
-                group_id=self.root_group_id,
-                name="Surfaces",
-                enabled=True,
-                hidden=False,
-                parent_id=None,
-                locked=True,
-            )
-        }
+        # Keine Root-Gruppe mehr - nur manuelle Gruppen
+        return {}
     
     def _ensure_group_object(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
         if not group_id:
@@ -1788,6 +1972,19 @@ class _SurfaceGroupController:
             if candidate not in store:
                 return candidate
             index += 1
+
+    def _find_group_by_name_in_parent(self, name: str, parent_id: Optional[str]) -> Optional[SurfaceGroup]:
+        target = (name or "").strip().lower()
+        if not target:
+            return None
+        for group_id in list(self._ensure_group_store().keys()):
+            group = self._ensure_group_object(group_id)
+            if not group:
+                continue
+            current_parent = group.parent_id or None
+            if current_parent == parent_id and (group.name or "").strip().lower() == target:
+                return group
+        return None
     
     def _set_surface_enabled(self, surface_id: str, enabled: bool):
         set_enabled = getattr(self.settings, "set_surface_enabled", None)
