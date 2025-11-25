@@ -78,10 +78,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._rotate_last_pos: Optional[QtCore.QPoint] = None
         self._camera_state: Optional[dict[str, object]] = None
         self._skip_next_render_restore = False
-        self._camera_debug_enabled = False
+        self._camera_debug_enabled = self._init_camera_debug_flag()
         self._camera_debug_counter = 0
         self._phase_mode_active = False
         self._colorbar_override: dict | None = None
+        self._has_plotted_data = False  # Flag: ob bereits ein Plot mit Daten durchgeführt wurde
 
         if not hasattr(self.plotter, '_cmap_to_lut'):
             self.plotter._cmap_to_lut = types.MethodType(self._fallback_cmap_to_lut, self.plotter)  # type: ignore[attr-defined]
@@ -108,9 +109,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         # Guard gegen reentrante Render-Aufrufe (z. B. Kamera-Callbacks).
         self._is_rendering = False
 
-        self._configure_plotter()
+        self._camera_debug("DrawSPLPlot3D.__init__ -> initialize_empty_scene(False)")
         self.initialize_empty_scene(preserve_camera=False)
         # Erzwinge beim UI-Start eine definierte Top-Down-Ansicht.
+        self._camera_debug("DrawSPLPlot3D.__init__ -> set_view_top() after init scene")
         self.set_view_top()
         self._setup_view_controls()
         self._setup_time_control()
@@ -177,10 +179,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     # ------------------------------------------------------------------
     def initialize_empty_scene(self, preserve_camera: bool = True):
         """Zeigt eine leere Szene und bewahrt optional die Kameraposition."""
+        self._camera_debug(f"initialize_empty_scene(preserve_camera={preserve_camera})")
         if preserve_camera:
             camera_state = self._camera_state or self._capture_camera()
         else:
             camera_state = None
+            # Wenn Kamera nicht erhalten wird, Flag zurücksetzen, damit beim nächsten Plot mit Daten Zoom maximiert wird
+            self._has_plotted_data = False
 
         self.plotter.clear()
         self.overlay_helper.clear()
@@ -188,13 +193,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.surface_mesh = None
         self._last_overlay_signatures = {}
 
-        self._configure_plotter()
+        # Konfiguriere Plotter nur bei Bedarf (nicht die Kamera überschreiben)
+        self._configure_plotter(configure_camera=not preserve_camera)
         # Grundfläche entfernt, damit keine zusätzliche Fläche gerendert wird
         self._add_scene_frame()
 
         if camera_state is not None:
             self._restore_camera(camera_state)
         else:
+            self._camera_debug("initialize_empty_scene -> no camera_state, fallback set_view_top()")
             self.set_view_top()
             camera_state = self._camera_state
             if camera_state is not None:
@@ -207,6 +214,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._save_camera_state()
         if self.time_control is not None:
             self.time_control.hide()
+        self._camera_debug("initialize_empty_scene -> completed")
 
     def update_spl_plot(
         self,
@@ -420,11 +428,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         if camera_state is not None:
             self._restore_camera(camera_state)
-        self._maximize_camera_view(add_padding=True)
+        # Nur beim ersten Plot mit Daten den Zoom maximieren
+        # Bei späteren Updates bleibt der Zoom erhalten (wird durch preserve_camera=True sichergestellt)
+        if not self._has_plotted_data:
+            self._maximize_camera_view(add_padding=True)
+            self._has_plotted_data = True
         self.render()
         self._save_camera_state()
         self._colorbar_override = None
         print(f"[DEBUG] PlotSPL3D.update_spl_plot() ENDE: Plot aktualisiert, time_mode={time_mode}, phase_mode={phase_mode}")
+        self._camera_debug("update_spl_plot -> finished, camera saved")
 
     def update_time_frame_values(
         self,
@@ -565,6 +578,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if hasattr(self, 'view_control_widget'):
                 self.view_control_widget.raise_()
             if not self._skip_next_render_restore and self._camera_state is not None:
+                self._camera_debug("render -> restoring saved camera state")
                 self._restore_camera(self._camera_state)
             self._skip_next_render_restore = False
             self._save_camera_state()
@@ -574,10 +588,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     # ------------------------------------------------------------------
     # Kamera-Zustand
     # ------------------------------------------------------------------
+    def _camera_debug(self, message: str) -> None:
+        if self._camera_debug_enabled:
+            print(f"[CAM DEBUG] {message}")
+
     def _save_camera_state(self) -> None:
         state = self._capture_camera()
         if state is not None:
             self._camera_state = state
+            self._camera_debug(f"_save_camera_state -> position={state.get('position')}")
 
     def _capture_camera(self) -> Optional[dict]:
         if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
@@ -611,12 +630,28 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except Exception:  # noqa: BLE001
             return None
 
+    def _init_camera_debug_flag(self) -> bool:
+        env_value = os.environ.get("LFO_DEBUG_CAMERA")
+        if env_value is None:
+            # Debug standardmäßig aktiv, damit der Startablauf analysiert werden kann.
+            return True
+        env_value = env_value.strip().lower()
+        if env_value in {"0", "false", "off"}:
+            return False
+        if env_value in {"1", "true", "on"}:
+            return True
+        try:
+            return bool(int(env_value))
+        except ValueError:
+            return True
+
     def _restore_camera(self, camera_state: Optional[dict]):
         if camera_state is None:
             return
         if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
             return
         cam = self.plotter.camera
+        self._camera_debug(f"_restore_camera -> target position={camera_state.get('position')}")
         try:
             cam.position = camera_state['position']
             cam.focal_point = camera_state['focal_point']
@@ -904,6 +939,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 if hasattr(cam, 'view_angle'):
                     angle = float(cam.view_angle) * (0.55 if not add_padding else 0.65)
                     cam.view_angle = max(3.0, min(60.0, angle))
+                    self._camera_debug(f"_maximize_camera_view -> new angle {cam.view_angle}")
                 if hasattr(cam, 'ResetClippingRange'):
                     try:
                         cam.ResetClippingRange()
@@ -1021,7 +1057,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     # ------------------------------------------------------------------
     # Interne Hilfsfunktionen
     # ------------------------------------------------------------------
-    def _configure_plotter(self):
+    def _configure_plotter(self, configure_camera: bool = True):
         self.plotter.set_background('white')
         self.plotter.show_axes()
         try:
@@ -1032,7 +1068,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.plotter.enable_anti_aliasing('msaa')
         except Exception:  # noqa: BLE001
             pass
-        self.plotter.camera_position = 'iso'
+        # Nur Kamera-Position setzen, wenn gewünscht (nicht bei preserve_camera=True)
+        if configure_camera:
+            self.plotter.camera_position = 'iso'
 
     def _get_colorbar_params(self, phase_mode: bool) -> dict[str, float]:
         if self._colorbar_override:

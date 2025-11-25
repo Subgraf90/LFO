@@ -1,3 +1,4 @@
+import os
 from PyQt5 import QtCore, QtWidgets, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -77,6 +78,7 @@ class DrawPlotsMainwindow(ModuleBase):
         self.plot_mode_menu_actions: dict[str, QtWidgets.QAction] = {}
         self.menu_mode_actions: dict[str, QtWidgets.QAction] = {}
         self._setup_plot_mode_controls()
+        self._camera_debug_enabled = self._resolve_camera_debug_flag()
 
         self._initialize_spl_plotter()
         initial_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
@@ -153,6 +155,7 @@ class DrawPlotsMainwindow(ModuleBase):
             raise ImportError(
                 "PyVista und PyVistaQt sind nicht verfügbar. Bitte installieren, um den 3D-SPL-Plot zu verwenden."
             )
+        self._camera_debug("_initialize_spl_plotter -> creating DrawSPLPlot3D")
         self.draw_spl_plotter = DrawSPLPlot3D(self.main_window.ui.SPLPlot, self.settings, self.colorbar_ax)
         self.draw_spl_plotter.set_time_slider_callback(self._on_time_slider_changed)
         # Prüfe ob "SPL over time" aktiv ist
@@ -292,8 +295,10 @@ class DrawPlotsMainwindow(ModuleBase):
 
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
+            self._camera_debug(f"show_empty_plots -> initialize_empty_scene(preserve_camera={preserve_camera})")
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
             if not preserve_camera and view == "top":
+                self._camera_debug("show_empty_plots -> forcing top view")
                 plotter.set_view_top()
             plotter.update_overlays(self.settings, self.container)
             self.colorbar_canvas.draw()
@@ -613,6 +618,7 @@ class DrawPlotsMainwindow(ModuleBase):
 
         if not self.container.calculation_spl.get("show_in_plot", True):
             if draw_spl_plotter is not None:
+                self._camera_debug("plot_spl -> initialize_empty_scene(True) because no data")
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
                 draw_spl_plotter.update_overlays(self.settings, self.container)
                 self.colorbar_canvas.draw()
@@ -714,6 +720,7 @@ class DrawPlotsMainwindow(ModuleBase):
             sound_field_values,
             self.settings.colorization_mode,
         )
+        self._camera_debug("plot_spl -> after update_spl_plot")
         draw_spl_plotter.update_overlays(self.settings, self.container)
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
@@ -1018,6 +1025,7 @@ class DrawPlotsMainwindow(ModuleBase):
         plotter = self._get_current_spl_plotter()
         if plotter is None:
             return
+        self._camera_debug("reset_zoom -> plotter.reset_camera()")
         try:
             plotter.plotter.reset_camera()
             plotter.render()
@@ -1066,11 +1074,13 @@ class DrawPlotsMainwindow(ModuleBase):
     def set_view_isometric(self):
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
+            self._camera_debug("set_view_isometric() invoked")
             plotter.set_view_isometric()
 
     def set_view_top(self):
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
+            self._camera_debug("set_view_top() invoked")
             plotter.set_view_top()
 
     def set_view_side_y(self):
@@ -1082,6 +1092,24 @@ class DrawPlotsMainwindow(ModuleBase):
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
             plotter.set_view_side_x()
+
+    def _camera_debug(self, message: str) -> None:
+        if self._camera_debug_enabled:
+            print(f"[CAM DEBUG][Window] {message}")
+
+    def _resolve_camera_debug_flag(self) -> bool:
+        env_value = os.environ.get("LFO_DEBUG_CAMERA")
+        if env_value is None:
+            return True
+        env_value = env_value.strip().lower()
+        if env_value in {"0", "false", "off"}:
+            return False
+        if env_value in {"1", "true", "on"}:
+            return True
+        try:
+            return bool(int(env_value))
+        except ValueError:
+            return True
 
 
     # ========== DEBUG-METHODEN FÜR SPLITTER ==========

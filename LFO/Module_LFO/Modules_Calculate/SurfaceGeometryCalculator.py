@@ -520,6 +520,7 @@ def build_surface_mesh(
     # 🎯 RENDERE ALLE ZELLEN: Alle Zellen werden gerendert, aber SPL-Werte außerhalb
     # der Surface-Maske werden auf NaN gesetzt, damit sie nicht angezeigt werden.
     face_list: List[int] = []
+    cell_mask = None
     point_mask = None
     if surface_mask is not None:
         mask_arr = np.asarray(surface_mask, dtype=bool)
@@ -532,13 +533,19 @@ def build_surface_mesh(
         elif mask_arr.size == ny * nx:
             point_mask = mask_arr.reshape(ny, nx)
 
-    # Rendere nur Zellen, deren Pixelzentrum innerhalb der Surface liegt
+    # Rendere nur Zellen, die vollständig innerhalb der Surface liegen
+    # 🎯 STRENGE CLIPPING: Alle vier Eckpunkte müssen in der Maske sein
+    # Die Maske wurde bereits erweitert, daher sollten Randpunkte enthalten sein
+    total_cells = (ny - 1) * (nx - 1)
+    rendered_cells = 0
     for j in range(ny - 1):
         for i in range(nx - 1):
             if cell_mask is not None:
                 if not cell_mask[j, i]:
                     continue
             elif point_mask is not None:
+                # Prüfe alle vier Eckpunkte der Zelle
+                # Nur rendern, wenn alle vier Eckpunkte in der Maske sind
                 if not np.all(point_mask[j:j+2, i:i+2]):
                     continue
             idx0 = j * nx + i
@@ -546,6 +553,14 @@ def build_surface_mesh(
             idx2 = idx0 + nx + 1
             idx3 = idx0 + nx
             face_list.extend([4, idx0, idx1, idx2, idx3])
+            rendered_cells += 1
+    
+    if DEBUG_SURFACE_GEOMETRY:
+        print(
+            f"[SurfaceGeometry] build_surface_mesh clipping: "
+            f"total_cells={total_cells}, rendered={rendered_cells}, "
+            f"filtered={total_cells - rendered_cells}"
+        )
 
     faces = np.asarray(face_list, dtype=np.int64)
 
@@ -629,15 +644,57 @@ def prepare_plot_geometry(
         expanded_y = _expand_axis_for_plot(plot_y, upscale_factor)
         plot_vals = _resample_values_to_grid(plot_vals, orig_plot_x, orig_plot_y, expanded_x, expanded_y)
 
+        # Erstelle zwei Masken:
+        # 1. Erweiterte Maske für Z-Berechnung (damit Randpunkte Z-Werte bekommen)
+        # 2. Nicht-erweiterte Maske für strenges Clipping (damit Plot-Daten nicht über Surface hinausgehen)
+        temp_plot_mask_dilated = _build_plot_surface_mask(expanded_x, expanded_y, settings, dilate=True)
+        temp_plot_mask_strict = _build_plot_surface_mask(expanded_x, expanded_y, settings, dilate=False)
+        
         if z_coords is not None:
-            z_coords = _resample_values_to_grid(z_coords, orig_plot_x, orig_plot_y, expanded_x, expanded_y)
+            # 🎯 WICHTIG: Berechne Z-Koordinaten direkt im Plot-Raster neu,
+            # anstatt zu resampeln. Resampling würde 0-Werte extrapolieren.
+            # Verwende erweiterte Maske für Z-Berechnung
+            orig_z_coords = z_coords.copy()  # Für Fallback speichern
+            z_coords = _recompute_z_coordinates_in_plot_grid(
+                expanded_x, expanded_y, settings, container, temp_plot_mask_dilated
+            )
+            if z_coords is None:
+                # Fallback: Resampling nur wenn Neuberechnung fehlschlägt
+                if DEBUG_SURFACE_GEOMETRY:
+                    z_min_before = float(np.nanmin(orig_z_coords[orig_z_coords != 0])) if np.any(orig_z_coords != 0) else 0.0
+                    z_max_before = float(np.nanmax(orig_z_coords)) if orig_z_coords.size > 0 else 0.0
+                    print(
+                        f"[SurfaceGeometry] Z-Resampling (Fallback): vorher shape={orig_z_coords.shape}, "
+                        f"z_range=({z_min_before:.3f}, {z_max_before:.3f})"
+                    )
+                z_coords = _resample_values_to_grid(orig_z_coords, orig_plot_x, orig_plot_y, expanded_x, expanded_y)
+                if DEBUG_SURFACE_GEOMETRY:
+                    z_min_after = float(np.nanmin(z_coords[z_coords != 0])) if np.any(z_coords != 0) else 0.0
+                    z_max_after = float(np.nanmax(z_coords)) if z_coords.size > 0 else 0.0
+                    print(
+                        f"[SurfaceGeometry] Z-Resampling (Fallback): nachher shape={z_coords.shape}, "
+                        f"z_range=({z_min_after:.3f}, {z_max_after:.3f})"
+                    )
+            elif DEBUG_SURFACE_GEOMETRY:
+                z_min = float(np.nanmin(z_coords[z_coords != 0])) if np.any(z_coords != 0) else 0.0
+                z_max = float(np.nanmax(z_coords)) if z_coords.size > 0 else 0.0
+                print(
+                    f"[SurfaceGeometry] Z-Neuberechnung: shape={z_coords.shape}, "
+                    f"z_range=({z_min:.3f}, {z_max:.3f})"
+                )
         if surface_mask is not None:
             surface_mask = _resample_mask_to_grid(surface_mask, orig_plot_x, orig_plot_y, expanded_x, expanded_y)
 
         plot_x = expanded_x
         plot_y = expanded_y
-
-    plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings)
+        # Verwende nicht-erweiterte Maske für strenges Clipping
+        if 'temp_plot_mask_strict' in locals() and temp_plot_mask_strict is not None:
+            plot_mask = temp_plot_mask_strict
+        else:
+            plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings, dilate=False)
+    
+    if plot_mask is None:
+        plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings, dilate=False)
     if plot_mask is None and surface_mask is not None:
         plot_mask = _convert_point_mask_to_cell_mask(surface_mask)
     if plot_mask is None:
@@ -661,6 +718,163 @@ def prepare_plot_geometry(
         requires_resample=requires_resample,
         was_upscaled=was_upscaled,
     )
+
+
+def _recompute_z_coordinates_in_plot_grid(
+    plot_x: np.ndarray,
+    plot_y: np.ndarray,
+    settings,
+    container,
+    plot_mask: Optional[np.ndarray] = None,
+) -> Optional[np.ndarray]:
+    """
+    Berechnet Z-Koordinaten direkt im Plot-Raster basierend auf Surface-Definitionen.
+    Dies ist genauer als Resampling, da Z-Werte exakt aus Planmodellen berechnet werden.
+    """
+    if settings is None or plot_x.size == 0 or plot_y.size == 0:
+        return None
+    
+    surface_definitions = getattr(settings, "surface_definitions", {})
+    if not isinstance(surface_definitions, dict):
+        return None
+    
+    # Sammle enabled Surfaces mit Planmodellen
+    surfaces_with_models = []
+    for surface_id, surface_def in surface_definitions.items():
+        if hasattr(surface_def, "to_dict"):
+            data = surface_def.to_dict()
+        else:
+            data = surface_def
+        
+        enabled = bool(data.get("enabled", False))
+        hidden = bool(data.get("hidden", False))
+        points = data.get("points", []) or []
+        
+        if not enabled or hidden or len(points) < 3:
+            continue
+        
+        # Berechne Planmodell
+        model, error = derive_surface_plane(points)
+        if model is None:
+            continue
+        
+        surfaces_with_models.append((points, model))
+    
+    if not surfaces_with_models:
+        return None
+    
+    # Erstelle Plot-Grid
+    X, Y = np.meshgrid(plot_x, plot_y, indexing="xy")
+    ny, nx = X.shape
+    Z_grid = np.zeros((ny, nx), dtype=float)
+    
+    # Erstelle Maske für Z-Berechnung (Punkt-Maske)
+    if plot_mask is not None:
+        # Konvertiere Cell-Maske zu Punkt-Maske falls nötig
+        if plot_mask.shape == (ny - 1, nx - 1):
+            # Cell-Maske: erweitere auf Punkt-Maske
+            point_mask = np.zeros((ny, nx), dtype=bool)
+            point_mask[:-1, :-1] |= plot_mask
+            point_mask[1:, :-1] |= plot_mask
+            point_mask[:-1, 1:] |= plot_mask
+            point_mask[1:, 1:] |= plot_mask
+        else:
+            point_mask = np.asarray(plot_mask, dtype=bool)
+    else:
+        point_mask = np.ones((ny, nx), dtype=bool)  # Alle Punkte
+    
+    # Erste Runde: Berechne Z für Punkte innerhalb der Polygone
+    x_flat = X.flatten()
+    y_flat = Y.flatten()
+    mask_flat = point_mask.flatten()
+    
+    for idx in range(len(x_flat)):
+        if not mask_flat[idx]:  # Nur Punkte in der Maske
+            continue
+        
+        x_point = x_flat[idx]
+        y_point = y_flat[idx]
+        
+        z_values = []
+        for points, model in surfaces_with_models:
+            if _point_in_polygon_simple(x_point, y_point, points):
+                z_val = evaluate_surface_plane(model, x_point, y_point)
+                z_values.append(z_val)
+        
+        if z_values:
+            iy, ix = np.unravel_index(idx, (ny, nx))
+            Z_grid[iy, ix] = float(np.mean(z_values))
+    
+    # Zweite Runde: Fülle Z-Werte für Randpunkte iterativ
+    # durch Interpolation von benachbarten Punkten mit Z-Werten
+    # Mehrere Iterationen, damit auch weiter entfernte Randpunkte gefüllt werden
+    points_with_z_before = int(np.sum(Z_grid != 0.0))
+    max_iterations = 5
+    for iteration in range(max_iterations):
+        filled_count = 0
+        for idx in range(len(x_flat)):
+            if not mask_flat[idx]:  # Nur Punkte in der Maske
+                continue
+            
+            iy, ix = np.unravel_index(idx, (ny, nx))
+            if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
+                continue
+            
+            # Finde benachbarte Punkte mit Z-Werten
+            neighbor_z = []
+            for di in [-1, 0, 1]:
+                for dj in [-1, 0, 1]:
+                    if di == 0 and dj == 0:
+                        continue
+                    niy, nix = iy + dj, ix + di
+                    if 0 <= niy < ny and 0 <= nix < nx:
+                        if point_mask[niy, nix] and Z_grid[niy, nix] != 0.0:
+                            neighbor_z.append(Z_grid[niy, nix])
+            
+            if neighbor_z:
+                # Verwende Durchschnitt der benachbarten Z-Werte
+                Z_grid[iy, ix] = float(np.mean(neighbor_z))
+                filled_count += 1
+        
+        # Wenn keine neuen Punkte gefüllt wurden, breche ab
+        if filled_count == 0:
+            break
+    
+    points_with_z_after = int(np.sum(Z_grid != 0.0))
+    if DEBUG_SURFACE_GEOMETRY:
+        mask_points = int(np.sum(point_mask))
+        print(
+            f"[SurfaceGeometry] Z-Füllung: mask_points={mask_points}, "
+            f"vorher={points_with_z_before}, "
+            f"nachher={points_with_z_after}, "
+            f"gefüllt={points_with_z_after - points_with_z_before}, "
+            f"iterationen={iteration + 1}"
+        )
+    
+    return Z_grid
+
+
+def _point_in_polygon_simple(x: float, y: float, polygon_points: List[Dict[str, float]]) -> bool:
+    """Einfache Punkt-in-Polygon-Prüfung für Z-Berechnung."""
+    if len(polygon_points) < 3:
+        return False
+    
+    px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
+    py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
+    
+    n = len(px)
+    inside = False
+    j = n - 1
+    
+    for i in range(n):
+        xi, yi = px[i], py[i]
+        xj, yj = px[j], py[j]
+        
+        if ((yi > y) != (yj > y)) and (x <= (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi):
+            inside = not inside
+        j = i
+    
+    return inside
 
 
 def _extract_plot_z_coordinates(container, len_y: int, len_x: int) -> Optional[np.ndarray]:
@@ -735,9 +949,14 @@ def _build_plot_surface_mask(
     plot_x: np.ndarray,
     plot_y: np.ndarray,
     settings,
+    dilate: bool = True,
 ) -> Optional[np.ndarray]:
     """
     Baut eine Maske im Plot-Raster basierend auf den aktiven Surfaces.
+    
+    Args:
+        dilate: Wenn True, wird die Maske durch Dilatation erweitert (für Z-Berechnung).
+                Wenn False, bleibt die Maske unverändert (für strenges Clipping).
     """
     if settings is None or plot_x.size == 0 or plot_y.size == 0:
         return None
@@ -776,7 +995,32 @@ def _build_plot_surface_mask(
 
     if not np.any(combined_mask):
         return None
-    return combined_mask
+
+    # 🎯 Wandle Zellmaske in Punktmaske (ny, nx) um
+    ny, nx = combined_mask.shape
+    point_mask = np.zeros((ny + 1, nx + 1), dtype=bool)
+    point_mask[:-1, :-1] |= combined_mask
+    point_mask[1:, :-1] |= combined_mask
+    point_mask[:-1, 1:] |= combined_mask
+    point_mask[1:, 1:] |= combined_mask
+
+    # 🎯 Erweiterung um 1 Pixel in alle Richtungen für glatte Ränder (nur wenn gewünscht)
+    if dilate:
+        try:
+            from scipy import ndimage
+
+            structure = np.array(
+                [
+                    [1, 1, 1],
+                    [1, 1, 1],
+                    [1, 1, 1],
+                ],
+                dtype=bool,
+            )
+            point_mask = ndimage.binary_dilation(point_mask, structure=structure)
+        except Exception:
+            point_mask = _dilate_mask_minimal(point_mask)
+    return point_mask
 
 
 def _points_in_polygon_batch_plot(

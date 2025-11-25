@@ -973,6 +973,18 @@ class MainWindow(QtWidgets.QMainWindow):
         manager.show_surface_dock_widget()
         # Stelle sicher, dass beide DockWidgets tabifiziert sind
         self._ensure_dock_widgets_tabified()
+        # 🎯 Aktualisiere Overlays nach dem Erstellen der Surface-Dock-Widgets,
+        # damit die Default-Surface im 3D-Plot geplottet wird
+        if hasattr(self, 'draw_plots') and self.draw_plots:
+            plotter = self.draw_plots._get_current_spl_plotter()
+            if plotter is not None:
+                # Setze die Signatur zurück, damit die Surfaces neu gezeichnet werden
+                # (wichtig, wenn update_overlays() bereits vorher aufgerufen wurde)
+                if hasattr(plotter, '_last_overlay_signatures'):
+                    # Entferne 'surfaces' aus der Signatur, damit sie neu gezeichnet werden
+                    if 'surfaces' in plotter._last_overlay_signatures:
+                        del plotter._last_overlay_signatures['surfaces']
+                plotter.update_overlays(self.settings, self.container)
 
 
 # ---- HELP METHODEN ----

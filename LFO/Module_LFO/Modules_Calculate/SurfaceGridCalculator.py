@@ -519,19 +519,94 @@ class SurfaceGridCalculator(ModuleBase):
         mask_flat = surface_mask.flatten()
         
         indices = np.where(mask_flat)[0]
+        points_with_z = 0
+        points_without_z = 0
+        edge_points = []
+        
+        # Erste Runde: Interpoliere Z für Punkte innerhalb der Polygone
         for idx in indices:
             x_point = x_flat[idx]  # X fest
             y_point = y_flat[idx]  # Y fest
             
             z_values = []
-            for points, model, _ in normalized_surfaces:
+            surface_names = []
+            for points, model, surface_name in normalized_surfaces:
                 if self._point_in_polygon(x_point, y_point, points):
                     z_val = evaluate_surface_plane(model, x_point, y_point)
                     z_values.append(z_val)
+                    surface_names.append(surface_name)
             
             if z_values:
                 iy, ix = np.unravel_index(idx, x_coords.shape)
-                Z_grid[iy, ix] = float(np.mean(z_values))  # Z wird interpoliert
+                z_final = float(np.mean(z_values))
+                Z_grid[iy, ix] = z_final
+                points_with_z += 1
+            else:
+                points_without_z += 1
+        
+        # Zweite Runde: Fülle Z-Werte für Punkte in erweiterter Maske (außerhalb Polygone)
+        # durch Interpolation von benachbarten Punkten mit Z-Werten
+        for idx in indices:
+            iy, ix = np.unravel_index(idx, x_coords.shape)
+            if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
+                continue
+            
+            x_point = x_flat[idx]
+            y_point = y_flat[idx]
+            
+            # Finde benachbarte Punkte mit Z-Werten
+            neighbor_z = []
+            for di in [-1, 0, 1]:
+                for dj in [-1, 0, 1]:
+                    if di == 0 and dj == 0:
+                        continue
+                    niy, nix = iy + dj, ix + di
+                    if 0 <= niy < Z_grid.shape[0] and 0 <= nix < Z_grid.shape[1]:
+                        if Z_grid[niy, nix] != 0.0:
+                            neighbor_z.append(Z_grid[niy, nix])
+            
+            if neighbor_z:
+                # Verwende Durchschnitt der benachbarten Z-Werte
+                Z_grid[iy, ix] = float(np.mean(neighbor_z))
+                points_with_z += 1
+                points_without_z -= 1
+                
+                # Prüfe ob Randpunkt
+                is_edge = False
+                if iy > 0 and iy < x_coords.shape[0] - 1 and ix > 0 and ix < x_coords.shape[1] - 1:
+                    neighbors = [
+                        surface_mask[iy-1, ix], surface_mask[iy+1, ix],
+                        surface_mask[iy, ix-1], surface_mask[iy, ix+1]
+                    ]
+                    if not all(neighbors):
+                        is_edge = True
+                else:
+                    is_edge = True
+                
+                if is_edge:
+                    edge_points.append((x_point, y_point, Z_grid[iy, ix], None))
+        
+        if DEBUG_SURFACE_GRID:
+            print(
+                f"[SurfaceGridCalculator] Z-Interpolation: "
+                f"mask_points={len(indices)}, "
+                f"with_z={points_with_z}, "
+                f"without_z={points_without_z}"
+            )
+            if Z_grid.size > 0:
+                z_min = float(np.nanmin(Z_grid[Z_grid != 0]))
+                z_max = float(np.nanmax(Z_grid[Z_grid != 0]))
+                z_mean = float(np.nanmean(Z_grid[Z_grid != 0]))
+                print(
+                    f"[SurfaceGridCalculator] Z-Statistik: "
+                    f"min={z_min:.3f}, max={z_max:.3f}, mean={z_mean:.3f}"
+                )
+            if edge_points:
+                edge_z_vals = [p[2] for p in edge_points[:10]]  # Erste 10 Randpunkte
+                print(
+                    f"[SurfaceGridCalculator] Randpunkte (erste 10): "
+                    f"z_values={[f'{z:.3f}' for z in edge_z_vals]}"
+                )
         
         return Z_grid
     
