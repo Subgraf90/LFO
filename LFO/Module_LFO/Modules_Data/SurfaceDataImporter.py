@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+from dataclasses import dataclass
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,15 @@ from typing import Any, Dict, List, Optional
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
+
+
+@dataclass(frozen=True)
+class InsertContext:
+    name: str
+    handle: Optional[str]
+    instance_index: int
+    tag: Optional[str]
+    layer: Optional[str]
 
 
 class SurfaceDataImporter:
@@ -26,6 +36,7 @@ class SurfaceDataImporter:
         self.group_manager = group_manager
         self._group_cache: Dict[str, str] = {}
         self._block_tag_map: Dict[str, str] = {}  # Mapping von Block-Namen zu Tags
+        self._block_instance_counters: Counter[str] = Counter()
 
     def execute(self) -> bool | None:
         """
@@ -205,7 +216,7 @@ class SurfaceDataImporter:
         skipped_count = 0
         entity_type_stats = Counter()  # Statistik welche Entity-Typen verarbeitet werden
 
-        for entity, transform in self._iter_surface_entities(msp):
+        for entity, transform, block_stack in self._iter_surface_entities(msp):
             entity_count += 1
             dxftype = entity.dxftype()
             layer = getattr(entity.dxf, "layer", "unbekannt")
@@ -341,6 +352,8 @@ class SurfaceDataImporter:
             
             # Extrahiere Tag/Attribut aus Entity (z.B. "WOOD", "BETON")
             tag = self._extract_tag_from_entity(entity, doc)
+            if not tag:
+                tag = self._resolve_tag_from_context(block_stack)
             
             # Verwende Tag als Gruppierung, falls vorhanden
             if tag:
@@ -348,12 +361,14 @@ class SurfaceDataImporter:
                     "Entity %d: Tag '%s' gefunden für %s auf Layer '%s'",
                     entity_count, tag, dxftype, layer
                 )
-                target_group_id = self._ensure_group_for_label(tag)
                 # Verwende Tag als Basis-Name, falls Layer nicht aussagekräftig
                 if not base_name or base_name == dxftype:
                     base_name = tag
-            else:
-                # Fallback auf normale Gruppen-Logik
+            # Gruppierung über Block-Hierarchie
+            group_label = self._build_group_label(block_stack)
+            target_group_id = self._ensure_group_for_label(group_label)
+            if not target_group_id:
+                # Fallback auf ursprüngliche Gruppen-Logik
                 group_name = group_lookup.get(entity.dxf.handle)
                 target_group_id = self._ensure_group_for_label(group_name)
 
@@ -735,6 +750,44 @@ class SurfaceDataImporter:
     @staticmethod
     def _rgb_to_hex(r: int, g: int, b: int) -> str:
         return f"#{r:02X}{g:02X}{b:02X}"
+    
+    @staticmethod
+    def _extract_float_from_vec3(value, default=0.0):
+        """
+        Rekursiv extrahiert einen Float-Wert aus einem Vec3-Objekt oder einer Zahl.
+        Vec3-Objekte können verschachtelt sein (z.B. Vec3 enthält Vec3).
+        """
+        # Wenn es bereits eine Zahl ist, direkt zurückgeben
+        if isinstance(value, (int, float)):
+            return float(value)
+        
+        # Versuche als Tupel zu konvertieren
+        try:
+            if hasattr(value, '__iter__') and not isinstance(value, str):
+                value_tuple = tuple(value)
+                if len(value_tuple) > 0:
+                    # Rekursiv: nimm das erste Element
+                    return SurfaceDataImporter._extract_float_from_vec3(value_tuple[0], default)
+        except (TypeError, ValueError):
+            pass
+        
+        # Versuche Index-Zugriff
+        try:
+            if hasattr(value, '__getitem__'):
+                first_elem = value[0]
+                return SurfaceDataImporter._extract_float_from_vec3(first_elem, default)
+        except (IndexError, TypeError):
+            pass
+        
+        # Versuche direkte Attribute
+        if hasattr(value, 'x'):
+            return SurfaceDataImporter._extract_float_from_vec3(value.x, default)
+        
+        # Fallback: versuche direkt zu konvertieren
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def _extract_polyline_points(self, entity) -> List[Dict[str, float]]:
         points: List[Dict[str, float]] = []
@@ -783,44 +836,25 @@ class SurfaceDataImporter:
                         # Versuche location-Attribut (ist ein Vec3-Objekt)
                         if hasattr(vertex.dxf, 'location'):
                             loc = vertex.dxf.location
-                            # loc ist ein Vec3, versuche verschiedene Zugriffsmethoden
+                            # Verwende Hilfsfunktion für rekursive Vec3-Extraktion
                             try:
-                                # Methode 1: Versuche als Tuple zu konvertieren (Vec3 kann in Tuple konvertiert werden)
+                                # Methode 1: Als Tuple konvertieren (sicherste Methode)
                                 try:
                                     loc_tuple = tuple(loc)
                                     if len(loc_tuple) >= 2:
-                                        x = float(loc_tuple[0])
-                                        y = float(loc_tuple[1])
-                                        z = float(loc_tuple[2]) if len(loc_tuple) >= 3 else elevation
+                                        x = self._extract_float_from_vec3(loc_tuple[0], 0.0)
+                                        y = self._extract_float_from_vec3(loc_tuple[1], 0.0)
+                                        z = self._extract_float_from_vec3(loc_tuple[2], elevation) if len(loc_tuple) >= 3 else elevation
+                                        points.append(self._make_point(x, y, z))
+                                except (TypeError, ValueError) as tuple_err:
+                                    # Methode 2: Direkte Attribute (falls .x, .y, .z vorhanden)
+                                    if hasattr(loc, 'x') and hasattr(loc, 'y'):
+                                        x = self._extract_float_from_vec3(loc.x, 0.0)
+                                        y = self._extract_float_from_vec3(loc.y, 0.0)
+                                        z = self._extract_float_from_vec3(loc.z, elevation) if hasattr(loc, 'z') else elevation
                                         points.append(self._make_point(x, y, z))
                                     else:
-                                        logger.info("    Vertex %d: location tuple hat zu wenige Elemente: %d", vertex_count, len(loc_tuple))
-                                except (TypeError, ValueError) as tuple_err:
-                                    # Methode 2: Versuche Index-Zugriff direkt
-                                    try:
-                                        x = float(loc[0])
-                                        y = float(loc[1])
-                                        z = float(loc[2]) if len(loc) >= 3 else elevation
-                                        points.append(self._make_point(x, y, z))
-                                    except (IndexError, TypeError) as idx_err:
-                                        # Methode 3: Versuche direkte Attribute (falls x, y, z numerisch sind)
-                                        if hasattr(loc, 'x') and hasattr(loc, 'y'):
-                                            x_val = loc.x
-                                            y_val = loc.y
-                                            z_val = loc.z if hasattr(loc, 'z') and loc.z is not None else elevation
-                                            
-                                            # Prüfe ob die Werte selbst Vec3 sind (unwahrscheinlich, aber möglich)
-                                            if hasattr(x_val, '__getitem__'):
-                                                x = float(x_val[0])
-                                                y = float(y_val[0]) if hasattr(y_val, '__getitem__') else float(y_val)
-                                                z = float(z_val[0]) if hasattr(z_val, '__getitem__') else float(z_val)
-                                            else:
-                                                x = float(x_val)
-                                                y = float(y_val)
-                                                z = float(z_val)
-                                            points.append(self._make_point(x, y, z))
-                                        else:
-                                            logger.info("    Vertex %d: location hat unerwartetes Format: %s", vertex_count, type(loc))
+                                        logger.info("    Vertex %d: location kann nicht verarbeitet werden (type: %s, repr: %s)", vertex_count, type(loc), repr(loc))
                             except Exception as loc_err:
                                 logger.info("    Vertex %d: Fehler beim Extrahieren aus location: %s (loc type: %s, loc repr: %s)", vertex_count, loc_err, type(loc), repr(loc))
                         # Fallback: Versuche einzelne Attribute
@@ -866,47 +900,35 @@ class SurfaceDataImporter:
                     elevation = float(getattr(entity.dxf, 'elevation', 0.0))
                     for point in entity.points():
                         try:
-                            # Methode 1: Versuche als Tuple zu konvertieren (Vec3 kann in Tuple konvertiert werden)
+                            # Verwende Hilfsfunktion für rekursive Vec3-Extraktion
+                            # Methode 1: Als Tuple konvertieren (sicherste Methode)
                             try:
                                 point_tuple = tuple(point)
                                 if len(point_tuple) >= 2:
-                                    x = float(point_tuple[0])
-                                    y = float(point_tuple[1])
-                                    z = float(point_tuple[2]) if len(point_tuple) >= 3 else elevation
+                                    x = self._extract_float_from_vec3(point_tuple[0], 0.0)
+                                    y = self._extract_float_from_vec3(point_tuple[1], 0.0)
+                                    z = self._extract_float_from_vec3(point_tuple[2], elevation) if len(point_tuple) >= 3 else elevation
                                     points.append(self._make_point(x, y, z))
-                                else:
-                                    logger.info("    Punkt tuple hat zu wenige Elemente: %d", len(point_tuple))
                             except (TypeError, ValueError) as tuple_err:
-                                # Methode 2: Versuche Index-Zugriff direkt
-                                try:
-                                    if hasattr(point, '__getitem__'):
-                                        x = float(point[0])
-                                        y = float(point[1])
-                                        z = float(point[2]) if len(point) >= 3 else elevation
+                                # Methode 2: Direkte Attribute (falls .x, .y, .z vorhanden)
+                                if hasattr(point, 'x') and hasattr(point, 'y'):
+                                    x = self._extract_float_from_vec3(point.x, 0.0)
+                                    y = self._extract_float_from_vec3(point.y, 0.0)
+                                    z = self._extract_float_from_vec3(point.z, elevation) if hasattr(point, 'z') else elevation
+                                    points.append(self._make_point(x, y, z))
+                                # Methode 3: Index-Zugriff als Fallback
+                                elif hasattr(point, '__getitem__'):
+                                    try:
+                                        x = self._extract_float_from_vec3(point[0], 0.0)
+                                        y = self._extract_float_from_vec3(point[1], 0.0)
+                                        z = self._extract_float_from_vec3(point[2], elevation) if len(point) >= 3 else elevation
                                         points.append(self._make_point(x, y, z))
-                                    else:
-                                        raise IndexError("Kein Index-Zugriff möglich")
-                                except (IndexError, TypeError) as idx_err:
-                                    # Methode 3: Versuche direkte Attribute (falls x, y, z numerisch sind)
-                                    if hasattr(point, 'x') and hasattr(point, 'y'):
-                                        x_val = point.x
-                                        y_val = point.y
-                                        z_val = point.z if hasattr(point, 'z') and point.z is not None else elevation
-                                        
-                                        # Prüfe ob die Werte selbst Vec3 sind (unwahrscheinlich, aber möglich)
-                                        if hasattr(x_val, '__getitem__'):
-                                            x = float(x_val[0])
-                                            y = float(y_val[0]) if hasattr(y_val, '__getitem__') else float(y_val)
-                                            z = float(z_val[0]) if hasattr(z_val, '__getitem__') else float(z_val)
-                                        else:
-                                            x = float(x_val)
-                                            y = float(y_val)
-                                            z = float(z_val)
-                                        points.append(self._make_point(x, y, z))
-                                    else:
-                                        logger.info("    Unerwartetes Punkt-Format: %s", type(point))
+                                    except (IndexError, TypeError):
+                                        logger.info("    Punkt Index-Zugriff fehlgeschlagen: %s", type(point))
+                                else:
+                                    logger.info("    Unerwartetes Punkt-Format: %s", type(point))
                         except Exception as point_err:
-                            logger.info("    Fehler beim Verarbeiten eines Punktes: %s (point type: %s, point repr: %s)", point_err, type(point), repr(point))
+                            logger.info("    Fehler beim Verarbeiten eines Punktes: %s (point type: %s)", point_err, type(point))
                     logger.info("  Methode 4 erfolgreich: %d Punkte extrahiert", len(points))
                 except Exception as e4:
                     logger.info("  Methode 4 fehlgeschlagen: %s", e4)
@@ -1040,18 +1062,48 @@ class SurfaceDataImporter:
 
         group_id = None
         if self.group_manager:
-            # Suche zuerst nach existierender Gruppe mit diesem Namen
-            existing_group = self.group_manager.find_surface_group_by_name(key)
-            if existing_group:
-                group_id = existing_group.group_id
+            if "/" in key:
+                group_id = self.group_manager.ensure_group_path(key)
             else:
-                # Erstelle neue Gruppe mit Tag-Namen
-                new_group = self.group_manager.create_surface_group(key)
-                if new_group:
-                    group_id = new_group.group_id
+                # Suche zuerst nach existierender Gruppe mit diesem Namen
+                existing_group = self.group_manager.find_surface_group_by_name(key)
+                if existing_group:
+                    group_id = existing_group.group_id
+                else:
+                    # Erstelle neue Gruppe mit Tag-Namen
+                    new_group = self.group_manager.create_surface_group(key)
+                    if new_group:
+                        group_id = new_group.group_id
 
         self._group_cache[key] = group_id
         return group_id
+
+    def _build_group_label(self, block_stack: tuple) -> Optional[str]:
+        if not block_stack:
+            return None
+        segments: List[str] = []
+        for ctx in block_stack:
+            segment = self._format_block_segment(ctx)
+            if segment:
+                segments.append(segment)
+        if not segments:
+            return None
+        return "/".join(segments)
+
+    def _format_block_segment(self, ctx: InsertContext) -> str:
+        base = (ctx.name or "Block").strip()
+        base = base.replace("/", "_").replace("\\", "_")
+        handle_part = ctx.handle or ""
+        if handle_part:
+            return f"{base}#{handle_part}"
+        return base
+
+    @staticmethod
+    def _resolve_tag_from_context(block_stack: tuple) -> Optional[str]:
+        for ctx in reversed(block_stack):
+            if ctx.tag:
+                return ctx.tag
+        return None
 
     # ---- Tag/Attribut-Extraktion -------------------------------------
 
@@ -1071,7 +1123,7 @@ class SurfaceDataImporter:
                         tags_found.add(tag)
         
         # Analysiere alle Entities im Modelspace und in Blöcken
-        for entity, _ in self._iter_surface_entities(msp):
+        for entity, _, _ in self._iter_surface_entities(msp):
             tag = self._extract_tag_from_entity(entity, doc)
             if tag:
                 tags_found.add(tag)
@@ -1352,9 +1404,15 @@ class SurfaceDataImporter:
         
         return points
 
-    def _iter_surface_entities(self, layout):
+    def _iter_surface_entities(self, layout, block_stack: Optional[tuple] = None):
+        current_stack = tuple() if block_stack is None else block_stack
         for entity in layout:
-            yield from self._resolve_entity(entity, depth=0, transform=None)
+            yield from self._resolve_entity(
+                entity,
+                depth=0,
+                transform=None,
+                block_stack=current_stack,
+            )
     
     def _get_identity_transform(self):
         """Gibt eine Identitäts-Transformation zurück"""
@@ -1364,13 +1422,13 @@ class SurfaceDataImporter:
             "rotation": 0.0,
         }
 
-    def _resolve_entity(self, entity, depth: int, transform):
+    def _resolve_entity(self, entity, depth: int, transform, block_stack: tuple):
         if entity.dxftype() == "INSERT":
-            yield from self._expand_insert(entity, depth, transform)
+            yield from self._expand_insert(entity, depth, transform, block_stack)
         else:
-            yield (entity, transform)
+            yield (entity, transform, block_stack)
 
-    def _expand_insert(self, insert_entity, depth: int, parent_transform):
+    def _expand_insert(self, insert_entity, depth: int, parent_transform, block_stack: tuple):
         logger = logging.getLogger(__name__)
         max_depth = 10
         if depth >= max_depth:
@@ -1383,18 +1441,18 @@ class SurfaceDataImporter:
             return
         
         block_name = getattr(insert_entity.dxf, "name", "unbenannt")
-        
+        doc = getattr(insert_entity, "doc", None)
+
         # Extrahiere Tag aus INSERT-Entity und speichere Mapping
-        # (wird später verwendet, wenn Entities aus diesem Block expandiert werden)
-        try:
-            import ezdxf
-            doc = getattr(insert_entity, "doc", None)
-            if doc:
-                tag = self._extract_tag_from_insert(insert_entity, doc)
-                if tag:
-                    self._block_tag_map[block_name] = tag
-        except Exception:
-            pass
+        block_tag = self._block_tag_map.get(block_name)
+        if doc:
+            try:
+                tag_from_insert = self._extract_tag_from_insert(insert_entity, doc)
+            except Exception:  # pragma: no cover - defensive
+                tag_from_insert = None
+            if tag_from_insert:
+                block_tag = tag_from_insert
+                self._block_tag_map[block_name] = tag_from_insert
         
         # Extrahiere Transformationen aus der INSERT-Entity
         insert_transform = self._extract_insert_transform(insert_entity)
@@ -1435,6 +1493,17 @@ class SurfaceDataImporter:
             )
             return
 
+        # Notiere Kontext für nachgelagerte Entities
+        self._block_instance_counters[block_name] += 1
+        context = InsertContext(
+            name=block_name,
+            handle=getattr(insert_entity.dxf, "handle", None),
+            instance_index=self._block_instance_counters[block_name],
+            tag=block_tag,
+            layer=getattr(insert_entity.dxf, "layer", None),
+        )
+        new_stack = block_stack + (context,)
+
         try:
             logger = logging.getLogger(__name__)
             for idx, virtual in enumerate(virtual_entities):
@@ -1444,7 +1513,12 @@ class SurfaceDataImporter:
                     "  Block '%s' Entity %d/%d: %s auf Layer '%s'",
                     block_name, idx+1, len(virtual_entities), vtype, vlayer
                 )
-                yield from self._resolve_entity(virtual, depth + 1, combined_transform)
+                yield from self._resolve_entity(
+                    virtual,
+                    depth + 1,
+                    combined_transform,
+                    new_stack,
+                )
         finally:
             for virtual in virtual_entities:
                 try:

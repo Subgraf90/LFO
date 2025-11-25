@@ -223,7 +223,21 @@ class Sources(ModuleBase):
             
         if not hasattr(self, 'sources_dockWidget') or self.sources_dockWidget is None:
             self.sources_dockWidget = QDockWidget("Sources", self.main_window)
-            self.main_window.addDockWidget(Qt.BottomDockWidgetArea, self.sources_dockWidget)
+            
+            # Prüfe, ob Surface-DockWidget bereits existiert und tabbifiziere es
+            surface_dock = None
+            if hasattr(self.main_window, 'surface_manager') and self.main_window.surface_manager:
+                surface_dock = getattr(self.main_window.surface_manager, 'surface_dockWidget', None)
+            
+            if surface_dock:
+                # Tabbifiziere: Beide DockWidgets übereinander mit Tab-Buttons
+                self.main_window.addDockWidget(Qt.BottomDockWidgetArea, self.sources_dockWidget)
+                self.main_window.tabifyDockWidget(surface_dock, self.sources_dockWidget)
+                # Aktiviere das Sources-DockWidget (wird als aktiver Tab angezeigt)
+                self.sources_dockWidget.raise_()
+            else:
+                # Füge normal hinzu
+                self.main_window.addDockWidget(Qt.BottomDockWidgetArea, self.sources_dockWidget)
     
             dock_content = QWidget()
             dock_layout = QVBoxLayout(dock_content)
@@ -1865,6 +1879,7 @@ class Sources(ModuleBase):
                 position_x_input.setFont(font)
                 position_x_input.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
                 position_x_input.setFixedWidth(70)
+                position_x_input.setMaximumWidth(70)
                 position_x_input.setText(f"{speaker_array.source_position_x[source_index]:.2f}")
                 # Deaktiviere im symmetrischen Modus die zweite Hälfte
                 if instance['state'] and source_index >= (len(speaker_array.source_position_x) + 1) // 2:
@@ -1880,6 +1895,7 @@ class Sources(ModuleBase):
                 position_y_input.setFont(font)
                 position_y_input.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
                 position_y_input.setFixedWidth(70)
+                position_y_input.setMaximumWidth(70)
                 position_y_input.setText(f"{speaker_array.source_position_y[source_index]:.2f}")
                 if instance['state'] and source_index >= (len(speaker_array.source_position_y) + 1) // 2:
                     position_y_input.setEnabled(False)
@@ -1894,6 +1910,7 @@ class Sources(ModuleBase):
                 position_z_input.setFont(font)
                 position_z_input.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
                 position_z_input.setFixedWidth(70)
+                position_z_input.setMaximumWidth(70)
                 
                 # Prüfe, ob source_position_z existiert und initialisiere es bei Bedarf
                 if not hasattr(speaker_array, 'source_position_z_stack') or speaker_array.source_position_z_stack is None:

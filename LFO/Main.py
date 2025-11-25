@@ -261,6 +261,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.surface_manager.bind_to_sources_widget(self.sources_instance)
 
         self.sources_instance.show_sources_dock_widget()
+        # Stelle sicher, dass beide DockWidgets tabifiziert sind
+        self._ensure_dock_widgets_tabified()
 
     def _ensure_surface_manager(self):
         if self.surface_manager is None:
@@ -268,6 +270,36 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, 'sources_instance'):
                 self.surface_manager.bind_to_sources_widget(self.sources_instance)
         return self.surface_manager
+    
+    def _ensure_dock_widgets_tabified(self):
+        """
+        Stellt sicher, dass Sources- und Surface-DockWidgets tabifiziert sind.
+        """
+        sources_dock = None
+        surface_dock = None
+        
+        if hasattr(self, 'sources_instance') and self.sources_instance:
+            sources_dock = getattr(self.sources_instance, 'sources_dockWidget', None)
+        
+        if hasattr(self, 'surface_manager') and self.surface_manager:
+            surface_dock = getattr(self.surface_manager, 'surface_dockWidget', None)
+        
+        # Wenn beide DockWidgets existieren, tabbifiziere sie
+        if sources_dock and surface_dock:
+            sources_area = self.dockWidgetArea(sources_dock)
+            surface_area = self.dockWidgetArea(surface_dock)
+            
+            # Wenn beide Widgets in derselben Area sind, tabbifiziere sie
+            if sources_area == surface_area and sources_area != Qt.NoDockWidgetArea:
+                self.tabifyDockWidget(sources_dock, surface_dock)
+            # Wenn Surface-DockWidget noch nicht in einer Area ist, füge es zur gleichen Area hinzu und tabbifiziere
+            elif sources_area != Qt.NoDockWidgetArea and surface_area == Qt.NoDockWidgetArea:
+                self.addDockWidget(sources_area, surface_dock)
+                self.tabifyDockWidget(sources_dock, surface_dock)
+            # Wenn Sources-DockWidget noch nicht in einer Area ist, füge es zur gleichen Area hinzu und tabbifiziere
+            elif surface_area != Qt.NoDockWidgetArea and sources_area == Qt.NoDockWidgetArea:
+                self.addDockWidget(surface_area, sources_dock)
+                self.tabifyDockWidget(surface_dock, sources_dock)
 
     def show_manage_speaker(self):
         """Zeigt das Manage Speaker Fenster an oder erstellt es, falls es noch nicht existiert."""
@@ -939,6 +971,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_surface_dock_lazy(self):
         manager = self._ensure_surface_manager()
         manager.show_surface_dock_widget()
+        # Stelle sicher, dass beide DockWidgets tabifiziert sind
+        self._ensure_dock_widgets_tabified()
 
 
 # ---- HELP METHODEN ----
@@ -1086,6 +1120,9 @@ if __name__ == "__main__":  # Befehle zur Erstausführung des Skripts
         window = MainWindow(settings, container)
         window.init_container()
         window.show_sources_dock_widget()
+        window._show_surface_dock_lazy()
+        # Stelle sicher, dass beide DockWidgets beim Start tabifiziert sind
+        window._ensure_dock_widgets_tabified()
         window.snapshot_engine.show_snapshot_widget()
         window.update_freq_bandwidth()
         window.show()

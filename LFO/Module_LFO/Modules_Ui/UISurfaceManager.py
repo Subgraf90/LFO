@@ -1,433 +1,1548 @@
-import math
-import weakref
-from typing import Dict, Optional, List, Callable
+from PyQt5.QtWidgets import (
+    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
+    QTreeWidget, QTreeWidgetItem, QCheckBox, QPushButton, 
+    QTabWidget, QSizePolicy, QGridLayout, QLabel, QLineEdit, 
+    QMenu, QAbstractItemView, QGroupBox, QScrollArea, QColorDialog
+)
+from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtGui import QDoubleValidator, QColor
+from PyQt5 import QtWidgets, QtGui
 
-from PyQt5.QtCore import Qt
+import numpy as np
+from typing import Dict, Optional, List
+import uuid
 
+from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
     SurfaceGroup,
-    build_planar_model,
-    evaluate_surface_plane,
 )
 
 
-class UISurfaceManager:
+class UISurfaceManager(ModuleBase):
     """
-    Verwaltet das SurfaceDockWidget und synchronisiert es mit dem ausgewählten SpeakerArray.
+    Verwaltet das SurfaceDockWidget mit TreeWidget für Surfaces/Gruppen
+    und TabWidget für Surface-Parameter.
+    Layout und Funktionalität basierend auf UiSourceManagement.
     """
-
-    PLANAR_Z_TOLERANCE = 1e-4
-
+    
     def __init__(self, main_window, settings, container):
+        super().__init__(settings)
         self.main_window = main_window
         self.settings = settings
         self.container = container
         self.surface_dock_widget = None
-        self.sources_widget = None
-        self.snapshot_dock = None
-        self._initial_docked = False
-        self._snapshot_split_done = False
-        self._sources_tree_widget_ref: Optional[Callable[[], object]] = None
         self._group_controller = _SurfaceGroupController(self.settings)
         self._group_controller.ensure_structure()
-
+        
+        # Speicher für ursprüngliche Positionen von Surfaces in Gruppen
+        self.surface_groups = {}  # {group_id: {'name': str, 'enabled': bool, 'hidden': bool, 'child_surface_ids': [str], 'original_surface_positions': {surface_id: {'x': float, 'y': float, 'z': float}}}}
+        
+        # Flag für das Laden von Punkten (verhindert Signal-Loops)
+        self._loading_points = False
+        
     # ---- public API -------------------------------------------------
-
+    
     def show_surface_dock_widget(self):
         """
         Erstellt (falls nötig) und zeigt das SurfaceDockWidget an.
-        Positioniert es rechts neben dem Hauptfenster als schwebendes Fenster.
+        Layout und Größe gemäß SourceManagement.
         """
-        if self.surface_dock_widget is None:
-            from Module_LFO.Modules_Window.WindowSurfaceWidget import SurfaceDockWidget
-
-            self.surface_dock_widget = SurfaceDockWidget(
-                self.main_window,
-                self.settings,
-                self.container,
-                self,
-            )
-            # Automatisches Docking deaktiviert - Widget wird nicht direkt an UI angehängt
-
-        # Vor der Darstellung sicherstellen, dass alle vorhandenen Flächen plan projiziert sind
-        adjustments = self._ensure_planar_surfaces()
-        if adjustments:
-            self._log_debug(f"{adjustments} gespeicherte Fläche(n) neu planprojiziert bevor das Dock geöffnet wurde.")
-        self.surface_dock_widget.initialize()
+        if not hasattr(self, 'surface_tree_widget'):
+            if hasattr(self, 'surface_tree_widget'):
+                self.surface_tree_widget.blockSignals(True)
         
-        # Als schwebendes Fenster setzen und rechts neben dem Hauptfenster positionieren
-        self.surface_dock_widget.setFloating(True)
-        
-        # Position berechnen: rechts neben dem Hauptfenster
-        main_geometry = self.main_window.geometry()
-        main_x = main_geometry.x()
-        main_y = main_geometry.y()
-        main_width = main_geometry.width()
-        main_height = main_geometry.height()
-        
-        # DockWidget-Größe (Standard oder bereits gesetzt)
-        dock_width = self.surface_dock_widget.width() if self.surface_dock_widget.width() > 0 else 520
-        dock_height = self.surface_dock_widget.height() if self.surface_dock_widget.height() > 0 else 600
-        
-        # Position: rechts neben dem Hauptfenster, vertikal zentriert
-        offset_x = 20  # Kleiner Abstand zum Hauptfenster
-        new_x = main_x + main_width + offset_x
-        new_y = main_y + (main_height - dock_height) // 2  # Vertikal zentriert
-        
-        # Stelle sicher, dass das Fenster auf dem Bildschirm bleibt
-        screen = self.main_window.screen()
-        if screen:
-            screen_geometry = screen.availableGeometry()
-            # Wenn das Fenster außerhalb des Bildschirms wäre, positioniere es innerhalb
-            if new_x + dock_width > screen_geometry.right():
-                new_x = screen_geometry.right() - dock_width - 20
-            if new_y + dock_height > screen_geometry.bottom():
-                new_y = screen_geometry.bottom() - dock_height - 20
-            if new_y < screen_geometry.top():
-                new_y = screen_geometry.top() + 20
-        
-        self.surface_dock_widget.setGeometry(new_x, new_y, dock_width, dock_height)
-        self.surface_dock_widget.show()
-        # Automatische Ausrichtung mit Snapshot deaktiviert
-
+        if not hasattr(self, 'surface_dockWidget') or self.surface_dockWidget is None:
+            self.surface_dockWidget = QDockWidget("Surfaces", self.main_window)
+            
+            # Prüfe, ob Sources-DockWidget bereits existiert und tabbifiziere es
+            sources_dock = None
+            if hasattr(self.main_window, 'sources_instance') and self.main_window.sources_instance:
+                sources_dock = getattr(self.main_window.sources_instance, 'sources_dockWidget', None)
+            
+            if sources_dock:
+                # Tabbifiziere: Beide DockWidgets übereinander mit Tab-Buttons
+                self.main_window.addDockWidget(Qt.BottomDockWidgetArea, self.surface_dockWidget)
+                self.main_window.tabifyDockWidget(sources_dock, self.surface_dockWidget)
+                # Aktiviere das Surface-DockWidget (wird als aktiver Tab angezeigt)
+                self.surface_dockWidget.raise_()
+            else:
+                # Füge normal hinzu
+                self.main_window.addDockWidget(Qt.BottomDockWidgetArea, self.surface_dockWidget)
+            
+            dock_content = QWidget()
+            dock_layout = QVBoxLayout(dock_content)
+            self.surface_dockWidget.setWidget(dock_content)
+            
+            splitter = QSplitter(Qt.Horizontal)
+            dock_layout.addWidget(splitter)
+            
+            # Linke Seite mit TreeWidget und Buttons
+            left_side_widget = QWidget()
+            left_side_layout = QVBoxLayout(left_side_widget)
+            left_side_layout.setContentsMargins(0, 0, 0, 0)
+            splitter.addWidget(left_side_widget)
+            
+            # TreeWidget für Surfaces und Gruppen
+            self.surface_tree_widget = QTreeWidget()
+            self.surface_tree_widget.setHeaderLabels(["Surface Name", "Enable", "Hide", ""])
+            
+            # Drag & Drop Funktionalität (identisch zu SourceManagement)
+            original_dropEvent = self.surface_tree_widget.dropEvent
+            original_startDrag = self.surface_tree_widget.startDrag
+            _pending_drag_items = []
+            
+            def custom_startDrag(supported_actions):
+                """Speichert die ausgewählten Items vor dem Drag"""
+                _pending_drag_items.clear()
+                _pending_drag_items.extend(self.surface_tree_widget.selectedItems())
+                original_startDrag(supported_actions)
+            
+            def custom_dropEvent(event):
+                """Behandelt Drop-Events für Drag & Drop mit Gruppen und Surfaces"""
+                drop_item = self.surface_tree_widget.itemAt(event.pos())
+                indicator_pos = self.surface_tree_widget.dropIndicatorPosition()
+                
+                if not _pending_drag_items:
+                    event.ignore()
+                    _pending_drag_items.clear()
+                    return
+                
+                # Trenne Surfaces und Gruppen
+                dragged_surfaces = [item for item in _pending_drag_items 
+                                   if item.data(0, Qt.UserRole + 1) == "surface"]
+                dragged_groups = [item for item in _pending_drag_items 
+                                 if item.data(0, Qt.UserRole + 1) == "group"]
+                
+                handled = False
+                
+                # Behandle Gruppen-Verschiebung
+                if dragged_groups:
+                    for group_item in dragged_groups:
+                        group_id = group_item.data(0, Qt.UserRole)
+                        
+                        # Bestimme Ziel-Gruppe
+                        target_group_id = self._group_controller.root_group_id
+                        if drop_item:
+                            drop_type = drop_item.data(0, Qt.UserRole + 1)
+                            if drop_type == "group":
+                                # Droppe auf Gruppe - verschiebe Gruppe als Child
+                                target_group_id = drop_item.data(0, Qt.UserRole)
+                            elif drop_type == "surface":
+                                # Droppe auf Surface - verwende Parent-Gruppe
+                                parent = drop_item.parent()
+                                if parent:
+                                    target_group_id = parent.data(0, Qt.UserRole)
+                        
+                        # Prüfe, ob Ziel-Gruppe nicht die Root-Gruppe ist (Root kann nicht verschoben werden)
+                        if group_id != target_group_id:
+                            # Prüfe, ob Ziel-Gruppe nicht ein Child der zu verschiebenden Gruppe ist
+                            target_group = self._group_controller.get_group(target_group_id)
+                            if target_group:
+                                # Prüfe, ob target_group ein Child von group_id ist
+                                is_child = False
+                                check_group = target_group
+                                while check_group and check_group.parent_id:
+                                    if check_group.parent_id == group_id:
+                                        is_child = True
+                                        break
+                                    check_group = self._group_controller.get_group(check_group.parent_id)
+                                
+                                if not is_child:
+                                    success = self._group_controller.move_surface_group(group_id, target_group_id)
+                                    if success:
+                                        handled = True
+                
+                # Behandle Surface-Verschiebung
+                if dragged_surfaces:
+                    # Prüfe, ob auf eine Gruppe gedroppt wird
+                    if drop_item and drop_item.data(0, Qt.UserRole + 1) == "group":
+                        # Droppe auf Gruppe - füge Surfaces als Childs hinzu
+                        target_group_id = drop_item.data(0, Qt.UserRole)
+                        for item in dragged_surfaces:
+                            surface_id = item.data(0, Qt.UserRole)
+                            if isinstance(surface_id, dict):
+                                surface_id = surface_id.get('id')
+                            
+                            # Verschiebe Surface zur Gruppe
+                            self._group_controller.assign_surface_to_group(surface_id, target_group_id, create_missing=False)
+                            handled = True
+                    elif indicator_pos == QAbstractItemView.OnItem and drop_item:
+                        # Droppe auf ein Surface Item
+                        parent = drop_item.parent()
+                        if parent and parent.data(0, Qt.UserRole + 1) == "group":
+                            # Ziel-Item ist bereits in einer Gruppe - füge zur bestehenden Gruppe hinzu
+                            target_group_id = parent.data(0, Qt.UserRole)
+                            for item in dragged_surfaces:
+                                surface_id = item.data(0, Qt.UserRole)
+                                if isinstance(surface_id, dict):
+                                    surface_id = surface_id.get('id')
+                                self._group_controller.assign_surface_to_group(surface_id, target_group_id, create_missing=False)
+                                handled = True
+                    elif indicator_pos in (QAbstractItemView.AboveItem, QAbstractItemView.BelowItem):
+                        # Droppe oberhalb/unterhalb - entferne aus Gruppe (zur Root-Gruppe)
+                        for item in dragged_surfaces:
+                            surface_id = item.data(0, Qt.UserRole)
+                            if isinstance(surface_id, dict):
+                                surface_id = surface_id.get('id')
+                            self._group_controller.assign_surface_to_group(surface_id, self._group_controller.root_group_id, create_missing=False)
+                            handled = True
+                
+                if handled:
+                    # Stelle sicher, dass Gruppen-Struktur aktuell ist
+                    self._group_controller.ensure_structure()
+                    # Lade TreeWidget neu
+                    self.load_surfaces()
+                    event.accept()
+                    event.setDropAction(Qt.MoveAction)
+                else:
+                    # Standard Drag & Drop Verhalten
+                    original_dropEvent(event)
+                
+                # Validiere alle Checkboxen nach Drag & Drop
+                self.validate_all_checkboxes()
+                
+                # Passe Spaltenbreite an den Inhalt an
+                self.adjust_column_width_to_content()
+                
+                _pending_drag_items.clear()
+            
+            # Überschreibe die Methoden
+            self.surface_tree_widget.startDrag = custom_startDrag
+            self.surface_tree_widget.dropEvent = custom_dropEvent
+            
+            # Schriftgröße im TreeWidget auf 11pt setzen
+            tree_font = QtGui.QFont()
+            tree_font.setPointSize(11)
+            self.surface_tree_widget.setFont(tree_font)
+            
+            # Source Name linksbündig ausrichten
+            header = self.surface_tree_widget.header()
+            header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            
+            # Spaltenbreiten konfigurieren
+            self.surface_tree_widget.setColumnWidth(1, 25)   # Enable
+            self.surface_tree_widget.setColumnWidth(2, 25)   # Hide
+            self.surface_tree_widget.setColumnWidth(3, 20)   # Farb-Quadrat
+            header.setStretchLastSection(False)
+            header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
+            header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+            header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+            header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+            
+            # Scrollbar aktivieren
+            self.surface_tree_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            
+            # Indentation für Gruppen aktivieren
+            self.surface_tree_widget.setIndentation(15)
+            
+            # Drag & Drop aktivieren
+            self.surface_tree_widget.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+            self.surface_tree_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            self.surface_tree_widget.setDragEnabled(True)
+            self.surface_tree_widget.setAcceptDrops(True)
+            self.surface_tree_widget.setDropIndicatorShown(True)
+            
+            self.surface_tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.surface_tree_widget.customContextMenuRequested.connect(self.show_context_menu)
+            
+            # Setze die SizePolicy
+            self.surface_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self.surface_tree_widget.setMinimumHeight(235)
+            self.surface_tree_widget.setFixedWidth(200)
+            
+            # Verbinde Signale mit Slots
+            self.surface_tree_widget.itemSelectionChanged.connect(self.show_surfaces_tab)
+            self.surface_tree_widget.itemChanged.connect(self.on_surface_item_text_changed)
+            
+            # Füge das TreeWidget zum Layout hinzu
+            left_side_layout.addWidget(self.surface_tree_widget, 1)
+            
+            # Buttons zum Hinzufügen
+            buttons_layout = QHBoxLayout()
+            buttons_layout.setContentsMargins(0, 0, 0, 0)
+            buttons_layout.setSpacing(5)
+            buttons_layout.setAlignment(Qt.AlignLeft)
+            self.pushbutton_add_surface = QPushButton("Add Surface")
+            self.pushbutton_add_surface.setFixedWidth(100)
+            btn_font = QtGui.QFont()
+            btn_font.setPointSize(11)
+            self.pushbutton_add_surface.setFont(btn_font)
+            self.pushbutton_add_surface.setFixedHeight(24)
+            buttons_layout.addWidget(self.pushbutton_add_surface)
+            
+            self.pushbutton_load_dxf = QPushButton("Load DXF")
+            self.pushbutton_load_dxf.setFixedWidth(100)
+            self.pushbutton_load_dxf.setFont(btn_font)
+            self.pushbutton_load_dxf.setFixedHeight(24)
+            buttons_layout.addWidget(self.pushbutton_load_dxf)
+            
+            buttons_layout.addStretch(1)
+            
+            left_side_layout.addLayout(buttons_layout)
+            
+            self.pushbutton_add_surface.clicked.connect(self.add_surface)
+            self.pushbutton_load_dxf.clicked.connect(self.load_dxf)
+            
+            # Rechte Seite für TabWidget
+            self.right_side_widget = QWidget()
+            splitter.addWidget(self.right_side_widget)
+            
+            # Erstelle das TabWidget
+            self.tab_widget = QTabWidget()
+            self.tab_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.tab_widget.setMinimumWidth(800)
+            
+            # Erstelle die Tabs
+            self.create_surface_tab()
+            self.create_group_tab_placeholder()
+            
+            # Füge TabWidget zum rechten Widget hinzu
+            right_layout = QVBoxLayout(self.right_side_widget)
+            right_layout.addWidget(self.tab_widget)
+            
+            # Lade bestehende Surfaces
+            self.load_surfaces()
+            
+            # Rufe show_surfaces_tab auf, um die Tabs zu konfigurieren
+            self.show_surfaces_tab()
+            
+        # Entsperre Signale am Ende
+        if hasattr(self, 'surface_tree_widget'):
+            self.surface_tree_widget.blockSignals(False)
+            
+        self.surface_tree_widget.clearSelection()
+        self.surface_dockWidget.show()
+    
     def close_surface_dock_widget(self):
-        """
-        Schließt das SurfaceDockWidget und entfernt Signalverbindungen.
-        """
-        if self.surface_dock_widget:
-            self.surface_dock_widget.close()
-            self.main_window.removeDockWidget(self.surface_dock_widget)
-            self.surface_dock_widget.deleteLater()
-            self.surface_dock_widget = None
-            self._initial_docked = False
-            self._snapshot_split_done = False
-            self._disconnect_sources_signals()
-
+        """Schließt das SurfaceDockWidget"""
+        if hasattr(self, 'surface_dockWidget') and self.surface_dockWidget:
+            self.surface_dockWidget.close()
+            if hasattr(self.main_window, 'removeDockWidget'):
+                self.main_window.removeDockWidget(self.surface_dockWidget)
+            self.surface_dockWidget.deleteLater()
+            self.surface_dockWidget = None
+    
     def bind_to_sources_widget(self, sources_widget):
         """
         Verbindet die Auswahländerungen aus dem Sources-TreeWidget mit dem Surface-Widget.
+        (Für Kompatibilität mit alter Implementierung)
         """
-        if sources_widget is None or not hasattr(sources_widget, "sources_tree_widget"):
+        # Diese Methode wird für Kompatibilität beibehalten
+        # Die neue Implementierung benötigt keine direkte Bindung
+        pass
+    
+    # ---- TreeWidget Management --------------------------------------
+    
+    def load_surfaces(self):
+        """Lädt alle Surfaces und Gruppen in das TreeWidget"""
+        if not hasattr(self, 'surface_tree_widget'):
             return
-
-        if self.sources_widget is not None or self._resolve_sources_tree_widget() is not None:
-            self._disconnect_sources_signals()
-
-        self.sources_widget = sources_widget
-        tree_widget = getattr(sources_widget, "sources_tree_widget", None)
-        if tree_widget is None:
-            return
-
-        self._sources_tree_widget_ref = weakref.ref(tree_widget)
-        tree_widget.itemSelectionChanged.connect(self._on_sources_selection_changed)
-        tree_widget.destroyed.connect(self._on_sources_widget_destroyed)
-
-        if self.surface_dock_widget is not None:
-            self._on_sources_selection_changed()
-
-    def on_snapshot_dock_available(self, snapshot_dock):
-        """
-        Wird aufgerufen, sobald das Snapshot-Dock erstellt wurde.
-        """
-        self.snapshot_dock = snapshot_dock
-        self._snapshot_split_done = False
-        self._align_with_snapshot_if_possible()
-
-    # ---- surface group helpers -------------------------------------
-
-    def ensure_surface_group_structure(self):
+        
+        self.surface_tree_widget.blockSignals(True)
+        self.surface_tree_widget.clear()
+        
+        # Stelle sicher, dass die Gruppen-Struktur aktuell ist
         self._group_controller.ensure_structure()
-
-    def reset_surface_storage(self):
-        self._group_controller.reset_storage()
-
-    def get_surface_group(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
-        return self._group_controller.get_group(group_id)
-
-    def list_surface_groups(self) -> Dict[str, SurfaceGroup]:
-        return self._group_controller.list_groups()
-
-    def get_root_group_id(self) -> str:
-        return self._group_controller.root_group_id
-
-    def assign_surface_to_group(self, surface_id: str, group_id: Optional[str], *, create_missing: bool = False):
-        self._group_controller.assign_surface_to_group(surface_id, group_id, create_missing=create_missing)
-
-    def create_surface_group(self, name: str, parent_id: Optional[str] = None, *, group_id: Optional[str] = None, locked: bool = False) -> SurfaceGroup:
-        return self._group_controller.create_surface_group(name, parent_id=parent_id, group_id=group_id, locked=locked)
-
-    def remove_surface_group(self, group_id: str) -> bool:
-        return self._group_controller.remove_surface_group(group_id)
-
-    def move_surface_group(self, group_id: str, target_parent_id: str) -> bool:
-        return self._group_controller.move_surface_group(group_id, target_parent_id)
-
-    def rename_surface_group(self, group_id: str, new_name: str):
-        self._group_controller.rename_surface_group(group_id, new_name)
-
-    def find_surface_group_by_name(self, name: str, parent_id: Optional[str] = None) -> Optional[SurfaceGroup]:
-        return self._group_controller.find_surface_group_by_name(name, parent_id)
-
-    def set_surface_group_enabled(self, group_id: str, enabled: bool):
-        self._group_controller.set_surface_group_enabled(group_id, enabled)
-
-    def set_surface_group_hidden(self, group_id: str, hidden: bool):
-        self._group_controller.set_surface_group_hidden(group_id, hidden)
-
-    def ensure_group_path(self, label: Optional[str]) -> Optional[str]:
-        return self._group_controller.ensure_group_path(label)
-
-    def detach_surface_from_group(self, surface_id: str):
-        self._group_controller.detach_surface(surface_id)
-
-    # ---- internal callbacks ----------------------------------------
-
-    def _on_sources_selection_changed(self):
-        if self.surface_dock_widget is None:
-            return
-
-        adjustments = self._ensure_planar_surfaces()
-        if adjustments:
-            self._log_debug(f"{adjustments} Fläche(n) aufgrund neuer Planprojektion aktualisiert.")
-        self.surface_dock_widget.load_surfaces()
-
-    def _disconnect_sources_signals(self):
-        tree_widget = self._resolve_sources_tree_widget()
-        if tree_widget:
-            try:
-                tree_widget.itemSelectionChanged.disconnect(self._on_sources_selection_changed)
-            except (RuntimeError, TypeError):
-                pass
-            try:
-                tree_widget.destroyed.disconnect(self._on_sources_widget_destroyed)
-            except (RuntimeError, TypeError):
-                pass
-        self.sources_widget = None
-        self._sources_tree_widget_ref = None
-
-    def _resolve_sources_tree_widget(self):
-        if self._sources_tree_widget_ref is None:
-            return None
-        return self._sources_tree_widget_ref()
-
-    def _on_sources_widget_destroyed(self, *_):
-        self.sources_widget = None
-        self._sources_tree_widget_ref = None
-
-    def _ensure_planar_surfaces(self) -> int:
-        """
-        Prüft alle gespeicherten Flächen auf Planarität und projiziert abweichende Punkte
-        automatisch auf die dazugehörige Ebene.
-
-        Returns:
-            int: Anzahl der Flächen, die angepasst wurden.
-        """
-        surface_store = getattr(self.settings, "surface_definitions", None)
-        if not isinstance(surface_store, dict) or not surface_store:
-            return 0
-
-        adjustments = 0
+        
+        # Lade Gruppen-Struktur
+        group_store = self._group_controller.list_groups()
+        root_group_id = self._group_controller.root_group_id
+        
+        if root_group_id and root_group_id in group_store:
+            root_group = self._group_controller.get_group(root_group_id)
+            if root_group:
+                self._populate_group_tree(None, root_group)
+        
+        # Stelle sicher, dass alle Surfaces einer Gruppe zugeordnet sind
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        needs_reload = False
         for surface_id, surface in surface_store.items():
+            # Prüfe, ob Surface eine Gruppe hat
             if isinstance(surface, SurfaceDefinition):
-                points = surface.points
+                group_id = surface.group_id
             else:
-                points = surface.get("points") or []
-            if len(points) < 4:  # Mindestens vier Punkte für planare Auswertung
-                continue
-
-            numeric_points, invalid_values = self._extract_numeric_z_points(points)
-            if invalid_values or len(numeric_points) < 3:
-                continue
-
-            model, _ = build_planar_model(numeric_points)
-            if model is None:
-                continue
-
-            if not self._apply_planar_projection(points, model):
-                continue
-
-            adjustments += 1
-            if isinstance(surface, SurfaceDefinition):
-                surface.points = points
-                surface.plane_model = model
-            else:
-                surface["points"] = points
-                surface["plane_model"] = model
-
-        return adjustments
-
-    @staticmethod
-    def _surface_has_numeric_z(points) -> bool:
-        numeric_points, invalid_values = UISurfaceManager._extract_numeric_z_points(points)
-        return not invalid_values and len(numeric_points) >= 3
-
-    @staticmethod
-    def _extract_numeric_z_points(points):
-        numeric_points: List[Dict[str, float]] = []
-        invalid_values = False
-        for point in points:
-            z_val = point.get("z")
-            numeric = UISurfaceManager._safe_float(z_val)
-            if numeric is None:
-                if UISurfaceManager._is_missing_z_value(z_val):
-                    continue
-                invalid_values = True
-                break
-            numeric_points.append(point)
-        return numeric_points, invalid_values
-
-    @staticmethod
-    def _is_missing_z_value(value) -> bool:
-        if value is None:
-            return True
-        if isinstance(value, str) and not value.strip():
-            return True
-        return False
-
-    def _apply_planar_projection(self, points, model) -> bool:
-        updated = False
-        for point in points:
-            x_val = self._safe_float(point.get("x"))
-            y_val = self._safe_float(point.get("y"))
-            if x_val is None:
-                x_val = 0.0
-            if y_val is None:
-                y_val = 0.0
-            target_z = evaluate_surface_plane(model, x_val, y_val)
-            current_z = self._safe_float(point.get("z"))
-            if current_z is None or abs(current_z - target_z) > self.PLANAR_Z_TOLERANCE:
-                point["z"] = target_z
-                updated = True
-        return updated
-
-    def _log_debug(self, message: str):
-        logger = getattr(self.settings, "logger", None)
-        if logger is None:
-            logger = getattr(self.main_window, "logger", None)
-        debug_fn = getattr(logger, "debug", None) if logger else None
-        if callable(debug_fn):
-            try:
-                debug_fn(message)
-            except Exception:
-                pass
-
-    @staticmethod
-    def _safe_float(value) -> Optional[float]:
-        if value is None or isinstance(value, bool):
-            return None
-        if isinstance(value, (int, float)):
-            numeric = float(value)
-        elif isinstance(value, str):
-            text = value.strip().replace(",", ".")
-            if not text:
-                return None
-            try:
-                numeric = float(text)
-            except ValueError:
-                return None
-        else:
-            return None
-
-        if math.isnan(numeric):
-            return None
-        return numeric
-
-    # ---- docking helpers -------------------------------------------
-
-    def _dock_surface_initial(self):
-        if self.surface_dock_widget is None or self._initial_docked:
+                group_id = surface.get('group_id')
+            
+            # Wenn keine Gruppe, ordne zur Root-Gruppe zu
+            if not group_id:
+                self._group_controller.assign_surface_to_group(surface_id, root_group_id, create_missing=False)
+                needs_reload = True
+        
+        # Wenn Surfaces zugeordnet wurden, aktualisiere Struktur und lade neu
+        if needs_reload:
+            self._group_controller.ensure_structure()
+            # Lade erneut, um die Änderungen zu reflektieren
+            self.surface_tree_widget.blockSignals(False)
+            self.load_surfaces()
             return
-
-        sources_dock = None
-        if hasattr(self.main_window, "sources_instance") and self.main_window.sources_instance:
-            sources_dock = getattr(self.main_window.sources_instance, "sources_dockWidget", None)
-
-        if sources_dock:
-            snapshot_dock = (
-                self.main_window.snapshot_engine.capture_dock_widget
-                if hasattr(self.main_window, "snapshot_engine") and self.main_window.snapshot_engine
-                else None
+        
+        self.surface_tree_widget.expandAll()
+        self.surface_tree_widget.blockSignals(False)
+    
+    def _populate_group_tree(self, parent_item, group):
+        """Rekursiv befüllt das TreeWidget mit Gruppen und deren Surfaces"""
+        # Erstelle Gruppen-Item
+        group_item = self._create_group_item(group)
+        
+        if parent_item is None:
+            # Füge oben hinzu (neue Items erscheinen oben)
+            self.surface_tree_widget.insertTopLevelItem(0, group_item)
+        else:
+            # Füge als erstes Child hinzu (oben)
+            parent_item.insertChild(0, group_item)
+        
+        # Füge Child-Gruppen hinzu (umgekehrte Reihenfolge, damit neue oben erscheinen)
+        for child_group_id in reversed(group.child_groups):
+            child_group = self._group_controller.get_group(child_group_id)
+            if child_group:
+                self._populate_group_tree(group_item, child_group)
+        
+        # Füge Surfaces der Gruppe hinzu (umgekehrte Reihenfolge, damit neue oben erscheinen)
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        for surface_id in reversed(group.surface_ids):
+            surface = surface_store.get(surface_id)
+            if surface:
+                surface_item = self._create_surface_item(surface_id, surface)
+                group_item.insertChild(0, surface_item)
+                self.ensure_surface_checkboxes(surface_item)
+        
+        group_item.setExpanded(True)
+    
+    def _create_surface_item(self, surface_id, surface_data):
+        """Erstellt ein TreeWidgetItem für ein Surface"""
+        item = QTreeWidgetItem()
+        
+        # Name
+        if isinstance(surface_data, SurfaceDefinition):
+            name = surface_data.name
+        else:
+            name = surface_data.get('name', surface_id)
+        item.setText(0, name)
+        
+        # UserRole: Surface-ID
+        item.setData(0, Qt.UserRole, surface_id)
+        item.setData(0, Qt.UserRole + 1, "surface")
+        
+        # Flags
+        item.setFlags(
+            Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable |
+            Qt.ItemIsDragEnabled | Qt.ItemIsUserCheckable
+        )
+        
+        # Checkboxen für Enable und Hide
+        self.ensure_surface_checkboxes(item)
+        
+        # Farb-Quadrat (Spalte 3)
+        self._add_color_indicator(item, surface_id, surface_data)
+        
+        return item
+    
+    def _create_group_item(self, group):
+        """Erstellt ein TreeWidgetItem für eine Gruppe"""
+        item = QTreeWidgetItem()
+        item.setText(0, group.name)
+        item.setData(0, Qt.UserRole, group.group_id)
+        item.setData(0, Qt.UserRole + 1, "group")
+        
+        # Flags
+        item.setFlags(
+            Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable |
+            Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled | Qt.ItemIsUserCheckable
+        )
+        
+        # Checkboxen für Enable und Hide
+        self.ensure_group_checkboxes(item)
+        
+        return item
+    
+    def ensure_surface_checkboxes(self, item):
+        """Stellt sicher, dass Checkboxen für ein Surface-Item existieren"""
+        # Enable Checkbox (Spalte 1)
+        if self.surface_tree_widget.itemWidget(item, 1) is None:
+            enable_checkbox = self.create_checkbox()
+            surface_id = item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get('id')
+            
+            # Lade aktuellen Enable-Status
+            surface = self._get_surface(surface_id)
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    enabled = surface.enabled
+                else:
+                    enabled = surface.get('enabled', False)
+                enable_checkbox.setChecked(enabled)
+            
+            enable_checkbox.stateChanged.connect(
+                lambda state, sid=surface_id: self.on_surface_enable_changed(sid, state)
             )
-            primary_dock = None
-
-            if snapshot_dock:
-                try:
-                    if self.main_window.dockWidgetArea(snapshot_dock) == Qt.NoDockWidgetArea:
-                        self.main_window.addDockWidget(Qt.RightDockWidgetArea, snapshot_dock)
-                    primary_dock = snapshot_dock
-                except Exception:
-                    snapshot_dock = None
-
-            try:
-                self.main_window.addDockWidget(Qt.RightDockWidgetArea, self.surface_dock_widget)
-            except Exception:
-                pass
-
-            if snapshot_dock:
-                try:
-                    self.main_window.tabifyDockWidget(snapshot_dock, self.surface_dock_widget)
-                    self.surface_dock_widget.raise_()
-                    primary_dock = snapshot_dock
-                except Exception:
-                    primary_dock = self.surface_dock_widget
-            else:
-                primary_dock = self.surface_dock_widget
-
-            if primary_dock:
-                try:
-                    self.main_window.splitDockWidget(sources_dock, primary_dock, Qt.Horizontal)
-                    self.main_window.resizeDocks([sources_dock, primary_dock], [360, 280], Qt.Horizontal)
-                except Exception:
-                    pass
+            self.surface_tree_widget.setItemWidget(item, 1, enable_checkbox)
+        
+        # Hide Checkbox (Spalte 2)
+        if self.surface_tree_widget.itemWidget(item, 2) is None:
+            hide_checkbox = self.create_checkbox()
+            surface_id = item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get('id')
+            
+            # Lade aktuellen Hide-Status
+            surface = self._get_surface(surface_id)
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    hidden = surface.hidden
+                else:
+                    hidden = surface.get('hidden', False)
+                hide_checkbox.setChecked(hidden)
+            
+            hide_checkbox.stateChanged.connect(
+                lambda state, sid=surface_id: self.on_surface_hide_changed(sid, state)
+            )
+            self.surface_tree_widget.setItemWidget(item, 2, hide_checkbox)
+    
+    def ensure_group_checkboxes(self, item):
+        """Stellt sicher, dass Checkboxen für ein Gruppen-Item existieren"""
+        # Enable Checkbox (Spalte 1)
+        if self.surface_tree_widget.itemWidget(item, 1) is None:
+            enable_checkbox = self.create_checkbox()
+            group_id = item.data(0, Qt.UserRole)
+            
+            # Lade aktuellen Enable-Status
+            group = self._group_controller.get_group(group_id)
+            if group:
+                enable_checkbox.setChecked(group.enabled)
+            
+            enable_checkbox.stateChanged.connect(
+                lambda state, g_item=item: self.on_group_enable_changed(g_item, state)
+            )
+            self.surface_tree_widget.setItemWidget(item, 1, enable_checkbox)
+        
+        # Hide Checkbox (Spalte 2)
+        if self.surface_tree_widget.itemWidget(item, 2) is None:
+            hide_checkbox = self.create_checkbox()
+            group_id = item.data(0, Qt.UserRole)
+            
+            # Lade aktuellen Hide-Status
+            group = self._group_controller.get_group(group_id)
+            if group:
+                hide_checkbox.setChecked(group.hidden)
+            
+            hide_checkbox.stateChanged.connect(
+                lambda state, g_item=item: self.on_group_hide_changed(g_item, state)
+            )
+            self.surface_tree_widget.setItemWidget(item, 2, hide_checkbox)
+    
+    def _add_color_indicator(self, item, surface_id, surface_data):
+        """Fügt ein Farb-Quadrat für das Surface hinzu"""
+        # TODO: Implementiere Farb-Anzeige ähnlich wie in SourceManagement
+        pass
+    
+    def create_checkbox(self, checked=False):
+        """Erstellt eine Checkbox mit Standard-Style"""
+        checkbox = QCheckBox()
+        checkbox.setFixedSize(18, 18)
+        checkbox.setChecked(checked)
+        return checkbox
+    
+    def validate_all_checkboxes(self):
+        """Validiert alle Checkboxen im TreeWidget"""
+        # TODO: Implementiere Validierung
+        pass
+    
+    def adjust_column_width_to_content(self):
+        """Passt Spaltenbreiten an den Inhalt an"""
+        # TODO: Implementiere Anpassung
+        pass
+    
+    # ---- Surface Management -----------------------------------------
+    
+    def add_surface(self):
+        """Fügt ein neues Surface hinzu"""
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        
+        # Generiere neue Surface-ID - prüfe alle existierenden IDs
+        index = 1
+        existing_ids = set(surface_store.keys())
+        while f"surface_{index}" in existing_ids:
+            index += 1
+        surface_id = f"surface_{index}"
+        
+        # Bestimme Ziel-Gruppe (ausgewähltes Item oder Root)
+        target_group_id = self._group_controller.root_group_id
+        selected_item = self.surface_tree_widget.currentItem()
+        if selected_item:
+            item_type = selected_item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                target_group_id = selected_item.data(0, Qt.UserRole)
+            elif item_type == "surface":
+                # Surface - finde Parent-Gruppe
+                parent = selected_item.parent()
+                if parent:
+                    target_group_id = parent.data(0, Qt.UserRole)
+                else:
+                    # Surface ist Top-Level - verwende Root-Gruppe
+                    target_group_id = self._group_controller.root_group_id
+        
+        # Erstelle neues Surface mit korrekter group_id
+        new_surface = SurfaceDefinition(
+            surface_id=surface_id,
+            name=f"Surface {index}",
+            enabled=False,
+            hidden=False,
+            locked=False,
+            points=[
+                {"x": 0.0, "y": 0.0, "z": 0.0},
+                {"x": 1.0, "y": 0.0, "z": 0.0},
+                {"x": 1.0, "y": 1.0, "z": 0.0},
+                {"x": 0.0, "y": 1.0, "z": 0.0},
+            ],
+            group_id=target_group_id
+        )
+        
+        # Verwende Settings-Methode für konsistente Behandlung
+        if hasattr(self.settings, 'add_surface_definition'):
+            self.settings.add_surface_definition(surface_id, new_surface, make_active=False)
         else:
-            self.main_window.addDockWidget(Qt.RightDockWidgetArea, self.surface_dock_widget)
-
-        self._initial_docked = True
-
-    def _align_with_snapshot_if_possible(self):
-        if (
-            self.surface_dock_widget is None
-            or self.snapshot_dock is None
-            or self._snapshot_split_done
-        ):
+            surface_store[surface_id] = new_surface
+            self.settings.surface_definitions = surface_store
+        
+        # Ordne Surface zur Gruppe zu
+        self._group_controller.assign_surface_to_group(surface_id, target_group_id, create_missing=False)
+        
+        # Stelle sicher, dass Gruppen-Struktur aktuell ist
+        self._group_controller.ensure_structure()
+        
+        # Lade TreeWidget neu
+        self.load_surfaces()
+        
+        # Wähle das neue Surface aus (rekursiv durchsuchen)
+        self._select_surface_in_tree(surface_id)
+    
+    def _select_surface_in_tree(self, surface_id):
+        """Wählt ein Surface im TreeWidget aus (rekursiv)"""
+        def find_item(parent_item=None):
+            if parent_item is None:
+                # Durchsuche Top-Level-Items
+                for i in range(self.surface_tree_widget.topLevelItemCount()):
+                    item = self.surface_tree_widget.topLevelItem(i)
+                    found = find_item(item)
+                    if found:
+                        return found
+            else:
+                # Prüfe aktuelles Item
+                item_surface_id = parent_item.data(0, Qt.UserRole)
+                if isinstance(item_surface_id, dict):
+                    item_surface_id = item_surface_id.get('id')
+                if item_surface_id == surface_id:
+                    return parent_item
+                
+                # Durchsuche Children
+                for i in range(parent_item.childCount()):
+                    child = parent_item.child(i)
+                    found = find_item(child)
+                    if found:
+                        return found
+            return None
+        
+        item = find_item()
+        if item:
+            self.surface_tree_widget.setCurrentItem(item)
+            self.surface_tree_widget.scrollToItem(item)
+    
+    def load_dxf(self):
+        """Lädt DXF-Dateien über SurfaceDataImporter"""
+        from Module_LFO.Modules_Data.SurfaceDataImporter import SurfaceDataImporter
+        
+        importer = SurfaceDataImporter(
+            self.surface_dockWidget if hasattr(self, 'surface_dockWidget') else self.main_window,
+            self.settings,
+            self.container,
+            group_manager=self._group_controller
+        )
+        
+        result = importer.execute()
+        if result:
+            # Stelle sicher, dass Gruppen-Struktur aktuell ist
+            self._group_controller.ensure_structure()
+            # Lade TreeWidget neu
+            self.load_surfaces()
+            
+            # Aktualisiere Berechnungen
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+    
+    def _get_surface(self, surface_id):
+        """Holt ein Surface aus den Settings"""
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        return surface_store.get(surface_id)
+    
+    # ---- Event Handlers ---------------------------------------------
+    
+    def on_surface_enable_changed(self, surface_id, state):
+        """Wird aufgerufen, wenn sich der Enable-Status eines Surfaces ändert"""
+        surface = self._get_surface(surface_id)
+        if surface:
+            if isinstance(surface, SurfaceDefinition):
+                surface.enabled = (state == Qt.Checked)
+            else:
+                surface['enabled'] = (state == Qt.Checked)
+            
+            # Aktualisiere Berechnungen
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+    
+    def on_surface_hide_changed(self, surface_id, state):
+        """Wird aufgerufen, wenn sich der Hide-Status eines Surfaces ändert"""
+        surface = self._get_surface(surface_id)
+        if surface:
+            if isinstance(surface, SurfaceDefinition):
+                surface.hidden = (state == Qt.Checked)
+            else:
+                surface['hidden'] = (state == Qt.Checked)
+            
+            # Aktualisiere Berechnungen
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+    
+    def on_group_enable_changed(self, group_item, state):
+        """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert"""
+        group_id = group_item.data(0, Qt.UserRole)
+        self._group_controller.set_surface_group_enabled(group_id, state == Qt.Checked)
+        
+        # Aktualisiere alle Child-Checkboxen
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            child_type = child.data(0, Qt.UserRole + 1)
+            if child_type == "surface":
+                checkbox = self.surface_tree_widget.itemWidget(child, 1)
+                if checkbox:
+                    checkbox.setChecked(state == Qt.Checked)
+            elif child_type == "group":
+                checkbox = self.surface_tree_widget.itemWidget(child, 1)
+                if checkbox:
+                    checkbox.setChecked(state == Qt.Checked)
+        
+        # Aktualisiere Berechnungen
+        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            self.main_window.update_speaker_array_calculations()
+    
+    def on_group_hide_changed(self, group_item, state):
+        """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert"""
+        group_id = group_item.data(0, Qt.UserRole)
+        self._group_controller.set_surface_group_hidden(group_id, state == Qt.Checked)
+        
+        # Aktualisiere alle Child-Checkboxen
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            child_type = child.data(0, Qt.UserRole + 1)
+            if child_type == "surface":
+                checkbox = self.surface_tree_widget.itemWidget(child, 2)
+                if checkbox:
+                    checkbox.setChecked(state == Qt.Checked)
+            elif child_type == "group":
+                checkbox = self.surface_tree_widget.itemWidget(child, 2)
+                if checkbox:
+                    checkbox.setChecked(state == Qt.Checked)
+        
+        # Aktualisiere Berechnungen
+        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            self.main_window.update_speaker_array_calculations()
+    
+    def on_surface_item_text_changed(self, item, column):
+        """Wird aufgerufen, wenn sich der Text eines Surface-Items ändert"""
+        if column != 0:
             return
-
-        if not self.snapshot_dock.isVisible():
+        
+        item_type = item.data(0, Qt.UserRole + 1)
+        if item_type == "group":
+            # Gruppen-Name wurde geändert
+            new_name = item.text(0)
+            group_id = item.data(0, Qt.UserRole)
+            self._group_controller.rename_surface_group(group_id, new_name)
+        elif item_type == "surface":
+            # Surface-Name wurde geändert
+            new_name = item.text(0)
+            surface_id = item.data(0, Qt.UserRole)
+            surface = self._get_surface(surface_id)
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    surface.name = new_name
+                else:
+                    surface['name'] = new_name
+    
+    # ---- Tab Management ---------------------------------------------
+    
+    def show_surfaces_tab(self):
+        """Zeigt den Surface-Parameter-Tab basierend auf der Auswahl"""
+        selected_item = self.surface_tree_widget.currentItem()
+        if not selected_item:
             return
-
+        
+        item_type = selected_item.data(0, Qt.UserRole + 1)
+        
+        if item_type == "group":
+            # Zeige Gruppen-Tab
+            self.create_group_tab(selected_item)
+        elif item_type == "surface":
+            # Zeige Surface-Parameter-Tab
+            surface_id = selected_item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get('id')
+            self.create_surface_parameter_tab(surface_id)
+    
+    def create_surface_tab(self):
+        """Erstellt den Surface-Parameter-Tab (Placeholder)"""
+        # Wird von create_surface_parameter_tab überschrieben
+        pass
+    
+    def create_surface_parameter_tab(self, surface_id):
+        """Erstellt den Tab mit Surface-Parametern - zeigt Koordinaten der Punkte"""
+        # Entferne alle vorhandenen Tabs
+        if hasattr(self, 'tab_widget') and self.tab_widget is not None:
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
+        
+        # Erstelle neuen Tab
+        surface_tab = QWidget()
+        self.tab_widget.addTab(surface_tab, "Surface Parameters")
+        
+        # Hauptlayout
+        main_layout = QVBoxLayout(surface_tab)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Schriftgröße
+        font = QtGui.QFont()
+        font.setPointSize(11)
+        
+        # Lade Surface-Daten
+        surface = self._get_surface(surface_id)
+        if not surface:
+            return
+        
+        # TreeWidget für Koordinaten
+        self.points_tree = QTreeWidget()
+        self.points_tree.setHeaderLabels(["Point", "X (m)", "Y (m)", "Z (m)"])
+        self.points_tree.setRootIsDecorated(False)
+        self.points_tree.setAlternatingRowColors(True)
+        self.points_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.points_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.points_tree.setUniformRowHeights(True)
+        self.points_tree.setColumnWidth(0, 55)
+        self.points_tree.setColumnWidth(1, 80)
+        self.points_tree.setColumnWidth(2, 80)
+        self.points_tree.setColumnWidth(3, 80)
+        self.points_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.points_tree.setFont(font)
+        self.points_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.points_tree.customContextMenuRequested.connect(
+            lambda pos: self._show_points_context_menu(pos, surface_id)
+        )
+        self.points_tree.setStyleSheet(
+            "QTreeWidget { font-size: 11pt; }"
+            "QTreeWidget::item { height: 24px; }"
+        )
+        
+        # Lade Punkte
+        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+        self._loading_points = True
+        self.points_tree.blockSignals(True)
+        self.points_tree.clear()
+        
+        for index, point in enumerate(points):
+            item = QTreeWidgetItem(self.points_tree)
+            item.setFlags(
+                Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable
+            )
+            item.setText(0, f"P{index + 1}")
+            item.setData(0, Qt.UserRole, index)
+            
+            x_val = point.get('x', 0.0)
+            y_val = point.get('y', 0.0)
+            z_val = point.get('z', 0.0)
+            
+            item.setText(1, f"{float(x_val):.2f}")
+            item.setText(2, f"{float(y_val):.2f}")
+            item.setText(3, f"{float(z_val):.2f}" if z_val is not None else "")
+            
+            # Erstelle Editoren für X, Y, Z
+            self._create_point_editor(item, 1, surface_id, index, 'x')
+            self._create_point_editor(item, 2, surface_id, index, 'y')
+            self._create_point_editor(item, 3, surface_id, index, 'z')
+        
+        # Nummeriere Punkte neu
+        self._renumber_points()
+        
+        self.points_tree.blockSignals(False)
+        self._loading_points = False
+        
+        main_layout.addWidget(self.points_tree)
+        
+        # Buttons zum Hinzufügen/Löschen von Punkten
+        buttons_layout = QHBoxLayout()
+        add_point_button = QPushButton("Add Point")
+        add_point_button.setFont(font)
+        add_point_button.setFixedHeight(24)
+        add_point_button.clicked.connect(lambda: self._handle_add_point(surface_id))
+        
+        delete_point_button = QPushButton("Delete Point")
+        delete_point_button.setFont(font)
+        delete_point_button.setFixedHeight(24)
+        delete_point_button.clicked.connect(lambda: self._handle_delete_point(surface_id))
+        
+        buttons_layout.addWidget(add_point_button)
+        buttons_layout.addWidget(delete_point_button)
+        buttons_layout.addStretch()
+        
+        main_layout.addLayout(buttons_layout)
+    
+    def create_group_tab_placeholder(self):
+        """Placeholder für Gruppen-Tab"""
+        pass
+    
+    def create_group_tab(self, group_item):
+        """Erstellt die UI für Gruppen-Einstellungen mit Relativpositionsverarbeitung"""
+        # Entferne alle vorhandenen Tabs
+        if hasattr(self, 'tab_widget') and self.tab_widget is not None:
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
+        
+        # Erstelle neuen Tab
+        group_tab = QWidget()
+        self.tab_widget.addTab(group_tab, "Group Settings")
+        
+        # Hauptlayout
+        main_layout = QVBoxLayout(group_tab)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Schriftgröße
+        font = QtGui.QFont()
+        font.setPointSize(11)
+        
+        # ScrollArea für den gesamten Inhalt
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumWidth(250)
+        scroll_area.setMaximumWidth(250)
+        
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(5, 5, 5, 5)
+        scroll_layout.setSpacing(10)
+        
+        # Bereich 1: Change relative position
+        relative_position_group = QGroupBox("Change relative position")
+        relative_position_group.setFont(font)
+        relative_position_layout = QGridLayout()
+        relative_position_layout.setVerticalSpacing(3)
+        relative_position_layout.setContentsMargins(5, 10, 5, 5)
+        
+        # Relative X-Position
+        rel_x_label = QLabel("Relative X (m)")
+        rel_x_label.setFont(font)
+        self.group_rel_x_edit = QLineEdit()
+        self.group_rel_x_edit.setFont(font)
+        self.group_rel_x_edit.setFixedHeight(18)
+        self.group_rel_x_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_rel_x_edit.setText("0.00")
+        rel_x_label.setFixedWidth(150)
+        self.group_rel_x_edit.setFixedWidth(40)
+        relative_position_layout.addWidget(rel_x_label, 0, 0)
+        relative_position_layout.addWidget(self.group_rel_x_edit, 0, 1)
+        
+        # Relative Y-Position
+        rel_y_label = QLabel("Relative Y (m)")
+        rel_y_label.setFont(font)
+        self.group_rel_y_edit = QLineEdit()
+        self.group_rel_y_edit.setFont(font)
+        self.group_rel_y_edit.setFixedHeight(18)
+        self.group_rel_y_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_rel_y_edit.setText("0.00")
+        rel_y_label.setFixedWidth(150)
+        self.group_rel_y_edit.setFixedWidth(40)
+        relative_position_layout.addWidget(rel_y_label, 1, 0)
+        relative_position_layout.addWidget(self.group_rel_y_edit, 1, 1)
+        
+        # Relative Z-Position
+        rel_z_label = QLabel("Relative Z (m)")
+        rel_z_label.setFont(font)
+        self.group_rel_z_edit = QLineEdit()
+        self.group_rel_z_edit.setFont(font)
+        self.group_rel_z_edit.setFixedHeight(18)
+        self.group_rel_z_edit.setValidator(QDoubleValidator(-float("inf"), float("inf"), 2))
+        self.group_rel_z_edit.setText("0.00")
+        rel_z_label.setFixedWidth(150)
+        self.group_rel_z_edit.setFixedWidth(40)
+        relative_position_layout.addWidget(rel_z_label, 2, 0)
+        relative_position_layout.addWidget(self.group_rel_z_edit, 2, 1)
+        
+        relative_position_group.setLayout(relative_position_layout)
+        scroll_layout.addWidget(relative_position_group)
+        
+        # Spacer
+        scroll_layout.addStretch()
+        
+        # Apply Changes Button
+        apply_button = QPushButton("Apply Changes")
+        apply_button.setFont(font)
+        apply_button.setFixedHeight(30)
+        apply_button.clicked.connect(lambda: self.apply_group_changes(group_item))
+        scroll_layout.addWidget(apply_button)
+        
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area)
+        
+        # Lade aktuelle Werte aus der Gruppe
+        self.load_group_values(group_item)
+    
+    def on_surface_name_changed(self, surface_id):
+        """Wird aufgerufen, wenn sich der Surface-Name ändert"""
+        if not hasattr(self, 'surface_name_edit'):
+            return
+        
+        new_name = self.surface_name_edit.text()
+        surface = self._get_surface(surface_id)
+        if surface:
+            if isinstance(surface, SurfaceDefinition):
+                surface.name = new_name
+            else:
+                surface['name'] = new_name
+            
+            # Aktualisiere TreeWidget
+            for i in range(self.surface_tree_widget.topLevelItemCount()):
+                item = self.surface_tree_widget.topLevelItem(i)
+                item_surface_id = item.data(0, Qt.UserRole)
+                if isinstance(item_surface_id, dict):
+                    item_surface_id = item_surface_id.get('id')
+                if item_surface_id == surface_id:
+                    item.setText(0, new_name)
+                    break
+    
+    def _create_point_editor(self, item, column, surface_id, point_index, coord_name):
+        """Erstellt einen LineEdit-Editor für einen Koordinatenwert"""
+        editor = QLineEdit()
+        editor.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        editor.setText(item.text(column))
+        editor.setFixedHeight(22)
+        editor.setValidator(QDoubleValidator(-1000.0, 1000.0, 2))
+        editor.editingFinished.connect(
+            lambda: self._on_point_editor_finished(surface_id, point_index, coord_name, editor)
+        )
+        self.points_tree.setItemWidget(item, column, editor)
+    
+    def _on_point_editor_finished(self, surface_id, point_index, coord_name, editor):
+        """Wird aufgerufen, wenn ein Koordinatenwert geändert wurde"""
+        if self._loading_points:
+            return
+        
+        text = editor.text().strip()
+        if not text:
+            text = "0"
+        
         try:
-            if self.main_window.dockWidgetArea(self.snapshot_dock) == Qt.NoDockWidgetArea:
-                self.main_window.addDockWidget(Qt.RightDockWidgetArea, self.snapshot_dock)
+            value = float(text)
+        except ValueError:
+            # Ungültiger Wert - setze zurück
+            surface = self._get_surface(surface_id)
+            if surface:
+                points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                if 0 <= point_index < len(points):
+                    old_value = points[point_index].get(coord_name, 0.0)
+                    editor.setText(f"{float(old_value):.2f}")
+            return
+        
+        # Aktualisiere Surface-Punkt
+        surface = self._get_surface(surface_id)
+        if surface:
+            points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+            if 0 <= point_index < len(points):
+                points[point_index][coord_name] = value
+                
+                # Aktualisiere Anzeige
+                formatted = f"{value:.2f}"
+                editor.setText(formatted)
+                
+                # Aktualisiere Berechnungen
+                if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                    self.main_window.update_speaker_array_calculations()
+    
+    def _handle_add_point(self, surface_id):
+        """Fügt einen neuen Punkt zum Surface hinzu"""
+        surface = self._get_surface(surface_id)
+        if not surface:
+            return
+        
+        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+        new_point = {"x": 0.0, "y": 0.0, "z": 0.0}
+        points.append(new_point)
+        
+        # Aktualisiere Anzeige
+        self.create_surface_parameter_tab(surface_id)
+        
+        # Aktualisiere Berechnungen
+        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            self.main_window.update_speaker_array_calculations()
+    
+    def _handle_delete_point(self, surface_id):
+        """Löscht den ausgewählten Punkt vom Surface"""
+        surface = self._get_surface(surface_id)
+        if not surface:
+            return
+        
+        item = self.points_tree.currentItem()
+        if not item:
+            return
+        
+        point_index = item.data(0, Qt.UserRole)
+        if not isinstance(point_index, int):
+            return
+        
+        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+        if 0 <= point_index < len(points):
+            del points[point_index]
+            
+            # Aktualisiere Anzeige
+            self.create_surface_parameter_tab(surface_id)
+            
+            # Aktualisiere Berechnungen
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+    
+    def _renumber_points(self):
+        """Nummeriert die Punkte im TreeWidget neu"""
+        if not hasattr(self, 'points_tree'):
+            return
+        
+        for idx in range(self.points_tree.topLevelItemCount()):
+            item = self.points_tree.topLevelItem(idx)
+            if item:
+                item.setText(0, f"P{idx + 1}")
+                item.setData(0, Qt.UserRole, idx)
+    
+    def _show_points_context_menu(self, position, surface_id):
+        """Zeigt das Kontextmenü für Punkte"""
+        menu = QMenu(self.points_tree)
+        add_action = menu.addAction("Add Point")
+        delete_action = menu.addAction("Delete Point")
+        
+        index = self.points_tree.indexAt(position)
+        if not index.isValid():
+            delete_action.setEnabled(False)
+        
+        action = menu.exec_(self.points_tree.viewport().mapToGlobal(position))
+        
+        if action == add_action:
+            self._handle_add_point(surface_id)
+        elif action == delete_action:
+            self._handle_delete_point(surface_id)
+    
+    # ---- Group Management --------------------------------------------
+    
+    def save_original_positions_for_group(self, group_item):
+        """Speichert die ursprünglichen Positionen für alle Surfaces in einer Gruppe"""
+        if not group_item:
+            return
+        
+        # Finde die Gruppen-ID
+        group_id = group_item.data(0, Qt.UserRole)
+        
+        # Hole oder erstelle Gruppen-Daten
+        if group_id not in self.surface_groups:
+            group = self._group_controller.get_group(group_id)
+            if group:
+                self.surface_groups[group_id] = {
+                    'name': group.name,
+                    'enabled': group.enabled,
+                    'hidden': group.hidden,
+                    'child_surface_ids': [],
+                    'original_surface_positions': {}
+                }
+        
+        # Hole oder erstelle ursprüngliche Positionen
+        original_positions = self.surface_groups[group_id].get('original_surface_positions', {})
+        
+        # Speichere ursprüngliche Positionen für alle Child-Surfaces
+        child_count = group_item.childCount()
+        for i in range(child_count):
+            child_item = group_item.child(i)
+            child_type = child_item.data(0, Qt.UserRole + 1)
+            
+            if child_type == "surface":
+                surface_id = child_item.data(0, Qt.UserRole)
+                if isinstance(surface_id, dict):
+                    surface_id = surface_id.get('id')
+                
+                if surface_id is not None and surface_id not in original_positions:
+                    surface = self._get_surface(surface_id)
+                    if surface:
+                        # Berechne Zentrum der Surface-Punkte als Position
+                        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                        if points:
+                            x_coords = [p.get('x', 0.0) for p in points]
+                            y_coords = [p.get('y', 0.0) for p in points]
+                            z_coords = [p.get('z', 0.0) for p in points]
+                            
+                            center_x = sum(x_coords) / len(x_coords) if x_coords else 0.0
+                            center_y = sum(y_coords) / len(y_coords) if y_coords else 0.0
+                            center_z = sum(z_coords) / len(z_coords) if z_coords else 0.0
+                            
+                            original_positions[surface_id] = {
+                                'x': center_x,
+                                'y': center_y,
+                                'z': center_z
+                            }
+        
+        # Speichere aktualisierte ursprüngliche Positionen
+        self.surface_groups[group_id]['original_surface_positions'] = original_positions
+    
+    def load_group_values(self, group_item):
+        """Lädt die aktuellen Werte der Gruppe in die Eingabefelder"""
+        if not group_item:
+            return
+        
+        group_id = group_item.data(0, Qt.UserRole)
+        
+        if group_id not in self.surface_groups:
+            # Initialisiere mit Standardwerten
+            self.group_rel_x_edit.setText("0.00")
+            self.group_rel_y_edit.setText("0.00")
+            self.group_rel_z_edit.setText("0.00")
+            return
+        
+        group_data = self.surface_groups[group_id]
+        
+        # Lade relative Positionen
+        rel_pos = group_data.get('relative_position', {'x': 0.0, 'y': 0.0, 'z': 0.0})
+        self.group_rel_x_edit.setText(f"{rel_pos.get('x', 0.0):.2f}")
+        self.group_rel_y_edit.setText(f"{rel_pos.get('y', 0.0):.2f}")
+        self.group_rel_z_edit.setText(f"{rel_pos.get('z', 0.0):.2f}")
+    
+    def apply_group_changes(self, group_item):
+        """Wendet die Gruppen-Änderungen auf alle Child-Surfaces an"""
+        if not group_item:
+            return
+        
+        # Hole die eingegebenen Werte
+        try:
+            rel_x = float(self.group_rel_x_edit.text())
+            rel_y = float(self.group_rel_y_edit.text())
+            rel_z = float(self.group_rel_z_edit.text())
+        except ValueError:
+            print("Fehler: Ungültige Eingabewerte")
+            return
+        
+        # Finde die Gruppen-ID
+        group_id = group_item.data(0, Qt.UserRole)
+        
+        # Stelle sicher, dass Gruppen-Daten existieren
+        if group_id not in self.surface_groups:
+            group = self._group_controller.get_group(group_id)
+            if group:
+                self.surface_groups[group_id] = {
+                    'name': group.name,
+                    'enabled': group.enabled,
+                    'hidden': group.hidden,
+                    'child_surface_ids': [],
+                    'original_surface_positions': {}
+                }
+        
+        # Speichere die relativen Werte in der Gruppe
+        self.surface_groups[group_id]['relative_position'] = {
+            'x': rel_x,
+            'y': rel_y,
+            'z': rel_z
+        }
+        
+        # Hole ursprüngliche Surface-Positionen (sollten bereits beim Hinzufügen zur Gruppe gespeichert sein)
+        original_positions = self.surface_groups[group_id].get('original_surface_positions', {})
+        
+        # Sammle alle Child-Surface-IDs
+        child_count = group_item.childCount()
+        child_surface_ids = []
+        for i in range(child_count):
+            child_item = group_item.child(i)
+            child_type = child_item.data(0, Qt.UserRole + 1)
+            
+            if child_type == "surface":
+                surface_id = child_item.data(0, Qt.UserRole)
+                if isinstance(surface_id, dict):
+                    surface_id = surface_id.get('id')
+                
+                if surface_id is not None:
+                    child_surface_ids.append(surface_id)
+                    
+                    # Falls ursprüngliche Positionen noch nicht gespeichert sind, speichere sie jetzt
+                    if surface_id not in original_positions:
+                        surface = self._get_surface(surface_id)
+                        if surface:
+                            points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                            if points:
+                                x_coords = [p.get('x', 0.0) for p in points]
+                                y_coords = [p.get('y', 0.0) for p in points]
+                                z_coords = [p.get('z', 0.0) for p in points]
+                                
+                                center_x = sum(x_coords) / len(x_coords) if x_coords else 0.0
+                                center_y = sum(y_coords) / len(y_coords) if y_coords else 0.0
+                                center_z = sum(z_coords) / len(z_coords) if z_coords else 0.0
+                                
+                                original_positions[surface_id] = {
+                                    'x': center_x,
+                                    'y': center_y,
+                                    'z': center_z
+                                }
+        
+        # Speichere aktualisierte ursprüngliche Positionen
+        if original_positions:
+            self.surface_groups[group_id]['original_surface_positions'] = original_positions
+        
+        # Wende die Änderungen auf alle Child-Surfaces an
+        # WICHTIG: Die relativen Werte werden zu den AKTUELLEN Surface-Punkt-Werten hinzugefügt
+        for surface_id in child_surface_ids:
+            surface = self._get_surface(surface_id)
+            if surface:
+                points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                
+                # Addiere relative Positionen zu allen Punkten
+                for point in points:
+                    point['x'] = point.get('x', 0.0) + rel_x
+                    point['y'] = point.get('y', 0.0) + rel_y
+                    point['z'] = point.get('z', 0.0) + rel_z
+                
+                # Aktualisiere Surface
+                if isinstance(surface, SurfaceDefinition):
+                    surface.points = points
+                else:
+                    surface['points'] = points
+        
+        # Aktualisiere Berechnungen
+        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            self.main_window.update_speaker_array_calculations()
+        
+        # Aktualisiere TreeWidget
+        self.load_surfaces()
+    
+    # ---- Context Menu -----------------------------------------------
+    
+    def show_context_menu(self, position):
+        """Zeigt das Kontextmenü für das TreeWidget"""
+        item = self.surface_tree_widget.itemAt(position)
+        
+        menu = QMenu(self.surface_tree_widget)
+        
+        add_surface_action = menu.addAction("Add Surface")
+        add_group_action = menu.addAction("Add Group")
+        menu.addSeparator()
+        duplicate_action = menu.addAction("Duplicate")
+        delete_action = menu.addAction("Delete")
+        
+        if item:
+            self.surface_tree_widget.setCurrentItem(item)
+            item_type = item.data(0, Qt.UserRole + 1)
+            
+            if item_type == "group":
+                delete_action.setText("Delete Group")
+            else:
+                delete_action.setText("Delete Surface")
+        else:
+            delete_action.setEnabled(False)
+            duplicate_action.setEnabled(False)
+        
+        action = menu.exec_(self.surface_tree_widget.viewport().mapToGlobal(position))
+        
+        if action == add_surface_action:
+            self.add_surface()
+        elif action == add_group_action:
+            self.add_group(item)
+        elif action == duplicate_action:
+            self.duplicate_item(item)
+        elif action == delete_action:
+            self.delete_item(item)
+    
+    def add_group(self, reference_item=None):
+        """Fügt eine neue Gruppe hinzu"""
+        from PyQt5.QtWidgets import QInputDialog
+        
+        name, ok = QInputDialog.getText(self.surface_dockWidget, "Add Group", "Group name:")
+        if not ok or not name.strip():
+            return
+        
+        # Bestimme Parent-Gruppe
+        parent_group_id = None
+        if reference_item:
+            item_type = reference_item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                parent_group_id = reference_item.data(0, Qt.UserRole)
+            else:
+                # Surface - finde Parent-Gruppe
+                parent = reference_item.parent()
+                if parent:
+                    parent_group_id = parent.data(0, Qt.UserRole)
+        
+        if not parent_group_id:
+            parent_group_id = self._group_controller.root_group_id
+        
+        # Erstelle Gruppe
+        group = self._group_controller.create_surface_group(name.strip(), parent_id=parent_group_id)
+        
+        # Lade TreeWidget neu
+        self.load_surfaces()
+        
+        # Wähle die neue Gruppe aus
+        for i in range(self.surface_tree_widget.topLevelItemCount()):
+            item = self.surface_tree_widget.topLevelItem(i)
+            if item.data(0, Qt.UserRole) == group.group_id:
+                self.surface_tree_widget.setCurrentItem(item)
+                break
+    
+    def duplicate_item(self, item):
+        """Dupliziert ein Surface oder eine Gruppe"""
+        if not item:
+            return
+        
+        item_type = item.data(0, Qt.UserRole + 1)
+        
+        if item_type == "surface":
+            surface_id = item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get('id')
+            
+            # Dupliziere Surface
+            surface = self._get_surface(surface_id)
+            if surface:
+                import copy
+                surface_store = getattr(self.settings, 'surface_definitions', {})
+                
+                # Generiere neue ID - prüfe alle existierenden IDs
+                index = 1
+                existing_ids = set(surface_store.keys())
+                while f"surface_{index}" in existing_ids:
+                    index += 1
+                new_surface_id = f"surface_{index}"
+                
+                # Bestimme Ziel-Gruppe (gleiche Gruppe wie Original)
+                target_group_id = None
+                if isinstance(surface, SurfaceDefinition):
+                    target_group_id = surface.group_id
+                else:
+                    target_group_id = surface.get('group_id')
+                
+                if not target_group_id:
+                    target_group_id = self._group_controller.root_group_id
+                
+                # Kopiere Surface
+                if isinstance(surface, SurfaceDefinition):
+                    new_surface = SurfaceDefinition(
+                        surface_id=new_surface_id,
+                        name=f"{surface.name} Copy",
+                        enabled=surface.enabled,
+                        hidden=surface.hidden,
+                        locked=False,
+                        points=copy.deepcopy(surface.points),
+                        plane_model=copy.deepcopy(surface.plane_model) if surface.plane_model else None,
+                        color=surface.color,
+                        group_id=target_group_id
+                    )
+                else:
+                    new_surface = copy.deepcopy(surface)
+                    new_surface['name'] = f"{surface.get('name', 'Surface')} Copy"
+                    new_surface['group_id'] = target_group_id
+                
+                # Verwende Settings-Methode für konsistente Behandlung
+                if hasattr(self.settings, 'add_surface_definition'):
+                    self.settings.add_surface_definition(new_surface_id, new_surface, make_active=False)
+                else:
+                    surface_store[new_surface_id] = new_surface
+                    self.settings.surface_definitions = surface_store
+                
+                # Ordne Surface zur Gruppe zu
+                self._group_controller.assign_surface_to_group(new_surface_id, target_group_id, create_missing=False)
+                
+                # Stelle sicher, dass Gruppen-Struktur aktuell ist
+                self._group_controller.ensure_structure()
+                
+                # Lade TreeWidget neu
+                self.load_surfaces()
+                
+                # Wähle das neue Surface aus
+                self._select_surface_in_tree(new_surface_id)
+    
+    def delete_item(self, item):
+        """Löscht ein Surface oder eine Gruppe"""
+        if not item:
+            return
+        
+        item_type = item.data(0, Qt.UserRole + 1)
+        
+        if item_type == "surface":
+            surface_id = item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get('id')
+            
+            # Prüfe, ob es die Default-Surface ist
+            if surface_id == getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default'):
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self.surface_dockWidget,
+                    "Aktion nicht möglich",
+                    "Die Standardfläche kann nicht gelöscht werden."
+                )
+                return
+            
+            # Lösche Surface
+            surface_store = getattr(self.settings, 'surface_definitions', {})
+            if surface_id in surface_store:
+                # Entferne aus Gruppe
+                self._group_controller.detach_surface(surface_id)
+                del surface_store[surface_id]
+                self.settings.surface_definitions = surface_store
+                
+                # Lade TreeWidget neu
+                self.load_surfaces()
+        
+        elif item_type == "group":
+            group_id = item.data(0, Qt.UserRole)
+            
+            # Prüfe, ob es die Root-Gruppe ist
+            if group_id == self._group_controller.root_group_id:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self.surface_dockWidget,
+                    "Aktion nicht möglich",
+                    "Die Root-Gruppe kann nicht gelöscht werden."
+                )
+                return
+            
+            # Lösche Gruppe
+            try:
+                success = self._group_controller.remove_surface_group(group_id)
+                if success:
+                    if group_id in self.surface_groups:
+                        del self.surface_groups[group_id]
+                    self.load_surfaces()
+            except ValueError:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self.surface_dockWidget,
+                    "Aktion nicht möglich",
+                    "Die Gruppe ist nicht leer und kann daher nicht gelöscht werden."
+                )
 
-            if self.main_window.dockWidgetArea(self.surface_dock_widget) == Qt.NoDockWidgetArea:
-                self.main_window.addDockWidget(Qt.RightDockWidgetArea, self.surface_dock_widget)
 
-            self.main_window.tabifyDockWidget(self.snapshot_dock, self.surface_dock_widget)
-            self.surface_dock_widget.raise_()
-
-            sources_dock = None
-            if hasattr(self.main_window, "sources_instance") and self.main_window.sources_instance:
-                sources_dock = getattr(self.main_window.sources_instance, "sources_dockWidget", None)
-
-            if sources_dock:
-                self.main_window.splitDockWidget(sources_dock, self.snapshot_dock, Qt.Horizontal)
-                self.main_window.resizeDocks([sources_dock, self.snapshot_dock], [360, 280], Qt.Horizontal)
-
-            self._snapshot_split_done = True
-        except Exception:
-            pass
-
+# ---- SurfaceGroupController (aus alter Implementierung übernommen) ----
 
 class _SurfaceGroupController:
+    """Controller für Surface-Gruppen-Verwaltung"""
+    
     def __init__(self, settings):
         self.settings = settings
-
+    
     @property
     def root_group_id(self) -> str:
         return getattr(self.settings, "ROOT_SURFACE_GROUP_ID", "surface_group_root")
-
+    
     def ensure_structure(self):
+        """Stellt sicher, dass die Gruppen-Struktur korrekt ist"""
         store = self._ensure_group_store()
         if self._ensure_group_object(self.root_group_id) is None:
             store[self.root_group_id] = SurfaceGroup(
@@ -438,51 +1553,49 @@ class _SurfaceGroupController:
                 parent_id=None,
                 locked=True,
             )
-
+        
         surface_store = getattr(self.settings, "surface_definitions", {})
         valid_surface_ids = set(surface_store.keys())
         claimed_surface_ids: set[str] = set()
-
+        
         for group_id in list(store.keys()):
             group = self._ensure_group_object(group_id)
             if group is None:
                 continue
-
+            
             if group_id == self.root_group_id:
                 group.parent_id = None
             elif group.parent_id not in store:
                 group.parent_id = self.root_group_id
-
+            
             parent = self._ensure_group_object(group.parent_id) if group.parent_id else None
             if parent and group_id not in parent.child_groups:
                 parent.child_groups.append(group_id)
-
+            
             group.child_groups = self._deduplicate_sequence(
                 gid
                 for gid in group.child_groups
                 if gid in store and gid != group_id
             )
-
+            
             cleaned_surface_ids = []
             for surface_id in group.surface_ids:
                 if surface_id not in valid_surface_ids:
                     continue
-                # Prüfe, ob das Surface wirklich zu dieser Gruppe gehört
                 surface = self._ensure_surface_object(surface_id)
                 if surface and surface.group_id and surface.group_id != group_id:
-                    # Surface gehört zu einer anderen Gruppe - entfernen
                     continue
                 if surface_id in claimed_surface_ids:
                     continue
                 cleaned_surface_ids.append(surface_id)
                 claimed_surface_ids.add(surface_id)
             group.surface_ids = cleaned_surface_ids
-
+        
         for surface_id in surface_store.keys():
             surface = self._ensure_surface_object(surface_id)
             target_group_id = surface.group_id or self.root_group_id
             self.assign_surface_to_group(surface_id, target_group_id, create_missing=True)
-
+    
     @staticmethod
     def _deduplicate_sequence(sequence):
         seen = set()
@@ -493,62 +1606,54 @@ class _SurfaceGroupController:
             seen.add(item)
             result.append(item)
         return result
-
-    def reset_storage(self):
-        init_surfaces = getattr(self.settings, "_initialize_surface_definitions", None)
-        if callable(init_surfaces):
-            self.settings.surface_definitions = init_surfaces()
-        else:
-            self.settings.surface_definitions = {}
-        self.settings.surface_groups = self._create_default_group_store()
-        self.ensure_structure()
-
+    
     def list_groups(self) -> Dict[str, SurfaceGroup]:
         store = self._ensure_group_store()
         return {gid: self._ensure_group_object(gid) for gid in store.keys()}
-
+    
     def get_group(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
         if not group_id:
             return None
         return self._ensure_group_object(group_id)
-
+    
     def assign_surface_to_group(self, surface_id: str, target_group_id: Optional[str], *, create_missing: bool = False):
         surface = self._ensure_surface_object(surface_id)
         if surface is None:
             return
-
+        
         if not target_group_id:
             target_group_id = self.root_group_id
-
+        
         group = self._ensure_group_object(target_group_id)
         if group is None and create_missing:
             group = self.create_surface_group(target_group_id, parent_id=self.root_group_id, group_id=target_group_id)
         elif group is None:
             target_group_id = self.root_group_id
             group = self._ensure_group_object(target_group_id)
-
+        
         previous_group_id = surface.group_id or self._find_surface_group_id(surface_id)
         if previous_group_id and previous_group_id != target_group_id:
             self._remove_surface_from_group(surface_id, previous_group_id)
-
+        
         if group and surface_id not in group.surface_ids:
-            group.surface_ids.append(surface_id)
+            # Füge am Anfang hinzu (neue Surfaces erscheinen oben)
+            group.surface_ids.insert(0, surface_id)
         surface.group_id = target_group_id
-
+    
     def create_surface_group(self, name: str, parent_id: Optional[str] = None, *, group_id: Optional[str] = None, locked: bool = False) -> SurfaceGroup:
         parent_id = parent_id or self.root_group_id
         parent = self._ensure_group_object(parent_id)
         if parent is None:
             parent_id = self.root_group_id
             parent = self._ensure_group_object(parent_id)
-
+        
         if group_id is None:
             group_id = self._generate_surface_group_id()
-
+        
         store = self._ensure_group_store()
         if group_id in store:
             return self._ensure_group_object(group_id)
-
+        
         group = SurfaceGroup(
             group_id=group_id,
             name=name or group_id,
@@ -558,55 +1663,29 @@ class _SurfaceGroupController:
             locked=locked,
         )
         store[group_id] = group
-
+        
         if parent and group_id not in parent.child_groups:
-            parent.child_groups.append(group_id)
-
+            # Füge am Anfang hinzu (neue Gruppen erscheinen oben)
+            parent.child_groups.insert(0, group_id)
+        
         return group
-
+    
     def remove_surface_group(self, group_id: str) -> bool:
         group = self._ensure_group_object(group_id)
         if not group or group.locked:
             return False
         if group.child_groups or group.surface_ids:
             raise ValueError("Group must be empty before removal.")
-
+        
         parent = self._ensure_group_object(group.parent_id) if group.parent_id else None
         if parent and group_id in parent.child_groups:
             parent.child_groups.remove(group_id)
-
+        
         store = self._ensure_group_store()
         if group_id in store:
             del store[group_id]
         return True
-
-    def move_surface_group(self, group_id: str, target_parent_id: str) -> bool:
-        group = self._ensure_group_object(group_id)
-        if not group or group.locked:
-            return False
-        if group_id == target_parent_id:
-            return False
-
-        ancestor_id = target_parent_id
-        while ancestor_id:
-            if ancestor_id == group_id:
-                return False
-            ancestor = self._ensure_group_object(ancestor_id)
-            if ancestor is None:
-                break
-            ancestor_id = ancestor.parent_id
-
-        old_parent = self._ensure_group_object(group.parent_id) if group.parent_id else None
-        if old_parent and group_id in old_parent.child_groups:
-            old_parent.child_groups.remove(group_id)
-
-        target_parent = self._ensure_group_object(target_parent_id) or self._ensure_group_object(self.root_group_id)
-        if target_parent and group_id not in target_parent.child_groups:
-            target_parent.child_groups.append(group_id)
-
-        group.parent_id = target_parent.group_id if target_parent else self.root_group_id
-        return True
-
+    
     def rename_surface_group(self, group_id: str, new_name: str):
         group = self._ensure_group_object(group_id)
         if not group:
@@ -614,19 +1693,7 @@ class _SurfaceGroupController:
         name = (new_name or "").strip()
         if name:
             group.name = name
-
-    def find_surface_group_by_name(self, name: str, parent_id: Optional[str] = None) -> Optional[SurfaceGroup]:
-        target_name = (name or "").strip()
-        if not target_name:
-            return None
-        for group_id in list(self._ensure_group_store().keys()):
-            group = self._ensure_group_object(group_id)
-            if not group:
-                continue
-            if group.name == target_name and (parent_id is None or group.parent_id == parent_id):
-                return group
-        return None
-
+    
     def set_surface_group_enabled(self, group_id: str, enabled: bool):
         group = self._ensure_group_object(group_id)
         if not group:
@@ -636,7 +1703,7 @@ class _SurfaceGroupController:
             self.set_surface_group_enabled(child_group_id, enabled)
         for surface_id in group.surface_ids:
             self._set_surface_enabled(surface_id, enabled)
-
+    
     def set_surface_group_hidden(self, group_id: str, hidden: bool):
         group = self._ensure_group_object(group_id)
         if not group:
@@ -648,37 +1715,19 @@ class _SurfaceGroupController:
             surface = self._ensure_surface_object(surface_id)
             if surface:
                 surface.hidden = bool(hidden)
-
-    def ensure_group_path(self, label: Optional[str]) -> Optional[str]:
-        if not label:
-            return None
-        key = label.strip()
-        if not key:
-            return None
-        segments = [part.strip() for part in key.replace("\\", "/").split("/") if part.strip()]
-        parent_id = self.root_group_id
-        current_group_id = parent_id
-        for segment in segments:
-            existing = self.find_surface_group_by_name(segment, parent_id=current_group_id)
-            if existing:
-                current_group_id = existing.group_id
-            else:
-                created = self.create_surface_group(segment, parent_id=current_group_id)
-                current_group_id = created.group_id
-        return current_group_id
-
+    
     def detach_surface(self, surface_id: str):
         group_id = self._find_surface_group_id(surface_id)
         if group_id:
             self._remove_surface_from_group(surface_id, group_id)
-
+    
     def _ensure_group_store(self) -> Dict[str, SurfaceGroup]:
         store = getattr(self.settings, "surface_groups", None)
         if not isinstance(store, dict) or not store:
             store = self._create_default_group_store()
         self.settings.surface_groups = store
         return store
-
+    
     def _create_default_group_store(self) -> Dict[str, SurfaceGroup]:
         return {
             self.root_group_id: SurfaceGroup(
@@ -690,7 +1739,7 @@ class _SurfaceGroupController:
                 locked=True,
             )
         }
-
+    
     def _ensure_group_object(self, group_id: Optional[str]) -> Optional[SurfaceGroup]:
         if not group_id:
             return None
@@ -703,7 +1752,7 @@ class _SurfaceGroupController:
         obj = SurfaceGroup.from_dict(group_id, group)
         store[group_id] = obj
         return obj
-
+    
     def _ensure_surface_object(self, surface_id: str) -> Optional[SurfaceDefinition]:
         ensure_fn = getattr(self.settings, "_ensure_surface_object", None)
         if callable(ensure_fn):
@@ -716,21 +1765,21 @@ class _SurfaceGroupController:
             self.settings.surface_definitions[surface_id] = obj
             return obj
         return None
-
+    
     def _remove_surface_from_group(self, surface_id: str, group_id: str):
         group = self._ensure_group_object(group_id)
         if not group:
             return
         if surface_id in group.surface_ids:
             group.surface_ids.remove(surface_id)
-
+    
     def _find_surface_group_id(self, surface_id: str) -> Optional[str]:
         for group_id in list(self._ensure_group_store().keys()):
             group = self._ensure_group_object(group_id)
             if group and surface_id in group.surface_ids:
                 return group.group_id
         return None
-
+    
     def _generate_surface_group_id(self) -> str:
         store = self._ensure_group_store()
         index = 1
@@ -739,7 +1788,7 @@ class _SurfaceGroupController:
             if candidate not in store:
                 return candidate
             index += 1
-
+    
     def _set_surface_enabled(self, surface_id: str, enabled: bool):
         set_enabled = getattr(self.settings, "set_surface_enabled", None)
         if callable(set_enabled):
@@ -751,5 +1800,3 @@ class _SurfaceGroupController:
         surface = self._ensure_surface_object(surface_id)
         if surface:
             surface.enabled = bool(enabled)
-
-
