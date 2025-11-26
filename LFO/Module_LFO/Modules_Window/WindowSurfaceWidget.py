@@ -882,11 +882,48 @@ class SurfaceDockWidget(QDockWidget):
 
         item = self.surface_tree.currentItem()
         item_type, item_id = self._get_item_identity(item)
+        surface_store = self._get_surface_store()
+
+        # --- Gruppen-Selektions-Handling (rote Umrandung für alle Surfaces der Gruppe) ---
+        if item_type == self.ITEM_TYPE_GROUP:
+            self.current_surface_id = None
+            self._loading_points = True
+            self.points_tree.clear()
+            self._loading_points = False
+
+            group_id = item_id
+            # Ermittle alle Surface-IDs dieser Gruppe (inkl. Fallback für dict-Struktur)
+            highlight_ids: List[str] = []
+            surface_groups = getattr(self.settings, "surface_groups", {}) or {}
+            group_obj = surface_groups.get(group_id)
+            if group_obj is not None:
+                try:
+                    # Dataclass SurfaceGroup
+                    ids = list(getattr(group_obj, "surface_ids", []))
+                except Exception:
+                    ids = []
+                if not ids and isinstance(group_obj, dict):
+                    ids = list(group_obj.get("surface_ids", []))
+                highlight_ids = [sid for sid in ids if sid in surface_store]
+
+            # Speichere Highlight-Liste auf Settings, damit Overlays sie nutzen können
+            setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
+
+            # Overlays aktualisieren (nur visuell, keine Neuberechnung)
+            if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "draw_spl_plotter"):
+                draw_spl = self.main_window.draw_plots.draw_spl_plotter
+                if hasattr(draw_spl, "update_overlays"):
+                    draw_spl.update_overlays(self.settings, self.container)
+            return
+
+        # --- Einzel-Surface-Selektions-Handling ---
         if item_type != self.ITEM_TYPE_SURFACE:
             self.current_surface_id = None
             self._loading_points = True
             self.points_tree.clear()
             self._loading_points = False
+            # Keine Surface-Auswahl → keine speziellen Highlight-IDs
+            setattr(self.settings, "active_surface_highlight_ids", [])
             return
 
         self.current_surface_id = item_id
@@ -966,6 +1003,9 @@ class SurfaceDockWidget(QDockWidget):
             self.settings.set_active_surface(surface_id)
         except KeyError:
             return
+
+        # Einzel-Surface-Auswahl: nur dieses Surface hervorheben
+        setattr(self.settings, "active_surface_highlight_ids", [surface_id])
         
         # Aktualisiere Overlays, wenn sich die Auswahl ändert (für rote Markierung)
         # KEINE Neuberechnung, nur visuelle Aktualisierung

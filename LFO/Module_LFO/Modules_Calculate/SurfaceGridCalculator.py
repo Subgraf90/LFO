@@ -52,6 +52,7 @@ class SurfaceSamplingPoints:
     coordinates: np.ndarray  # Shape (N, 3)
     indices: np.ndarray      # Shape (N, 2) - (row, col) im lokalen Grid
     grid_shape: Tuple[int, int]
+    is_vertical: bool = False
 
     def to_payload(self) -> Dict[str, List]:
         return {
@@ -60,6 +61,7 @@ class SurfaceSamplingPoints:
             "coordinates": self.coordinates.tolist(),
             "indices": self.indices.tolist(),
             "grid_shape": list(self.grid_shape),
+            "kind": "vertical" if self.is_vertical else "planar",
         }
 
 
@@ -188,7 +190,12 @@ class SurfaceGridCalculator(ModuleBase):
             )
         
         self._last_surface_meshes = self._build_surface_meshes(enabled_surfaces, resolution)
+        # Horizontale/geneigte Flächen über reguläre Meshes
         self._last_surface_samples = self._build_surface_samples(self._last_surface_meshes)
+        # Zusätzliche Sampling-Punkte für senkrechte Flächen (XY-Projektion ~ Linie)
+        vertical_samples = self._build_vertical_surface_samples(enabled_surfaces, resolution)
+        if vertical_samples:
+            self._last_surface_samples.extend(vertical_samples)
         return sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask
 
     def get_surface_meshes(self) -> List[SurfaceGridMesh]:
@@ -297,6 +304,50 @@ class SurfaceGridCalculator(ModuleBase):
             return False, warning
         
         return True, None
+
+    def _interpolate_z_coordinates(
+        self,
+        x_coords: np.ndarray,
+        y_coords: np.ndarray,
+        surfaces: List[Tuple[str, Dict]],
+        surface_mask: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Thin-Wrapper um die eigentliche Implementierung, damit
+        `SurfaceGridCalculator` das Attribut `_interpolate_z_coordinates`
+        besitzt und bestehende Aufrufer weiter funktionieren.
+        """
+        return _interpolate_z_coordinates_impl(
+            self,
+            x_coords,
+            y_coords,
+            surfaces,
+            surface_mask,
+        )
+
+    def _evaluate_plane_grid(
+        self,
+        x_coords: np.ndarray,
+        y_coords: np.ndarray,
+        plane_model: Optional[Dict[str, float]],
+    ) -> np.ndarray:
+        """
+        Thin-Wrapper um die planare Z-Auswertung, damit `_evaluate_plane_grid`
+        als Methoden-Attribut der Klasse existiert.
+        """
+        return _evaluate_plane_grid_core(x_coords, y_coords, plane_model)
+
+    def _point_in_polygon(
+        self,
+        x: float,
+        y: float,
+        polygon_points: List[Dict[str, float]],
+    ) -> bool:
+        """
+        Thin-Wrapper um die Punkt-im-Polygon-Prüfung, damit `SurfaceGridCalculator`
+        diese Methode immer als Attribut besitzt.
+        """
+        return _point_in_polygon_core(x, y, polygon_points)
     
     def _create_surface_mask(
         self,
@@ -377,6 +428,19 @@ class SurfaceGridCalculator(ModuleBase):
                 dilated = dilated | shifted
         
         return dilated
+
+    def _points_in_polygon_batch(
+        self,
+        x_coords: np.ndarray,
+        y_coords: np.ndarray,
+        polygon_points: List[Dict[str, float]],
+    ) -> np.ndarray:
+        """
+        Wrapper um die modulare, vektorisierte Polygon-Test-Funktion.
+        Stellt sicher, dass `SurfaceGridCalculator` immer ein Attribut
+        `_points_in_polygon_batch` besitzt (wichtig für ältere Importe).
+        """
+        return _points_in_polygon_batch_core(x_coords, y_coords, polygon_points)
 
     def _build_surface_meshes(
         self,
@@ -462,10 +526,11 @@ class SurfaceGridCalculator(ModuleBase):
             samples.append(
                 SurfaceSamplingPoints(
                     surface_id=mesh.surface_id,
-                    name=mesh.name,
-                    coordinates=coords,
-                    indices=indices,
-                    grid_shape=mesh.mask.shape,
+                        name=mesh.name,
+                        coordinates=coords,
+                        indices=indices,
+                        grid_shape=mesh.mask.shape,
+                        is_vertical=False,
                 )
             )
         if DEBUG_SURFACE_GRID and samples:
@@ -476,72 +541,259 @@ class SurfaceGridCalculator(ModuleBase):
                 f"sample_points_total={total_sample_points}",
             )
         return samples
-    
-    def _interpolate_z_coordinates(
-        self,
-        x_coords: np.ndarray,
-        y_coords: np.ndarray,
-        surfaces: List[Tuple[str, Dict]],
-        surface_mask: np.ndarray,
-    ) -> np.ndarray:
-        """
-        🎯 Interpoliert Z-Koordinaten basierend auf planaren Surface-Modellen.
-        
-        🎯 FESTE GEOMETRIE: X/Y-Positionen werden immer fest eingehalten, auch wenn Z variiert.
-        Wenn eine Surface Z-Abweichungen hat, werden diese normalisiert (einzelne Abweichung → 4.0).
-        
-        Args:
-            x_coords: 2D-Array von X-Koordinaten (Shape: [ny, nx])
-            y_coords: 2D-Array von Y-Koordinaten (Shape: [ny, nx])
-            surfaces: Liste von (surface_id, surface_definition) Tupeln
-            surface_mask: 2D-Boolean-Array - True wenn Punkt in mindestens einem Surface
-            
-        Returns:
-            2D-Array der Z-Koordinaten (Shape: [ny, nx])
-        """
-        Z_grid = np.zeros_like(x_coords, dtype=float)
-        
-        if not surfaces:
-            return Z_grid
-        
-        # 🎯 Normalisiere Z-Koordinaten für alle Surfaces
-        def _safe_coord(point_obj, key: str, default: float = 0.0) -> float:
-            if isinstance(point_obj, dict):
-                value = point_obj.get(key, default)
-            else:
-                value = getattr(point_obj, key, default)
-            if value is None:
-                return float(default)
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return float(default)
 
-        normalized_surfaces = []
-        for surface_id, surface_def in surfaces:
-            raw_points = surface_def.get("points", [])
-            if not isinstance(raw_points, list):
-                continue
-            points = []
-            for raw_point in raw_points:
-                points.append(
-                    {
-                        "x": _safe_coord(raw_point, "x", 0.0),
-                        "y": _safe_coord(raw_point, "y", 0.0),
-                        "z": _safe_coord(raw_point, "z", 0.0),
-                    }
-                )
+    def _build_vertical_surface_samples(
+        self,
+        surfaces: List[Tuple[str, Dict]],
+        resolution: float,
+    ) -> List[SurfaceSamplingPoints]:
+        """
+        Erstellt Sampling-Punkte für senkrechte Flächen (XY-Projektion ~ Linie).
+        Diese Punkte liegen direkt auf der vertikalen Fläche und werden als
+        3D-Koordinaten für die Schallfeld-Berechnung verwendet (surface_point_buffers).
+        """
+        vertical_samples: List[SurfaceSamplingPoints] = []
+        if not surfaces:
+            return vertical_samples
+
+        # Verwende für die vertikalen Flächen die gleiche effektive Auflösung
+        # wie für die anderen Flächen im Plot: Basis-Resolution geteilt durch
+        # den Plot-Upscale-Faktor (geclamped auf 1..6 wie in SurfaceGeometry).
+        base_resolution = float(resolution or 1.0)
+        requested_upscale = getattr(self.settings, "plot_upscale_factor", None)
+        if requested_upscale is None:
+            requested_upscale = 3
+        try:
+            upscale_factor = int(requested_upscale)
+        except (TypeError, ValueError):
+            upscale_factor = 3
+        upscale_factor = max(1, min(6, upscale_factor))
+        step = base_resolution / float(upscale_factor)
+        if step <= 0.0:
+            step = base_resolution or 1.0
+
+        for surface_id, definition in surfaces:
+            surface = definition
+            if not isinstance(surface, SurfaceDefinition):
+                surface = SurfaceDefinition.from_dict(surface_id, definition)
+            points = surface.points
             if len(points) < 3:
                 continue
-            
-            # Erstelle Surface-Modell mit normalisierten Punkten
-            model, error = derive_surface_plane(points)
-            name = surface_def.get("name", surface_id)
-            if model is None:
-                print(
-                    f"[SurfaceGridCalculator] Surface '{name}' wird ignoriert: {error}"
-                )
+
+            xs = np.array([float(pt.get("x", 0.0)) for pt in points], dtype=float)
+            ys = np.array([float(pt.get("y", 0.0)) for pt in points], dtype=float)
+            zs = np.array([float(pt.get("z", 0.0)) for pt in points], dtype=float)
+
+            x_span = float(np.ptp(xs))
+            y_span = float(np.ptp(ys))
+            z_span = float(np.ptp(zs))
+
+            # Versuche zunächst, die Fläche als planare Z=Z(x,y)-Fläche zu modellieren.
+            # Wenn das gelingt, ist sie NICHT senkrecht (Steigung < 180°) und soll
+            # über die normale horizontale Berechnung laufen.
+            dict_points = [
+                {"x": float(pt.get("x", 0.0)), "y": float(pt.get("y", 0.0)), "z": float(pt.get("z", 0.0))}
+                for pt in points
+            ]
+            model, _ = derive_surface_plane(dict_points)
+            if model is not None:
                 continue
+
+            # Vollständig degeneriert (Punkt oder Linie ohne Ausdehnung) oder
+            # praktisch keine Höhe → ignorieren.
+            if (x_span < 1e-6 and y_span < 1e-6) or z_span <= 1e-3:
+                continue
+
+            # Ab hier behandeln wir nur noch echte senkrechte Flächen:
+            # XY-Projektion ist (fast) eine Linie, aber Δz ist signifikant.
+
+            # Vollständig degeneriert (Punkt oder Linie ohne Ausdehnung)
+            if x_span < 1e-6 and y_span < 1e-6:
+                continue
+
+            # Fall 1: Fläche verläuft im X-Z-Raum bei (fast) konstantem Y
+            if y_span < 1e-6:
+                y0 = float(np.mean(ys))
+                u_min, u_max = float(xs.min()), float(xs.max())
+                v_min, v_max = float(zs.min()), float(zs.max())
+                if math.isclose(u_min, u_max) or math.isclose(v_min, v_max):
+                    continue
+
+                u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                if u_axis.size < 2 or v_axis.size < 2:
+                    continue
+
+                U, V = np.meshgrid(u_axis, v_axis, indexing="xy")
+                # 2D-Polygon im (x,z)-Raum aufbauen
+                polygon_uv = [
+                    {"x": float(pt.get("x", 0.0)), "y": float(pt.get("z", 0.0))}
+                    for pt in points
+                ]
+                # Wie bei den nicht senkrechten Flächen: Maske leicht erweitern,
+                # damit der Plot bis an den Rand der Fläche sauber gefüllt wird.
+                mask = self._points_in_polygon_batch(U, V, polygon_uv)
+                mask = _dilate_mask_minimal(mask)
+                if not np.any(mask):
+                    continue
+
+                rows, cols = np.where(mask)
+                coords_x = u_axis[cols]
+                coords_y = np.full_like(coords_x, y0, dtype=float)
+                coords_z = v_axis[rows]
+                coords = np.column_stack((coords_x, coords_y, coords_z))
+
+                vertical_samples.append(
+                    SurfaceSamplingPoints(
+                        surface_id=surface_id,
+                        name=surface.name,
+                        coordinates=coords,
+                        indices=np.zeros((0, 2), dtype=int),
+                        grid_shape=mask.shape,
+                        is_vertical=True,
+                    )
+                )
+
+            # Fall 2: Fläche verläuft im Y-Z-Raum bei (fast) konstantem X
+            elif x_span < 1e-6:
+                x0 = float(np.mean(xs))
+                u_min, u_max = float(ys.min()), float(ys.max())
+                v_min, v_max = float(zs.min()), float(zs.max())
+                if math.isclose(u_min, u_max) or math.isclose(v_min, v_max):
+                    continue
+
+                u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                if u_axis.size < 2 or v_axis.size < 2:
+                    continue
+
+                U, V = np.meshgrid(u_axis, v_axis, indexing="xy")
+                # 2D-Polygon im (y,z)-Raum aufbauen
+                polygon_uv = [
+                    {"x": float(pt.get("y", 0.0)), "y": float(pt.get("z", 0.0))}
+                    for pt in points
+                ]
+                # Leicht erweiterte Maske analog zu den waagrechten Flächen
+                mask = self._points_in_polygon_batch(U, V, polygon_uv)
+                mask = _dilate_mask_minimal(mask)
+                if not np.any(mask):
+                    continue
+
+                rows, cols = np.where(mask)
+                coords_x = np.full_like(u_axis[cols], x0, dtype=float)
+                coords_y = u_axis[cols]
+                coords_z = v_axis[rows]
+                coords = np.column_stack((coords_x, coords_y, coords_z))
+
+                vertical_samples.append(
+                    SurfaceSamplingPoints(
+                        surface_id=surface_id,
+                        name=surface.name,
+                        coordinates=coords,
+                        indices=np.zeros((0, 2), dtype=int),
+                        grid_shape=mask.shape,
+                        is_vertical=True,
+                    )
+                )
+
+        if DEBUG_SURFACE_GRID and vertical_samples:
+            total_points = sum(int(s.coordinates.shape[0]) for s in vertical_samples)
+            print(
+                "[SurfaceGridCalculator] Vertikale Surface-Samples:",
+                f"surfaces={len(vertical_samples)},",
+                f"sample_points_total={total_points}",
+            )
+        return vertical_samples
+
+
+def _dilate_mask_minimal(mask: np.ndarray) -> np.ndarray:
+    """
+    Einfache 3x3-Dilatation für boolesche Masken.
+    Wird genutzt, um die Sample-Maske von Surfaces um 1 Zelle zu erweitern,
+    analog zur Behandlung der Plot-Maske bei horizontalen Flächen.
+    """
+    kernel = np.array(
+        [
+            [1, 1, 1],
+            [1, 1, 1],
+            [1, 1, 1],
+        ],
+        dtype=bool,
+    )
+    ny, nx = mask.shape
+    padded = np.pad(mask, ((1, 1), (1, 1)), mode="edge")
+    dilated = np.zeros_like(mask, dtype=bool)
+    for i in range(ny):
+        for j in range(nx):
+            region = padded[i : i + 3, j : j + 3]
+            dilated[i, j] = np.any(region & kernel)
+    return dilated
+    
+def _interpolate_z_coordinates_impl(
+    self,
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    surfaces: List[Tuple[str, Dict]],
+    surface_mask: np.ndarray,
+) -> np.ndarray:
+    """
+    🎯 Interpoliert Z-Koordinaten basierend auf planaren Surface-Modellen.
+    
+    🎯 FESTE GEOMETRIE: X/Y-Positionen werden immer fest eingehalten, auch wenn Z variiert.
+    Wenn eine Surface Z-Abweichungen hat, werden diese normalisiert (einzelne Abweichung → 4.0).
+    """
+    Z_grid = np.zeros_like(x_coords, dtype=float)
+    
+    if not surfaces:
+        return Z_grid
+    
+    # 🎯 Normalisiere Z-Koordinaten für alle Surfaces
+    def _safe_coord(point_obj, key: str, default: float = 0.0) -> float:
+        if isinstance(point_obj, dict):
+            value = point_obj.get(key, default)
+        else:
+            value = getattr(point_obj, key, default)
+        if value is None:
+            return float(default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+    
+    normalized_surfaces = []
+    for surface_id, surface_def in surfaces:
+        raw_points = surface_def.get("points", [])
+        if not isinstance(raw_points, list):
+            continue
+        points = []
+        for raw_point in raw_points:
+            points.append(
+                {
+                    "x": _safe_coord(raw_point, "x", 0.0),
+                    "y": _safe_coord(raw_point, "y", 0.0),
+                    "z": _safe_coord(raw_point, "z", 0.0),
+                }
+            )
+        if len(points) < 3:
+            continue
+
+        # XY-/Z-Ausdehnung bestimmen
+        xs = np.array([p["x"] for p in points], dtype=float)
+        ys = np.array([p["y"] for p in points], dtype=float)
+        zs = np.array([p["z"] for p in points], dtype=float)
+        x_span = float(np.ptp(xs))
+        y_span = float(np.ptp(ys))
+        z_span = float(np.ptp(zs))
+
+        name = surface_def.get("name", surface_id)
+
+        # Versuche zuerst immer ein normales planeres Modell zu finden
+        # (konstant / X-Steigung / Y-Steigung / allgemeine Ebene).
+        model, error = derive_surface_plane(points)
+
+        # Wenn ein Plan-Modell existiert, ist die Fläche NICHT senkrecht
+        # (Steigung < 180°) → normale Berechnung.
+        if model is not None:
             if DEBUG_SURFACE_GRID:
                 print(
                     "[SurfaceGridCalculator] plane",
@@ -549,244 +801,263 @@ class SurfaceGridCalculator(ModuleBase):
                     f"mode={model.get('mode')}",
                     f"params={model}",
                 )
-            normalized_surfaces.append((points, model, surface_def.get("name", surface_id)))
-        
-        if not normalized_surfaces:
-            return Z_grid
-        
-        # Interpoliere Z-Koordinaten für alle gültigen Punkte
-        # 🎯 X/Y-Positionen bleiben fest, nur Z wird interpoliert
-        x_flat = x_coords.flatten()
-        y_flat = y_coords.flatten()
-        mask_flat = surface_mask.flatten()
-        
-        indices = np.where(mask_flat)[0]
-        points_with_z = 0
-        points_without_z = 0
-        edge_points = []
-        
-        # Erste Runde: Interpoliere Z für Punkte innerhalb der Polygone
-        for idx in indices:
-            x_point = x_flat[idx]  # X fest
-            y_point = y_flat[idx]  # Y fest
-            
-            z_values = []
-            surface_names = []
-            for points, model, surface_name in normalized_surfaces:
-                if self._point_in_polygon(x_point, y_point, points):
-                    z_val = evaluate_surface_plane(model, x_point, y_point)
-                    z_values.append(z_val)
-                    surface_names.append(surface_name)
-            
-            if z_values:
-                iy, ix = np.unravel_index(idx, x_coords.shape)
-                z_final = float(np.mean(z_values))
-                Z_grid[iy, ix] = z_final
-                points_with_z += 1
-            else:
-                points_without_z += 1
-        
-        # Zweite Runde: Fülle Z-Werte für Punkte in erweiterter Maske (außerhalb Polygone)
-        # durch Interpolation von benachbarten Punkten mit Z-Werten
-        for idx in indices:
-            iy, ix = np.unravel_index(idx, x_coords.shape)
-            if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
-                continue
-            
-            x_point = x_flat[idx]
-            y_point = y_flat[idx]
-            
-            # Finde benachbarte Punkte mit Z-Werten
-            neighbor_z = []
-            for di in [-1, 0, 1]:
-                for dj in [-1, 0, 1]:
-                    if di == 0 and dj == 0:
-                        continue
-                    niy, nix = iy + dj, ix + di
-                    if 0 <= niy < Z_grid.shape[0] and 0 <= nix < Z_grid.shape[1]:
-                        if Z_grid[niy, nix] != 0.0:
-                            neighbor_z.append(Z_grid[niy, nix])
-            
-            if neighbor_z:
-                # Verwende Durchschnitt der benachbarten Z-Werte
-                Z_grid[iy, ix] = float(np.mean(neighbor_z))
-                points_with_z += 1
-                points_without_z -= 1
-                
-                # Prüfe ob Randpunkt
-                is_edge = False
-                if iy > 0 and iy < x_coords.shape[0] - 1 and ix > 0 and ix < x_coords.shape[1] - 1:
-                    neighbors = [
-                        surface_mask[iy-1, ix], surface_mask[iy+1, ix],
-                        surface_mask[iy, ix-1], surface_mask[iy, ix+1]
-                    ]
-                    if not all(neighbors):
-                        is_edge = True
-                else:
-                    is_edge = True
-                
-                if is_edge:
-                    edge_points.append((x_point, y_point, Z_grid[iy, ix], None))
-        
-        if DEBUG_SURFACE_GRID:
-            print(
-                f"[SurfaceGridCalculator] Z-Interpolation: "
-                f"mask_points={len(indices)}, "
-                f"with_z={points_with_z}, "
-                f"without_z={points_without_z}"
+            normalized_surfaces.append(
+                (points, model, surface_def.get("name", surface_id))
             )
-            if Z_grid.size > 0:
-                z_min = float(np.nanmin(Z_grid[Z_grid != 0]))
-                z_max = float(np.nanmax(Z_grid[Z_grid != 0]))
-                z_mean = float(np.nanmean(Z_grid[Z_grid != 0]))
-                print(
-                    f"[SurfaceGridCalculator] Z-Statistik: "
-                    f"min={z_min:.3f}, max={z_max:.3f}, mean={z_mean:.3f}"
-                )
-            if edge_points:
-                edge_z_vals = [p[2] for p in edge_points[:10]]  # Erste 10 Randpunkte
-                print(
-                    f"[SurfaceGridCalculator] Randpunkte (erste 10): "
-                    f"z_values={[f'{z:.3f}' for z in edge_z_vals]}"
-                )
-        
+            continue
+
+        # Kein gültiges Planmodell → kann z.B. eine echte senkrechte Wand sein.
+        # Diese erkennen wir daran, dass die XY-Projektion (fast) eine Linie ist,
+        # die Fläche aber eine nennenswerte Z-Höhe hat.
+        is_xy_line = (x_span < 1e-6 and y_span >= 1e-6) or (
+            y_span < 1e-6 and x_span >= 1e-6
+        )
+        has_height = z_span > 1e-3
+
+        if is_xy_line and has_height:
+            # → Echte senkrechte Fläche: hier NICHT in das horizontale Z-Grid
+            # einmischen. Sie wird ausschließlich über die vertikalen
+            # Surface-Samples behandelt.
+            print(
+                f"[SurfaceGridCalculator] Surface '{name}' wird als SENKRECHT "
+                f"klassifiziert (Δx={x_span:.6f}, Δy={y_span:.6f}, Δz={z_span:.6f}) – "
+                "wird im horizontalen SPL-Surface-Plot ignoriert und nur "
+                "über vertikale Surface-Samples berechnet."
+            )
+            continue
+
+        # Weder planar noch sinnvolle senkrechte Fläche → komplett ignorieren.
+        print(
+            f"[SurfaceGridCalculator] Surface '{name}' wird ignoriert: {error}"
+        )
+        continue
+    
+    if not normalized_surfaces:
         return Z_grid
     
-    def _point_in_polygon(
-        self,
-        x: float,
-        y: float,
-        polygon_points: List[Dict[str, float]],
-    ) -> bool:
-        """
-        Prüft, ob ein Punkt (x, y) innerhalb eines Polygons liegt.
-        Verwendet den Ray Casting Algorithmus (Winding Number).
-        
-        Args:
-            x: X-Koordinate des Punktes
-            y: Y-Koordinate des Punktes
-            polygon_points: Liste von Punkten mit 'x' und 'y' Schlüsseln
-            
-        Returns:
-            True wenn Punkt innerhalb des Polygons liegt, sonst False
-        """
-        if len(polygon_points) < 3:
-            return False
-        
-        # Extrahiere X- und Y-Koordinaten
-        px = np.array([p.get('x', 0.0) for p in polygon_points])
-        py = np.array([p.get('y', 0.0) for p in polygon_points])
-        
-        # Ray Casting Algorithmus
-        n = len(px)
-        inside = False
-        
-        j = n - 1
-        boundary_eps = 1e-6
-        for i in range(n):
-            xi, yi = px[i], py[i]
-            xj, yj = px[j], py[j]
-            
-            # Prüfe ob Strahl von (x,y) nach rechts die Kante schneidet
-            if ((yi > y) != (yj > y)) and (x <= (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi + boundary_eps):
-                inside = not inside
-            
-            # Prüfe ob Punkt direkt auf der Kante liegt
-            dx = xj - xi
-            dy = yj - yi
-            segment_len = math.hypot(dx, dy)
-            if segment_len > 0:
-                dist = abs(dy * (x - xi) - dx * (y - yi)) / segment_len
-                if dist <= boundary_eps:
-                    proj = ((x - xi) * dx + (y - yi) * dy) / (segment_len * segment_len)
-                    if -boundary_eps <= proj <= 1 + boundary_eps:
-                        return True
-            j = i
-        
-        return inside
+    # Interpoliere Z-Koordinaten für alle gültigen Punkte
+    # 🎯 X/Y-Positionen bleiben fest, nur Z wird interpoliert
+    x_flat = x_coords.flatten()
+    y_flat = y_coords.flatten()
+    mask_flat = surface_mask.flatten()
     
-    def _points_in_polygon_batch(
-        self,
-        x_coords: np.ndarray,
-        y_coords: np.ndarray,
-        polygon_points: List[Dict[str, float]],
-    ) -> np.ndarray:
-        """
-        🚀 VEKTORISIERT: Prüft für viele Punkte gleichzeitig, ob sie innerhalb eines Polygons liegen.
+    indices = np.where(mask_flat)[0]
+    points_with_z = 0
+    points_without_z = 0
+    edge_points = []
+    
+    # Erste Runde: Interpoliere Z für Punkte innerhalb der Polygone
+    for idx in indices:
+        x_point = x_flat[idx]  # X fest
+        y_point = y_flat[idx]  # Y fest
         
-        Args:
-            x_coords: 2D-Array von X-Koordinaten (Shape: [ny, nx])
-            y_coords: 2D-Array von Y-Koordinaten (Shape: [ny, nx])
-            polygon_points: Liste von Punkten mit 'x' und 'y' Schlüsseln
+        z_values = []
+        surface_names = []
+        for points, model, surface_name in normalized_surfaces:
+            if self._point_in_polygon(x_point, y_point, points):
+                z_val = evaluate_surface_plane(model, x_point, y_point)
+                z_values.append(z_val)
+                surface_names.append(surface_name)
+        
+        if z_values:
+            iy, ix = np.unravel_index(idx, x_coords.shape)
+            z_final = float(np.mean(z_values))
+            Z_grid[iy, ix] = z_final
+            points_with_z += 1
+        else:
+            points_without_z += 1
+    
+    # Zweite Runde: Fülle Z-Werte für Punkte in erweiterter Maske (außerhalb Polygone)
+    # durch Interpolation von benachbarten Punkten mit Z-Werten
+    for idx in indices:
+        iy, ix = np.unravel_index(idx, x_coords.shape)
+        if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
+            continue
+        
+        x_point = x_flat[idx]
+        y_point = y_flat[idx]
+        
+        # Finde benachbarte Punkte mit Z-Werten
+        neighbor_z = []
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == 0 and dj == 0:
+                    continue
+                niy, nix = iy + dj, ix + di
+                if 0 <= niy < Z_grid.shape[0] and 0 <= nix < Z_grid.shape[1]:
+                    if Z_grid[niy, nix] != 0.0:
+                        neighbor_z.append(Z_grid[niy, nix])
+        
+        if neighbor_z:
+            # Verwende Durchschnitt der benachbarten Z-Werte
+            Z_grid[iy, ix] = float(np.mean(neighbor_z))
+            points_with_z += 1
+            points_without_z -= 1
             
-        Returns:
-            2D-Boolean-Array (Shape: [ny, nx]) - True wenn Punkt innerhalb liegt
-        """
-        if len(polygon_points) < 3:
-            return np.zeros_like(x_coords, dtype=bool)
-        
-        # Extrahiere Polygon-Koordinaten
-        px = np.array([p.get('x', 0.0) for p in polygon_points])
-        py = np.array([p.get('y', 0.0) for p in polygon_points])
-        
-        # Flatten für einfachere Verarbeitung
-        x_flat = x_coords.flatten()
-        y_flat = y_coords.flatten()
-        n_points = len(x_flat)
-        
-        # Ray Casting für alle Punkte gleichzeitig
-        inside = np.zeros(n_points, dtype=bool)
-        on_edge = np.zeros(n_points, dtype=bool)
-        boundary_eps = 1e-6
-        n = len(px)
-        
-        j = n - 1
-        for i in range(n):
-            xi, yi = px[i], py[i]
-            xj, yj = px[j], py[j]
+            # Prüfe ob Randpunkt
+            is_edge = False
+            if iy > 0 and iy < x_coords.shape[0] - 1 and ix > 0 and ix < x_coords.shape[1] - 1:
+                neighbors = [
+                    surface_mask[iy-1, ix], surface_mask[iy+1, ix],
+                    surface_mask[iy, ix-1], surface_mask[iy, ix+1]
+                ]
+                if not all(neighbors):
+                    is_edge = True
+            else:
+                is_edge = True
             
-            # Vektorisierte Prüfung: Welche Punkte schneiden diese Kante?
-            # Bedingung: ((yi > y) != (yj > y)) AND (x < Schnittpunkt-X)
-            y_above_edge = (yi > y_flat) != (yj > y_flat)
-            intersection_x = (xj - xi) * (y_flat - yi) / (yj - yi + 1e-10) + xi
-            intersects = y_above_edge & (x_flat <= intersection_x + boundary_eps)
-            
-            # XOR-Operation für Winding Number
-            inside = inside ^ intersects
-            
-            # Prüfe Punkte, die direkt auf der Kante liegen
-            dx = xj - xi
-            dy = yj - yi
-            segment_len = math.hypot(dx, dy)
-            if segment_len > 0:
-                numerator = np.abs(dy * (x_flat - xi) - dx * (y_flat - yi))
-                dist = numerator / (segment_len + 1e-12)
-                proj = ((x_flat - xi) * dx + (y_flat - yi) * dy) / ((segment_len ** 2) + 1e-12)
-                on_edge_segment = (dist <= boundary_eps) & (proj >= -boundary_eps) & (proj <= 1 + boundary_eps)
-                on_edge = on_edge | on_edge_segment
-            
-            j = i
-        
-        # Reshape zurück zu Original-Form
-        return (inside | on_edge).reshape(x_coords.shape)
+            if is_edge:
+                edge_points.append((x_point, y_point, Z_grid[iy, ix], None))
+    
+    if DEBUG_SURFACE_GRID:
+        print(
+            f"[SurfaceGridCalculator] Z-Interpolation: "
+            f"mask_points={len(indices)}, "
+            f"with_z={points_with_z}, "
+            f"without_z={points_without_z}"
+        )
+        if Z_grid.size > 0:
+            z_min = float(np.nanmin(Z_grid[Z_grid != 0]))
+            z_max = float(np.nanmax(Z_grid[Z_grid != 0]))
+            z_mean = float(np.nanmean(Z_grid[Z_grid != 0]))
+            print(
+                f"[SurfaceGridCalculator] Z-Statistik: "
+                f"min={z_min:.3f}, max={z_max:.3f}, mean={z_mean:.3f}"
+            )
+        if edge_points:
+            edge_z_vals = [p[2] for p in edge_points[:10]]  # Erste 10 Randpunkte
+            print(
+                f"[SurfaceGridCalculator] Randpunkte (erste 10): "
+                f"z_values={[f'{z:.3f}' for z in edge_z_vals]}"
+            )
+    
+    return Z_grid
 
-    @staticmethod
-    def _evaluate_plane_grid(
-        x_coords: np.ndarray,
-        y_coords: np.ndarray,
-        plane_model: Optional[Dict[str, float]],
-    ) -> np.ndarray:
-        if plane_model is None:
-            return np.zeros_like(x_coords, dtype=float)
-        mode = plane_model.get("mode")
-        if mode == "x":
-            slope = float(plane_model.get("slope", 0.0))
-            intercept = float(plane_model.get("intercept", 0.0))
-            return slope * x_coords + intercept
-        if mode == "y":
-            slope = float(plane_model.get("slope", 0.0))
-            intercept = float(plane_model.get("intercept", 0.0))
-            return slope * y_coords + intercept
-        base = float(plane_model.get("base", 0.0))
-        return np.full_like(x_coords, base, dtype=float)
+def _point_in_polygon_core(
+    x: float,
+    y: float,
+    polygon_points: List[Dict[str, float]],
+) -> bool:
+    """
+    Prüft, ob ein Punkt (x, y) innerhalb eines Polygons liegt.
+    Verwendet den Ray-Casting-Algorithmus (Winding Number).
+    """
+    if len(polygon_points) < 3:
+        return False
+
+    # Extrahiere X- und Y-Koordinaten
+    px = np.array([p.get("x", 0.0) for p in polygon_points])
+    py = np.array([p.get("y", 0.0) for p in polygon_points])
+
+    # Ray-Casting-Algorithmus
+    n = len(px)
+    inside = False
+
+    j = n - 1
+    boundary_eps = 1e-6
+    for i in range(n):
+        xi, yi = px[i], py[i]
+        xj, yj = px[j], py[j]
+
+        # Prüfe ob Strahl von (x,y) nach rechts die Kante schneidet
+        if ((yi > y) != (yj > y)) and (
+            x <= (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi + boundary_eps
+        ):
+            inside = not inside
+
+        # Prüfe ob Punkt direkt auf der Kante liegt
+        dx = xj - xi
+        dy = yj - yi
+        segment_len = math.hypot(dx, dy)
+        if segment_len > 0:
+            dist = abs(dy * (x - xi) - dx * (y - yi)) / segment_len
+            if dist <= boundary_eps:
+                proj = ((x - xi) * dx + (y - yi) * dy) / (segment_len * segment_len)
+                if -boundary_eps <= proj <= 1 + boundary_eps:
+                    return True
+        j = i
+
+    return inside
+
+def _points_in_polygon_batch_core(
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    polygon_points: List[Dict[str, float]],
+) -> np.ndarray:
+    """
+    🚀 VEKTORISIERT: Prüft für viele Punkte gleichzeitig, ob sie innerhalb eines Polygons liegen.
+    Wird von `SurfaceGridCalculator._points_in_polygon_batch` als Kernfunktion verwendet.
+    """
+    if len(polygon_points) < 3:
+        return np.zeros_like(x_coords, dtype=bool)
+    
+    # Extrahiere Polygon-Koordinaten
+    px = np.array([p.get('x', 0.0) for p in polygon_points])
+    py = np.array([p.get('y', 0.0) for p in polygon_points])
+    
+    # Flatten für einfachere Verarbeitung
+    x_flat = x_coords.flatten()
+    y_flat = y_coords.flatten()
+    n_points = len(x_flat)
+    
+    # Ray Casting für alle Punkte gleichzeitig
+    inside = np.zeros(n_points, dtype=bool)
+    on_edge = np.zeros(n_points, dtype=bool)
+    boundary_eps = 1e-6
+    n = len(px)
+    
+    j = n - 1
+    for i in range(n):
+        xi, yi = px[i], py[i]
+        xj, yj = px[j], py[j]
+        
+        # Vektorisierte Prüfung: Welche Punkte schneiden diese Kante?
+        # Bedingung: ((yi > y) != (yj > y)) AND (x < Schnittpunkt-X)
+        y_above_edge = (yi > y_flat) != (yj > y_flat)
+        intersection_x = (xj - xi) * (y_flat - yi) / (yj - yi + 1e-10) + xi
+        intersects = y_above_edge & (x_flat <= intersection_x + boundary_eps)
+        
+        # XOR-Operation für Winding Number
+        inside = inside ^ intersects
+        
+        # Prüfe Punkte, die direkt auf der Kante liegen
+        dx = xj - xi
+        dy = yj - yi
+        segment_len = math.hypot(dx, dy)
+        if segment_len > 0:
+            numerator = np.abs(dy * (x_flat - xi) - dx * (y_flat - yi))
+            dist = numerator / (segment_len + 1e-12)
+            proj = ((x_flat - xi) * dx + (y_flat - yi) * dy) / ((segment_len ** 2) + 1e-12)
+            on_edge_segment = (dist <= boundary_eps) & (proj >= -boundary_eps) & (proj <= 1 + boundary_eps)
+            on_edge = on_edge | on_edge_segment
+        
+        j = i
+    
+    # Reshape zurück zu Original-Form
+    return (inside | on_edge).reshape(x_coords.shape)
+
+
+def _evaluate_plane_grid_core(
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    plane_model: Optional[Dict[str, float]],
+) -> np.ndarray:
+    """
+    Kern-Implementierung für die Auswertung eines planaren Modells Z=Z(x,y)
+    auf einem 2D-Grid. Wird über `SurfaceGridCalculator._evaluate_plane_grid`
+    aufgerufen.
+    """
+    if plane_model is None:
+        return np.zeros_like(x_coords, dtype=float)
+    mode = plane_model.get("mode")
+    if mode == "x":
+        slope = float(plane_model.get("slope", 0.0))
+        intercept = float(plane_model.get("intercept", 0.0))
+        return slope * x_coords + intercept
+    if mode == "y":
+        slope = float(plane_model.get("slope", 0.0))
+        intercept = float(plane_model.get("intercept", 0.0))
+        return slope * y_coords + intercept
+    base = float(plane_model.get("base", 0.0))
+    return np.full_like(x_coords, base, dtype=float)
 

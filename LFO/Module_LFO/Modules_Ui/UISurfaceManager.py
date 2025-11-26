@@ -275,7 +275,8 @@ class UISurfaceManager(ModuleBase):
             self.surface_tree_widget.setFixedWidth(260)
             
             # Verbinde Signale mit Slots
-            self.surface_tree_widget.itemSelectionChanged.connect(self.show_surfaces_tab)
+            # Eigener Handler, der sowohl die UI-Tabs als auch die 3D-Overlays aktualisiert
+            self.surface_tree_widget.itemSelectionChanged.connect(self._handle_surface_tree_selection_changed)
             self.surface_tree_widget.itemChanged.connect(self.on_surface_item_text_changed)
             
             # Füge das TreeWidget zum Layout hinzu
@@ -456,6 +457,8 @@ class UISurfaceManager(ModuleBase):
         self.surface_tree_widget.expandAll()
         self.validate_all_checkboxes()
         self.surface_tree_widget.blockSignals(False)
+        # Nach dem Laden keine Auswahl markieren → Highlight-Liste leeren
+        setattr(self.settings, "active_surface_highlight_ids", [])
     
     def _populate_group_tree(self, parent_item, group):
         """Rekursiv befüllt das TreeWidget mit Gruppen und deren Surfaces"""
@@ -541,6 +544,73 @@ class UISurfaceManager(ModuleBase):
         self.ensure_group_checkboxes(item)
         
         return item
+
+    # ---- Auswahl-Handling für rote Umrandung ------------------------
+
+    def _handle_surface_tree_selection_changed(self):
+        """
+        Reagiert auf Auswahländerungen im Surface-Tree:
+        - Aktualisiert die Tabs (wie bisher über show_surfaces_tab)
+        - Setzt active_surface_highlight_ids für den 3D-Plot
+        - Triggert update_overlays() für rote Umrandung.
+        """
+        if not hasattr(self, 'surface_tree_widget'):
+            return
+
+        selected_item = self.surface_tree_widget.currentItem()
+        print("[DEBUG SurfaceUI] _handle_surface_tree_selection_changed() aufgerufen")
+        if not selected_item:
+            # Keine Auswahl → keine Highlights
+            setattr(self.settings, "active_surface_highlight_ids", [])
+            print("[DEBUG SurfaceUI] Keine Auswahl im Tree – active_surface_highlight_ids geleert")
+            return
+
+        item_type = selected_item.data(0, Qt.UserRole + 1)
+        print(f"[DEBUG SurfaceUI] Selektierter Item-Typ: {item_type}")
+
+        # UI-Tabs wie bisher aktualisieren
+        try:
+            self.show_surfaces_tab()
+        except Exception:
+            pass
+
+        highlight_ids = []
+        surface_store = getattr(self.settings, "surface_definitions", {}) or {}
+
+        if item_type == "surface":
+            surface_id = selected_item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get("id")
+            if isinstance(surface_id, str) and surface_id in surface_store:
+                highlight_ids = [surface_id]
+            print(f"[DEBUG SurfaceUI] Surface ausgewählt: {highlight_ids}")
+        elif item_type == "group":
+            group_id = selected_item.data(0, Qt.UserRole)
+            group = self._group_controller.get_group(group_id)
+            if group:
+                for sid in getattr(group, "surface_ids", []):
+                    if sid in surface_store:
+                        highlight_ids.append(sid)
+            print(f"[DEBUG SurfaceUI] Gruppe ausgewählt, Surfaces: {highlight_ids}")
+
+        # In Settings speichern, damit PlotSPL3DOverlays die Info nutzen kann
+        setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
+        print(f"[DEBUG SurfaceUI] active_surface_highlight_ids gesetzt auf: {highlight_ids}")
+
+        # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
+        main_window = getattr(self, "main_window", None)
+        if (
+            main_window is not None
+            and hasattr(main_window, "draw_plots")
+            and hasattr(main_window.draw_plots, "draw_spl_plotter")
+        ):
+            draw_spl = main_window.draw_plots.draw_spl_plotter
+            if hasattr(draw_spl, "update_overlays"):
+                try:
+                    draw_spl.update_overlays(self.settings, self.container)
+                except Exception:
+                    # Fehler hier sollen die restliche UI nicht blockieren
+                    pass
     
     def ensure_surface_checkboxes(self, item):
         """Stellt sicher, dass Checkboxen für ein Surface-Item existieren"""
@@ -1888,7 +1958,7 @@ class _SurfaceGroupController:
         group = SurfaceGroup(
             group_id=group_id,
             name=name or group_id,
-            enabled=parent.enabled if parent else True,
+            enabled=parent.enabled if parent else False,
             hidden=parent.hidden if parent else False,
             parent_id=parent_id,
             locked=locked,

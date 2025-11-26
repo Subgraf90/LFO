@@ -292,6 +292,9 @@ class SurfaceDataImporter:
                 getattr(surface, "name", surface_id),
                 getattr(surface, "group_id", None),
             )
+            # Stelle sicher, dass imported Surfaces immer enabled=False haben
+            surface.enabled = False
+            
             if hasattr(self.settings, "add_surface_definition"):
                 self.settings.add_surface_definition(surface_id, surface, make_active=False)
             else:

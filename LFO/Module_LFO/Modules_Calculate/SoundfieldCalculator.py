@@ -453,6 +453,7 @@ class SoundFieldCalculator(ModuleBase):
                         "coordinates": sample.coordinates.tolist(),
                         "indices": sample.indices.tolist(),
                         "grid_shape": list(sample.grid_shape),
+                        "kind": "vertical" if getattr(sample, "is_vertical", False) else "planar",
                     }
                 )
 

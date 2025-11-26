@@ -185,6 +185,10 @@ class Settings:
             'measurement_size': 4,
             'impulse_plot_height': 180,
             'resolution': 1,
+            # Anzahl der Frequenzpunkte innerhalb des Bandes für spätere Bandmittelung
+            # (wird aktuell nur als Einstellung gespeichert und noch nicht in den
+            #  Berechnungen verwendet)
+            'frequency_band_points': 3,
             'temperature': 20.0,
             'humidity': 50.0,
             'speed_of_sound': 331.3 + 0.606 * 20.0, # 20°C

@@ -1128,7 +1128,17 @@ if __name__ == "__main__":  # Befehle zur Erstausführung des Skripts
         window._ensure_dock_widgets_tabified()
         window.snapshot_engine.show_snapshot_widget()
         window.update_freq_bandwidth()
-        window.show()
+
+        # Hauptfenster an verfügbare Bildschirmgröße anpassen
+        # Nutzt die vom Betriebssystem gemeldete verfügbare Geometrie (ohne Dock/Taskleisten)
+        screen = app.primaryScreen()
+        if screen is not None:
+            available_geom = screen.availableGeometry()
+            window.setGeometry(available_geom)
+            window.show()
+        else:
+            # Fallback, falls kein Screen ermittelt werden kann
+            window.showMaximized()
 
         if os.environ.get("LFO_CRASH_TEST") == "1":
             QtCore.QTimer.singleShot(

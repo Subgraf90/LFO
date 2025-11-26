@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import os
 import types
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -94,6 +94,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.cbar = None
         self.has_data = False
         self.surface_mesh = None  # type: pv.DataSet | None
+        # Zusätzliche SPL-Meshes für senkrechte Flächen (werden über calculation_spl gespeist)
+        self._vertical_surface_meshes: dict[str, Any] = {}
         self.time_control: Optional[SPLTimeControlBar] = None
         self._time_slider_callback = None
         self._time_mode_active = False
@@ -353,6 +355,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except RuntimeError as exc:
             print(f"[Plot SPL3D] Abbruch: {exc}")
             self.initialize_empty_scene(preserve_camera=True)
+            # Auch vertikale SPL-Flächen entfernen, da keine gültige Geometrie vorliegt
+            self._clear_vertical_spl_surfaces()
             return
         plot_x = geometry.plot_x
         plot_y = geometry.plot_y
@@ -413,6 +417,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 mapper.interpolate_before_map = False
 
         self._update_colorbar(colorization_mode_used, tick_step=tick_step)
+
+        # ------------------------------------------------------------
+        # Vertikale Flächen: separate SPL-Flächen rendern
+        # ------------------------------------------------------------
+        self._update_vertical_spl_surfaces()
+
         self.has_data = True
         if time_mode and self.surface_mesh is not None:
             # Prüfe ob Upscaling aktiv ist - wenn ja, deaktiviere schnellen Update-Pfad
@@ -517,6 +527,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         print(f"[DEBUG 3D-Plot] update_overlays() START")
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
         self.container = container
+        # Wenn kein gültiger calculation_spl-Container vorhanden ist, entferne vertikale SPL-Flächen
+        if not hasattr(container, "calculation_spl"):
+            self._clear_vertical_spl_surfaces()
         
         # Wir vergleichen Hash-Signaturen pro Kategorie und zeichnen nur dort neu,
         # wo sich Parameter geändert haben. Das verhindert unnötiges Entfernen
@@ -635,6 +648,322 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._save_camera_state()
         finally:
             self._is_rendering = False
+
+    def _get_vertical_color_limits(self) -> tuple[float, float]:
+        """
+        Liefert die Farbskalen-Grenzen (min, max) für vertikale SPL-Flächen.
+        Bevorzugt aktuelle Override-Range aus der Colorbar, sonst Settings-Range.
+        """
+        if self._colorbar_override:
+            try:
+                cmin = float(self._colorbar_override.get("min", 0.0))
+                cmax = float(self._colorbar_override.get("max", 0.0))
+                return cmin, cmax
+            except Exception:
+                pass
+        try:
+            rng = self.settings.colorbar_range
+            return float(rng["min"]), float(rng["max"])
+        except Exception:
+            return 0.0, 120.0
+
+    # ------------------------------------------------------------------
+    # Vertikale SPL-Flächen (senkrechte Surfaces)
+    # ------------------------------------------------------------------
+    def _clear_vertical_spl_surfaces(self) -> None:
+        """Entfernt alle zusätzlichen SPL-Meshes für senkrechte Flächen."""
+        if not hasattr(self, "plotter") or self.plotter is None:
+            self._vertical_surface_meshes.clear()
+            return
+        for name, actor in list(self._vertical_surface_meshes.items()):
+            try:
+                # Actor kann entweder direkt der Actor oder nur der Name sein
+                if isinstance(name, str):
+                    self.plotter.remove_actor(name)
+            except Exception:
+                pass
+        self._vertical_surface_meshes.clear()
+
+    def _update_vertical_spl_surfaces(self) -> None:
+        """
+        Zeichnet / aktualisiert SPL-Flächen für senkrechte Surfaces auf Basis von
+        calculation_spl['surface_samples'] und calculation_spl['surface_fields'].
+        """
+        container = self.container
+        if container is None or not hasattr(container, "calculation_spl"):
+            self._clear_vertical_spl_surfaces()
+            return
+
+        calc_spl = getattr(container, "calculation_spl", {}) or {}
+        sample_payloads = calc_spl.get("surface_samples")
+        surface_fields = calc_spl.get("surface_fields")
+        if not isinstance(sample_payloads, list) or not isinstance(surface_fields, dict):
+            self._clear_vertical_spl_surfaces()
+            return
+
+        # Aktueller Surface-Status (enabled/hidden) aus den Settings
+        surface_definitions = getattr(self.settings, "surface_definitions", {})
+        if not isinstance(surface_definitions, dict):
+            surface_definitions = {}
+
+        # Wir zeichnen nur senkrechte Surfaces (die kein reguläres Feld im 2D-Grid haben).
+        # Identifikation: Sample-Payloads ohne sinnvolle grid_shape/indices werden als Punkt-Samples genutzt.
+        # surface_fields enthält für jedes surface_id ein 1D-Array komplexer Werte.
+        new_vertical_meshes: dict[str, Any] = {}
+        for payload in sample_payloads:
+            # Nur Payloads verarbeiten, die explizit als "vertical" markiert sind.
+            kind = payload.get("kind", "planar")
+            if kind != "vertical":
+                continue
+            try:
+                surface_id = payload.get("surface_id")
+                name = payload.get("name", surface_id)
+                coords = np.asarray(payload.get("coordinates", []), dtype=float).reshape(-1, 3)
+                grid_shape = payload.get("grid_shape", None)
+            except Exception:
+                continue
+
+            if coords.size == 0 or surface_id is None:
+                continue
+
+            # Nur Surfaces zeichnen, die aktuell enabled und nicht hidden sind
+            surf_def = surface_definitions.get(surface_id)
+            if surf_def is None:
+                continue
+            if hasattr(surf_def, "to_dict"):
+                surf_data = surf_def.to_dict()
+            elif isinstance(surf_def, dict):
+                surf_data = surf_def
+            else:
+                surf_data = {
+                    "enabled": getattr(surf_def, "enabled", False),
+                    "hidden": getattr(surf_def, "hidden", False),
+                    "points": getattr(surf_def, "points", []),
+                }
+            if not surf_data.get("enabled", False) or surf_data.get("hidden", False):
+                # Falls es bereits einen Actor gab, wird er unten automatisch entfernt,
+                # da wir keinen neuen für dieses surface_id registrieren.
+                continue
+
+            # Nur senkrechte Flächen: grid_shape ist 2D, indices sind leer (Punkt-Samples)
+            field_values = surface_fields.get(surface_id)
+            if field_values is None:
+                continue
+
+            try:
+                field_values = np.asarray(field_values, dtype=complex).reshape(-1)
+            except Exception:
+                continue
+            if field_values.size != coords.shape[0]:
+                # Inkompatible Dimensionen - überspringen
+                continue
+
+            # SPL in dB aus komplexen Werten ableiten (Betrag)
+            pressure_mag = np.abs(field_values)
+            with np.errstate(divide="ignore"):
+                spl_vals = 20.0 * np.log10(np.maximum(pressure_mag, 1e-12))
+
+            # Colorization-Mode (Gradient vs. Color step) analog zur Hauptfläche anwenden
+            colorization_mode = getattr(self.settings, "colorization_mode", "Gradient")
+            try:
+                cbar_range = getattr(self.settings, "colorbar_range", {})
+                cbar_step = float(cbar_range.get("step", 0.0))
+            except Exception:
+                cbar_step = 0.0
+            if colorization_mode == "Color step" and cbar_step > 0:
+                spl_vals = self._quantize_to_steps(spl_vals, cbar_step)
+
+            # Versuche, aus grid_shape ein regelmäßiges Raster in (u, v) aufzubauen
+            # grid_shape stammt aus SurfaceGridCalculator._build_vertical_surface_samples()
+            # Die Reihenfolge der Punkte ist dort nicht garantiert → wir behandeln
+            # die Koordinaten generell als unstrukturierte Punktwolke und triangulieren.
+            try:
+                base_cloud = pv.PolyData(coords)
+                # Erzeuge aus der Punktwolke eine 2D-Triangulation (gefüllte Fläche)
+                grid = base_cloud.delaunay_2d()
+                # Begrenze das triangulierte Mesh mit dem ursprünglichen Surface-Polygon,
+                # damit keine SPL-Flächen außerhalb der senkrechten Wand liegen.
+                grid = self._clip_vertical_mesh_to_surface_polygon(grid, surf_data)
+                if grid is None or grid.n_points == 0 or grid.n_cells == 0:
+                    continue
+                # Übernehme die SPL-Skalare auf die Punkte des triangulierten Gitters
+                # (Annahme: Punkte wurden nicht neu sortiert, ansonsten Clip auf Länge)
+                n_pts = grid.n_points
+                if n_pts != spl_vals.size:
+                    grid["plot_scalars"] = np.asarray(spl_vals, dtype=float)[:n_pts]
+                else:
+                    grid["plot_scalars"] = np.asarray(spl_vals, dtype=float)
+            except Exception:
+                continue
+
+            actor_name = f"vertical_spl_{surface_id}"
+            # Entferne ggf. alten Actor
+            try:
+                if actor_name in self.plotter.renderer.actors:
+                    self.plotter.remove_actor(actor_name)
+            except Exception:
+                pass
+
+            # Farbschema und CLim an das Haupt-SPL anlehnen
+            cbar_min, cbar_max = self._get_vertical_color_limits()
+            try:
+                actor = self.plotter.add_mesh(
+                    grid,
+                    name=actor_name,
+                    scalars="plot_scalars",
+                    cmap="jet",
+                    clim=(cbar_min, cbar_max),
+                    smooth_shading=False,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    interpolate_before_map=False,
+                )
+                new_vertical_meshes[actor_name] = actor
+            except Exception:
+                continue
+
+        # Alte Actors entfernen, die nicht mehr gebraucht werden
+        for old_name in list(self._vertical_surface_meshes.keys()):
+            if old_name not in new_vertical_meshes:
+                try:
+                    if old_name in self.plotter.renderer.actors:
+                        self.plotter.remove_actor(old_name)
+                except Exception:
+                    pass
+
+        self._vertical_surface_meshes = new_vertical_meshes
+
+    # ------------------------------------------------------------------
+    # Clipping-Helfer für senkrechte SPL-Flächen
+    # ------------------------------------------------------------------
+    def _clip_vertical_mesh_to_surface_polygon(self, grid, surf_data: dict):
+        """
+        Beschränkt ein trianguliertes senkrechtes SPL-Mesh auf das ursprüngliche
+        Surface-Polygon (in seiner lokalen Ebene), damit keine SPL-Flächen
+        außerhalb der Wand angezeigt werden.
+        """
+        try:
+            points = surf_data.get("points") or []
+        except Exception:
+            points = []
+        if not points or grid is None or grid.n_cells == 0:
+            return grid
+
+        # Bestimme Orientierung der Wand: nahezu konstantes X oder nahezu konstantes Y
+        try:
+            xs = np.array([float(p.get("x", 0.0)) for p in points], dtype=float)
+            ys = np.array([float(p.get("y", 0.0)) for p in points], dtype=float)
+        except Exception:
+            return grid
+
+        x_span = float(np.ptp(xs))
+        y_span = float(np.ptp(ys))
+
+        if x_span < 1e-6 and y_span < 1e-6:
+            # Degenerierter Fall – nichts zu clippen
+            return grid
+
+        # Lokale (u, v)-Koordinaten und Polygon bestimmen
+        if y_span < 1e-6:
+            # Wand verläuft im X-Z-Raum bei (fast) konstantem Y
+            poly_u = xs
+            poly_v = np.array([float(p.get("z", 0.0)) for p in points], dtype=float)
+
+            def project_xyz_to_uv(arr):
+                arr = np.asarray(arr, dtype=float)
+                return arr[:, 0], arr[:, 2]  # u=x, v=z
+
+        elif x_span < 1e-6:
+            # Wand verläuft im Y-Z-Raum bei (fast) konstantem X
+            poly_u = ys
+            poly_v = np.array([float(p.get("z", 0.0)) for p in points], dtype=float)
+
+            def project_xyz_to_uv(arr):
+                arr = np.asarray(arr, dtype=float)
+                return arr[:, 1], arr[:, 2]  # u=y, v=z
+
+        else:
+            # Keine eindeutige senkrechte Orientierung erkennbar
+            return grid
+
+        # Prüfe alle Zellen: nur Zellen behalten, deren *alle* Eckpunkte
+        # innerhalb des Polygons liegen. Das vermeidet Zacken an der Kante.
+        try:
+            all_points = np.asarray(grid.points, dtype=float)  # (n_points, 3)
+        except Exception:
+            return grid
+
+        if all_points.size == 0 or grid.n_cells == 0:
+            return grid
+
+        u_all, v_all = project_xyz_to_uv(all_points)
+        inside_points = self._points_in_polygon_uv(u_all, v_all, poly_u, poly_v)
+        if not np.any(inside_points):
+            return grid
+
+        keep_mask = np.zeros(grid.n_cells, dtype=bool)
+        for cid in range(grid.n_cells):
+            try:
+                cell = grid.get_cell(cid)
+                pt_ids = np.asarray(cell.point_ids, dtype=int).reshape(-1)
+            except Exception:
+                continue
+            if pt_ids.size == 0:
+                continue
+            if np.all(inside_points[pt_ids]):
+                keep_mask[cid] = True
+
+        cell_ids = np.nonzero(keep_mask)[0].astype(int)
+        try:
+            clipped = grid.extract_cells(cell_ids)
+        except Exception:
+            return grid
+        return clipped
+
+    @staticmethod
+    def _points_in_polygon_uv(u_pts: np.ndarray, v_pts: np.ndarray, poly_u: np.ndarray, poly_v: np.ndarray) -> np.ndarray:
+        """
+        Vektorisierter 2D-Punkt-in-Polygon-Test (Ray-Casting) im (u, v)-Raum.
+        """
+        u_pts = np.asarray(u_pts, dtype=float).reshape(-1)
+        v_pts = np.asarray(v_pts, dtype=float).reshape(-1)
+        poly_u = np.asarray(poly_u, dtype=float).reshape(-1)
+        poly_v = np.asarray(poly_v, dtype=float).reshape(-1)
+
+        n = poly_u.size
+        if n < 3 or u_pts.size == 0:
+            return np.zeros_like(u_pts, dtype=bool)
+
+        inside = np.zeros_like(u_pts, dtype=bool)
+        boundary = np.zeros_like(u_pts, dtype=bool)
+        boundary_eps = 1e-6
+
+        j = n - 1
+        for i in range(n):
+            ui, vi = poly_u[i], poly_v[i]
+            uj, vj = poly_u[j], poly_v[j]
+
+            # Schnitt mit waagrechter Halbgeraden?
+            cond = (vi > v_pts) != (vj > v_pts)
+            denom = (vj - vi) + 1e-12
+            inter_u = (uj - ui) * (v_pts - vi) / denom + ui
+            intersects = cond & (u_pts <= inter_u + boundary_eps)
+            inside ^= intersects
+
+            # Punkt auf Kante?
+            du = uj - ui
+            dv = vj - vi
+            seg_len = math.hypot(du, dv)
+            if seg_len > 0:
+                num = np.abs(dv * (u_pts - ui) - du * (v_pts - vi))
+                dist = num / (seg_len + 1e-12)
+                proj = ((u_pts - ui) * du + (v_pts - vi) * dv) / ((seg_len ** 2) + 1e-12)
+                on_edge = (dist <= boundary_eps) & (proj >= -boundary_eps) & (proj <= 1 + boundary_eps)
+                boundary |= on_edge
+
+            j = i
+
+        return inside | boundary
 
     # ------------------------------------------------------------------
     # Kamera-Zustand

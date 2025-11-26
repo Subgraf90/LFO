@@ -114,9 +114,17 @@ class SPL3DOverlayRenderer:
             self._last_surfaces_state = None
             return
 
-        # Hole aktives Surface für Signatur und Markierung
+        # Hole aktives Surface bzw. Highlight-Liste für Signatur und Markierung
         active_surface_id = getattr(settings, 'active_surface_id', None)
-        print(f"[DEBUG 3D-Plot] active_surface_id: {active_surface_id}")
+        highlight_ids = getattr(settings, 'active_surface_highlight_ids', None)
+        if isinstance(highlight_ids, (list, tuple, set)):
+            active_ids_set = {str(sid) for sid in highlight_ids}
+        else:
+            active_ids_set = set()
+        # Füge das "klassische" aktive Surface optional hinzu, falls nicht hidden
+        if active_surface_id is not None:
+            active_ids_set.add(str(active_surface_id))
+        print(f"[DEBUG 3D-Plot] active_surface_id: {active_surface_id}, highlight_ids_raw={highlight_ids}, active_ids_set={list(active_ids_set)}")
 
         surfaces_signature: List[tuple] = []
         for surface_id in sorted(surface_definitions.keys()):
@@ -157,29 +165,21 @@ class SPL3DOverlayRenderer:
                     has_speaker_arrays_for_signature = True
                     break
         
-        # 🎯 WICHTIG: has_speaker_arrays wird NICHT in die Signatur aufgenommen,
-        # da Surfaces unabhängig von der Anwesenheit von Sources gezeichnet werden sollen.
-        # has_speaker_arrays beeinflusst nur die Darstellung (gestrichelt vs. durchgezogen).
-        # Die Signatur besteht nur aus den Surface-Definitionen und active_surface_id.
-        signature_tuple = (tuple(surfaces_signature), active_surface_id)
+        # 🎯 Signatur: Surface-Definitionen + aktive Highlight-IDs (für Auswahländerungen)
+        signature_tuple = (tuple(surfaces_signature), tuple(sorted(active_ids_set)))
         
         # Prüfe ob sich etwas geändert hat (ohne has_speaker_arrays zu berücksichtigen)
         print(f"[DEBUG 3D-Plot] _last_surfaces_state: {self._last_surfaces_state}, neue Signatur: {signature_tuple}")
         print(f"[DEBUG 3D-Plot] active_surface_id in Signatur: {active_surface_id}, has_speaker_arrays: {has_speaker_arrays_for_signature}")
         
-        # Prüfe ob sich die Signatur geändert hat (nur Surface-Definitionen und active_surface_id)
+        # Prüfe ob sich die Signatur geändert hat (Surface-Definitionen + Highlight-IDs)
         signature_changed = True
         if self._last_surfaces_state is not None:
-            # Normalisiere alte Signatur: Wenn sie 3 Elemente hat (mit has_speaker_arrays), ignoriere das dritte Element
-            if len(self._last_surfaces_state) == 3:
-                last_signature_tuple, last_active, _ = self._last_surfaces_state
+            if len(self._last_surfaces_state) == 2:
+                last_signature_tuple, last_ids = self._last_surfaces_state
+                last_ids_set = set(last_ids) if isinstance(last_ids, (list, tuple, set)) else set()
                 if (last_signature_tuple == tuple(surfaces_signature) and 
-                    last_active == active_surface_id):
-                    signature_changed = False
-            elif len(self._last_surfaces_state) == 2:
-                last_signature_tuple, last_active = self._last_surfaces_state
-                if (last_signature_tuple == tuple(surfaces_signature) and 
-                    last_active == active_surface_id):
+                    last_ids_set == active_ids_set):
                     signature_changed = False
             elif self._last_surfaces_state == signature_tuple:
                 signature_changed = False
@@ -229,8 +229,8 @@ class SPL3DOverlayRenderer:
                 print(f"[DEBUG 3D-Plot] Surface '{surface_id}' hat weniger als 3 Punkte ({len(points)}) - überspringe")
                 continue
             
-            # Prüfe ob dies das aktive Surface ist
-            is_active = (surface_id == active_surface_id)
+            # Prüfe ob dies ein aktives Surface ist (Einzel- oder Gruppen-Selektion)
+            is_active = (surface_id in active_ids_set)
             
             print(f"[DEBUG 3D-Plot] Zeichne Surface '{surface_id}': enabled={enabled}, hidden={hidden}, points={len(points)}, is_active={is_active}, has_speaker_arrays={has_speaker_arrays}")
             
@@ -298,32 +298,12 @@ class SPL3DOverlayRenderer:
                         pass
                 
                 actor_name = None
-                # Wenn enabled aber keine Sources vorhanden, behandle wie disabled Surface
-                if enabled and not has_speaker_arrays:
-                    # Enabled Surface ohne Sources: wie disabled Surface (gestrichelte schwarze Linien)
-                    dashed_pattern = 0xAAAA  # Gestricheltes Muster
-                    line_color = '#000000'  # Schwarze Linien
-                    opacity = 0.7 if is_active else 0.6
-                    print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Enabled Surface ohne Sources → wie disabled (gestrichelte schwarze Linien)")
-                    
-                    # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
-                    actor_name = self._add_overlay_mesh(
-                        polyline,
-                        color=line_color,
-                        line_width=1.2,
-                        opacity=opacity,
-                        line_pattern=dashed_pattern,
-                        line_repeat=2,
-                        category='surfaces',
-                        show_vertices=False,
-                        render_lines_as_tubes=True,
-                    )
-                elif enabled and has_speaker_arrays:
-                    # Enabled Surface mit Sources: normale enabled Surface Logik
+                # Enabled Surfaces: immer durchgezogene Linien, aktive Surfaces rot hervorgehoben
+                if enabled:
                     if is_active:
-                        # Aktives enabled Surface mit Sources: Rote Umrandung, etwas hervorgehoben
-                        surface_color = '#FF0000'  # Immer Rot für aktives Surface mit Sources
-                        print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Aktives Surface mit Sources → Farbe: {surface_color}")
+                        # Aktives enabled Surface: rote, etwas dickere Umrandung (unabhängig von Sources)
+                        surface_color = '#FF0000'
+                        print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Aktives enabled Surface → rote Umrandung")
                         polyline_render = polyline
                         try:
                             polyline_render = polyline.tube(radius=0.02, n_sides=24, capping=True)
@@ -339,7 +319,7 @@ class SPL3DOverlayRenderer:
                             render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
                     else:
-                        # Inaktives enabled Surface: sehr schlanke Linienführung
+                        # Inaktives enabled Surface: dünnere Umrandung in Surface-Farbe
                         surface_color = color  # Verwendet Surface-Farbe
                         print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Inaktives enabled Surface → Farbe: {surface_color}")
                         polyline_render = polyline
@@ -357,10 +337,14 @@ class SPL3DOverlayRenderer:
                             render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
                         )
                 else:
-                    # Disabled Surface: nur Rahmen (gestrichelte Linien), keine Füllung
+                    # Disabled Surfaces: gestrichelte Linien, aktive Surfaces rot, andere schwarz
                     dashed_pattern = 0xAAAA  # Gestricheltes Muster
-                    line_color = '#000000'  # Schwarze Linien für alle disabled Surfaces
-                    opacity = 0.7 if is_active else 0.6
+                    line_color = '#FF0000' if is_active else '#000000'
+                    opacity = 0.8 if is_active else 0.6
+                    print(
+                        f"[DEBUG 3D-Plot] Surface '{surface_id}': Disabled Surface → "
+                        f"{'rote' if is_active else 'schwarze'} gestrichelte Umrandung"
+                    )
 
                     # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
                     actor_name = self._add_overlay_mesh(

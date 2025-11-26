@@ -316,6 +316,8 @@ class UiSettings(QtWidgets.QWidget):
         freq_bandwidth_upper_layout.setSpacing(ROW_SPACING)
         freq_bandwidth_lower_layout = QtWidgets.QHBoxLayout()
         freq_bandwidth_lower_layout.setSpacing(ROW_SPACING)
+        freq_band_points_layout = QtWidgets.QHBoxLayout()
+        freq_band_points_layout.setSpacing(ROW_SPACING)
 
         available_frequencies = [
             400, 375, 355, 335, 315,
@@ -329,6 +331,7 @@ class UiSettings(QtWidgets.QWidget):
         self.freq_bandwidth_lower = QtWidgets.QComboBox()
         self.freq_bandwidth_upper = QtWidgets.QComboBox()
         self.fem_calculate_frequency = QtWidgets.QComboBox()
+        self.freq_band_points = QtWidgets.QComboBox()
 
         self.freq_bandwidth_lower.blockSignals(True)
         self.freq_bandwidth_upper.blockSignals(True)
@@ -338,11 +341,25 @@ class UiSettings(QtWidgets.QWidget):
         self.freq_bandwidth_upper.addItems(frequency_strings)
         self.fem_calculate_frequency.addItems(frequency_strings)
 
+        # Anzahl der Frequenzpunkte für Bandmittelung (1–12 als vordefinierte Auswahl)
+        self.freq_band_points.addItems([str(i) for i in range(1, 13)])
+        self.freq_band_points.setFixedWidth(COMBO_BOX_WIDTH)
+        freq_band_points_label = QtWidgets.QLabel("Averaging points in band")
+        freq_band_points_layout.addWidget(freq_band_points_label)
+        freq_band_points_layout.addStretch()
+        freq_band_points_layout.addWidget(self.freq_band_points)
+
         self.freq_bandwidth_lower.setCurrentText(f"{self.settings.lower_calculate_frequency} Hz")
         self.freq_bandwidth_upper.setCurrentText(f"{self.settings.upper_calculate_frequency} Hz")
         fem_freq = int(getattr(self.settings, "fem_calculate_frequency", 50))
         if f"{fem_freq} Hz" in frequency_strings:
             self.fem_calculate_frequency.setCurrentText(f"{fem_freq} Hz")
+        # Initialwert für Anzahl der Frequenzpunkte
+        points = int(getattr(self.settings, "frequency_band_points", 3))
+        if 1 <= points <= 12:
+            self.freq_band_points.setCurrentText(str(points))
+        else:
+            self.freq_band_points.setCurrentText("3")
 
         self.freq_bandwidth_lower.blockSignals(False)
         self.freq_bandwidth_upper.blockSignals(False)
@@ -351,6 +368,7 @@ class UiSettings(QtWidgets.QWidget):
         self.freq_bandwidth_upper.currentIndexChanged.connect(self.validate_frequency_range)
         self.freq_bandwidth_lower.currentIndexChanged.connect(self.validate_frequency_range)
         self.fem_calculate_frequency.currentIndexChanged.connect(self.on_fem_frequency_changed)
+        self.freq_band_points.currentIndexChanged.connect(self.on_freq_band_points_changed)
 
         freq_bandwidth_upper_label = QtWidgets.QLabel("Upper frequency bandwidth")
         self.freq_bandwidth_upper.setFixedWidth(COMBO_BOX_WIDTH)
@@ -376,8 +394,45 @@ class UiSettings(QtWidgets.QWidget):
             "Frequency range: Axis & Soundfield",
             default_open=True
         )
+
+        # Kleine Trennlinie + Titel für Superposition-Bereich
+        super_header_layout = QtWidgets.QHBoxLayout()
+        super_header_layout.setContentsMargins(0, 8, 0, 8)
+        super_label = QtWidgets.QLabel("Superposition calculation")
+        # Nur kursiv, nicht fett
+        super_label.setStyleSheet("font-size: 10px; font-style: italic;")
+        super_line_left = QtWidgets.QFrame()
+        super_line_left.setFrameShape(QtWidgets.QFrame.HLine)
+        super_line_left.setFrameShadow(QtWidgets.QFrame.Sunken)
+        super_line_right = QtWidgets.QFrame()
+        super_line_right.setFrameShape(QtWidgets.QFrame.HLine)
+        super_line_right.setFrameShadow(QtWidgets.QFrame.Sunken)
+        super_header_layout.addWidget(super_line_left)
+        super_header_layout.addWidget(super_label)
+        super_header_layout.addWidget(super_line_right)
+
+        # Kleine Trennlinie + Titel für FEM-Bereich
+        fem_header_layout = QtWidgets.QHBoxLayout()
+        # Etwas größerer Abstand nach oben als beim Superposition-Header
+        fem_header_layout.setContentsMargins(0, 14, 0, 8)
+        fem_title_label = QtWidgets.QLabel("FEM calculation")
+        fem_title_label.setStyleSheet("font-size: 10px; font-style: italic;")
+        fem_line_left = QtWidgets.QFrame()
+        fem_line_left.setFrameShape(QtWidgets.QFrame.HLine)
+        fem_line_left.setFrameShadow(QtWidgets.QFrame.Sunken)
+        fem_line_right = QtWidgets.QFrame()
+        fem_line_right.setFrameShape(QtWidgets.QFrame.HLine)
+        fem_line_right.setFrameShadow(QtWidgets.QFrame.Sunken)
+        fem_header_layout.addWidget(fem_line_left)
+        fem_header_layout.addWidget(fem_title_label)
+        fem_header_layout.addWidget(fem_line_right)
+
+        # Inhalte in der gewünschten Reihenfolge in den Abschnitt einfügen
+        freq_section_layout.addLayout(super_header_layout)
         freq_section_layout.addLayout(freq_bandwidth_upper_layout)
         freq_section_layout.addLayout(freq_bandwidth_lower_layout)
+        freq_section_layout.addLayout(freq_band_points_layout)
+        freq_section_layout.addLayout(fem_header_layout)
         freq_section_layout.addLayout(fem_frequency_layout)
 
         # Resolution
@@ -593,6 +648,12 @@ class UiSettings(QtWidgets.QWidget):
             self.fem_calculate_frequency,
             getattr(self.settings, "fem_calculate_frequency", 50)
         )
+        # Anzahl der Frequenzpunkte im Band
+        points = int(getattr(self.settings, "frequency_band_points", 3))
+        if 1 <= points <= 12:
+            self.freq_band_points.setCurrentText(str(points))
+        else:
+            self.freq_band_points.setCurrentText("3")
         self.resolution.setText(f"{self.settings.resolution:.2f}")
         self.temperature.setText(f"{self.settings.temperature:.1f}")
         self.humidity.setText(f"{self.settings.humidity:.1f}")
@@ -746,6 +807,58 @@ class UiSettings(QtWidgets.QWidget):
             self.db_step.setText(str(self.settings.colorbar_range['step']))
 
         self.main_window.plot_spl()
+
+    def on_freq_band_points_changed(self):
+        """
+        Aktualisiert die Anzahl der Mittelungspunkte im Frequenzband und
+        berechnet direkt die dazugehörigen Frequenzpunkte zwischen lower/upper.
+
+        Sonderfall:
+            - Wenn lower == upper → genau ein Frequenzpunkt, nämlich diese Frequenz.
+        """
+        try:
+            text = self.freq_band_points.currentText()
+            value = int(text)
+            if value < 1:
+                raise ValueError("frequency_band_points must be >= 1")
+
+            # Anzahl Punkte in Settings übernehmen
+            current_points = getattr(self.settings, "frequency_band_points", 3)
+            if current_points != value:
+                self.settings.frequency_band_points = value
+
+            # Aktuelle Bandgrenzen aus den Settings lesen
+            lower_freq = float(getattr(self.settings, "lower_calculate_frequency", 50.0))
+            upper_freq = float(getattr(self.settings, "upper_calculate_frequency", 50.0))
+
+            # Sonderfall: identische Frequenzen → genau ein Punkt
+            if upper_freq == lower_freq or value == 1:
+                freq_points = [float(upper_freq)]
+            else:
+                # Frequenzpunkte logarithmisch zwischen lower und upper verteilen
+                # (akustisch sinnvoller als linear im Hz-Raster)
+                freq_points = np.geomspace(lower_freq, upper_freq, num=value).tolist()
+
+            # In Settings ablegen, damit die Berechnung später darauf zugreifen kann
+            self.settings.frequency_band_frequencies = freq_points
+
+            # Debug-Ausgabe: Zeige gewählte Frequenzen für das Band an
+            try:
+                freqs_str = ", ".join(f"{f:.2f} Hz" for f in freq_points)
+            except Exception:
+                freqs_str = str(freq_points)
+            print(
+                "[Settings] Frequency band selection:",
+                f"lower={lower_freq} Hz, upper={upper_freq} Hz, points={value} -> [{freqs_str}]",
+            )
+
+        except ValueError:
+            # Auf letzten gültigen Wert aus Settings zurücksetzen
+            points = int(getattr(self.settings, "frequency_band_points", 3))
+            if 1 <= points <= 12:
+                self.freq_band_points.setCurrentText(str(points))
+            else:
+                self.freq_band_points.setCurrentText("3")
 
     def on_ColorizationMode_changed(self, index):
         # Dies bleibt gleich, da wir intern weiterhin "step" vs "linear" verwenden
