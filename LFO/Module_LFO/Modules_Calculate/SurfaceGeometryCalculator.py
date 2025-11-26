@@ -28,6 +28,23 @@ class PlotSurfaceGeometry:
 
 
 @dataclass
+class VerticalPlotGeometry:
+    """
+    Lokale Plot-Geometrie für eine senkrechte Fläche in (u, v)-Koordinaten.
+    - Für X-Z-Wände gilt: u = x, v = z, wall_axis='y'
+    - Für Y-Z-Wände gilt: u = y, v = z, wall_axis='x'
+    """
+    surface_id: str
+    orientation: str          # "xz" oder "yz"
+    wall_axis: str            # "x" oder "y"
+    wall_value: float         # Konstante Koordinate der Wand (y≈const bzw. x≈const)
+    plot_u: np.ndarray        # 1D-Achse in Wandlängsrichtung
+    plot_v: np.ndarray        # 1D-Achse in Wandhöhe (z)
+    plot_values: np.ndarray   # 2D-Array (len(v), len(u)) mit SPL-Werten
+    mask_uv: np.ndarray       # 2D-Bool-Array gleicher Shape wie plot_values
+
+
+@dataclass
 class SurfaceDefinition:
     surface_id: str
     name: str
@@ -594,6 +611,102 @@ def build_surface_mesh(
     return mesh
 
 
+def build_vertical_surface_mesh(
+    geom: VerticalPlotGeometry,
+    *,
+    pv_module: Any = None,
+):
+    """
+    Baut ein strukturiertes PyVista-PolyData für eine senkrechte Fläche auf
+    Basis der lokalen (u, v)-Plot-Geometrie.
+
+    - Die Eingabe ist ein VerticalPlotGeometry-Objekt mit:
+        plot_u, plot_v, plot_values, mask_uv, orientation, wall_axis, wall_value.
+    - Es wird ein reguläres Grid erzeugt und mit einer Zellmaske (aus mask_uv)
+      streng auf den Wandbereich begrenzt – analog zu build_surface_mesh.
+    """
+    if pv_module is None:
+        try:
+            import pyvista as pv_module  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise ImportError(
+                "PyVista wird benötigt, um ein vertikales Surface-Mesh zu erstellen."
+            ) from exc
+
+    plot_u = np.asarray(geom.plot_u, dtype=float)
+    plot_v = np.asarray(geom.plot_v, dtype=float)
+    values = np.asarray(geom.plot_values, dtype=float)
+    mask_uv = np.asarray(geom.mask_uv, dtype=bool)
+
+    ny, nx = values.shape
+    if ny != plot_v.size or nx != plot_u.size:
+        raise ValueError("plot_values müssen Shape (len(v), len(u)) besitzen.")
+
+    # Erzeuge lokales (u, v)-Grid
+    U, V = np.meshgrid(plot_u, plot_v, indexing="xy")
+
+    # Mapping in Weltkoordinaten:
+    #   X-Z-Wand: u=x, v=z, y=wall_value
+    #   Y-Z-Wand: u=y, v=z, x=wall_value
+    if geom.orientation == "xz":
+        X = U
+        Y = np.full_like(U, geom.wall_value, dtype=float)
+        Z = V
+    else:  # "yz"
+        X = np.full_like(U, geom.wall_value, dtype=float)
+        Y = U
+        Z = V
+
+    points = np.column_stack((X.ravel(), Y.ravel(), Z.ravel()))
+
+    # Maskenlogik wie bei build_surface_mesh:
+    # - mask_uv kann entweder Punktmaske (ny, nx) oder Zellmaske (ny-1, nx-1) sein.
+    face_list: List[int] = []
+    cell_mask = None
+    point_mask = None
+
+    if mask_uv.shape == (ny - 1, nx - 1):
+        cell_mask = mask_uv
+    elif mask_uv.shape == (ny, nx):
+        point_mask = mask_uv
+
+    total_cells = (ny - 1) * (nx - 1)
+    rendered_cells = 0
+
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            if cell_mask is not None:
+                if not cell_mask[j, i]:
+                    continue
+            elif point_mask is not None:
+                # Nur Zellen rendern, deren vier Eckpunkte im Polygon liegen
+                if not np.all(point_mask[j:j+2, i:i+2]):
+                    continue
+
+            idx0 = j * nx + i
+            idx1 = idx0 + 1
+            idx2 = idx0 + nx + 1
+            idx3 = idx0 + nx
+            face_list.extend([4, idx0, idx1, idx2, idx3])
+            rendered_cells += 1
+
+    if DEBUG_SURFACE_GEOMETRY:
+        print(
+            f"[SurfaceGeometry] build_vertical_surface_mesh clipping: "
+            f"total_cells={total_cells}, rendered={rendered_cells}, "
+            f"filtered={total_cells - rendered_cells}"
+        )
+
+    faces = np.asarray(face_list, dtype=np.int64)
+    if faces.size > 0:
+        mesh = pv_module.PolyData(points, faces)
+    else:
+        mesh = pv_module.PolyData(points)
+
+    mesh["plot_scalars"] = values.ravel()
+    return mesh
+
+
 def prepare_plot_geometry(
     sound_field_x,
     sound_field_y,
@@ -741,6 +854,202 @@ def prepare_plot_geometry(
         source_y=source_y,
         requires_resample=requires_resample,
         was_upscaled=was_upscaled,
+    )
+
+
+def prepare_vertical_plot_geometry(
+    surface_id: str,
+    settings,
+    container,
+    *,
+    default_upscale: int = 3,
+) -> Optional[VerticalPlotGeometry]:
+    """
+    Bereitet eine lokale Plot-Geometrie für eine senkrechte Fläche vor.
+
+    Schritte:
+    - Bestimme Orientierung (X-Z- oder Y-Z-Wand) aus dem 3D-Polygon.
+    - Leite lokale Koordinaten (u, v) ab:
+        X-Z-Wand: u = x, v = z, wall_axis='y'
+        Y-Z-Wand: u = y, v = z, wall_axis='x'
+    - Erzeuge ein regelmäßiges (u, v)-Grid mit plot_upscale_factor.
+    - Interpoliere SPL-Werte aus den vertikalen Samples (`surface_samples`/`surface_fields`)
+      auf dieses Grid (IDW-Interpolation).
+    - Baue eine Maskenmatrix mask_uv im (u, v)-Grid (Punkte im Polygon).
+    """
+    if settings is None or container is None:
+        return None
+
+    surface_definitions = getattr(settings, "surface_definitions", {})
+    if not isinstance(surface_definitions, dict):
+        return None
+    surface = surface_definitions.get(surface_id)
+    if surface is None:
+        return None
+
+    # Normalisiere Surface-Daten (dict)
+    if hasattr(surface, "to_dict"):
+        surface_data = surface.to_dict()
+    else:
+        surface_data = surface
+    points = surface_data.get("points", []) or []
+    if len(points) < 3:
+        return None
+
+    # Extrahiere Polygonkoordinaten
+    xs = np.array([float(p.get("x", 0.0)) for p in points], dtype=float)
+    ys = np.array([float(p.get("y", 0.0)) for p in points], dtype=float)
+    zs = np.array([float(p.get("z", 0.0)) for p in points], dtype=float)
+    x_span = float(np.ptp(xs))
+    y_span = float(np.ptp(ys))
+
+    # Bestimme Orientierung
+    eps_line = 1e-6
+    if y_span < eps_line and x_span >= eps_line:
+        # X-Z-Wand: y ≈ const
+        orientation = "xz"
+        wall_axis = "y"
+        wall_value = float(np.mean(ys))
+        poly_u = xs
+        poly_v = zs
+    elif x_span < eps_line and y_span >= eps_line:
+        # Y-Z-Wand: x ≈ const
+        orientation = "yz"
+        wall_axis = "x"
+        wall_value = float(np.mean(xs))
+        poly_u = ys
+        poly_v = zs
+    else:
+        # Keine eindeutig senkrechte Fläche
+        return None
+
+    # Vertikale Samples + Felder aus calculation_spl holen
+    calc_spl = getattr(container, "calculation_spl", None)
+    if not isinstance(calc_spl, dict):
+        return None
+    sample_payloads = calc_spl.get("surface_samples")
+    surface_fields = calc_spl.get("surface_fields")
+    if not isinstance(sample_payloads, list) or not isinstance(surface_fields, dict):
+        return None
+
+    payload = None
+    for entry in sample_payloads:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("surface_id") != surface_id:
+            continue
+        if entry.get("kind", "planar") != "vertical":
+            continue
+        payload = entry
+        break
+    if payload is None:
+        return None
+
+    coords = np.asarray(payload.get("coordinates", []), dtype=float)
+    if coords.size == 0:
+        return None
+    coords = coords.reshape(-1, 3)
+    field_values = surface_fields.get(surface_id)
+    if field_values is None:
+        return None
+    field_arr = np.asarray(field_values, dtype=complex).reshape(-1)
+    if field_arr.size != coords.shape[0]:
+        return None
+
+    # Lokale Sample-Koordinaten (u_s, v_s)
+    if orientation == "xz":
+        u_samples = coords[:, 0]  # x
+        v_samples = coords[:, 2]  # z
+    else:  # "yz"
+        u_samples = coords[:, 1]  # y
+        v_samples = coords[:, 2]  # z
+
+    if u_samples.size == 0 or v_samples.size == 0:
+        return None
+
+    # Bounds aus Polygonpunkten bestimmen
+    u_min, u_max = float(np.min(poly_u)), float(np.max(poly_u))
+    v_min, v_max = float(np.min(poly_v)), float(np.max(poly_v))
+    if not np.isfinite(u_min + u_max + v_min + v_max):
+        return None
+
+    # Auflösung aus Settings (identisch zur XY-Plotauflösung)
+    base_res = float(getattr(settings, "resolution", 1.0) or 1.0)
+    requested_upscale = getattr(settings, "plot_upscale_factor", None)
+    if requested_upscale is None:
+        requested_upscale = default_upscale
+    try:
+        upscale_factor = int(requested_upscale)
+    except (TypeError, ValueError):
+        upscale_factor = default_upscale
+    upscale_factor = max(1, min(6, upscale_factor))
+
+    step = base_res / float(upscale_factor)
+    if step <= 0.0:
+        step = base_res
+
+    # Regelmäßiges (u, v)-Plot-Grid
+    plot_u = np.arange(u_min, u_max + step, step, dtype=float)
+    plot_v = np.arange(v_min, v_max + step, step, dtype=float)
+    if plot_u.size < 2 or plot_v.size < 2:
+        return None
+    U, V = np.meshgrid(plot_u, plot_v, indexing="xy")
+
+    # SPL-Werte per IDW-Interpolation von (u_samples, v_samples) auf (U, V)
+    u_s = u_samples[None, :].astype(float)
+    v_s = v_samples[None, :].astype(float)
+    uv_s = np.stack([u_s, v_s], axis=0)  # shape (2, 1, N)
+
+    u_g = U.ravel()[:, None].astype(float)
+    v_g = V.ravel()[:, None].astype(float)
+    uv_g = np.stack([u_g.T, v_g.T], axis=0)  # shape (2, 1, M) transposed später
+
+    # Distanz^2 zwischen Grid-Punkten und Samples
+    # dist2[m, n] = (u_g[m]-u_s[n])^2 + (v_g[m]-v_s[n])^2
+    du = u_g - u_s  # (M, N)
+    dv = v_g - v_s
+    dist2 = du * du + dv * dv
+    eps = 1e-9
+
+    # Punkte, die exakt auf einem Sample liegen → direkte Übernahme
+    same = dist2 < eps
+    M, N = dist2.shape
+    values_flat = np.empty(M, dtype=complex)
+    exact_mask = same.any(axis=1)
+    if np.any(exact_mask):
+        idx_sample = same[exact_mask].argmax(axis=1)
+        values_flat[exact_mask] = field_arr[idx_sample]
+
+    # Für restliche Punkte IDW
+    remaining = ~exact_mask
+    if np.any(remaining):
+        dist2_rem = dist2[remaining]
+        # Gewicht = 1 / dist^2
+        w = 1.0 / np.clip(dist2_rem, eps, None)
+        w_sum = w.sum(axis=1)
+        # (w @ field_arr) nutzt Broadcasting über komplexe Werte
+        values_flat[remaining] = (w @ field_arr) / w_sum
+
+    # Betrags-SPL in dB
+    pressure_mag = np.abs(values_flat.reshape(V.shape))
+    pressure_mag = np.clip(pressure_mag, 1e-12, None)
+    spl_db = 20.0 * np.log10(pressure_mag)
+
+    # Maskenmatrix im (u, v)-Grid analog _build_plot_surface_mask (Punkt-Maske)
+    mask_uv = _points_in_polygon_batch_uv(U, V, poly_u, poly_v)
+    if mask_uv is None:
+        # Fallback: alles sichtbar
+        mask_uv = np.ones_like(U, dtype=bool)
+
+    return VerticalPlotGeometry(
+        surface_id=surface_id,
+        orientation=orientation,
+        wall_axis=wall_axis,
+        wall_value=wall_value,
+        plot_u=plot_u,
+        plot_v=plot_v,
+        plot_values=spl_db,
+        mask_uv=mask_uv,
     )
 
 
@@ -1146,6 +1455,65 @@ def _points_in_polygon_batch_plot(
 
     mask = (inside | on_edge).reshape(x_coords.shape)
     return mask
+
+
+def _points_in_polygon_batch_uv(
+    u_coords: np.ndarray,
+    v_coords: np.ndarray,
+    poly_u: np.ndarray,
+    poly_v: np.ndarray,
+) -> Optional[np.ndarray]:
+    """
+    Vektorisierter Punkt-in-Polygon-Test im (u, v)-Raum.
+    Aufbau analog zu _points_in_polygon_batch_plot, aber explizit für
+    senkrechte Flächen in lokalen Koordinaten.
+    """
+    u_coords = np.asarray(u_coords, dtype=float)
+    v_coords = np.asarray(v_coords, dtype=float)
+    poly_u = np.asarray(poly_u, dtype=float).reshape(-1)
+    poly_v = np.asarray(poly_v, dtype=float).reshape(-1)
+
+    if poly_u.size < 3 or poly_v.size < 3:
+        return None
+
+    u_flat = u_coords.flatten()
+    v_flat = v_coords.flatten()
+    inside = np.zeros_like(u_flat, dtype=bool)
+    on_edge = np.zeros_like(u_flat, dtype=bool)
+    boundary_eps = 1e-6
+    n = poly_u.size
+
+    j = n - 1
+    for i in range(n):
+        ui, vi = poly_u[i], poly_v[i]
+        uj, vj = poly_u[j], poly_v[j]
+
+        # Ray-Casting: Schnitt mit waagrechter Halbgeraden von (u,v) nach rechts
+        v_above_edge = (vi > v_flat) != (vj > v_flat)
+        denom = (vj - vi) + 1e-12
+        inter_u = (uj - ui) * (v_flat - vi) / denom + ui
+        intersects = v_above_edge & (u_flat <= inter_u + boundary_eps)
+        inside ^= intersects
+
+        # Punkt liegt direkt auf der Kante?
+        du = uj - ui
+        dv = vj - vi
+        seg_len = math.hypot(du, dv)
+        if seg_len > 0.0:
+            num = np.abs(dv * (u_flat - ui) - du * (v_flat - vi))
+            dist = num / (seg_len + 1e-12)
+            proj = ((u_flat - ui) * du + (v_flat - vi) * dv) / (
+                (seg_len**2) + 1e-12
+            )
+            on_edge_segment = (
+                (dist <= boundary_eps)
+                & (proj >= -boundary_eps)
+                & (proj <= 1.0 + boundary_eps)
+            )
+            on_edge |= on_edge_segment
+        j = i
+
+    return (inside | on_edge).reshape(u_coords.shape)
 
 
 def _evaluate_plane_on_grid(

@@ -568,9 +568,12 @@ class SurfaceGridCalculator(ModuleBase):
         except (TypeError, ValueError):
             upscale_factor = 3
         upscale_factor = max(1, min(6, upscale_factor))
-        step = base_resolution / float(upscale_factor)
+        # Für vertikale Flächen etwas feinere Auflösung als im Haupt-Plot:
+        # wir teilen zusätzlich durch 2, damit die sichtbaren Stufen in Z
+        # deutlich kleiner werden, ohne das globale Rechengitter zu verändern.
+        step = base_resolution / float(upscale_factor * 2)
         if step <= 0.0:
-            step = base_resolution or 1.0
+            step = base_resolution / float(upscale_factor) if upscale_factor > 0 else (base_resolution or 1.0)
 
         for surface_id, definition in surfaces:
             surface = definition
