@@ -158,15 +158,20 @@ class SoundFieldCalculator(ModuleBase):
             Z_grid,
             surface_mask,
         ) = self._grid_calculator.create_calculation_grid(enabled_surfaces)
-        if DEBUG_SOUNDFIELD:
-            total_points = int(X_grid.size)
-            active_points = int(np.count_nonzero(surface_mask))
-            print(
-                "[SoundFieldCalculator] Berechnungs-Grid:",
-                f"shape={X_grid.shape} (ny, nx),",
-                f"total_points={total_points},",
-                f"active_points_in_mask={active_points}",
-            )
+        # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
+        total_points = int(X_grid.size)
+        active_points = int(np.count_nonzero(surface_mask))
+        resolution = self.settings.resolution
+        nx_points = len(sound_field_x)
+        ny_points = len(sound_field_y)
+        print(
+            "[SoundFieldCalculator] Berechnungs-Grid verwendet:",
+            f"resolution={resolution:.3f}m, "
+            f"shape={X_grid.shape} (ny={ny_points}, nx={nx_points}), "
+            f"total_points={total_points}, "
+            f"active_points_in_mask={active_points} "
+            f"({100.0*active_points/total_points:.1f}% der Punkte aktiv)"
+        )
         surface_meshes = self._grid_calculator.get_surface_meshes()
         surface_samples = self._grid_calculator.get_surface_sampling_points()
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)

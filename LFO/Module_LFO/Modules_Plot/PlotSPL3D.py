@@ -6,13 +6,14 @@ import math
 import os
 import time
 import types
-from typing import Iterable, List, Optional, Tuple, Any
+from typing import Dict, Iterable, List, Optional, Tuple, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import BoundaryNorm, Normalize, LinearSegmentedColormap, ListedColormap
 from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtCore import Qt
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
@@ -91,6 +92,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._pan_last_pos: Optional[QtCore.QPoint] = None
         self._rotate_active = False
         self._rotate_last_pos: Optional[QtCore.QPoint] = None
+        self._click_start_pos: Optional[QtCore.QPoint] = None  # Für Click-Erkennung (vs. Drag)
+        self._last_click_time: Optional[float] = None  # Zeitpunkt des letzten Klicks (für Doppelklick-Erkennung)
+        self._last_click_pos: Optional[QtCore.QPoint] = None  # Position des letzten Klicks
         self._camera_state: Optional[dict[str, object]] = None
         self._skip_next_render_restore = False
         self._camera_debug_enabled = self._init_camera_debug_flag()
@@ -109,6 +113,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.cbar = None
         self.has_data = False
         self.surface_mesh = None  # type: pv.DataSet | None
+        self._plot_geometry_cache = None  # Cache für Plot-Geometrie (plot_x, plot_y)
         # Zusätzliche SPL-Meshes für senkrechte Flächen (werden über calculation_spl gespeist)
         self._vertical_surface_meshes: dict[str, Any] = {}
         self.time_control: Optional[SPLTimeControlBar] = None
@@ -146,14 +151,54 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
                 self._rotate_active = True
                 self._rotate_last_pos = QtCore.QPoint(event.pos())
+                self._click_start_pos = QtCore.QPoint(event.pos())  # Merke Start-Position für Click-Erkennung
                 self.widget.setCursor(QtCore.Qt.OpenHandCursor)
                 event.accept()
                 return True
             if etype == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                # Prüfe ob es ein Klick war (kein Drag)
+                click_pos = QtCore.QPoint(event.pos())
+                is_click = (
+                    self._click_start_pos is not None
+                    and abs(click_pos.x() - self._click_start_pos.x()) < 3
+                    and abs(click_pos.y() - self._click_start_pos.y()) < 3
+                )
+                
+                print(f"[DEBUG Click] MouseButtonRelease: pos=({click_pos.x()}, {click_pos.y()}), is_click={is_click}, start_pos={self._click_start_pos}")
+                
                 self._rotate_active = False
                 self._rotate_last_pos = None
                 self.widget.unsetCursor()
                 self._save_camera_state()
+                
+                # Prüfe ob es ein Doppelklick ist
+                is_double_click = False
+                if is_click and self._last_click_time is not None and self._last_click_pos is not None:
+                    current_time = time.time()
+                    time_diff = current_time - self._last_click_time
+                    pos_diff = (
+                        abs(click_pos.x() - self._last_click_pos.x()) < 5
+                        and abs(click_pos.y() - self._last_click_pos.y()) < 5
+                    )
+                    # Doppelklick wenn innerhalb von 300ms und ähnlicher Position
+                    if time_diff < 0.3 and pos_diff:
+                        is_double_click = True
+                        print(f"[DEBUG Click] Double click detected (time_diff={time_diff*1000:.0f}ms)")
+                
+                # Wenn es ein Klick war (kein Drag) und kein Doppelklick, prüfe ob eine Surface geklickt wurde
+                if is_click and not is_double_click:
+                    print(f"[DEBUG Click] Calling _handle_surface_click")
+                    self._handle_surface_click(click_pos)
+                    # Speichere Zeitpunkt und Position für Doppelklick-Erkennung
+                    self._last_click_time = time.time()
+                    self._last_click_pos = QtCore.QPoint(click_pos)
+                elif is_double_click:
+                    # Bei Doppelklick: Ignoriere den zweiten Klick (verhindert doppelte Surface-Auswahl)
+                    print(f"[DEBUG Click] Double click ignored")
+                    self._last_click_time = None
+                    self._last_click_pos = None
+                
+                self._click_start_pos = None
                 event.accept()
                 return True
             if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.RightButton:
@@ -196,6 +241,468 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if etype == QtCore.QEvent.Wheel:
                 QtCore.QTimer.singleShot(0, self._save_camera_state)
         return QtCore.QObject.eventFilter(self, obj, event)
+
+    def _handle_surface_click(self, click_pos: QtCore.QPoint) -> None:
+        """Behandelt einen Klick auf eine Surface im 3D-Plot und wählt das entsprechende Item im TreeWidget aus."""
+        try:
+            print(f"[DEBUG Click] _handle_surface_click called with pos=({click_pos.x()}, {click_pos.y()})")
+            # QtInteractor erbt von Plotter, aber pick() könnte nicht verfügbar sein
+            # Verwende stattdessen den Renderer direkt für Picking
+            renderer = self.plotter.renderer
+            if renderer is None:
+                print(f"[DEBUG Click] No renderer available")
+                return
+            
+            # Verwende VTK CellPicker für präzises Picking
+            try:
+                from vtkmodules.vtkRenderingCore import vtkCellPicker
+                picker = vtkCellPicker()
+                picker.SetTolerance(0.001)
+                
+                # Konvertiere Qt-Koordinaten zu VTK-Koordinaten (Viewport-Koordinaten)
+                # VTK verwendet Viewport-Koordinaten (0-1 normalisiert)
+                size = self.widget.size()
+                if size.width() > 0 and size.height() > 0:
+                    x_norm = click_pos.x() / size.width()
+                    y_norm = 1.0 - (click_pos.y() / size.height())  # VTK Y ist invertiert
+                    
+                    print(f"[DEBUG Click] Normalized coords: x={x_norm:.3f}, y={y_norm:.3f}")
+                    picker.Pick(x_norm, y_norm, 0.0, renderer)
+                    
+                    picked_actor = picker.GetActor()
+                    picked_point = picker.GetPickPosition()
+                    
+                    print(f"[DEBUG Click] VTK picker: actor={picked_actor}, point={picked_point}")
+                    
+                    if picked_actor is not None:
+                        # Hole Actor-Name
+                        actor_name = None
+                        if hasattr(picked_actor, 'GetProperty'):
+                            # Versuche Name über verschiedene Wege zu bekommen
+                            actor_name = getattr(picked_actor, 'name', None)
+                            if actor_name is None:
+                                # Prüfe ob Actor in plotter.renderer.actors ist
+                                for name, actor in renderer.actors.items():
+                                    if actor == picked_actor:
+                                        actor_name = name
+                                        break
+                        
+                        print(f"[DEBUG Click] actor_name={actor_name}")
+                        
+                        # Prüfe ob es eine Surface-Linie ist (disabled Surfaces)
+                        if actor_name and isinstance(actor_name, str) and actor_name.startswith('surface_line_'):
+                            # Extrahiere Surface-ID aus Actor-Namen
+                            surface_id = actor_name.replace('surface_line_', '')
+                            print(f"[DEBUG Click] Found surface line, surface_id={surface_id}")
+                            self._select_surface_in_treewidget(surface_id)
+                            return
+                        
+                        # Prüfe ob es die SPL-Surface ist (für enabled Surfaces)
+                        if actor_name == self.SURFACE_NAME:
+                            print(f"[DEBUG Click] Found SPL surface, handling SPL surface click")
+                            self._handle_spl_surface_click(click_pos)
+                            return
+                    
+                    # Wenn kein Actor gepickt wurde, aber ein Punkt vorhanden ist, prüfe SPL-Surface
+                    if picked_point and len(picked_point) >= 3:
+                        print(f"[DEBUG Click] No actor but point found, trying SPL surface click")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                else:
+                    print(f"[DEBUG Click] Invalid widget size: {size}")
+            except ImportError:
+                print(f"[DEBUG Click] vtkCellPicker not available, trying alternative method")
+                # Fallback: Versuche PyVista pick über renderer
+                try:
+                    # QtInteractor sollte Plotter-Methoden haben, aber vielleicht nicht pick()
+                    # Versuche über renderer.actors zu iterieren und Distanz zu prüfen
+                    pass
+                except Exception as e:
+                    print(f"[DEBUG Click] Fallback also failed: {e}")
+            
+            # Kein Actor gefunden - prüfe ob auf SPL-Surface geklickt wurde (für enabled Surfaces)
+            print(f"[DEBUG Click] No actor picked, trying SPL surface click")
+            self._handle_spl_surface_click(click_pos)
+            
+        except Exception as e:  # noqa: BLE001
+            # Bei Fehler einfach ignorieren
+            print(f"[DEBUG Click] Exception in _handle_surface_click: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _handle_spl_surface_click(self, click_pos: QtCore.QPoint) -> None:
+        """Behandelt einen Klick auf die SPL-Surface (für enabled Surfaces)."""
+        try:
+            print(f"[DEBUG Click] _handle_spl_surface_click called")
+            # Hole 3D-Koordinaten des geklickten Punktes über VTK CellPicker
+            renderer = self.plotter.renderer
+            if renderer is None:
+                print(f"[DEBUG Click] No renderer available for SPL click")
+                return
+            
+            # Versuche direkt auf das Surface-Mesh zuzugreifen und die Zelle an der geklickten Position zu finden
+            if self.surface_mesh is None:
+                print(f"[DEBUG Click] Surface mesh is None, cannot determine clicked point")
+                return
+            
+            try:
+                from vtkmodules.vtkRenderingCore import vtkCellPicker
+                from vtkmodules.util.numpy_support import vtk_to_numpy
+                
+                picker = vtkCellPicker()
+                picker.SetTolerance(0.01)
+                
+                size = self.widget.size()
+                if size.width() > 0 and size.height() > 0:
+                    x_norm = click_pos.x() / size.width()
+                    y_norm = 1.0 - (click_pos.y() / size.height())  # VTK Y ist invertiert
+                    
+                    print(f"[DEBUG Click] Picking at normalized coords: x={x_norm:.3f}, y={y_norm:.3f}")
+                    
+                    # Picke auf dem Renderer
+                    picker.Pick(x_norm, y_norm, 0.0, renderer)
+                    picked_cell_id = picker.GetCellId()
+                    picked_point = picker.GetPickPosition()
+                    
+                    print(f"[DEBUG Click] Picker result: cell_id={picked_cell_id}, point={picked_point}")
+                    
+                    # Wenn Picker keine Zelle findet, verwende einen alternativen Ansatz:
+                    # Finde die Zelle im Mesh direkt an der geklickten Position
+                    if picked_cell_id < 0 or picked_point is None:
+                        print(f"[DEBUG Click] Picker found no cell, using mesh-based coordinate lookup")
+                        
+                        # Versuche die Zelle direkt im Mesh zu finden
+                        if self.surface_mesh is not None and hasattr(self.surface_mesh, 'points'):
+                            # Verwende Kamera, um einen Ray zu erzeugen und die Schnittstelle mit dem Mesh zu finden
+                            camera = renderer.GetActiveCamera()
+                            if camera is None:
+                                print(f"[DEBUG Click] No camera available")
+                                return
+                            
+                            # Konvertiere 2D-Koordinaten zu einem Ray
+                            renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 0.0)
+                            renderer.DisplayToWorld()
+                            world_point_near = renderer.GetWorldPoint()
+                            
+                            renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 1.0)
+                            renderer.DisplayToWorld()
+                            world_point_far = renderer.GetWorldPoint()
+                            
+                            if world_point_near[3] != 0.0 and world_point_far[3] != 0.0:
+                                ray_start = np.array([
+                                    world_point_near[0] / world_point_near[3],
+                                    world_point_near[1] / world_point_near[3],
+                                    world_point_near[2] / world_point_near[3]
+                                ])
+                                ray_end = np.array([
+                                    world_point_far[0] / world_point_far[3],
+                                    world_point_far[1] / world_point_far[3],
+                                    world_point_far[2] / world_point_far[3]
+                                ])
+                                
+                                # Finde nächsten Punkt im Mesh entlang des Rays
+                                mesh_points = self.surface_mesh.points
+                                if mesh_points.size > 0:
+                                    # Finde Punkt im Mesh, der am nächsten zur Ray-Mitte liegt
+                                    ray_mid = (ray_start + ray_end) / 2.0
+                                    distances = np.linalg.norm(mesh_points - ray_mid, axis=1)
+                                    nearest_idx = int(np.argmin(distances))
+                                    nearest_point = mesh_points[nearest_idx]
+                                    
+                                    x_click, y_click, z_click = nearest_point[0], nearest_point[1], nearest_point[2]
+                                    print(f"[DEBUG Click] Found nearest mesh point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
+                                else:
+                                    print(f"[DEBUG Click] Mesh has no points")
+                                    return
+                            else:
+                                print(f"[DEBUG Click] Invalid ray conversion")
+                                return
+                        else:
+                            print(f"[DEBUG Click] Surface mesh not available")
+                            return
+                    else:
+                        # Picker hat einen Punkt gefunden
+                        x_click, y_click, z_click = picked_point[0], picked_point[1], picked_point[2]
+                        print(f"[DEBUG Click] Using picker point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
+                else:
+                    print(f"[DEBUG Click] Invalid widget size for SPL click")
+                    return
+            except ImportError:
+                print(f"[DEBUG Click] VTK modules not available for SPL click")
+                return
+            except Exception as e:
+                print(f"[DEBUG Click] Exception in coordinate conversion: {e}")
+                import traceback
+                traceback.print_exc()
+                return
+            
+            # Prüfe welche enabled Surface diesen Punkt enthält
+            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+            print(f"[DEBUG Click] surface_definitions count: {len(surface_definitions) if isinstance(surface_definitions, dict) else 0}")
+            if not isinstance(surface_definitions, dict):
+                print(f"[DEBUG Click] surface_definitions is not a dict")
+                return
+            
+            # Durchsuche alle enabled Surfaces
+            checked_count = 0
+            skipped_disabled = 0
+            skipped_hidden = 0
+            skipped_too_few_points = 0
+            
+            for surface_id, surface_def in surface_definitions.items():
+                if isinstance(surface_def, SurfaceDefinition):
+                    enabled = bool(getattr(surface_def, 'enabled', False))
+                    hidden = bool(getattr(surface_def, 'hidden', False))
+                    points = getattr(surface_def, 'points', []) or []
+                else:
+                    enabled = surface_def.get('enabled', False)
+                    hidden = surface_def.get('hidden', False)
+                    points = surface_def.get('points', [])
+                
+                if not enabled:
+                    skipped_disabled += 1
+                    continue
+                if hidden:
+                    skipped_hidden += 1
+                    continue
+                if len(points) < 3:
+                    skipped_too_few_points += 1
+                    continue
+                
+                checked_count += 1
+                
+                # Debug: Berechne Bounding Box der Surface für Vergleich
+                surface_xs = [p.get('x', 0.0) for p in points]
+                surface_ys = [p.get('y', 0.0) for p in points]
+                if surface_xs and surface_ys:
+                    min_x, max_x = min(surface_xs), max(surface_xs)
+                    min_y, max_y = min(surface_ys), max(surface_ys)
+                    
+                    # Prüfe ob Punkt in diesem Polygon liegt (nur X/Y, Z wird ignoriert)
+                    is_inside = self._point_in_polygon(x_click, y_click, points)
+                    
+                    # Debug: Zeige erste paar Punkte des Polygons für Vergleich
+                    if checked_count <= 10 or is_inside:
+                        first_point = points[0] if points else {}
+                        print(f"[DEBUG Click] Surface {surface_id}: enabled={enabled}, hidden={hidden}, points_count={len(points)}, "
+                              f"bbox=({min_x:.2f}..{max_x:.2f}, {min_y:.2f}..{max_y:.2f}), "
+                              f"click=({x_click:.2f}, {y_click:.2f}), "
+                              f"is_inside={is_inside}")
+                    
+                    if is_inside:
+                        print(f"[DEBUG Click] Found matching surface: {surface_id}")
+                        self._select_surface_in_treewidget(str(surface_id))
+                        return
+                else:
+                    print(f"[DEBUG Click] Surface {surface_id}: No valid points")
+            
+            print(f"[DEBUG Click] Checked {checked_count} enabled surfaces, skipped: disabled={skipped_disabled}, "
+                  f"hidden={skipped_hidden}, too_few_points={skipped_too_few_points}, no match found")
+            
+        except Exception as e:  # noqa: BLE001
+            print(f"[DEBUG Click] Exception in _handle_spl_surface_click: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    @staticmethod
+    def _point_in_polygon(x: float, y: float, polygon_points: List[Dict[str, float]]) -> bool:
+        """Prüft, ob ein Punkt (x, y) innerhalb eines Polygons liegt (Ray-Casting-Algorithmus)."""
+        if len(polygon_points) < 3:
+            return False
+        
+        # Extrahiere X- und Y-Koordinaten
+        px = np.array([p.get("x", 0.0) for p in polygon_points])
+        py = np.array([p.get("y", 0.0) for p in polygon_points])
+        
+        # Ray-Casting-Algorithmus
+        n = len(px)
+        inside = False
+        boundary_eps = 1e-6
+        
+        j = n - 1
+        for i in range(n):
+            xi, yi = px[i], py[i]
+            xj, yj = px[j], py[j]
+            
+            # Prüfe ob Strahl von (x,y) nach rechts die Kante schneidet
+            if ((yi > y) != (yj > y)) and (
+                x <= (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi + boundary_eps
+            ):
+                inside = not inside
+            
+            # Prüfe ob Punkt direkt auf der Kante liegt
+            dx = xj - xi
+            dy = yj - yi
+            segment_len = math.hypot(dx, dy)
+            if segment_len > 0:
+                dist = abs(dy * (x - xi) - dx * (y - yi)) / segment_len
+                if dist <= boundary_eps:
+                    proj = ((x - xi) * dx + (y - yi) * dy) / (segment_len * segment_len)
+                    if -boundary_eps <= proj <= 1 + boundary_eps:
+                        return True
+            j = i
+        
+        return inside
+    
+    def _select_surface_in_treewidget(self, surface_id: str) -> None:
+        """Wählt eine Surface im TreeWidget aus und öffnet die zugehörige Gruppe."""
+        try:
+            print(f"[DEBUG Click] _select_surface_in_treewidget called with surface_id={surface_id}")
+            # Finde das Main-Window über parent_widget
+            # parent_widget ist self.main_window.ui.SPLPlot (ein QWidget)
+            # Wir müssen durch die Widget-Hierarchie gehen, um das MainWindow zu finden
+            parent = self.parent_widget
+            print(f"[DEBUG Click] parent_widget={parent}, type={type(parent).__name__}")
+            main_window = None
+            
+            # Gehe durch die Widget-Hierarchie, um das Main-Window zu finden
+            depth = 0
+            while parent is not None and depth < 15:
+                parent_type = type(parent).__name__
+                has_surface_manager = hasattr(parent, 'surface_manager')
+                print(f"[DEBUG Click] Checking parent at depth {depth}: {parent_type}, has surface_manager={has_surface_manager}")
+                
+                if has_surface_manager:
+                    main_window = parent
+                    print(f"[DEBUG Click] Found main_window: {main_window}")
+                    break
+                
+                # Versuche verschiedene Wege, um zum nächsten Parent zu kommen
+                next_parent = None
+                if hasattr(parent, 'parent'):
+                    next_parent = parent.parent()
+                elif hasattr(parent, 'parentWidget'):
+                    next_parent = parent.parentWidget()
+                elif hasattr(parent, 'parent_widget'):
+                    next_parent = parent.parent_widget
+                elif hasattr(parent, 'window'):
+                    # QWidget.window() gibt das Top-Level-Window zurück
+                    next_parent = parent.window()
+                
+                if next_parent == parent:
+                    # Verhindere Endlosschleife
+                    break
+                parent = next_parent
+                depth += 1
+            
+            if main_window is None or not hasattr(main_window, 'surface_manager'):
+                print(f"[DEBUG Click] Could not find main_window or surface_manager after {depth} levels")
+                # Versuche alternativen Weg: Suche nach QMainWindow
+                parent = self.parent_widget
+                while parent is not None:
+                    if isinstance(parent, QtWidgets.QMainWindow):
+                        if hasattr(parent, 'surface_manager'):
+                            main_window = parent
+                            print(f"[DEBUG Click] Found QMainWindow with surface_manager: {main_window}")
+                            break
+                    if hasattr(parent, 'parent'):
+                        parent = parent.parent()
+                    elif hasattr(parent, 'parentWidget'):
+                        parent = parent.parentWidget()
+                    else:
+                        break
+                
+                if main_window is None:
+                    print(f"[DEBUG Click] Could not find main_window")
+                    return
+            
+            # Hole das SurfaceDockWidget über surface_manager
+            surface_manager = main_window.surface_manager
+            print(f"[DEBUG Click] surface_manager={surface_manager}")
+            if not hasattr(surface_manager, 'surface_tree_widget'):
+                print(f"[DEBUG Click] surface_tree_widget not found")
+                return
+            
+            # UISurfaceManager verwendet direkt ein QTreeWidget, nicht WindowSurfaceWidget
+            # Verwende _select_surface_in_tree Methode
+            if hasattr(surface_manager, '_select_surface_in_tree'):
+                print(f"[DEBUG Click] Calling _select_surface_in_tree({surface_id})")
+                # Wähle Surface aus
+                surface_manager._select_surface_in_tree(surface_id)
+                
+                # Finde das Surface-Item und expandiere die Parent-Gruppe
+                tree_widget = surface_manager.surface_tree_widget
+                if tree_widget is not None:
+                    # Finde das Item rekursiv
+                    def find_item(parent_item=None):
+                        if parent_item is None:
+                            for i in range(tree_widget.topLevelItemCount()):
+                                item = tree_widget.topLevelItem(i)
+                                found = find_item(item)
+                                if found:
+                                    return found
+                        else:
+                            item_surface_id = parent_item.data(0, Qt.UserRole)
+                            if isinstance(item_surface_id, dict):
+                                item_surface_id = item_surface_id.get('id')
+                            if item_surface_id == surface_id:
+                                return parent_item
+                            for i in range(parent_item.childCount()):
+                                child = parent_item.child(i)
+                                found = find_item(child)
+                                if found:
+                                    return found
+                        return None
+                    
+                    item = find_item()
+                    if item is not None:
+                        print(f"[DEBUG Click] Found surface item: {item}")
+                        # Finde Parent-Gruppe und expandiere sie
+                        parent = item.parent()
+                        while parent is not None:
+                            item_type = parent.data(0, Qt.UserRole + 1)
+                            if item_type == "group":
+                                print(f"[DEBUG Click] Found parent group, expanding")
+                                parent.setExpanded(True)
+                                # Scrolle zur Gruppe, damit sie sichtbar ist
+                                tree_widget.scrollToItem(parent, QtWidgets.QAbstractItemView.PositionAtTop)
+                                break
+                            parent = parent.parent()
+                        
+                        # Scrolle zur Surface, damit sie sichtbar ist
+                        tree_widget.scrollToItem(item, QtWidgets.QAbstractItemView.PositionAtCenter)
+                        print(f"[DEBUG Click] Scrolled to item")
+                    else:
+                        print(f"[DEBUG Click] Could not find surface item in tree")
+            else:
+                print(f"[DEBUG Click] surface_manager has no _select_surface_in_tree method")
+                    
+        except Exception as e:  # noqa: BLE001
+            # Bei Fehler einfach ignorieren
+            print(f"[DEBUG Click] Exception in _select_surface_in_treewidget: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _find_surface_dock_widget(self, widget) -> Optional[Any]:
+        """Findet rekursiv das SurfaceDockWidget (WindowSurfaceWidget) in der Widget-Hierarchie."""
+        if widget is None:
+            return None
+        
+        # Prüfe ob dieses Widget das SurfaceDockWidget ist (hat _select_surface Methode)
+        if hasattr(widget, '_select_surface') and hasattr(widget, 'surface_tree'):
+            return widget
+        
+        # Prüfe Kinder
+        if hasattr(widget, 'children'):
+            for child in widget.children():
+                result = self._find_surface_dock_widget(child)
+                if result is not None:
+                    return result
+        
+        # Prüfe Layout
+        if hasattr(widget, 'layout'):
+            layout = widget.layout()
+            if layout is not None:
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    if item is not None:
+                        child_widget = item.widget()
+                        if child_widget is not None:
+                            result = self._find_surface_dock_widget(child_widget)
+                            if result is not None:
+                                return result
+        
+        return None
 
     # ------------------------------------------------------------------
     # Öffentliche API
@@ -350,15 +857,27 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         tick_step = colorbar_params['tick_step']
         self._colorbar_override = colorbar_params
 
+        # 🎯 WICHTIG: Speichere ursprüngliche Berechnungs-Werte für PyVista sample-Modus VOR Clipping!
+        # Clipping ändert die Werte und sollte nur für Visualisierung erfolgen, nicht für Sampling
+        original_plot_values = plot_values.copy() if hasattr(plot_values, 'copy') else plot_values
+        
+        # 🎯 Cache original_plot_values für Debug-Vergleiche
+        self._cached_original_plot_values = original_plot_values
+        
+        # 🎯 Validierung: Stelle sicher, dass original_plot_values die korrekte Shape hat
+        if original_plot_values.shape != (len(y), len(x)):
+            raise ValueError(
+                f"original_plot_values Shape stimmt nicht überein: "
+                f"erhalten {original_plot_values.shape}, erwartet ({len(y)}, {len(x)})"
+            )
+
+        # Clipping nur für Visualisierung (nicht für Sampling)
         if time_mode:
             plot_values = np.clip(plot_values, cbar_min, cbar_max)
         elif phase_mode:
             plot_values = np.clip(plot_values, cbar_min, cbar_max)
         else:
             plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
-
-        # Speichere ursprüngliche Berechnungs-Werte für PyVista sample-Modus
-        original_plot_values = plot_values.copy() if hasattr(plot_values, 'copy') else plot_values
         
         try:
             geometry = prepare_plot_geometry(
@@ -393,6 +912,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         plot_values = geometry.plot_values
         z_coords = geometry.z_coords
         
+        # 🎯 Cache Plot-Geometrie für Click-Handling
+        self._plot_geometry_cache = {
+            'plot_x': plot_x.copy() if hasattr(plot_x, 'copy') else plot_x,
+            'plot_y': plot_y.copy() if hasattr(plot_y, 'copy') else plot_y,
+            'source_x': geometry.source_x.copy() if hasattr(geometry.source_x, 'copy') else geometry.source_x,
+            'source_y': geometry.source_y.copy() if hasattr(geometry.source_y, 'copy') else geometry.source_y,
+        }
+        
         colorization_mode_used = colorization_mode
         if colorization_mode_used == 'Color step':
             scalars = self._quantize_to_steps(plot_values, cbar_step)
@@ -400,8 +927,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             scalars = plot_values
         
         # Für PyVista sample-Modus: Verwende ursprüngliche Berechnungs-Werte (vor Upscaling)
+        # 🎯 Validierung: Stelle sicher, dass source_x/source_y mit original_plot_values übereinstimmen
         source_scalars_for_sample = None
         if getattr(self.settings, "spl_plot_use_pyvista_sample", False):
+            # Prüfe ob Shapes übereinstimmen
+            if original_plot_values.shape != (len(geometry.source_y), len(geometry.source_x)):
+                raise ValueError(
+                    f"Shape-Mismatch zwischen original_plot_values und source_x/source_y: "
+                    f"original_plot_values.shape={original_plot_values.shape}, "
+                    f"source_grid=({len(geometry.source_y)}, {len(geometry.source_x)})"
+                )
             source_scalars_for_sample = original_plot_values
         
         mesh = build_surface_mesh(
@@ -417,6 +952,78 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             source_y=geometry.source_y,
             source_scalars=source_scalars_for_sample,
         )
+        
+        # 🎯 DEBUG: Referenzpunkt pro Surface beim Plotten
+        if mesh is not None and hasattr(mesh, 'points') and mesh.n_points > 0:
+            # Finde Referenzpunkte pro Surface (wenn PyVista sample-Modus aktiv)
+            if getattr(self.settings, "spl_plot_use_pyvista_sample", False):
+                # Im PyVista sample-Modus: Mesh enthält alle kombinierten Surfaces
+                # Suche nach enabled Surfaces und gebe für jedes einen Referenzpunkt aus
+                surface_definitions = getattr(self.settings, 'surface_definitions', {})
+                if isinstance(surface_definitions, dict):
+                    for surface_id, surface_def in surface_definitions.items():
+                        if isinstance(surface_def, SurfaceDefinition):
+                            enabled = bool(getattr(surface_def, 'enabled', False))
+                            hidden = bool(getattr(surface_def, 'hidden', False))
+                            points = getattr(surface_def, 'points', []) or []
+                        else:
+                            enabled = bool(surface_def.get('enabled', False))
+                            hidden = bool(surface_def.get('hidden', False))
+                            points = surface_def.get('points', [])
+                        
+                        if enabled and not hidden and len(points) >= 3:
+                            # Berechne Mittelpunkt der Surface-Bounding-Box
+                            surface_xs = [p.get("x", 0.0) for p in points]
+                            surface_ys = [p.get("y", 0.0) for p in points]
+                            if surface_xs and surface_ys:
+                                ref_x = (min(surface_xs) + max(surface_xs)) / 2.0
+                                ref_y = (min(surface_ys) + max(surface_ys)) / 2.0
+                                # Finde nächsten Punkt im Mesh
+                                mesh_points = mesh.points
+                                if mesh_points.size > 0:
+                                    mesh_points_2d = mesh_points[:, :2]  # Nur X, Y
+                                    ref_point_2d = np.array([ref_x, ref_y])
+                                    distances = np.linalg.norm(mesh_points_2d - ref_point_2d, axis=1)
+                                    nearest_idx = int(np.argmin(distances))
+                                    nearest_point = mesh_points[nearest_idx]
+                                    debug_plot_x = float(nearest_point[0])
+                                    debug_plot_y = float(nearest_point[1])
+                                    debug_plot_z = float(nearest_point[2])
+                                    
+                                    # Hole SPL-Wert an dieser Stelle (wenn verfügbar)
+                                    plot_spl = None
+                                    if hasattr(mesh, 'point_data') and 'plot_scalars' in mesh.point_data:
+                                        plot_spl = float(mesh.point_data['plot_scalars'][nearest_idx])
+                                    
+                                    # 🎯 DEBUG: Vergleiche mit ursprünglichem Berechnungs-Grid
+                                    source_spl = None
+                                    if hasattr(geometry, 'source_x') and hasattr(geometry, 'source_y'):
+                                        # Finde nächstgelegenen Punkt im ursprünglichen Berechnungs-Grid
+                                        source_x_arr = np.asarray(geometry.source_x, dtype=float)
+                                        source_y_arr = np.asarray(geometry.source_y, dtype=float)
+                                        
+                                        # Finde Index im source-Grid
+                                        x_idx = int(np.argmin(np.abs(source_x_arr - debug_plot_x))) if len(source_x_arr) > 0 else 0
+                                        y_idx = int(np.argmin(np.abs(source_y_arr - debug_plot_y))) if len(source_y_arr) > 0 else 0
+                                        
+                                        if 0 <= y_idx < len(source_y_arr) and 0 <= x_idx < len(source_x_arr):
+                                            # Hole SPL-Wert aus original_plot_values (vor Clipping)
+                                            if hasattr(self, '_cached_original_plot_values'):
+                                                orig_vals = self._cached_original_plot_values
+                                                if orig_vals.shape == (len(source_y_arr), len(source_x_arr)):
+                                                    source_spl = float(orig_vals[y_idx, x_idx])
+                                    
+                                    spl_str = f", SPL={plot_spl:.2f} dB" if plot_spl is not None else ""
+                                    source_str = f", Source-Grid SPL={source_spl:.2f} dB" if source_spl is not None else ""
+                                    diff_str = f" [Diff: {plot_spl - source_spl:.2f} dB]" if plot_spl is not None and source_spl is not None else ""
+                                    
+                                    print(
+                                        f"[DEBUG Plot] Surface '{surface_id}': "
+                                        f"Referenzpunkt beim Plotten: "
+                                        f"Mesh-Punkt=({debug_plot_x:.3f}, {debug_plot_y:.3f}, {debug_plot_z:.3f})"
+                                        f"{spl_str}{source_str}{diff_str} "
+                                        f"[Punkt {nearest_idx}/{mesh.n_points}]"
+                                    )
 
         if time_mode:
             cmap_object = 'RdBu_r'

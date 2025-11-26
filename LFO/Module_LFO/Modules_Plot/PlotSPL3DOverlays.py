@@ -221,6 +221,7 @@ class SPL3DOverlayRenderer:
         active_lines_list = []   # Liste von Linien-Arrays für aktive Surfaces
         inactive_points_list = []  # Liste von Punkt-Arrays für inaktive Surfaces
         inactive_lines_list = []   # Liste von Linien-Arrays für inaktive Surfaces
+        inactive_surface_ids = []  # Liste von Surface-IDs für inaktive Surfaces (zur Zuordnung)
         
         tolerance = 1e-6
         
@@ -281,18 +282,20 @@ class SPL3DOverlayRenderer:
                 else:
                     inactive_points_list.append(np.array(closed_coords, dtype=float))
                     inactive_lines_list.append(n_points)
+                    inactive_surface_ids.append(str(surface_id))  # Speichere ID für Zuordnung
                 
                 surfaces_drawn += 1
             except (ValueError, TypeError, AttributeError, Exception):
                 continue
         
-        # Erstelle Batch-PolyData für aktive Surfaces
+        # 🎯 Zeichne Surfaces EINZELN mit IDs für Picking (nur für disabled Surfaces)
+        # Für enabled Surfaces verwenden wir die SPL-Surface und prüfen beim Klick, welche Surface den Punkt enthält
+        # Für disabled Surfaces müssen wir jede einzeln zeichnen, damit wir sie beim Klick identifizieren können
+        
+        # Zeichne aktive Surfaces als Batch (für Performance)
         if active_points_list:
             try:
-                # Kombiniere alle Punkte in einem Array
                 all_active_points = np.vstack(active_points_list)
-                
-                # Erstelle Linien-Array im VTK-Format: [N, idx0, idx1, ..., idx(N-1)]
                 active_lines_array = []
                 point_offset = 0
                 for n_pts in active_lines_list:
@@ -322,41 +325,69 @@ class SPL3DOverlayRenderer:
             except Exception:
                 pass
         
-        # Erstelle Batch-PolyData für inaktive Surfaces
-        if inactive_points_list:
+        # 🎯 Zeichne inaktive Surfaces EINZELN mit IDs für Picking
+        # Speichere Mapping von Actor-Namen zu Surface-IDs
+        if not hasattr(self, '_surface_actor_to_id'):
+            self._surface_actor_to_id = {}
+        
+        # Lösche alte Mappings für inaktive Surfaces (die nicht mehr existieren)
+        current_inactive_actor_names = {f"surface_line_{sid}" for sid in inactive_surface_ids}
+        old_inactive_actors = [
+            name for name, sid in self._surface_actor_to_id.items()
+            if name.startswith("surface_line_") and name not in current_inactive_actor_names
+        ]
+        for name in old_inactive_actors:
             try:
-                # Kombiniere alle Punkte in einem Array
-                all_inactive_points = np.vstack(inactive_points_list)
-                
-                # Erstelle Linien-Array im VTK-Format
-                inactive_lines_array = []
-                point_offset = 0
-                for n_pts in inactive_lines_list:
-                    inactive_lines_array.append(n_pts)
-                    inactive_lines_array.extend(range(point_offset, point_offset + n_pts))
-                    point_offset += n_pts
-                
-                inactive_polyline = self.pv.PolyData(all_inactive_points)
-                inactive_polyline.lines = inactive_lines_array
-                try:
-                    inactive_polyline.verts = np.empty(0, dtype=np.int64)
-                except Exception:
-                    try:
-                        inactive_polyline.verts = []
-                    except Exception:
-                        pass
-                
-                self._add_overlay_mesh(
-                    inactive_polyline,
-                    color='#000000',
-                    line_width=1.5,
-                    opacity=0.85,
-                    category='surfaces',
-                    show_vertices=False,
-                    render_lines_as_tubes=False,
-                )
+                self.plotter.remove_actor(name)
             except Exception:
                 pass
+            self._surface_actor_to_id.pop(name, None)
+            if name in self.overlay_actor_names:
+                self.overlay_actor_names.remove(name)
+            if 'surfaces' in self._category_actors and name in self._category_actors['surfaces']:
+                self._category_actors['surfaces'].remove(name)
+        
+        # Zeichne jede inaktive Surface einzeln
+        for idx, surface_id in enumerate(inactive_surface_ids):
+            if idx < len(inactive_points_list):
+                try:
+                    points = inactive_points_list[idx]
+                    n_pts = len(points)
+                    
+                    polyline = self.pv.PolyData(points)
+                    lines_array = [n_pts] + list(range(n_pts))
+                    polyline.lines = lines_array
+                    try:
+                        polyline.verts = np.empty(0, dtype=np.int64)
+                    except Exception:
+                        try:
+                            polyline.verts = []
+                        except Exception:
+                            pass
+                    
+                    # Erstelle eindeutigen Actor-Namen mit Surface-ID
+                    actor_name = f"surface_line_{surface_id}"
+                    actor = self.plotter.add_mesh(
+                        polyline,
+                        name=actor_name,
+                        color='#000000',
+                        line_width=1.5,
+                        opacity=0.85,
+                        smooth_shading=False,
+                        show_scalar_bar=False,
+                        reset_camera=False,
+                        render_lines_as_tubes=False,
+                    )
+                    
+                    # Speichere Mapping
+                    self._surface_actor_to_id[actor_name] = str(surface_id)
+                    
+                    # Füge zu Overlay-Listen hinzu
+                    if actor_name not in self.overlay_actor_names:
+                        self.overlay_actor_names.append(actor_name)
+                    self._category_actors.setdefault('surfaces', []).append(actor_name)
+                except Exception:
+                    continue
         
         t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         

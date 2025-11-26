@@ -141,13 +141,18 @@ class SurfaceGridCalculator(ModuleBase):
         # SCHRITT 3: 2D-Meshgrid erstellen
         # ============================================================
         X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-        if DEBUG_SURFACE_GRID:
-            total_points = int(X_grid.size)
-            print(
-                "[SurfaceGridCalculator] Berechnungs-Grid:",
-                f"shape={X_grid.shape} (ny, nx),",
-                f"total_points={total_points}",
-            )
+        # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
+        total_points = int(X_grid.size)
+        nx_points = len(sound_field_x)
+        ny_points = len(sound_field_y)
+        print(
+            "[SurfaceGridCalculator] Berechnungs-Grid erstellt:",
+            f"resolution={resolution:.3f}m, "
+            f"shape={X_grid.shape} (ny={ny_points}, nx={nx_points}), "
+            f"total_points={total_points}, "
+            f"Bereich x=[{float(sound_field_x[0]):.2f}, {float(sound_field_x[-1]):.2f}]m, "
+            f"y=[{float(sound_field_y[0]):.2f}, {float(sound_field_y[-1]):.2f}]m"
+        )
         
         # ============================================================
         # SCHRITT 4: Resolution-Check (optional, gibt Warnung aus)
@@ -382,6 +387,58 @@ class SurfaceGridCalculator(ModuleBase):
             if len(points) >= 3:
                 surface_mask = self._points_in_polygon_batch(x_coords, y_coords, points)
                 combined_mask = combined_mask | surface_mask
+                
+                # 🎯 DEBUG: Referenzpunkt pro Surface beim Grid erstellen
+                # Wähle den Mittelpunkt der Bounding Box als Referenzpunkt
+                surface_xs = [p.get("x", 0.0) for p in points]
+                surface_ys = [p.get("y", 0.0) for p in points]
+                if surface_xs and surface_ys:
+                    ref_x = (min(surface_xs) + max(surface_xs)) / 2.0
+                    ref_y = (min(surface_ys) + max(surface_ys)) / 2.0
+                    # Finde nächsten Grid-Punkt der wirklich im Surface liegt
+                    ny, nx = x_coords.shape
+                    # Suche alle Punkte im Surface und wähle den nähesten zum BBox-Mitte
+                    surface_mask_flat = surface_mask.flatten()
+                    if np.any(surface_mask_flat):
+                        # Finde Indizes der Punkte im Surface
+                        surface_indices = np.where(surface_mask_flat)[0]
+                        # Berechne Distanzen zum Referenzpunkt
+                        surface_points = np.column_stack((
+                            x_coords.flatten()[surface_indices],
+                            y_coords.flatten()[surface_indices]
+                        ))
+                        ref_point_2d = np.array([ref_x, ref_y])
+                        distances = np.linalg.norm(surface_points - ref_point_2d, axis=1)
+                        nearest_surface_idx = surface_indices[np.argmin(distances)]
+                        y_idx, x_idx = np.unravel_index(nearest_surface_idx, x_coords.shape)
+                    else:
+                        # Fallback: Suche einfach nächstgelegenen Punkt
+                        x_idx = int(np.argmin(np.abs(x_coords[ny//2, :] - ref_x))) if nx > 0 else 0
+                        y_idx = int(np.argmin(np.abs(y_coords[:, nx//2] - ref_y))) if ny > 0 else 0
+                    
+                    if 0 <= y_idx < ny and 0 <= x_idx < nx:
+                        grid_x = float(x_coords[y_idx, x_idx])
+                        grid_y = float(y_coords[y_idx, x_idx])
+                        grid_z = 0.0  # Wird später in Z_grid gesetzt
+                        
+                        # Speichere Referenzpunkt für späteren Vergleich (in Settings oder als Attribut)
+                        if not hasattr(self, '_surface_ref_points'):
+                            self._surface_ref_points = {}
+                        self._surface_ref_points[surface_id] = {
+                            'grid_x': grid_x,
+                            'grid_y': grid_y,
+                            'grid_z': grid_z,
+                            'grid_idx': (y_idx, x_idx),
+                            'bbox_center': (ref_x, ref_y)
+                        }
+                        
+                        print(
+                            f"[DEBUG Grid] Surface '{surface_id}': "
+                            f"Referenzpunkt beim Grid erstellen: "
+                            f"BBox-Mitte=({ref_x:.3f}, {ref_y:.3f}), "
+                            f"Grid-Punkt=({grid_x:.3f}, {grid_y:.3f}, {grid_z:.3f}) "
+                            f"[idx=({y_idx}, {x_idx})]"
+                        )
         
         # 🎯 ERWEITERE MASKE FÜR BERECHNUNG: Erfasse auch Randpunkte
         if include_edges:
