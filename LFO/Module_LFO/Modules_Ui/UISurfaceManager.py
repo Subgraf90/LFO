@@ -1662,6 +1662,10 @@ class UISurfaceManager(ModuleBase):
                 
                 # Lade TreeWidget neu
                 self.load_surfaces()
+                
+                # 🎯 Trigger Calc/Plot Update: Surface wurde gelöscht
+                if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
         
         elif item_type == "group":
             group_id = item.data(0, Qt.UserRole)
@@ -1683,6 +1687,9 @@ class UISurfaceManager(ModuleBase):
                     if group_id in self.surface_groups:
                         del self.surface_groups[group_id]
                     self.load_surfaces()
+                    # 🎯 Trigger Calc/Plot Update: Gruppe wurde gelöscht
+                    if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                        self.main_window.draw_plots.update_plots_for_surface_state()
             except ValueError:
                 from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.information(

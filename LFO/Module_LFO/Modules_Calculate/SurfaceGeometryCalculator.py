@@ -622,7 +622,15 @@ def prepare_plot_geometry(
         upscale_factor = int(requested_upscale)
     except (TypeError, ValueError):
         upscale_factor = default_upscale
+    # Begrenze Upscaling für Performance: zu hohe Werte erzeugen Millionen Plot-Punkte
     upscale_factor = max(1, upscale_factor)
+    if upscale_factor > 6:
+        if DEBUG_SURFACE_GEOMETRY:
+            print(
+                "[SurfaceGeometry] plot_upscale_factor zu hoch, clamp auf 6 "
+                f"(requested={upscale_factor})"
+            )
+        upscale_factor = 6
 
     plot_x = source_x.copy()
     plot_y = source_y.copy()
@@ -652,18 +660,20 @@ def prepare_plot_geometry(
         plot_vals = _resample_values_to_grid(plot_vals, orig_plot_x, orig_plot_y, expanded_x, expanded_y)
 
         # Erstelle zwei Masken:
-        # 1. Erweiterte Maske für Z-Berechnung (damit Randpunkte Z-Werte bekommen)
-        # 2. Nicht-erweiterte Maske für strenges Clipping (damit Plot-Daten nicht über Surface hinausgehen)
+        # 1. Erweiterte Maske (optional, aktuell nicht für Z verwendet)
+        # 2. Nicht-erweiterte Maske für strenges Clipping UND Z-Berechnung,
+        #    damit die Z-Werte exakt an den Surface-Rändern enden.
         temp_plot_mask_dilated = _build_plot_surface_mask(expanded_x, expanded_y, settings, dilate=True)
         temp_plot_mask_strict = _build_plot_surface_mask(expanded_x, expanded_y, settings, dilate=False)
         
         if z_coords is not None:
             # 🎯 WICHTIG: Berechne Z-Koordinaten direkt im Plot-Raster neu,
             # anstatt zu resampeln. Resampling würde 0-Werte extrapolieren.
-            # Verwende erweiterte Maske für Z-Berechnung
+            # Verwende die STRIKTE Maske für Z-Berechnung, damit Randpunkte
+            # exakt auf der Surface-Geometrie liegen (kein aufgeblasener Ring).
             orig_z_coords = z_coords.copy()  # Für Fallback speichern
             z_coords = _recompute_z_coordinates_in_plot_grid(
-                expanded_x, expanded_y, settings, container, temp_plot_mask_dilated
+                expanded_x, expanded_y, settings, container, temp_plot_mask_strict
             )
             if z_coords is None:
                 # Fallback: Resampling nur wenn Neuberechnung fehlschlägt
@@ -820,62 +830,90 @@ def _recompute_z_coordinates_in_plot_grid(
     else:
         point_mask = np.ones((ny, nx), dtype=bool)  # Alle Punkte
     
-    # Erste Runde: Berechne Z für Punkte innerhalb der Polygone
-    x_flat = X.flatten()
-    y_flat = Y.flatten()
-    mask_flat = point_mask.flatten()
-    
-    for idx in range(len(x_flat)):
-        if not mask_flat[idx]:  # Nur Punkte in der Maske
+    # ------------------------------------------------------------
+    # Erste Runde (vektorisiert):
+    # Für jede Surface:
+    #   - Maske im Plot-Grid bestimmen
+    #   - Z-Ebene auf gesamtem Grid auswerten
+    #   - Beiträge mitteln, falls mehrere Surfaces überlappen
+    # ------------------------------------------------------------
+    Z_sum = np.zeros_like(Z_grid, dtype=float)
+    Z_count = np.zeros_like(Z_grid, dtype=float)
+
+    for points, model in surfaces_with_models:
+        surface_mask = _points_in_polygon_batch_plot(X, Y, points)
+        if surface_mask is None:
             continue
-        
-        x_point = x_flat[idx]
-        y_point = y_flat[idx]
-        
-        z_values = []
-        for points, model in surfaces_with_models:
-            if _point_in_polygon_simple(x_point, y_point, points):
-                z_val = evaluate_surface_plane(model, x_point, y_point)
-                z_values.append(z_val)
-        
-        if z_values:
-            iy, ix = np.unravel_index(idx, (ny, nx))
-            Z_grid[iy, ix] = float(np.mean(z_values))
-    
+        # Nur Punkte berücksichtigen, die auch in der globalen Plot-Maske liegen
+        effective_mask = surface_mask & point_mask
+        if not np.any(effective_mask):
+            continue
+
+        Z_surface = _evaluate_plane_on_grid(model, X, Y)
+        Z_sum[effective_mask] += Z_surface[effective_mask]
+        Z_count[effective_mask] += 1.0
+
+    inside_mask = (Z_count > 0.0)
+    Z_grid[inside_mask] = Z_sum[inside_mask] / Z_count[inside_mask]
+
+    # ------------------------------------------------------------
     # Zweite Runde: Fülle Z-Werte für Randpunkte iterativ
-    # durch Interpolation von benachbarten Punkten mit Z-Werten
-    # Mehrere Iterationen, damit auch weiter entfernte Randpunkte gefüllt werden
+    # (Punkte in point_mask, die noch Z==0 haben, aber an befüllte
+    # Nachbarn angrenzen). Das glättet Kanten ohne die Fläche zu
+    # verlassen.
+    # ------------------------------------------------------------
     points_with_z_before = int(np.sum(Z_grid != 0.0))
+
+    # Kantenmaske: Punkte in point_mask, die einen Nachbarn außerhalb der Maske haben
+    # → diese markieren die eigentliche Surface-Grenze und sollen NICHT durch
+    #    die Füll-Interpolation verändert werden, damit die Geometrie exakt bleibt.
+    padded_pm = np.pad(point_mask, ((1, 1), (1, 1)), mode="constant", constant_values=False)
+    edge_mask = np.zeros_like(point_mask, dtype=bool)
+    for dj in (-1, 0, 1):
+        for di in (-1, 0, 1):
+            if di == 0 and dj == 0:
+                continue
+            ys = 1 + dj
+            ye = ys + ny
+            xs = 1 + di
+            xe = xs + nx
+            neighbor_pm = padded_pm[ys:ye, xs:xe]
+            edge_mask |= point_mask & (~neighbor_pm)
     max_iterations = 5
+    iteration = 0
     for iteration in range(max_iterations):
-        filled_count = 0
-        for idx in range(len(x_flat)):
-            if not mask_flat[idx]:  # Nur Punkte in der Maske
-                continue
-            
-            iy, ix = np.unravel_index(idx, (ny, nx))
-            if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
-                continue
-            
-            # Finde benachbarte Punkte mit Z-Werten
-            neighbor_z = []
-            for di in [-1, 0, 1]:
-                for dj in [-1, 0, 1]:
-                    if di == 0 and dj == 0:
-                        continue
-                    niy, nix = iy + dj, ix + di
-                    if 0 <= niy < ny and 0 <= nix < nx:
-                        if point_mask[niy, nix] and Z_grid[niy, nix] != 0.0:
-                            neighbor_z.append(Z_grid[niy, nix])
-            
-            if neighbor_z:
-                # Verwende Durchschnitt der benachbarten Z-Werte
-                Z_grid[iy, ix] = float(np.mean(neighbor_z))
-                filled_count += 1
-        
-        # Wenn keine neuen Punkte gefüllt wurden, breche ab
-        if filled_count == 0:
+        # Punkte mit gültigem Z innerhalb der Maske
+        known = (Z_grid != 0.0) & point_mask
+        # Unbekannte Z nur für innere Punkte (nicht am äußeren Rand)
+        unknown = (Z_grid == 0.0) & point_mask & (~edge_mask)
+        if not np.any(unknown):
             break
+
+        # Nachbar-Summen und -Anzahl vektorbasiert berechnen
+        padded_Z = np.pad(Z_grid, ((1, 1), (1, 1)), mode="edge")
+        padded_known = np.pad(known, ((1, 1), (1, 1)), mode="constant", constant_values=False)
+
+        sum_neighbors = np.zeros_like(Z_grid, dtype=float)
+        count_neighbors = np.zeros_like(Z_grid, dtype=float)
+
+        for dj in (-1, 0, 1):
+            for di in (-1, 0, 1):
+                if di == 0 and dj == 0:
+                    continue
+                ys = 1 + dj
+                ye = ys + ny
+                xs = 1 + di
+                xe = xs + nx
+                neighbor_Z = padded_Z[ys:ye, xs:xe]
+                neighbor_known = padded_known[ys:ye, xs:xe]
+                sum_neighbors += neighbor_Z * neighbor_known
+                count_neighbors += neighbor_known.astype(float)
+
+        fill_mask = unknown & (count_neighbors > 0)
+        if not np.any(fill_mask):
+            break
+
+        Z_grid[fill_mask] = sum_neighbors[fill_mask] / count_neighbors[fill_mask]
     
     points_with_z_after = int(np.sum(Z_grid != 0.0))
     if DEBUG_SURFACE_GEOMETRY:
@@ -1108,6 +1146,35 @@ def _points_in_polygon_batch_plot(
 
     mask = (inside | on_edge).reshape(x_coords.shape)
     return mask
+
+
+def _evaluate_plane_on_grid(
+    model: Dict[str, float],
+    X: np.ndarray,
+    Y: np.ndarray,
+) -> np.ndarray:
+    """
+    Vektorisierte Auswertung eines Planar-Modells auf einem 2D-Grid.
+    """
+    mode = model.get("mode")
+    if mode == "constant":
+        base = float(model.get("base", 0.0))
+        return np.full_like(X, base, dtype=float)
+    if mode == "x":
+        slope = float(model.get("slope", 0.0))
+        intercept = float(model.get("intercept", 0.0))
+        return slope * X + intercept
+    if mode == "y":
+        slope = float(model.get("slope", 0.0))
+        intercept = float(model.get("intercept", 0.0))
+        return slope * Y + intercept
+    if mode == "xy":
+        slope_x = float(model.get("slope_x", model.get("slope", 0.0)))
+        slope_y = float(model.get("slope_y", 0.0))
+        intercept = float(model.get("intercept", 0.0))
+        return slope_x * X + slope_y * Y + intercept
+    base = float(model.get("base", 0.0))
+    return np.full_like(X, base, dtype=float)
 
 
 def _binary_closing_minimal(mask: np.ndarray) -> np.ndarray:

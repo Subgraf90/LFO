@@ -587,12 +587,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         impulse_actors = self.overlay_helper._category_actors.get('impulse', [])
         print(f"[DEBUG 3D-Plot] Andere Overlays - Axis: {len(axis_actors)}, Speakers: {len(speakers_actors)}, Impulse: {len(impulse_actors)}")
         
-        # 🎯 Beim ersten Start: Zoom auf Default-Surface einstellen (nach dem Zeichnen aller Overlays)
+        # 🎯 Beim ersten Start: Zoom auf das Default-Surface einstellen (nach dem Zeichnen aller Overlays)
         if (not getattr(self, "_did_initial_overlay_zoom", False)) and 'surfaces' in categories_to_refresh:
-            print(
-                f"[DEBUG 3D-Plot] _did_initial_overlay_zoom={self._did_initial_overlay_zoom}, "
-                "rufe _zoom_to_default_surface() auf..."
-            )
             self._zoom_to_default_surface()
         
         self.render()
@@ -651,21 +647,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         state = self._capture_camera()
         if state is not None:
             self._camera_state = state
-            # 🎯 Debug: Logge jeden Kamera-Zustand (jedes Mal, wenn sich der 3D-Plot bewegt / gerendert wird)
-            try:
-                pos = state.get('position')
-                fp = state.get('focal_point')
-                dist = state.get('distance', None)
-                par = state.get('parallel_projection', None)
-                pscale = state.get('parallel_scale', None)
-                vang = state.get('view_angle', None)
-                print(
-                    "[DEBUG 3D-Plot] CameraState update: "
-                    f"position={pos}, focal_point={fp}, distance={dist}, "
-                    f"parallel_projection={par}, parallel_scale={pscale}, view_angle={vang}"
-                )
-            except Exception:
-                pass
 
     def _capture_camera(self) -> Optional[dict]:
         if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
@@ -1014,15 +995,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     
     def _zoom_to_default_surface(self) -> None:
         """Stellt den Zoom auf das Default-Surface ein."""
-        print(f"[DEBUG 3D-Plot] _zoom_to_default_surface() START")
         try:
             # Hole Default-Surface aus Settings
             default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
             surface_definitions = getattr(self.settings, 'surface_definitions', {})
-            print(f"[DEBUG 3D-Plot] default_surface_id: {default_surface_id}, surface_definitions keys: {list(surface_definitions.keys())}")
             
             if default_surface_id not in surface_definitions:
-                print(f"[DEBUG 3D-Plot] Default-Surface '{default_surface_id}' nicht in surface_definitions gefunden")
                 return
             
             surface_def = surface_definitions[default_surface_id]
@@ -1051,17 +1029,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             height = abs(max_y - min_y) if max_y != min_y else 1.0
             max_extent = max(width, height)
             
-            print(f"[DEBUG 3D-Plot] Surface-Bounds: x=[{min_x:.2f}, {max_x:.2f}], y=[{min_y:.2f}, {max_y:.2f}], z=[{min_z:.2f}, {max_z:.2f}]")
-            print(f"[DEBUG 3D-Plot] Surface-Ausdehnung: width={width:.2f}, height={height:.2f}, max_extent={max_extent:.2f}")
-            
             # Setze Bounds im Plotter und zoome darauf
             if hasattr(self.plotter, 'camera') and self.plotter.camera is not None:
                 # Setze die Kamera-Position auf die Mitte des Surfaces
                 center_x = (min_x + max_x) / 2.0
                 center_y = (min_y + max_y) / 2.0
                 center_z = (min_z + max_z) / 2.0
-                
-                print(f"[DEBUG 3D-Plot] Surface-Mitte: ({center_x:.2f}, {center_y:.2f}, {center_z:.2f})")
                 
                 # Stelle sicher, dass die Kamera auf die Top-Ansicht eingestellt ist
                 self.plotter.view_xy()
@@ -1080,7 +1053,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     distance = max_extent * 1.0
                     min_distance = 20.0
                     distance = max(distance, min_distance)
-                    print(f"[DEBUG 3D-Plot] Kamera-Abstand: {distance:.2f} (max_extent={max_extent:.2f}, Faktor=1.0)")
                     cam.position = (center_x, center_y, center_z + distance)
                     cam.focal_point = (center_x, center_y, center_z)
                     cam.up = (0, 1, 0)
@@ -1095,7 +1067,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         # Wir wollen max_extent (Breite oder Höhe) ≈ 0.9 * visible_height
                         # → parallel_scale ≈ max_extent / (2 * 0.9) ≈ max_extent * 0.56
                         scale = max_extent * 0.56
-                        print(f"[DEBUG 3D-Plot] Parallel Scale: {scale:.2f} (max_extent={max_extent:.2f})")
                         cam.parallel_scale = scale
                 else:
                     if hasattr(cam, 'view_angle'):
@@ -1105,23 +1076,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         visible_extent = max_extent * 1.1
                         angle = 2.0 * np.arctan(visible_extent / (2.0 * distance)) * 180.0 / np.pi
                         angle = max(30.0, min(60.0, angle))  # Mindestwinkel erhöht auf 30°
-                        print(f"[DEBUG 3D-Plot] View Angle: {angle:.2f}° (visible_extent={visible_extent:.2f}, distance={distance:.2f})")
                         cam.view_angle = angle
-
-                # Zusätzlicher Debug-Print für den eingestellten Zoom (unabhängig von Projektionsart)
-                try:
-                    proj_mode = "parallel" if getattr(cam, "parallel_projection", False) else "perspective"
-                    parallel_scale = getattr(cam, "parallel_scale", None)
-                    view_angle = getattr(cam, "view_angle", None)
-                    cam_pos = getattr(cam, "position", None)
-                    cam_fp = getattr(cam, "focal_point", None)
-                    print(
-                        "[DEBUG 3D-Plot] Eingestellter Zoom: "
-                        f"mode={proj_mode}, parallel_scale={parallel_scale}, "
-                        f"view_angle={view_angle}, position={cam_pos}, focal_point={cam_fp}"
-                    )
-                except Exception:
-                    pass
                 
                 # Reset Clipping Range
                 if hasattr(cam, 'ResetClippingRange'):
@@ -1139,13 +1094,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self.render()
                 # Nach dem Rendern den aktuellen Kamera-State als neuen Referenzzustand speichern
                 self._camera_state = self._capture_camera()
-                print(f"[DEBUG 3D-Plot] Zoom auf Default-Surface erfolgreich eingestellt (Kamera-State übernommen)")
         except Exception as e:
-            print(f"[DEBUG 3D-Plot] Fehler beim Zoomen auf Default-Surface: {e}")
             import traceback
             traceback.print_exc()
             pass
-        print(f"[DEBUG 3D-Plot] _zoom_to_default_surface() ENDE")
 
     def _create_view_button(self, orientation: str, tooltip: str, callback) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self.widget)

@@ -870,6 +870,11 @@ class SurfaceDockWidget(QDockWidget):
             return
         if success:
             self.load_surfaces()
+            # 🎯 Trigger Calc/Plot Update: Gruppe wurde gelöscht
+            # Entfernte Surfaces beeinflussen Berechnung und Overlays.
+            if hasattr(self.main_window, "draw_plots"):
+                if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
 
     def _handle_surface_selection_changed(self) -> None:
         if self._loading_surfaces:
