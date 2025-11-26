@@ -185,6 +185,11 @@ class Settings:
             'measurement_size': 4,
             'impulse_plot_height': 180,
             'resolution': 1,
+            # Beobachtungshöhen / Auswerte-Ebene (z): 0.0 = Surface-Ebene
+            # Wird von FEM- und FDTD-Solvern verwendet (_get_output_plane_height)
+            'listener_height': 0.0,
+            'fem_output_plane_height': 0.0,
+            'fdtd_output_plane_height': 0.0,
             # Anzahl der Frequenzpunkte innerhalb des Bandes für spätere Bandmittelung
             # (wird aktuell nur als Einstellung gespeichert und noch nicht in den
             #  Berechnungen verwendet)
@@ -213,6 +218,14 @@ class Settings:
                 'step': 3,
                 'tick_step': 6
             },
+            # Visualisierung: Upscaling/Interpolation der SPL-Fläche im 3D-Plot
+            # False = Nearest-Neighbour (blockig, aber exakt zu Berechnungszellen)
+            # True  = Lineare Interpolation (glattere Darstellung, weniger Zacken)
+            'spl_plot_use_linear_resample': True,
+            # Visualisierung: PyVista sample() für feines Surface-Mesh (eliminiert Zacken an Rändern)
+            # False = Alte Methode (kartesisches Grid mit Masken-Clipping)
+            # True  = PyVista sample() auf feinem Surface-Mesh (glatte Ränder, keine Zacken)
+            'spl_plot_use_pyvista_sample': True,
             'impulse_points': [],
             'polar_frequencies': {
                 'red': 31.5,

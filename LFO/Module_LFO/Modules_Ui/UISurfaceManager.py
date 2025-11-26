@@ -277,6 +277,10 @@ class UISurfaceManager(ModuleBase):
             # Verbinde Signale mit Slots
             # Eigener Handler, der sowohl die UI-Tabs als auch die 3D-Overlays aktualisiert
             self.surface_tree_widget.itemSelectionChanged.connect(self._handle_surface_tree_selection_changed)
+            # Zusätzlich auch auf Änderungen des aktuellen Items reagieren (falls Selektion unverändert bleibt)
+            self.surface_tree_widget.currentItemChanged.connect(
+                lambda _current, _previous: self._handle_surface_tree_selection_changed()
+            )
             self.surface_tree_widget.itemChanged.connect(self.on_surface_item_text_changed)
             
             # Füge das TreeWidget zum Layout hinzu
@@ -405,19 +409,6 @@ class UISurfaceManager(ModuleBase):
         
         # Lade manuelle Gruppen (ohne Root-Gruppe)
         group_store = self._group_controller.list_groups()
-        logger.debug("load_surfaces: %d Gruppen (root=%s)", len(group_store), root_group_id)
-        for group_id, group in group_store.items():
-            if not group:
-                continue
-            logger.debug(
-                "  Gruppe %s (%s): parent=%s, children=%d, surfaces=%d",
-                group_id,
-                group.name,
-                group.parent_id,
-                len(group.child_groups),
-                len(group.surface_ids),
-            )
-        
         # Lade alle Gruppen außer der Root-Gruppe
         for group_id, group in group_store.items():
             if group_id != root_group_id:
@@ -526,6 +517,8 @@ class UISurfaceManager(ModuleBase):
     
     def _create_group_item(self, group):
         """Erstellt ein TreeWidgetItem für eine Gruppe"""
+        import logging
+        logger = logging.getLogger(__name__)
         item = QTreeWidgetItem()
         item.setText(0, group.name)
         item.setData(0, Qt.UserRole, group.group_id)
@@ -547,6 +540,34 @@ class UISurfaceManager(ModuleBase):
 
     # ---- Auswahl-Handling für rote Umrandung ------------------------
 
+    def _collect_all_surfaces_from_group(self, group_id: str, surface_store: Dict) -> List[str]:
+        """
+        Sammelt rekursiv alle Surface-IDs aus einer Gruppe und ihren Untergruppen.
+        
+        Args:
+            group_id: ID der Gruppe
+            surface_store: Dictionary mit allen Surface-Definitionen
+            
+        Returns:
+            Liste aller Surface-IDs aus der Gruppe und ihren Untergruppen
+        """
+        highlight_ids = []
+        group = self._group_controller.get_group(group_id)
+        if not group:
+            return highlight_ids
+        
+        # Sammle direkte Surfaces der Gruppe
+        for sid in getattr(group, "surface_ids", []):
+            if sid in surface_store:
+                highlight_ids.append(sid)
+        
+        # Sammle rekursiv Surfaces aus Untergruppen
+        for child_group_id in getattr(group, "child_groups", []):
+            child_surfaces = self._collect_all_surfaces_from_group(child_group_id, surface_store)
+            highlight_ids.extend(child_surfaces)
+        
+        return highlight_ids
+
     def _handle_surface_tree_selection_changed(self):
         """
         Reagiert auf Auswahländerungen im Surface-Tree:
@@ -558,15 +579,12 @@ class UISurfaceManager(ModuleBase):
             return
 
         selected_item = self.surface_tree_widget.currentItem()
-        print("[DEBUG SurfaceUI] _handle_surface_tree_selection_changed() aufgerufen")
         if not selected_item:
             # Keine Auswahl → keine Highlights
             setattr(self.settings, "active_surface_highlight_ids", [])
-            print("[DEBUG SurfaceUI] Keine Auswahl im Tree – active_surface_highlight_ids geleert")
             return
 
         item_type = selected_item.data(0, Qt.UserRole + 1)
-        print(f"[DEBUG SurfaceUI] Selektierter Item-Typ: {item_type}")
 
         # UI-Tabs wie bisher aktualisieren
         try:
@@ -583,19 +601,33 @@ class UISurfaceManager(ModuleBase):
                 surface_id = surface_id.get("id")
             if isinstance(surface_id, str) and surface_id in surface_store:
                 highlight_ids = [surface_id]
-            print(f"[DEBUG SurfaceUI] Surface ausgewählt: {highlight_ids}")
+                # Setze zusätzlich das klassische active_surface_id,
+                # damit auch ältere Signatur-Logik im Plot auf Auswahl reagiert.
+                try:
+                    setattr(self.settings, "active_surface_id", surface_id)
+                except Exception:
+                    pass
         elif item_type == "group":
-            group_id = selected_item.data(0, Qt.UserRole)
-            group = self._group_controller.get_group(group_id)
-            if group:
-                for sid in getattr(group, "surface_ids", []):
-                    if sid in surface_store:
-                        highlight_ids.append(sid)
-            print(f"[DEBUG SurfaceUI] Gruppe ausgewählt, Surfaces: {highlight_ids}")
+            group_id_data = selected_item.data(0, Qt.UserRole)
+            # group_id kann ein Dict sein (wie in WindowSurfaceWidget) oder direkt die ID
+            if isinstance(group_id_data, dict):
+                group_id = group_id_data.get("id")
+            else:
+                group_id = group_id_data
+            # Sammle rekursiv alle Surfaces aus der Gruppe und ihren Untergruppen
+            if group_id:
+                highlight_ids = self._collect_all_surfaces_from_group(group_id, surface_store)
+            else:
+                highlight_ids = []
+            
+            # Setze active_surface_id auf None, damit nur highlight_ids verwendet werden
+            try:
+                setattr(self.settings, "active_surface_id", None)
+            except Exception:
+                pass
 
         # In Settings speichern, damit PlotSPL3DOverlays die Info nutzen kann
         setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
-        print(f"[DEBUG SurfaceUI] active_surface_highlight_ids gesetzt auf: {highlight_ids}")
 
         # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
         main_window = getattr(self, "main_window", None)
@@ -1897,9 +1929,25 @@ class _SurfaceGroupController:
             return
         
         group = self._ensure_group_object(target_group_id)
+        if group is None:
+            # Prüfe nochmal im Store, ob die Gruppe vielleicht als Dict existiert
+            store = self._ensure_group_store()
+            if target_group_id in store:
+                # Gruppe existiert bereits, lade sie
+                group = self._ensure_group_object(target_group_id)
+        
         if group is None and create_missing:
+            # Gruppe existiert nicht - erstelle sie mit group_id als temporären Namen
+            # (der Name sollte später aktualisiert werden, wenn die Gruppe durch _ensure_group_for_label erstellt wurde)
+            # Aber eigentlich sollte die Gruppe bereits existieren, wenn sie durch _ensure_group_for_label erstellt wurde
+            # Wenn group_id wie "group_1" aussieht, versuche nicht, eine Gruppe zu erstellen
+            # (die Gruppe sollte bereits existieren)
+            if target_group_id.startswith("group_"):
+                return
+            # Ansonsten erstelle eine neue Gruppe mit group_id als Name (Fallback)
             group = self.create_surface_group(target_group_id, parent_id=None, group_id=target_group_id)
-        elif group is None:
+        
+        if group is None:
             # Gruppe existiert nicht und soll nicht erstellt werden
             return
         
@@ -1953,7 +2001,11 @@ class _SurfaceGroupController:
         
         store = self._ensure_group_store()
         if group_id in store:
-            return self._ensure_group_object(group_id)
+            existing_group = self._ensure_group_object(group_id)
+            # Wenn die Gruppe bereits existiert, aktualisiere den Namen nur, wenn er noch nicht gesetzt ist
+            if existing_group and existing_group.name == group_id and name != group_id:
+                existing_group.name = name
+            return existing_group
         
         group = SurfaceGroup(
             group_id=group_id,
@@ -2054,9 +2106,16 @@ class _SurfaceGroupController:
     
     def _ensure_group_store(self) -> Dict[str, SurfaceGroup]:
         store = getattr(self.settings, "surface_groups", None)
-        if not isinstance(store, dict) or not store:
+        if not isinstance(store, dict):
+            # Store ist None oder kein Dict - erstelle neuen Store
             store = self._create_default_group_store()
-        self.settings.surface_groups = store
+            self.settings.surface_groups = store
+        elif not store:
+            # Store ist ein leeres Dict - behalte es, aber setze es explizit
+            self.settings.surface_groups = store
+        else:
+            # Store existiert und hat Inhalt - setze ihn explizit (falls nötig)
+            self.settings.surface_groups = store
         return store
     
     def _create_default_group_store(self) -> Dict[str, SurfaceGroup]:
@@ -2072,6 +2131,7 @@ class _SurfaceGroupController:
             return None
         if isinstance(group, SurfaceGroup):
             return group
+        # Gruppe ist ein Dict - konvertiere zu SurfaceGroup
         obj = SurfaceGroup.from_dict(group_id, group)
         store[group_id] = obj
         return obj

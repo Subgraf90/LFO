@@ -556,24 +556,17 @@ class SurfaceGridCalculator(ModuleBase):
         if not surfaces:
             return vertical_samples
 
-        # Verwende für die vertikalen Flächen die gleiche effektive Auflösung
-        # wie für die anderen Flächen im Plot: Basis-Resolution geteilt durch
-        # den Plot-Upscale-Faktor (geclamped auf 1..6 wie in SurfaceGeometry).
+        # Für vertikale Flächen soll die Berechnungsauflösung NICHT vom
+        # Plot-Upscale-Faktor abhängen, sondern ausschließlich von der
+        # globalen Grid-Resolution. Wir verfeinern die Auflösung entlang
+        # der Wand jedoch leicht (Faktor 2), damit die sichtbaren Stufen
+        # an schrägen Kanten ähnlich fein wirken wie bei den XY-Plots,
+        # ohne zusätzliche Interpolation der SPL-Werte.
         base_resolution = float(resolution or 1.0)
-        requested_upscale = getattr(self.settings, "plot_upscale_factor", None)
-        if requested_upscale is None:
-            requested_upscale = 3
-        try:
-            upscale_factor = int(requested_upscale)
-        except (TypeError, ValueError):
-            upscale_factor = 3
-        upscale_factor = max(1, min(6, upscale_factor))
-        # Für vertikale Flächen etwas feinere Auflösung als im Haupt-Plot:
-        # wir teilen zusätzlich durch 2, damit die sichtbaren Stufen in Z
-        # deutlich kleiner werden, ohne das globale Rechengitter zu verändern.
-        step = base_resolution / float(upscale_factor * 2)
+        refine_factor = 2.0
+        step = base_resolution / refine_factor
         if step <= 0.0:
-            step = base_resolution / float(upscale_factor) if upscale_factor > 0 else (base_resolution or 1.0)
+            step = base_resolution or 1.0
 
         for surface_id, definition in surfaces:
             surface = definition
@@ -651,7 +644,9 @@ class SurfaceGridCalculator(ModuleBase):
                         surface_id=surface_id,
                         name=surface.name,
                         coordinates=coords,
-                        indices=np.zeros((0, 2), dtype=int),
+                        # Speichere die lokalen Gitter-Indizes, damit wir in der
+                        # Plot-Geometrie wieder ein 2D-Gitter rekonstruieren können.
+                        indices=np.column_stack((rows, cols)),
                         grid_shape=mask.shape,
                         is_vertical=True,
                     )
@@ -693,7 +688,8 @@ class SurfaceGridCalculator(ModuleBase):
                         surface_id=surface_id,
                         name=surface.name,
                         coordinates=coords,
-                        indices=np.zeros((0, 2), dtype=int),
+                        # Lokale Indizes im (u,v)-Raster speichern
+                        indices=np.column_stack((rows, cols)),
                         grid_shape=mask.shape,
                         is_vertical=True,
                     )
@@ -870,8 +866,10 @@ def _interpolate_z_coordinates_impl(
         else:
             points_without_z += 1
     
-    # Zweite Runde: Fülle Z-Werte für Punkte in erweiterter Maske (außerhalb Polygone)
-    # durch Interpolation von benachbarten Punkten mit Z-Werten
+    # Zweite Runde: Fülle Z-Werte für Punkte in der ERWEITERTEN Maske (außerhalb der
+    # eigentlichen Polygone). Statt eines lokalen Nachbarschafts-Mittels (führt zu
+    # Treppen/Stufen) verwenden wir hier eine saubere planare Fortsetzung der
+    # jeweiligen Surface-Ebene(n).
     for idx in indices:
         iy, ix = np.unravel_index(idx, x_coords.shape)
         if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
@@ -879,38 +877,28 @@ def _interpolate_z_coordinates_impl(
         
         x_point = x_flat[idx]
         y_point = y_flat[idx]
-        
-        # Finde benachbarte Punkte mit Z-Werten
-        neighbor_z = []
-        for di in [-1, 0, 1]:
-            for dj in [-1, 0, 1]:
-                if di == 0 and dj == 0:
-                    continue
-                niy, nix = iy + dj, ix + di
-                if 0 <= niy < Z_grid.shape[0] and 0 <= nix < Z_grid.shape[1]:
-                    if Z_grid[niy, nix] != 0.0:
-                        neighbor_z.append(Z_grid[niy, nix])
-        
-        if neighbor_z:
-            # Verwende Durchschnitt der benachbarten Z-Werte
-            Z_grid[iy, ix] = float(np.mean(neighbor_z))
+
+        # Nutze die planaren Modelle aller relevanten Surfaces und setze Z als
+        # Mittelwert dieser Ebenen (saubere lineare Fortsetzung über den Rand).
+        z_values = []
+        for points, model, surface_name in normalized_surfaces:
+            # Grober Bounding-Box-Check, um nur nahe Flächen zu berücksichtigen
+            xs = [p["x"] for p in points]
+            ys = [p["y"] for p in points]
+            if (
+                x_point < min(xs) - 1e-6
+                or x_point > max(xs) + 1e-6
+                or y_point < min(ys) - 1e-6
+                or y_point > max(ys) + 1e-6
+            ):
+                continue
+            z_val = evaluate_surface_plane(model, x_point, y_point)
+            z_values.append(z_val)
+
+        if z_values:
+            Z_grid[iy, ix] = float(np.mean(z_values))
             points_with_z += 1
             points_without_z -= 1
-            
-            # Prüfe ob Randpunkt
-            is_edge = False
-            if iy > 0 and iy < x_coords.shape[0] - 1 and ix > 0 and ix < x_coords.shape[1] - 1:
-                neighbors = [
-                    surface_mask[iy-1, ix], surface_mask[iy+1, ix],
-                    surface_mask[iy, ix-1], surface_mask[iy, ix+1]
-                ]
-                if not all(neighbors):
-                    is_edge = True
-            else:
-                is_edge = True
-            
-            if is_edge:
-                edge_points.append((x_point, y_point, Z_grid[iy, ix], None))
     
     if DEBUG_SURFACE_GRID:
         print(
@@ -919,19 +907,14 @@ def _interpolate_z_coordinates_impl(
             f"with_z={points_with_z}, "
             f"without_z={points_without_z}"
         )
-        if Z_grid.size > 0:
-            z_min = float(np.nanmin(Z_grid[Z_grid != 0]))
-            z_max = float(np.nanmax(Z_grid[Z_grid != 0]))
-            z_mean = float(np.nanmean(Z_grid[Z_grid != 0]))
+        if Z_grid.size > 0 and np.any(Z_grid != 0.0):
+            z_vals = Z_grid[Z_grid != 0.0]
+            z_min = float(np.nanmin(z_vals))
+            z_max = float(np.nanmax(z_vals))
+            z_mean = float(np.nanmean(z_vals))
             print(
                 f"[SurfaceGridCalculator] Z-Statistik: "
                 f"min={z_min:.3f}, max={z_max:.3f}, mean={z_mean:.3f}"
-            )
-        if edge_points:
-            edge_z_vals = [p[2] for p in edge_points[:10]]  # Erste 10 Randpunkte
-            print(
-                f"[SurfaceGridCalculator] Randpunkte (erste 10): "
-                f"z_values={[f'{z:.3f}' for z in edge_z_vals]}"
             )
     
     return Z_grid

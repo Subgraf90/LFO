@@ -187,6 +187,9 @@ class SurfaceDockWidget(QDockWidget):
         """
         Lädt alle Flächen aus den Settings in das TreeWidget.
         """
+        import time
+        t_start = time.perf_counter()
+
         self._loading_surfaces = True
         self.surface_tree.blockSignals(True)
         self.surface_tree.clear()
@@ -209,23 +212,13 @@ class SurfaceDockWidget(QDockWidget):
                 item = self._create_surface_item(surface_id, surface_data)
                 self.surface_tree.addTopLevelItem(item)
 
+        # Einmal alle Gruppen/Surfaces expandieren, ohne übertrieben viele Updates
         self.surface_tree.expandAll()
-        
-        # Stelle sicher, dass alle Items sichtbar sind, bevor wir blockSignals aufheben
-        self._ensure_all_items_visible()
-        
+
         self.surface_tree.blockSignals(False)
         self._loading_surfaces = False
-        
-        # Explizite Aktualisierung des TreeWidgets, um sicherzustellen, dass alle Items angezeigt werden
-        # Verwende processEvents, um sicherzustellen, dass alle UI-Updates verarbeitet werden
-        from PyQt5.QtWidgets import QApplication
-        QApplication.processEvents()
-        self.surface_tree.update()
-        self.surface_tree.repaint()
-        # Erzwinge eine vollständige Neuzeichnung des TreeWidgets
-        self.surface_tree.viewport().update()
-        # Erzwinge eine vollständige Neuberechnung der Layouts
+
+        # Einmalige Layout-Aktualisierung reicht
         self.surface_tree.doItemsLayout()
 
         target_surface = self.current_surface_id or self.DEFAULT_SURFACE_ID
@@ -237,6 +230,12 @@ class SurfaceDockWidget(QDockWidget):
             self._loading_points = False
 
         self._activate_surface(self.current_surface_id)
+
+        # Grobes Timing für das UI-Nachladen der Surfaces
+        t_end = time.perf_counter()
+        print(
+            f"Surface-UI: load_surfaces() für {len(surface_store)} Surfaces in {t_end - t_start:.3f}s"
+        )
 
     def _on_surface_load_clicked(self) -> None:
         """
@@ -449,16 +448,8 @@ class SurfaceDockWidget(QDockWidget):
         group: SurfaceGroup,
         surface_store: Dict[str, SurfaceRecord],
     ) -> None:
-        location = "root" if parent_item is None else f"group:{group.group_id}"
-        print(
-            f"[SurfaceDockWidget] populate group '{group.group_id}' ({group.name}) "
-            f"with {len(group.child_groups)} child groups and {len(group.surface_ids)} surfaces "
-            f"into {location}"
-        )
-        if group.surface_ids:
-            print(
-                f"[SurfaceDockWidget] group '{group.group_id}' surface_ids: {group.surface_ids}"
-            )
+        # Rekursiver Aufbau der Baumstruktur ohne übermäßiges Debug-Logging
+
         for child_group_id in group.child_groups:
             child_group = self._get_surface_group(child_group_id)
             if child_group is None:
@@ -473,89 +464,16 @@ class SurfaceDockWidget(QDockWidget):
         for surface_id in group.surface_ids:
             surface_data = surface_store.get(surface_id)
             if surface_data is None:
-                print(
-                    f"[SurfaceDockWidget] WARNING: surface '{surface_id}' not found in surface_store, skipping"
-                )
                 continue
             surface_item = self._create_surface_item(surface_id, surface_data)
-            print(
-                f"[SurfaceDockWidget] add surface '{surface_id}' to "
-                f"{'root' if parent_item is None else group.group_id}"
-            )
-            # Stelle sicher, dass das Item nicht bereits ein Parent hat
-            if surface_item.parent() is not None:
-                print(
-                    f"[SurfaceDockWidget] WARNING: surface '{surface_id}' already has parent, removing first"
-                )
-                surface_item.parent().removeChild(surface_item)
             if parent_item is None:
-                # Prüfe, ob das Item bereits ein Top-Level-Item ist
-                if self.surface_tree.indexOfTopLevelItem(surface_item) < 0:
-                    self.surface_tree.addTopLevelItem(surface_item)
-                    print(f"[SurfaceDockWidget] ✓ surface '{surface_id}' added as top-level item")
-                else:
-                    print(f"[SurfaceDockWidget] ⚠ surface '{surface_id}' already exists as top-level item")
+                self.surface_tree.addTopLevelItem(surface_item)
             else:
-                # Prüfe, ob das Item bereits ein Child des Parent ist
-                if parent_item.indexOfChild(surface_item) < 0:
-                    parent_item.addChild(surface_item)
-                    print(f"[SurfaceDockWidget] ✓ surface '{surface_id}' added to group '{group.group_id}' (parent has {parent_item.childCount()} children)")
-                    # Stelle sicher, dass der Parent erweitert ist, damit das Item sichtbar ist
-                    if not parent_item.isExpanded():
-                        parent_item.setExpanded(True)
-                    # Aktualisiere das TreeWidget nach jedem Hinzufügen, um Rendering-Probleme zu vermeiden
-                    self.surface_tree.update()
-                else:
-                    print(f"[SurfaceDockWidget] ⚠ surface '{surface_id}' already exists in group '{group.group_id}'")
-        
-        # Nach dem Hinzufügen aller Items zu einer Gruppe, explizit aktualisieren
-        if parent_item is not None and parent_item.childCount() > 0:
-            # Stelle sicher, dass die Gruppe erweitert ist
+                parent_item.addChild(surface_item)
+
+        # Gruppe standardmäßig expandieren, falls vorhanden
+        if parent_item is not None:
             parent_item.setExpanded(True)
-            # Stelle sicher, dass alle Child-Items sichtbar und aktiviert sind
-            for idx in range(parent_item.childCount()):
-                child = parent_item.child(idx)
-                if child:
-                    child.setHidden(False)
-                    # Stelle sicher, dass das Item aktiviert ist
-                    flags = child.flags()
-                    if not (flags & Qt.ItemIsEnabled):
-                        child.setFlags(flags | Qt.ItemIsEnabled)
-                    # Stelle sicher, dass das Item wirklich existiert und Daten hat
-                    child_data = child.data(0, Qt.UserRole)
-                    if child_data is None:
-                        print(f"[SurfaceDockWidget] WARNING: child at index {idx} has no data")
-            
-            # Debug: Prüfe, ob alle Items wirklich vorhanden sind
-            print(f"[SurfaceDockWidget] DEBUG: group '{group.group_id}' has {parent_item.childCount()} children after adding all items")
-            for idx in range(parent_item.childCount()):
-                child = parent_item.child(idx)
-                if child:
-                    child_type, child_id = self._get_item_identity(child)
-                    print(f"[SurfaceDockWidget] DEBUG: child {idx}: {child_type}:{child_id}, hidden={child.isHidden()}, enabled={bool(child.flags() & Qt.ItemIsEnabled)}")
-            
-            # Aktualisiere das TreeWidget, um alle Items anzuzeigen
-            # Verwende processEvents, um sicherzustellen, dass alle UI-Updates verarbeitet werden
-            from PyQt5.QtWidgets import QApplication
-            QApplication.processEvents()
-            # Erzwinge eine vollständige Neuberechnung der Layouts
-            self.surface_tree.doItemsLayout()
-            self.surface_tree.update()
-            self.surface_tree.repaint()
-            # Erzwinge eine vollständige Neuzeichnung des Viewports
-            self.surface_tree.viewport().update()
-            # Scrolle durch alle Items, um sicherzustellen, dass sie gerendert werden
-            # Beginne mit dem letzten Item
-            for idx in range(parent_item.childCount() - 1, -1, -1):
-                child = parent_item.child(idx)
-                if child:
-                    self.surface_tree.scrollToItem(child, QAbstractItemView.EnsureVisible)
-                    QApplication.processEvents()
-            # Scrolle zurück zum ersten Item
-            if parent_item.childCount() > 0:
-                first_child = parent_item.child(0)
-                if first_child:
-                    self.surface_tree.scrollToItem(first_child, QAbstractItemView.PositionAtTop)
 
     def _ensure_all_items_visible(self):
         """
@@ -587,6 +505,34 @@ class SurfaceDockWidget(QDockWidget):
         if not group_id or not self.surface_manager:
             return None
         return self.surface_manager.get_surface_group(group_id)
+
+    def _collect_all_surfaces_from_group(self, group_id: str, surface_store: Dict) -> List[str]:
+        """
+        Sammelt rekursiv alle Surface-IDs aus einer Gruppe und ihren Untergruppen.
+        
+        Args:
+            group_id: ID der Gruppe
+            surface_store: Dictionary mit allen Surface-Definitionen
+            
+        Returns:
+            Liste aller Surface-IDs aus der Gruppe und ihren Untergruppen
+        """
+        highlight_ids = []
+        group = self._get_surface_group(group_id)
+        if not group:
+            return highlight_ids
+        
+        # Sammle direkte Surfaces der Gruppe
+        for sid in getattr(group, "surface_ids", []):
+            if sid in surface_store:
+                highlight_ids.append(sid)
+        
+        # Sammle rekursiv Surfaces aus Untergruppen
+        for child_group_id in getattr(group, "child_groups", []):
+            child_surfaces = self._collect_all_surfaces_from_group(child_group_id, surface_store)
+            highlight_ids.extend(child_surfaces)
+        
+        return highlight_ids
 
     def _get_item_identity(self, item: Optional[QTreeWidgetItem]) -> tuple[Optional[str], Optional[str]]:
         if item is None:
@@ -892,20 +838,15 @@ class SurfaceDockWidget(QDockWidget):
             self._loading_points = False
 
             group_id = item_id
-            # Ermittle alle Surface-IDs dieser Gruppe (inkl. Fallback für dict-Struktur)
-            highlight_ids: List[str] = []
-            surface_groups = getattr(self.settings, "surface_groups", {}) or {}
-            group_obj = surface_groups.get(group_id)
-            if group_obj is not None:
-                try:
-                    # Dataclass SurfaceGroup
-                    ids = list(getattr(group_obj, "surface_ids", []))
-                except Exception:
-                    ids = []
-                if not ids and isinstance(group_obj, dict):
-                    ids = list(group_obj.get("surface_ids", []))
-                highlight_ids = [sid for sid in ids if sid in surface_store]
+            # Sammle rekursiv alle Surfaces aus der Gruppe und ihren Untergruppen
+            highlight_ids = self._collect_all_surfaces_from_group(group_id, surface_store)
 
+            # Setze active_surface_id auf None, damit nur highlight_ids verwendet werden
+            try:
+                setattr(self.settings, "active_surface_id", None)
+            except Exception:
+                pass
+            
             # Speichere Highlight-Liste auf Settings, damit Overlays sie nutzen können
             setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from typing import List, Optional, Tuple, Any
 
 import numpy as np
@@ -9,6 +11,8 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     DEBUG_SURFACE_GEOMETRY,
     SurfaceDefinition,
 )
+
+DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
 
 
 class SPL3DOverlayRenderer:
@@ -26,8 +30,9 @@ class SPL3DOverlayRenderer:
         self._category_actors: dict[str, List[str]] = {}
         self._box_template_cache: dict[tuple[float, float, float], Any] = {}
         self._box_face_cache: dict[tuple[float, float, float], Tuple[Optional[int], Optional[int]]] = {}
-        # Kleinster Z-Offset, um Z-Fighting mit Boden/Surface zu vermeiden
-        # (insbesondere bei Draufsicht sollen Linien klar sichtbar bleiben).
+        # Kleiner Z-Offset für alle planaren Overlays (Surfaces, Axis-Linien),
+        # damit Umrandungen leicht ÜBER dem SPL-Plot liegen und nicht verdeckt werden.
+        # Wert bewusst klein halten, damit perspektivisch nichts "schwebt".
         self._planar_z_offset = 0.0
         self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
         self._speaker_geometry_cache: dict[str, List[Tuple[Any, Optional[int]]]] = {}  # Cache für transformierte Geometrien
@@ -54,14 +59,25 @@ class SPL3DOverlayRenderer:
     def clear_category(self, category: str) -> None:
         """Entfernt alle Actor einer Kategorie, ohne andere Overlays anzutasten."""
         actor_names = self._category_actors.pop(category, [])
+        # Stelle sicher, dass actor_names eine Liste ist (nicht ein Set)
+        if not isinstance(actor_names, list):
+            actor_names = list(actor_names) if actor_names else []
+        
         for name in actor_names:
             try:
                 self.plotter.remove_actor(name)
             except KeyError:
                 pass
             else:
-                if name in self.overlay_actor_names:
-                    self.overlay_actor_names.remove(name)
+                # Stelle sicher, dass overlay_actor_names eine Liste ist
+                if isinstance(self.overlay_actor_names, list):
+                    if name in self.overlay_actor_names:
+                        self.overlay_actor_names.remove(name)
+                else:
+                    # Falls es irgendwie zu einem Set wurde, konvertiere zurück zu Liste
+                    self.overlay_actor_names = list(self.overlay_actor_names) if self.overlay_actor_names else []
+                    if name in self.overlay_actor_names:
+                        self.overlay_actor_names.remove(name)
         if category == 'speakers':
             keys_to_remove = [key for key, info in self._speaker_actor_cache.items() if info['actor'] in actor_names]
             for key in keys_to_remove:
@@ -104,12 +120,11 @@ class SPL3DOverlayRenderer:
 
     def draw_surfaces(self, settings) -> None:
         """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot."""
-        print(f"[DEBUG 3D-Plot] draw_surfaces() START")
+        t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
         # Erstelle Signatur für Änderungsdetektion
         surface_definitions = getattr(settings, 'surface_definitions', {})
-        print(f"[DEBUG 3D-Plot] surface_definitions: {list(surface_definitions.keys()) if isinstance(surface_definitions, dict) else 'kein dict'}")
         if not isinstance(surface_definitions, dict):
-            print(f"[DEBUG 3D-Plot] surface_definitions ist kein dict - beende draw_surfaces()")
             self.clear_category('surfaces')
             self._last_surfaces_state = None
             return
@@ -124,8 +139,8 @@ class SPL3DOverlayRenderer:
         # Füge das "klassische" aktive Surface optional hinzu, falls nicht hidden
         if active_surface_id is not None:
             active_ids_set.add(str(active_surface_id))
-        print(f"[DEBUG 3D-Plot] active_surface_id: {active_surface_id}, highlight_ids_raw={highlight_ids}, active_ids_set={list(active_ids_set)}")
 
+        t_sig_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         surfaces_signature: List[tuple] = []
         for surface_id in sorted(surface_definitions.keys()):
             surface_def = surface_definitions[surface_id]
@@ -155,6 +170,7 @@ class SPL3DOverlayRenderer:
                 hidden,
                 tuple(points_tuple)
             ))
+        t_sig_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
         # Prüfe ob Speaker Arrays vorhanden sind (nicht versteckt) - nur für Darstellung, nicht für Signatur
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
@@ -169,9 +185,6 @@ class SPL3DOverlayRenderer:
         signature_tuple = (tuple(surfaces_signature), tuple(sorted(active_ids_set)))
         
         # Prüfe ob sich etwas geändert hat (ohne has_speaker_arrays zu berücksichtigen)
-        print(f"[DEBUG 3D-Plot] _last_surfaces_state: {self._last_surfaces_state}, neue Signatur: {signature_tuple}")
-        print(f"[DEBUG 3D-Plot] active_surface_id in Signatur: {active_surface_id}, has_speaker_arrays: {has_speaker_arrays_for_signature}")
-        
         # Prüfe ob sich die Signatur geändert hat (Surface-Definitionen + Highlight-IDs)
         signature_changed = True
         if self._last_surfaces_state is not None:
@@ -185,58 +198,52 @@ class SPL3DOverlayRenderer:
                 signature_changed = False
         
         if not signature_changed:
-            print(f"[DEBUG 3D-Plot] Signatur unverändert - beende draw_surfaces() ohne Zeichnung")
             return
         
         # Lösche alte Surfaces
-        print(f"[DEBUG 3D-Plot] Signatur geändert - lösche alte Surfaces und zeichne neu")
-        # Debug: Prüfe Actors vor clear_category
-        actors_before_clear = list(self.plotter.renderer.actors.keys())
-        surface_actors_before = [name for name in actors_before_clear if name in self._category_actors.get('surfaces', [])]
-        print(f"[DEBUG 3D-Plot] Actors vor clear_category('surfaces'): {actors_before_clear}")
-        print(f"[DEBUG 3D-Plot] Surface-Actors vor clear_category: {surface_actors_before}")
+        t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self.clear_category('surfaces')
-        # Debug: Prüfe Actors nach clear_category
-        actors_after_clear = list(self.plotter.renderer.actors.keys())
-        print(f"[DEBUG 3D-Plot] Actors nach clear_category('surfaces'): {actors_after_clear}")
+        t_clear_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self._last_surfaces_state = signature_tuple
         
         # Verwende has_speaker_arrays aus der Signatur-Berechnung
         has_speaker_arrays = has_speaker_arrays_for_signature
         
         # Zeichne alle nicht versteckten Surfaces (enabled und disabled)
+        # OPTIMIERUNG: Batch-Zeichnen - kombiniere alle Surfaces in zwei PolyData-Objekte
+        # (eines für aktive, eines für inaktive) statt einzelner add_mesh Aufrufe
         z_offset = self._planar_z_offset
         surfaces_drawn = 0
+        t_draw_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
+        # Sammle alle Punkte und Linien für Batch-Zeichnen
+        active_points_list = []  # Liste von Punkt-Arrays für aktive Surfaces
+        active_lines_list = []   # Liste von Linien-Arrays für aktive Surfaces
+        inactive_points_list = []  # Liste von Punkt-Arrays für inaktive Surfaces
+        inactive_lines_list = []   # Liste von Linien-Arrays für inaktive Surfaces
+        
+        tolerance = 1e-6
         
         for surface_id, surface_def in surface_definitions.items():
             if isinstance(surface_def, SurfaceDefinition):
                 enabled = bool(getattr(surface_def, 'enabled', False))
                 hidden = bool(getattr(surface_def, 'hidden', False))
                 points = getattr(surface_def, 'points', []) or []
-                color_value = getattr(surface_def, 'color', '#888888')
             else:
                 enabled = surface_def.get('enabled', False)
                 hidden = surface_def.get('hidden', False)
                 points = surface_def.get('points', [])
-                color_value = surface_def.get('color', '#888888')
             
             # Überspringe nur versteckte Surfaces
             if hidden:
-                print(f"[DEBUG 3D-Plot] Surface '{surface_id}' ist hidden - überspringe")
                 continue
             
             if len(points) < 3:
-                print(f"[DEBUG 3D-Plot] Surface '{surface_id}' hat weniger als 3 Punkte ({len(points)}) - überspringe")
                 continue
             
             # Prüfe ob dies ein aktives Surface ist (Einzel- oder Gruppen-Selektion)
-            is_active = (surface_id in active_ids_set)
-            
-            print(f"[DEBUG 3D-Plot] Zeichne Surface '{surface_id}': enabled={enabled}, hidden={hidden}, points={len(points)}, is_active={is_active}, has_speaker_arrays={has_speaker_arrays}")
-            
-            # Hole Farbe aus Surface-Definition oder verwende Standard
-            # WICHTIG: Die Farbe wird hier nur für enabled Surfaces mit Sources verwendet
-            color = color_value if isinstance(color_value, str) else '#888888'
+            # Stelle sicher, dass surface_id als String verglichen wird
+            is_active = (str(surface_id) in active_ids_set)
             
             # Konvertiere Punkte zu numpy-Array
             try:
@@ -250,121 +257,118 @@ class SPL3DOverlayRenderer:
                 if len(point_coords) < 3:
                     continue
                 
-                # Prüfe ob Polygon bereits geschlossen ist (erster und letzter Punkt identisch)
+                # Prüfe ob Polygon bereits geschlossen ist
                 first_point = point_coords[0]
                 last_point = point_coords[-1]
-                tolerance = 1e-6
                 is_already_closed = (
                     abs(first_point[0] - last_point[0]) < tolerance
                     and abs(first_point[1] - last_point[1]) < tolerance
                     and abs(first_point[2] - last_point[2]) < tolerance
                 )
 
-                # Erzeuge IMMER ein explizit geschlossenes Polygon:
-                # - Wenn bereits geschlossen → verwende Punkte unverändert
-                # - Wenn offen          → füge ersten Punkt am Ende hinzu
+                # Erzeuge IMMER ein explizit geschlossenes Polygon
                 if is_already_closed:
-                    closed_coords = point_coords.copy()
-                    print(
-                        f"[DEBUG 3D-Plot] Surface '{surface_id}': Polygon bereits geschlossen "
-                        f"({len(closed_coords)} Punkte, letzter = erster)"
-                    )
+                    closed_coords = point_coords
                 else:
                     closed_coords = point_coords + [point_coords[0]]
-                    print(
-                        f"[DEBUG 3D-Plot] Surface '{surface_id}': Polygon nicht geschlossen - "
-                        f"füge ersten Punkt als Abschluss hinzu ({len(closed_coords)} Punkte)"
-                    )
-
-                # Erstelle PolyLine aus PyVista.
-                # VTK-Format für eine einzelne PolyLine:
-                # [N, idx0, idx1, ..., idx(N-1)]
-                # Die Segmente werden zwischen aufeinanderfolgenden Punkten gezogen.
-                # Da der letzte Punkt == erster Punkt ist, entsteht automatisch die
-                # schließende Kante zurück zum Startpunkt.
-                polyline = self.pv.PolyData(closed_coords)
+                
                 n_points = len(closed_coords)
-                polyline.lines = [n_points] + list(range(n_points))
-                print(
-                    f"[DEBUG 3D-Plot] Surface '{surface_id}': PolyLine mit {n_points} Punkten (geschlossen)"
-                )
-                # Entferne Vertex-Zellen, damit keine Punkte an den Eckpunkten gerendert werden
+                
+                # Füge zu entsprechendem Batch hinzu
+                if is_active:
+                    active_points_list.append(np.array(closed_coords, dtype=float))
+                    active_lines_list.append(n_points)
+                else:
+                    inactive_points_list.append(np.array(closed_coords, dtype=float))
+                    inactive_lines_list.append(n_points)
+                
+                surfaces_drawn += 1
+            except (ValueError, TypeError, AttributeError, Exception):
+                continue
+        
+        # Erstelle Batch-PolyData für aktive Surfaces
+        if active_points_list:
+            try:
+                # Kombiniere alle Punkte in einem Array
+                all_active_points = np.vstack(active_points_list)
+                
+                # Erstelle Linien-Array im VTK-Format: [N, idx0, idx1, ..., idx(N-1)]
+                active_lines_array = []
+                point_offset = 0
+                for n_pts in active_lines_list:
+                    active_lines_array.append(n_pts)
+                    active_lines_array.extend(range(point_offset, point_offset + n_pts))
+                    point_offset += n_pts
+                
+                active_polyline = self.pv.PolyData(all_active_points)
+                active_polyline.lines = active_lines_array
                 try:
-                    polyline.verts = np.empty(0, dtype=np.int64)
+                    active_polyline.verts = np.empty(0, dtype=np.int64)
                 except Exception:
                     try:
-                        polyline.verts = []
+                        active_polyline.verts = []
                     except Exception:
                         pass
                 
-                actor_name = None
-                # Enabled Surfaces: immer durchgezogene Linien, aktive Surfaces rot hervorgehoben
-                if enabled:
-                    if is_active:
-                        # Aktives enabled Surface: rote, etwas dickere Umrandung (unabhängig von Sources)
-                        surface_color = '#FF0000'
-                        print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Aktives enabled Surface → rote Umrandung")
-                        polyline_render = polyline
-                        try:
-                            polyline_render = polyline.tube(radius=0.02, n_sides=24, capping=True)
-                        except Exception:
-                            pass
-                        actor_name = self._add_overlay_mesh(
-                            polyline_render,
-                            color=surface_color,
-                            line_width=1.2,
-                            opacity=0.95,
-                            category='surfaces',
-                            show_vertices=False,
-                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
-                        )
-                    else:
-                        # Inaktives enabled Surface: dünnere Umrandung in Surface-Farbe
-                        surface_color = color  # Verwendet Surface-Farbe
-                        print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Inaktives enabled Surface → Farbe: {surface_color}")
-                        polyline_render = polyline
-                        try:
-                            polyline_render = polyline.tube(radius=0.015, n_sides=24, capping=True)
-                        except Exception:
-                            pass
-                        actor_name = self._add_overlay_mesh(
-                            polyline_render,
-                            color=surface_color,
-                            line_width=1.2,
-                            opacity=0.75,
-                            category='surfaces',
-                            show_vertices=False,
-                            render_lines_as_tubes=None,  # Bereits Tube-Mesh, daher nicht nötig
-                        )
-                else:
-                    # Disabled Surfaces: gestrichelte Linien, aktive Surfaces rot, andere schwarz
-                    dashed_pattern = 0xAAAA  # Gestricheltes Muster
-                    line_color = '#FF0000' if is_active else '#000000'
-                    opacity = 0.8 if is_active else 0.6
-                    print(
-                        f"[DEBUG 3D-Plot] Surface '{surface_id}': Disabled Surface → "
-                        f"{'rote' if is_active else 'schwarze'} gestrichelte Umrandung"
-                    )
-
-                    # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
-                    actor_name = self._add_overlay_mesh(
-                        polyline,
-                        color=line_color,
-                        line_width=1.2,
-                        opacity=opacity,
-                        line_pattern=dashed_pattern,
-                        line_repeat=2,
-                        category='surfaces',
-                        show_vertices=False,
-                        render_lines_as_tubes=True,
-                    )
-                surfaces_drawn += 1
-                print(f"[DEBUG 3D-Plot] Surface '{surface_id}' erfolgreich gezeichnet (Actor: {actor_name})")
-            except (ValueError, TypeError, AttributeError, Exception) as e:
-                print(f"[DEBUG 3D-Plot] Fehler beim Zeichnen von Surface '{surface_id}': {e}")
-                continue
+                self._add_overlay_mesh(
+                    active_polyline,
+                    color='#FF0000',
+                    line_width=3.5,
+                    opacity=0.95,
+                    category='surfaces',
+                    show_vertices=False,
+                    render_lines_as_tubes=False,
+                )
+            except Exception:
+                pass
         
-        print(f"[DEBUG 3D-Plot] draw_surfaces() ENDE - {surfaces_drawn} Surfaces gezeichnet")
+        # Erstelle Batch-PolyData für inaktive Surfaces
+        if inactive_points_list:
+            try:
+                # Kombiniere alle Punkte in einem Array
+                all_inactive_points = np.vstack(inactive_points_list)
+                
+                # Erstelle Linien-Array im VTK-Format
+                inactive_lines_array = []
+                point_offset = 0
+                for n_pts in inactive_lines_list:
+                    inactive_lines_array.append(n_pts)
+                    inactive_lines_array.extend(range(point_offset, point_offset + n_pts))
+                    point_offset += n_pts
+                
+                inactive_polyline = self.pv.PolyData(all_inactive_points)
+                inactive_polyline.lines = inactive_lines_array
+                try:
+                    inactive_polyline.verts = np.empty(0, dtype=np.int64)
+                except Exception:
+                    try:
+                        inactive_polyline.verts = []
+                    except Exception:
+                        pass
+                
+                self._add_overlay_mesh(
+                    inactive_polyline,
+                    color='#000000',
+                    line_width=1.5,
+                    opacity=0.85,
+                    category='surfaces',
+                    show_vertices=False,
+                    render_lines_as_tubes=False,
+                )
+            except Exception:
+                pass
+        
+        t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
+        if DEBUG_OVERLAY_PERF and t_start is not None:
+            t_total = (t_draw_end - t_start) * 1000 if t_draw_end else 0
+            t_sig = (t_sig_end - t_sig_start) * 1000 if t_sig_end and t_sig_start else 0
+            t_clear = (t_clear_end - t_clear_start) * 1000 if t_clear_end and t_clear_start else 0
+            t_draw = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
+            print(f"[Overlay Perf] draw_surfaces GESAMT: {t_total:.2f}ms (gezeichnet: {surfaces_drawn})")
+            print(f"  ├─ Signatur erstellen: {t_sig:.2f}ms")
+            print(f"  ├─ Clear category: {t_clear:.2f}ms")
+            print(f"  └─ Surfaces zeichnen: {t_draw:.2f}ms")
 
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
         speaker_arrays = getattr(settings, 'speaker_arrays', {})

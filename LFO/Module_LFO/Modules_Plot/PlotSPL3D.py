@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 import types
 from typing import Iterable, List, Optional, Tuple, Any
 
@@ -25,6 +26,17 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
 )
 
 DEBUG_SPL_DUMP = bool(int(os.environ.get("LFO_DEBUG_SPL", "0")))
+DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
+
+# Steuerung des Anti-Aliasing-Modus für PyVista:
+# Mögliche Werte (abhängig von PyVista/VTK-Version):
+#   - "msaa"  : Multi-Sample Anti-Aliasing (Standard, guter Kompromiss)
+#   - "ssaa"  : Super-Sample Anti-Aliasing (höhere Qualität, mehr Last)
+#   - "fxaa"  : Fast Approximate Anti-Aliasing (shaderbasiert)
+#   - "none" / "off" / "" : Anti-Aliasing komplett deaktivieren
+#
+# Diese Variable kann bei Bedarf direkt angepasst werden, ohne weiteren Code zu ändern.
+PYVISTA_AA_MODE = "ssaa"
 
 try:  # pragma: no cover - optional Abhängigkeit
     import pyvista as pv
@@ -116,6 +128,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         # Guard gegen reentrante Render-Aufrufe (z. B. Kamera-Callbacks).
         self._is_rendering = False
 
+        # Verzögertes Rendering: Timer für Batch-Updates (500ms)
+        self._render_timer = QtCore.QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._delayed_render)
+        self._pending_render = False
+
         # initialize_empty_scene(preserve_camera=False) setzt bereits die Top-Ansicht via set_view_top()
         # daher ist der explizite Aufruf hier nicht nötig und würde den Zoom unnötig zweimal ändern
         self.initialize_empty_scene(preserve_camera=False)
@@ -191,10 +209,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Wenn Kamera nicht erhalten wird, Flag zurücksetzen, damit beim nächsten Plot mit Daten Zoom maximiert wird
             self._has_plotted_data = False
 
-        # Debug: Liste alle Actors vor dem Löschen
-        actors_before = list(self.plotter.renderer.actors.keys())
-        print(f"[DEBUG 3D-Plot] initialize_empty_scene() - Actors vor clear(): {actors_before}")
-        
         self.plotter.clear()
         self.overlay_helper.clear()
         self.has_data = False
@@ -203,11 +217,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         # 🎯 Setze auch _last_surfaces_state zurück, damit Surfaces nach initialize_empty_scene() neu gezeichnet werden
         if hasattr(self.overlay_helper, '_last_surfaces_state'):
             self.overlay_helper._last_surfaces_state = None
+        # Cache zurücksetzen
+        if hasattr(self, '_surface_signature_cache'):
+            self._surface_signature_cache.clear()
         
-        # Debug: Liste alle Actors nach dem Löschen
-        actors_after = list(self.plotter.renderer.actors.keys())
-        print(f"[DEBUG 3D-Plot] initialize_empty_scene() - Actors nach clear(): {actors_after}")
-
         # Konfiguriere Plotter nur bei Bedarf (nicht die Kamera überschreiben)
         self._configure_plotter(configure_camera=not preserve_camera)
         # scene_frame wurde entfernt - nicht mehr benötigt
@@ -234,13 +247,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         sound_field_y: Iterable[float],
         sound_field_pressure: Iterable[float],
         colorization_mode: str = "Gradient",
-    ):
+        ):
         """Aktualisiert die SPL-Fläche."""
-        print(f"[DEBUG 3D-Plot] update_spl_plot() START - colorization_mode={colorization_mode}")
         camera_state = self._camera_state or self._capture_camera()
 
         if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
-            print(f"[DEBUG 3D-Plot] Keine gültigen Daten - rufe initialize_empty_scene() auf")
             self.initialize_empty_scene(preserve_camera=True)
             return
 
@@ -346,6 +357,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
 
+        # Speichere ursprüngliche Berechnungs-Werte für PyVista sample-Modus
+        original_plot_values = plot_values.copy() if hasattr(plot_values, 'copy') else plot_values
+        
         try:
             geometry = prepare_plot_geometry(
                 x,
@@ -361,6 +375,19 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Auch vertikale SPL-Flächen entfernen, da keine gültige Geometrie vorliegt
             self._clear_vertical_spl_surfaces()
             return
+
+        # Debug: Prüfen, ob das Plot-Grid gegenüber dem Berechnungs-Grid verfeinert wurde
+        if DEBUG_SPL_DUMP:
+            try:
+                print(
+                    "[Plot SPL3D] Grid-Info:",
+                    f"source_grid=({len(y)}x{len(x)}), "
+                    f"plot_grid=({geometry.plot_y.size}x{geometry.plot_x.size}), "
+                    f"upscaled={geometry.was_upscaled}, "
+                    f"requires_resample={geometry.requires_resample}",
+                )
+            except Exception:
+                pass
         plot_x = geometry.plot_x
         plot_y = geometry.plot_y
         plot_values = geometry.plot_values
@@ -372,6 +399,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             scalars = plot_values
         
+        # Für PyVista sample-Modus: Verwende ursprüngliche Berechnungs-Werte (vor Upscaling)
+        source_scalars_for_sample = None
+        if getattr(self.settings, "spl_plot_use_pyvista_sample", False):
+            source_scalars_for_sample = original_plot_values
+        
         mesh = build_surface_mesh(
             plot_x,
             plot_y,
@@ -379,6 +411,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             z_coords=z_coords,
             surface_mask=geometry.surface_mask,
             pv_module=pv,
+            settings=self.settings,
+            container=self.container,
+            source_x=geometry.source_x,
+            source_y=geometry.source_y,
+            source_scalars=source_scalars_for_sample,
         )
 
         if time_mode:
@@ -390,7 +427,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
         if actor is None or self.surface_mesh is None:
-            print(f"[DEBUG 3D-Plot] Erstelle neue SPL-Surface (spl_surface) - Actor existiert noch nicht")
             self.surface_mesh = mesh.copy(deep=True)
             actor = self.plotter.add_mesh(
                 self.surface_mesh,
@@ -403,14 +439,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 reset_camera=False,
                 interpolate_before_map=False,
             )
-            print(f"[DEBUG 3D-Plot] SPL-Surface (spl_surface) erstellt - Actors im Plotter: {list(self.plotter.renderer.actors.keys())}")
             if hasattr(actor, 'prop') and actor.prop is not None:
                 try:
                     actor.prop.interpolation = 'flat'
                 except Exception:  # noqa: BLE001
                     pass
         else:
-            print(f"[DEBUG 3D-Plot] Aktualisiere bestehende SPL-Surface (spl_surface)")
             self.surface_mesh.deep_copy(mesh)
             mapper = actor.mapper
             if mapper is not None:
@@ -462,7 +496,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.render()
         self._save_camera_state()
         self._colorbar_override = None
-        print(f"[DEBUG 3D-Plot] update_spl_plot() ENDE - Finale Actors im Plotter: {list(self.plotter.renderer.actors.keys())}")
 
     def update_time_frame_values(
         self,
@@ -530,90 +563,115 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
-        print(f"[DEBUG 3D-Plot] update_overlays() START")
+        t_start = time.perf_counter()
+        
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
         self.container = container
+        t_container = time.perf_counter()
+        
         # Wenn kein gültiger calculation_spl-Container vorhanden ist, entferne vertikale SPL-Flächen
         if not hasattr(container, "calculation_spl"):
             self._clear_vertical_spl_surfaces()
+        t_clear = time.perf_counter()
         
         # Wir vergleichen Hash-Signaturen pro Kategorie und zeichnen nur dort neu,
         # wo sich Parameter geändert haben. Das verhindert unnötiges Entfernen
         # und erneutes Hinzufügen zahlreicher PyVista-Actor.
+        t_sig_start = time.perf_counter()
         signatures = self._compute_overlay_signatures(settings, container)
+        t_sig_end = time.perf_counter()
         previous = self._last_overlay_signatures or {}
-        print(f"[DEBUG 3D-Plot] Signatures: {list(signatures.keys())}, Previous: {list(previous.keys())}")
         if not previous:
             categories_to_refresh = set(signatures.keys())
-            print(f"[DEBUG 3D-Plot] Keine vorherigen Signaturen - alle Kategorien werden aktualisiert: {categories_to_refresh}")
         else:
             categories_to_refresh = {
                 key for key, value in signatures.items() if value != previous.get(key)
             }
-            print(f"[DEBUG 3D-Plot] Kategorien zum Aktualisieren: {categories_to_refresh}")
-            # Debug: Prüfe speziell surfaces-Signatur
-            if 'surfaces' in signatures and 'surfaces' in previous:
-                print(f"[DEBUG 3D-Plot] Surfaces-Signatur-Vergleich:")
-                print(f"  Neue Signatur: {signatures['surfaces']}")
-                print(f"  Alte Signatur: {previous['surfaces']}")
-                print(f"  Gleich? {signatures['surfaces'] == previous['surfaces']}")
-                # Signatur hat jetzt 2 Elemente: (surfaces_signature_tuple, active_surface_id)
-                if len(signatures['surfaces']) >= 2 and len(previous['surfaces']) >= 2:
-                    new_active = signatures['surfaces'][1]
-                    old_active = previous['surfaces'][1]
-                    print(f"  Neue active_surface_id: {new_active}")
-                    print(f"  Alte active_surface_id: {old_active}")
-                    print(f"  active_surface_id geändert? {new_active != old_active}")
+        t_compare = time.perf_counter()
+        
         if not categories_to_refresh:
-            print(f"[DEBUG 3D-Plot] Keine Kategorien zum Aktualisieren - update_overlays() beendet")
             self._last_overlay_signatures = signatures
             if not self._rotate_active and not self._pan_active:
                 self._save_camera_state()
+            if DEBUG_OVERLAY_PERF:
+                t_total = time.perf_counter() - t_start
+                print(f"[Overlay Perf] update_overlays (keine Änderungen): {t_total*1000:.2f}ms")
             return
-
-        print(f"[DEBUG 3D-Plot] Vor Overlay-Zeichnung - Actors im Plotter: {list(self.plotter.renderer.actors.keys())}")
+        
         prev_debug_state = getattr(self.overlay_helper, 'DEBUG_ON_TOP', False)
+        t_draw_start = time.perf_counter()
         try:
             self.overlay_helper.DEBUG_ON_TOP = True
+            t_axis_start = t_speakers_start = t_surfaces_start = t_impulse_start = t_draw_start
+            t_axis_end = t_speakers_end = t_surfaces_end = t_impulse_end = t_draw_start
+            
             if 'axis' in categories_to_refresh:
-                print(f"[DEBUG 3D-Plot] Zeichne Axis-Linien...")
+                t_axis_start = time.perf_counter()
                 self.overlay_helper.draw_axis_lines(settings)
+                t_axis_end = time.perf_counter()
             if 'surfaces' in categories_to_refresh:
-                print(f"[DEBUG 3D-Plot] Zeichne Surfaces...")
+                t_surfaces_start = time.perf_counter()
                 self.overlay_helper.draw_surfaces(settings)
+                t_surfaces_end = time.perf_counter()
             if 'speakers' in categories_to_refresh:
-                print(f"[DEBUG 3D-Plot] Zeichne Speakers...")
+                t_speakers_start = time.perf_counter()
                 cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
+                t_cabinet_lookup = time.perf_counter()
                 self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
+                t_speakers_end = time.perf_counter()
             if 'impulse' in categories_to_refresh:
-                print(f"[DEBUG 3D-Plot] Zeichne Impulse-Punkte...")
+                t_impulse_start = time.perf_counter()
                 self.overlay_helper.draw_impulse_points(settings)
+                t_impulse_end = time.perf_counter()
         finally:
             self.overlay_helper.DEBUG_ON_TOP = prev_debug_state
+        t_draw_end = time.perf_counter()
+        
         self._last_overlay_signatures = signatures
-        actors_after_overlays = list(self.plotter.renderer.actors.keys())
-        print(f"[DEBUG 3D-Plot] Nach Overlay-Zeichnung - Actors im Plotter: {actors_after_overlays}")
-        # Debug: Prüfe ob spl_surface vorhanden ist
-        if self.SURFACE_NAME in actors_after_overlays:
-            print(f"[DEBUG 3D-Plot] WARNUNG: spl_surface ist noch vorhanden nach update_overlays()!")
-        # Debug: Zähle nur Surface-Overlays (nicht Axis, Speakers, etc.)
-        surface_actors = self.overlay_helper._category_actors.get('surfaces', [])
-        print(f"[DEBUG 3D-Plot] Anzahl Surface-Overlays (nur surfaces-Kategorie): {len(surface_actors)}")
-        print(f"[DEBUG 3D-Plot] Surface-Actor-Namen: {surface_actors}")
-        # Debug: Zähle auch andere Kategorien
-        axis_actors = self.overlay_helper._category_actors.get('axis', [])
-        speakers_actors = self.overlay_helper._category_actors.get('speakers', [])
-        impulse_actors = self.overlay_helper._category_actors.get('impulse', [])
-        print(f"[DEBUG 3D-Plot] Andere Overlays - Axis: {len(axis_actors)}, Speakers: {len(speakers_actors)}, Impulse: {len(impulse_actors)}")
+        t_signature_save = time.perf_counter()
         
         # 🎯 Beim ersten Start: Zoom auf das Default-Surface einstellen (nach dem Zeichnen aller Overlays)
+        t_zoom_start = time.perf_counter()
         if (not getattr(self, "_did_initial_overlay_zoom", False)) and 'surfaces' in categories_to_refresh:
             self._zoom_to_default_surface()
+        t_zoom_end = time.perf_counter()
         
-        self.render()
+        # Verzögertes Rendering: Timer starten/stoppen für Batch-Updates
+        self._schedule_render()
         if not self._rotate_active and not self._pan_active:
             self._save_camera_state()
-        print(f"[DEBUG 3D-Plot] update_overlays() ENDE")
+        t_end = time.perf_counter()
+        
+        if DEBUG_OVERLAY_PERF:
+            t_total = (t_end - t_start) * 1000
+            t_sig = (t_sig_end - t_sig_start) * 1000
+            t_compare_time = (t_compare - t_sig_end) * 1000
+            t_draw_total = (t_draw_end - t_draw_start) * 1000
+            t_axis = (t_axis_end - t_axis_start) * 1000 if 'axis' in categories_to_refresh else 0
+            t_surfaces = (t_surfaces_end - t_surfaces_start) * 1000 if 'surfaces' in categories_to_refresh else 0
+            t_speakers = (t_speakers_end - t_speakers_start) * 1000 if 'speakers' in categories_to_refresh else 0
+            t_cabinet = (t_cabinet_lookup - t_speakers_start) * 1000 if 'speakers' in categories_to_refresh else 0
+            t_impulse = (t_impulse_end - t_impulse_start) * 1000 if 'impulse' in categories_to_refresh else 0
+            t_zoom = (t_zoom_end - t_zoom_start) * 1000
+            print(f"[Overlay Perf] update_overlays GESAMT: {t_total:.2f}ms")
+            print(f"  ├─ Container/Setup: {(t_container-t_start)*1000:.2f}ms")
+            print(f"  ├─ Clear: {(t_clear-t_container)*1000:.2f}ms")
+            print(f"  ├─ Signaturen berechnen: {t_sig:.2f}ms")
+            print(f"  ├─ Signaturen vergleichen: {t_compare_time:.2f}ms")
+            print(f"  ├─ Zeichnen gesamt: {t_draw_total:.2f}ms")
+            if t_axis > 0:
+                print(f"  │  ├─ Axis: {t_axis:.2f}ms")
+            if t_surfaces > 0:
+                print(f"  │  ├─ Surfaces: {t_surfaces:.2f}ms")
+            if t_speakers > 0:
+                print(f"  │  ├─ Speakers (gesamt): {t_speakers:.2f}ms")
+                print(f"  │  │  └─ Cabinet Lookup: {t_cabinet:.2f}ms")
+            if t_impulse > 0:
+                print(f"  │  ├─ Impulse: {t_impulse:.2f}ms")
+            if t_zoom > 0:
+                print(f"  │  └─ Zoom: {t_zoom:.2f}ms")
+            print(f"  ├─ Signaturen speichern: {(t_signature_save-t_draw_end)*1000:.2f}ms")
+            print(f"  └─ Rest (Timer/Save): {(t_end-t_signature_save)*1000:.2f}ms")
 
     def _debug_dump_soundfield(self, x: np.ndarray, y: np.ndarray, pressure: np.ndarray) -> None:
         if not DEBUG_SPL_DUMP:
@@ -654,6 +712,29 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._save_camera_state()
         finally:
             self._is_rendering = False
+
+    def _schedule_render(self):
+        """Plant ein verzögertes Rendering (500ms), um mehrere schnelle Updates zu bündeln."""
+        self._pending_render = True
+        # Stoppe laufenden Timer und starte neu (debouncing)
+        self._render_timer.stop()
+        self._render_timer.start(500)  # 500ms Verzögerung
+        if DEBUG_OVERLAY_PERF:
+            if not hasattr(self, '_render_schedule_count'):
+                self._render_schedule_count = 0
+            self._render_schedule_count += 1
+
+    def _delayed_render(self):
+        """Führt das verzögerte Rendering aus, wenn der Timer abgelaufen ist."""
+        if self._pending_render:
+            t_render_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+            self._pending_render = False
+            self.render()
+            if DEBUG_OVERLAY_PERF and t_render_start is not None:
+                t_render_end = time.perf_counter()
+                count = getattr(self, '_render_schedule_count', 0)
+                print(f"[Overlay Perf] _delayed_render: {(t_render_end-t_render_start)*1000:.2f}ms (geplant: {count}x)")
+                self._render_schedule_count = 0
 
     def _get_vertical_color_limits(self) -> tuple[float, float]:
         """
@@ -1362,8 +1443,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self.plotter.disable_eye_dome_lighting()
         except Exception:  # noqa: BLE001
             pass
+        # Anti-Aliasing nach globaler Vorgabe konfigurieren
         try:
-            self.plotter.enable_anti_aliasing('msaa')
+            aa_mode = PYVISTA_AA_MODE.lower() if isinstance(PYVISTA_AA_MODE, str) else ""
+            if aa_mode in {"", "none", "off"}:
+                # Explizit deaktivieren, falls Plotter das unterstützt
+                if hasattr(self.plotter, "disable_anti_aliasing"):
+                    self.plotter.disable_anti_aliasing()  # type: ignore[call-arg]
+            else:
+                self.plotter.enable_anti_aliasing(aa_mode)
         except Exception:  # noqa: BLE001
             pass
         # Nur Kamera-Position setzen, wenn gewünscht (nicht bei preserve_camera=True)
@@ -1626,6 +1714,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         - Wir wandeln relevante Settings in flache Tupel um, die sich leicht
           vergleichen lassen und keine PyVista-Objekte enthalten.
         """
+        if DEBUG_OVERLAY_PERF:
+            t_start = time.perf_counter()
         def _to_tuple(sequence) -> tuple:
             if sequence is None:
                 return tuple()
@@ -1756,9 +1846,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 continue
         impulse_signature_tuple = tuple(sorted(impulse_signature))
 
-        # Surfaces-Signatur
+        # Surfaces-Signatur (optimiert: nur geänderte Surfaces neu berechnen)
         surface_definitions = getattr(settings, 'surface_definitions', {})
         surfaces_signature: List[tuple] = []
+        
+        # Cache für Surface-Signaturen (nur bei wiederholten Aufrufen)
+        if not hasattr(self, '_surface_signature_cache'):
+            self._surface_signature_cache: dict[str, tuple] = {}
+        
         if isinstance(surface_definitions, dict):
             for surface_id in sorted(surface_definitions.keys()):
                 surface_def = surface_definitions[surface_id]
@@ -1771,6 +1866,21 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     hidden = bool(surface_def.get('hidden', False))
                     points = surface_def.get('points', [])
                 
+                # Erstelle schnelle Hash-Signatur für Vergleich
+                # (nur enabled/hidden + Anzahl Punkte + Hash der Punkte)
+                points_hash = hash(tuple(
+                    (float(p.get('x', 0.0)), float(p.get('y', 0.0)), float(p.get('z', 0.0)))
+                    for p in points[:10]  # Nur erste 10 Punkte für Hash (Performance)
+                )) if points else 0
+                
+                # Prüfe ob Surface sich geändert hat
+                cache_key = f"{surface_id}_{enabled}_{hidden}_{len(points)}_{points_hash}"
+                if cache_key in self._surface_signature_cache:
+                    # Verwende gecachte Signatur
+                    surfaces_signature.append(self._surface_signature_cache[cache_key])
+                    continue
+                
+                # Neu berechnen nur wenn nötig
                 points_tuple = []
                 for point in points:
                     try:
@@ -1781,29 +1891,47 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     except (ValueError, TypeError, AttributeError):
                         continue
                 
-                surfaces_signature.append((
+                sig = (
                     str(surface_id),
                     enabled,
                     hidden,
                     tuple(points_tuple)
-                ))
+                )
+                surfaces_signature.append(sig)
+                # Cache speichern
+                self._surface_signature_cache[cache_key] = sig
+        
         surfaces_signature_tuple = tuple(surfaces_signature)
         
         # 🎯 WICHTIG: has_speaker_arrays wird NICHT in die Signatur aufgenommen,
         # da Surfaces unabhängig von der Anwesenheit von Sources gezeichnet werden sollen.
         # has_speaker_arrays beeinflusst nur die Darstellung (gestrichelt vs. durchgezogen),
         # nicht ob Surfaces gezeichnet werden.
-        # Die Signatur besteht nur aus den Surface-Definitionen und active_surface_id.
+        # Die Signatur besteht aus den Surface-Definitionen, active_surface_id und active_surface_highlight_ids.
         active_surface_id = getattr(settings, 'active_surface_id', None)
+        highlight_ids = getattr(settings, 'active_surface_highlight_ids', None)
+        if isinstance(highlight_ids, (list, tuple, set)):
+            highlight_ids_tuple = tuple(sorted(str(sid) for sid in highlight_ids))
+        else:
+            highlight_ids_tuple = tuple()
         
-        surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id)
-
-        return {
+        surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id, highlight_ids_tuple)
+        
+        result = {
             'axis': axis_signature,
             'speakers': speakers_signature_tuple,
             'impulse': impulse_signature_tuple,
             'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id und has_speaker_arrays
         }
+        
+        if DEBUG_OVERLAY_PERF:
+            t_end = time.perf_counter()
+            t_total = (t_end - t_start) * 1000
+            num_surfaces = len(surfaces_signature) if isinstance(surface_definitions, dict) else 0
+            num_speakers = len(speakers_signature) if isinstance(speaker_arrays, dict) else 0
+            print(f"[Overlay Perf] _compute_overlay_signatures: {t_total:.2f}ms (Surfaces: {num_surfaces}, Speakers: {num_speakers})")
+        
+        return result
 
 
 

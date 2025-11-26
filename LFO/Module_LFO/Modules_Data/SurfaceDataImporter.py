@@ -59,6 +59,9 @@ class SurfaceDataImporter:
         path = Path(file_path)
 
         suffix = path.suffix.lower()
+        import time
+        t_start = time.perf_counter()
+
         if suffix == ".dxf":
             try:
                 surfaces = self._load_dxf_surfaces(path)
@@ -80,7 +83,12 @@ class SurfaceDataImporter:
             else:
                 if surfaces and self._ask_clear_existing_surfaces():
                     self._clear_existing_surfaces()
+            t_load = time.perf_counter()
         elif suffix == ".txt":
+            # WICHTIG: Lösche existierende Surfaces VOR dem Laden, damit Gruppen nicht gelöscht werden
+            # (Gruppen werden während des Ladens erstellt)
+            if self._ask_clear_existing_surfaces():
+                self._clear_existing_surfaces()
             try:
                 surfaces = self._load_txt_surfaces(path)
             except ValueError as exc:
@@ -91,8 +99,7 @@ class SurfaceDataImporter:
                 )
                 return False
             else:
-                if surfaces and self._ask_clear_existing_surfaces():
-                    self._clear_existing_surfaces()
+                t_load = time.perf_counter()
         else:
             try:
                 payload = self._load_payload(path)
@@ -105,6 +112,7 @@ class SurfaceDataImporter:
                 return False
 
             surfaces = self._parse_surfaces(payload)
+            t_load = time.perf_counter()
         if not surfaces:
             QMessageBox.information(
                 self.parent_widget,
@@ -114,6 +122,21 @@ class SurfaceDataImporter:
             return False
 
         imported_count = self._store_surfaces(surfaces)
+        t_store = time.perf_counter()
+
+        # Grobes Performance-Logging (nur eine Zeile, kein Spam)
+        logger = logging.getLogger(__name__)
+        msg = (
+            f"Surface-Import ({suffix}): {imported_count} Surfaces, "
+            f"Ladezeit={t_load - t_start:.3f}s, "
+            f"Speichern={t_store - t_load:.3f}s, "
+            f"Gesamt={t_store - t_start:.3f}s"
+        )
+        # Immer auf stdout ausgeben, damit es im Terminal sichtbar ist
+        print(msg)
+        # Zusätzlich über logging, falls konfiguriert
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(msg)
         QMessageBox.information(
             self.parent_widget,
             "Surface Import Successful",
@@ -163,7 +186,6 @@ class SurfaceDataImporter:
         - Einfache Zeile mit ';' oder '";"' beendet den Abschnitt
         - Alle Flächen mit gleichem Labelpräfix (z.B. BETON) werden zu einer Gruppe zusammengefasst
         """
-        logger = logging.getLogger(__name__)
         surfaces: Dict[str, SurfaceDefinition] = {}
         current_label: Optional[str] = None
         current_points: List[Dict[str, float]] = []
@@ -175,11 +197,6 @@ class SurfaceDataImporter:
                 current_points = []
                 return
             if len(current_points) < 3:
-                logger.info(
-                    "TXT-Surface '%s' übersprungen: nur %d Punkte vorhanden",
-                    current_label,
-                    len(current_points),
-                )
                 current_label = None
                 current_points = []
                 return
@@ -209,38 +226,44 @@ class SurfaceDataImporter:
                 payload["group_id"] = group_id
 
             surfaces[surface_id] = SurfaceDefinition.from_dict(surface_id, payload)
-            logger.info(
-                "TXT-Surface '%s' importiert (%d Punkte, Gruppe=%s)",
-                current_label,
-                len(current_points),
-                group_label or "keine",
-            )
             current_label = None
             current_points = []
 
         with file_path.open("r", encoding="utf-8") as handle:
             for line_number, raw_line in enumerate(handle, start=1):
+                # Einmalig trimmen, um führende/nachfolgende Whitespaces zu entfernen
                 line = raw_line.strip()
                 if not line:
                     continue
 
-                stripped = line.strip()
-                if stripped.startswith(";") or stripped.startswith('";'):
-                    if stripped in ('";"', '" ;"', ";", '";', '"'):
+                # Abschnittsende-Zeilen wie ';' oder '";"' erkennen
+                first_char = line[0]
+                if first_char == ";" or line.startswith('";'):
+                    if line in ('";"', '" ;"', ";", '";', '"'):
                         finalize_current_surface()
                     continue
 
-                if line.lower().startswith('"label"') or line.lower().startswith("label"):
+                # Label-Zeilen erkennen (nur einmal tolower ausführen)
+                lower_line = line.lower()
+                if lower_line.startswith('"label"') or lower_line.startswith("label"):
                     finalize_current_surface()
                     label = self._extract_label_value(line, line_number)
                     current_label = label
                     current_points = []
                     continue
 
-                # Koordinatenzeilen
-                point = self._parse_txt_point(line, line_number)
-                if point:
-                    current_points.append(point)
+                # Koordinatenzeilen direkt hier parsen (spart Funktions-Overhead)
+                try:
+                    parts = line.split(",")
+                    if len(parts) < 3:
+                        raise ValueError
+                    x = float(parts[0])
+                    y = float(parts[1])
+                    z = float(parts[2])
+                except ValueError:
+                    raise ValueError(f"Ungültige Koordinaten in Zeile {line_number}: {line}")
+
+                current_points.append(self._make_point(x, y, z))
 
         finalize_current_surface()
         return surfaces
@@ -256,11 +279,17 @@ class SurfaceDataImporter:
         return label
 
     def _parse_txt_point(self, line: str, line_number: int) -> Dict[str, float]:
+        """
+        Beibehaltung der bisherigen API für eventuelle zukünftige Nutzung.
+        Aktuell wird im TXT-Importer direkt geparst, um Funktions-Overhead zu sparen.
+        """
         try:
-            parts = [p.strip() for p in line.split(",") if p.strip()]
+            parts = line.split(",")
             if len(parts) < 3:
                 raise ValueError
-            x, y, z = map(float, parts[:3])
+            x = float(parts[0])
+            y = float(parts[1])
+            z = float(parts[2])
         except ValueError:
             raise ValueError(f"Ungültige Koordinaten in Zeile {line_number}: {line}")
         return self._make_point(x, y, z)
@@ -276,22 +305,34 @@ class SurfaceDataImporter:
     def _derive_group_label(label: Optional[str]) -> Optional[str]:
         if not label:
             return None
-        match = re.match(r"([A-Za-zÄÖÜäöüß\s_-]+)", label.strip())
+        label = label.strip()
+        
+        # Strategie: Extrahiere den gemeinsamen Überbegriff durch Entfernen von Zahlen am Ende
+        # Beispiele:
+        # "Stage 156" -> "Stage"
+        # "test 1" -> "test"
+        # "03_Gebaeude 01" -> "03_Gebaeude"
+        # "04_Stage 02" -> "04_Stage"
+        # "06_GP 0001" -> "06_GP"
+        # "LP 01" -> "LP"
+        # "BETON 1" -> "BETON"
+        
+        # Finde das letzte Vorkommen von Leerzeichen gefolgt von Zahlen am Ende
+        # und entferne alles ab diesem Punkt
+        # Pattern: Alles bis zum letzten Leerzeichen + Zahlen am Ende
+        match = re.search(r"\s+\d+.*$", label)
         if match:
-            base = match.group(1).strip()
-            return base or label.strip()
-        return label.strip()
+            # Entferne alles ab dem Leerzeichen vor den Zahlen
+            base = label[:match.start()].strip()
+            if base:
+                return base
+        
+        # Fallback: Wenn keine Zahlen am Ende gefunden, verwende Original
+        return label
 
     def _store_surfaces(self, surfaces: Dict[str, SurfaceDefinition]) -> int:
-        logger = logging.getLogger(__name__)
         imported = 0
         for surface_id, surface in surfaces.items():
-            logger.debug(
-                "Store surface %s (%s) group=%s",
-                surface_id,
-                getattr(surface, "name", surface_id),
-                getattr(surface, "group_id", None),
-            )
             # Stelle sicher, dass imported Surfaces immer enabled=False haben
             surface.enabled = False
             
@@ -315,20 +356,8 @@ class SurfaceDataImporter:
                         create_missing=True,
                     )
         if self.group_manager:
+            # Struktur nur einmal am Ende sicherstellen
             self.group_manager.ensure_surface_group_structure()
-
-        final_store = getattr(self.settings, "surface_definitions", {})
-        logger.info(
-            "Surface store now contains %d entries: %s",
-            len(final_store),
-            ", ".join(list(final_store.keys())),
-        )
-        if self.group_manager:
-            groups = self.group_manager.list_groups() if hasattr(self.group_manager, "list_groups") else {}
-            logger.info(
-                "Current groups after import: %s",
-                ", ".join(f"{gid}:{grp.name}" for gid, grp in groups.items()) if groups else "none",
-            )
         return imported
 
     # ---- user confirmation ------------------------------------------
@@ -1240,16 +1269,30 @@ class SurfaceDataImporter:
 
         group_id = None
         if self.group_manager:
+            # Präfixiere Gruppennamen mit "Group " für die Anzeige
+            group_name = f"Group {key}" if not key.startswith("Group ") else key
+            
             if "/" in key:
-                group_id = self.group_manager.ensure_group_path(key)
+                # Für verschachtelte Pfade: Präfixiere jeden Segment
+                segments = [segment.strip() for segment in key.split("/") if segment.strip()]
+                prefixed_segments = [f"Group {seg}" if not seg.startswith("Group ") else seg for seg in segments]
+                prefixed_path = "/".join(prefixed_segments)
+                group_id = self.group_manager.ensure_group_path(prefixed_path)
             else:
-                # Suche zuerst nach existierender Gruppe mit diesem Namen
-                existing_group = self.group_manager.find_surface_group_by_name(key)
+                # Suche zuerst nach existierender Gruppe mit diesem Namen (mit oder ohne Präfix)
+                existing_group = self.group_manager.find_surface_group_by_name(group_name)
+                if not existing_group:
+                    # Versuche auch ohne "Group " Präfix zu suchen
+                    existing_group = self.group_manager.find_surface_group_by_name(key)
                 if existing_group:
                     group_id = existing_group.group_id
+                    # Stelle sicher, dass die Gruppe den richtigen Namen hat
+                    if existing_group.name != group_name:
+                        self.group_manager.rename_surface_group(group_id, group_name)
+                        existing_group.name = group_name
                 else:
-                    # Erstelle neue Gruppe mit Tag-Namen
-                    new_group = self.group_manager.create_surface_group(key)
+                    # Erstelle neue Gruppe mit "Group " Präfix
+                    new_group = self.group_manager.create_surface_group(group_name)
                     if new_group:
                         group_id = new_group.group_id
 

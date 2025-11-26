@@ -175,11 +175,15 @@ class SoundFieldCalculator(ModuleBase):
         surface_point_buffers: Dict[str, np.ndarray] = {}
         if surface_samples:
             for sample in surface_samples:
-                if sample.indices.size > 0:
+                # Planare Flächen: Feldwerte direkt aus dem globalen Grid
+                # über lokale Indizes auslesen (klassischer Pfad)
+                if not getattr(sample, "is_vertical", False) and sample.indices.size > 0:
                     surface_field_buffers[sample.surface_id] = np.zeros(
                         sample.indices.shape[0],
                         dtype=complex,
                     )
+                # Vertikale UND planare Flächen: 3D-Sample-Punkte bekommen
+                # eigene Feldpuffer (für vertikale Wände ist das der Hauptpfad)
                 sample_coords = np.asarray(sample.coordinates)
                 if sample_coords.size > 0:
                     surface_point_buffers[sample.surface_id] = np.zeros(
@@ -371,6 +375,12 @@ class SoundFieldCalculator(ModuleBase):
                     sound_field_p += wave
                     if surface_field_buffers:
                         for sample in surface_samples:
+                            # Nur planare Surfaces nutzen die (row,col)-Indizes
+                            # im globalen Grid. Vertikale Flächen haben ein
+                            # eigenes lokales Raster und werden separat über
+                            # surface_point_buffers versorgt.
+                            if getattr(sample, "is_vertical", False):
+                                continue
                             buffer = surface_field_buffers.get(sample.surface_id)
                             if buffer is None or sample.indices.size == 0:
                                 continue
