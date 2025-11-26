@@ -789,9 +789,16 @@ class UISurfaceManager(ModuleBase):
                 self.surface_tree_widget.update()
                 self.surface_tree_widget.expandAll()
             
-            # Aktualisiere Berechnungen
-            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            # Aktualisiere Plots und Overlays (inkl. neue Surfaces im 3D-Plot)
+            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+                self.main_window.draw_plots.update_plots_for_surface_state()
+            elif hasattr(self.main_window, 'update_speaker_array_calculations'):
+                # Fallback: Nur Berechnungen aktualisieren (Overlays werden dann nicht aktualisiert)
                 self.main_window.update_speaker_array_calculations()
+                # Stelle sicher, dass Overlays auch aktualisiert werden
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
+                        self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
     def _get_surface(self, surface_id):
         """Holt ein Surface aus den Settings"""
@@ -822,9 +829,20 @@ class UISurfaceManager(ModuleBase):
             else:
                 surface['hidden'] = (state == Qt.Checked)
             
-            # Aktualisiere Berechnungen
-            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            # Speichere Hide-Status in Settings
+            if hasattr(self.settings, 'set_surface_hidden'):
+                self.settings.set_surface_hidden(surface_id, state == Qt.Checked)
+            
+            # Aktualisiere Plots und Overlays (inkl. Hide-Status-Änderung)
+            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+                self.main_window.draw_plots.update_plots_for_surface_state()
+            elif hasattr(self.main_window, 'update_speaker_array_calculations'):
+                # Fallback: Nur Berechnungen aktualisieren
                 self.main_window.update_speaker_array_calculations()
+                # Stelle sicher, dass Overlays auch aktualisiert werden
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
+                        self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
     def on_group_enable_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert"""
@@ -856,9 +874,16 @@ class UISurfaceManager(ModuleBase):
         # Aktualisiere alle Child-Checkboxen
         self._update_group_child_checkboxes(group_item, 2, checked)
         
-        # Aktualisiere Berechnungen
-        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+        # Aktualisiere Plots und Overlays (inkl. Hide-Status-Änderung der Gruppe)
+        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+            self.main_window.draw_plots.update_plots_for_surface_state()
+        elif hasattr(self.main_window, 'update_speaker_array_calculations'):
+            # Fallback: Nur Berechnungen aktualisieren
             self.main_window.update_speaker_array_calculations()
+            # Stelle sicher, dass Overlays auch aktualisiert werden
+            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
+                    self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
     def on_surface_item_text_changed(self, item, column):
         """Wird aufgerufen, wenn sich der Text eines Surface-Items ändert"""

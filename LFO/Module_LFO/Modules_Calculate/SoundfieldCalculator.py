@@ -5,6 +5,9 @@ from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
 from typing import List, Dict, Tuple, Optional, Any
 
+DEBUG_SOUNDFIELD = bool(int(__import__("os").environ.get("LFO_DEBUG_SOUNDFIELD", "1")))
+
+
 class SoundFieldCalculator(ModuleBase):
     def __init__(self, settings, data, calculation_spl):
         super().__init__(settings)
@@ -155,6 +158,15 @@ class SoundFieldCalculator(ModuleBase):
             Z_grid,
             surface_mask,
         ) = self._grid_calculator.create_calculation_grid(enabled_surfaces)
+        if DEBUG_SOUNDFIELD:
+            total_points = int(X_grid.size)
+            active_points = int(np.count_nonzero(surface_mask))
+            print(
+                "[SoundFieldCalculator] Berechnungs-Grid:",
+                f"shape={X_grid.shape} (ny, nx),",
+                f"total_points={total_points},",
+                f"active_points_in_mask={active_points}",
+            )
         surface_meshes = self._grid_calculator.get_surface_meshes()
         surface_samples = self._grid_calculator.get_surface_sampling_points()
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)

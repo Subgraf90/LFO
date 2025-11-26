@@ -193,8 +193,28 @@ class SoundFieldCalculatorXaxis(ModuleBase):
                 speaker_array.source_position_y,
             )
             
-            # Prüfe, ob Z-Position vorhanden ist
-            source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
+            # Prüfe, ob Z-Position vorhanden ist (mit Fallback auf source_position_z)
+            source_position_z = getattr(
+                speaker_array,
+                'source_position_calc_z',
+                getattr(speaker_array, 'source_position_z', None)
+            )
+            
+            # Wenn source_position_z None ist oder kein Array, erstelle ein Array mit Standardwerten
+            if source_position_z is None:
+                # Erstelle Array mit Standardwert 0.0 für alle Quellen
+                source_position_z = np.zeros(len(speaker_array.source_polar_pattern), dtype=float)
+            elif not isinstance(source_position_z, (np.ndarray, list)):
+                # Wenn es ein Skalar ist, konvertiere zu Array
+                source_position_z = np.full(len(speaker_array.source_polar_pattern), float(source_position_z), dtype=float)
+            else:
+                # Stelle sicher, dass es ein numpy Array ist
+                source_position_z = np.asarray(source_position_z, dtype=float)
+                # Stelle sicher, dass es die richtige Länge hat
+                if len(source_position_z) < len(speaker_array.source_polar_pattern):
+                    # Erweitere Array mit Nullen, falls zu kurz
+                    padding = np.zeros(len(speaker_array.source_polar_pattern) - len(source_position_z), dtype=float)
+                    source_position_z = np.concatenate([source_position_z, padding])
             
             source_azimuth_deg = speaker_array.source_azimuth
             source_azimuth = np.deg2rad(source_azimuth_deg)

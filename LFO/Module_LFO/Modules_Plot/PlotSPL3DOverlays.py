@@ -104,15 +104,19 @@ class SPL3DOverlayRenderer:
 
     def draw_surfaces(self, settings) -> None:
         """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot."""
+        print(f"[DEBUG 3D-Plot] draw_surfaces() START")
         # Erstelle Signatur für Änderungsdetektion
         surface_definitions = getattr(settings, 'surface_definitions', {})
+        print(f"[DEBUG 3D-Plot] surface_definitions: {list(surface_definitions.keys()) if isinstance(surface_definitions, dict) else 'kein dict'}")
         if not isinstance(surface_definitions, dict):
+            print(f"[DEBUG 3D-Plot] surface_definitions ist kein dict - beende draw_surfaces()")
             self.clear_category('surfaces')
             self._last_surfaces_state = None
             return
 
         # Hole aktives Surface für Signatur und Markierung
         active_surface_id = getattr(settings, 'active_surface_id', None)
+        print(f"[DEBUG 3D-Plot] active_surface_id: {active_surface_id}")
 
         surfaces_signature: List[tuple] = []
         for surface_id in sorted(surface_definitions.keys()):
@@ -144,19 +148,65 @@ class SPL3DOverlayRenderer:
                 tuple(points_tuple)
             ))
         
-        # Füge active_surface_id zur Signatur hinzu, damit Plot aktualisiert wird bei Auswahländerung
+        # Prüfe ob Speaker Arrays vorhanden sind (nicht versteckt) - nur für Darstellung, nicht für Signatur
+        speaker_arrays = getattr(settings, 'speaker_arrays', {})
+        has_speaker_arrays_for_signature = False
+        if isinstance(speaker_arrays, dict):
+            for array in speaker_arrays.values():
+                if not getattr(array, 'hide', False):
+                    has_speaker_arrays_for_signature = True
+                    break
+        
+        # 🎯 WICHTIG: has_speaker_arrays wird NICHT in die Signatur aufgenommen,
+        # da Surfaces unabhängig von der Anwesenheit von Sources gezeichnet werden sollen.
+        # has_speaker_arrays beeinflusst nur die Darstellung (gestrichelt vs. durchgezogen).
+        # Die Signatur besteht nur aus den Surface-Definitionen und active_surface_id.
         signature_tuple = (tuple(surfaces_signature), active_surface_id)
         
-        # Prüfe ob sich etwas geändert hat
-        if self._last_surfaces_state == signature_tuple:
+        # Prüfe ob sich etwas geändert hat (ohne has_speaker_arrays zu berücksichtigen)
+        print(f"[DEBUG 3D-Plot] _last_surfaces_state: {self._last_surfaces_state}, neue Signatur: {signature_tuple}")
+        print(f"[DEBUG 3D-Plot] active_surface_id in Signatur: {active_surface_id}, has_speaker_arrays: {has_speaker_arrays_for_signature}")
+        
+        # Prüfe ob sich die Signatur geändert hat (nur Surface-Definitionen und active_surface_id)
+        signature_changed = True
+        if self._last_surfaces_state is not None:
+            # Normalisiere alte Signatur: Wenn sie 3 Elemente hat (mit has_speaker_arrays), ignoriere das dritte Element
+            if len(self._last_surfaces_state) == 3:
+                last_signature_tuple, last_active, _ = self._last_surfaces_state
+                if (last_signature_tuple == tuple(surfaces_signature) and 
+                    last_active == active_surface_id):
+                    signature_changed = False
+            elif len(self._last_surfaces_state) == 2:
+                last_signature_tuple, last_active = self._last_surfaces_state
+                if (last_signature_tuple == tuple(surfaces_signature) and 
+                    last_active == active_surface_id):
+                    signature_changed = False
+            elif self._last_surfaces_state == signature_tuple:
+                signature_changed = False
+        
+        if not signature_changed:
+            print(f"[DEBUG 3D-Plot] Signatur unverändert - beende draw_surfaces() ohne Zeichnung")
             return
         
         # Lösche alte Surfaces
+        print(f"[DEBUG 3D-Plot] Signatur geändert - lösche alte Surfaces und zeichne neu")
+        # Debug: Prüfe Actors vor clear_category
+        actors_before_clear = list(self.plotter.renderer.actors.keys())
+        surface_actors_before = [name for name in actors_before_clear if name in self._category_actors.get('surfaces', [])]
+        print(f"[DEBUG 3D-Plot] Actors vor clear_category('surfaces'): {actors_before_clear}")
+        print(f"[DEBUG 3D-Plot] Surface-Actors vor clear_category: {surface_actors_before}")
         self.clear_category('surfaces')
+        # Debug: Prüfe Actors nach clear_category
+        actors_after_clear = list(self.plotter.renderer.actors.keys())
+        print(f"[DEBUG 3D-Plot] Actors nach clear_category('surfaces'): {actors_after_clear}")
         self._last_surfaces_state = signature_tuple
+        
+        # Verwende has_speaker_arrays aus der Signatur-Berechnung
+        has_speaker_arrays = has_speaker_arrays_for_signature
         
         # Zeichne alle nicht versteckten Surfaces (enabled und disabled)
         z_offset = self._planar_z_offset
+        surfaces_drawn = 0
         
         for surface_id, surface_def in surface_definitions.items():
             if isinstance(surface_def, SurfaceDefinition):
@@ -172,20 +222,21 @@ class SPL3DOverlayRenderer:
             
             # Überspringe nur versteckte Surfaces
             if hidden:
+                print(f"[DEBUG 3D-Plot] Surface '{surface_id}' ist hidden - überspringe")
                 continue
             
             if len(points) < 3:
+                print(f"[DEBUG 3D-Plot] Surface '{surface_id}' hat weniger als 3 Punkte ({len(points)}) - überspringe")
                 continue
             
             # Prüfe ob dies das aktive Surface ist
             is_active = (surface_id == active_surface_id)
             
+            print(f"[DEBUG 3D-Plot] Zeichne Surface '{surface_id}': enabled={enabled}, hidden={hidden}, points={len(points)}, is_active={is_active}, has_speaker_arrays={has_speaker_arrays}")
+            
             # Hole Farbe aus Surface-Definition oder verwende Standard
-            # Aktives Surface wird rot markiert
-            if is_active:
-                color = '#FF0000'  # Rot für aktives Surface
-            else:
-                color = color_value if isinstance(color_value, str) else '#888888'
+            # WICHTIG: Die Farbe wird hier nur für enabled Surfaces mit Sources verwendet
+            color = color_value if isinstance(color_value, str) else '#888888'
             
             # Konvertiere Punkte zu numpy-Array
             try:
@@ -199,15 +250,44 @@ class SPL3DOverlayRenderer:
                 if len(point_coords) < 3:
                     continue
                 
-                # Für gefüllte Polygone (z. B. disabled Surfaces) ohne doppelten Schluss-Punkt
-                polygon_coords = point_coords.copy()
+                # Prüfe ob Polygon bereits geschlossen ist (erster und letzter Punkt identisch)
+                first_point = point_coords[0]
+                last_point = point_coords[-1]
+                tolerance = 1e-6
+                is_already_closed = (
+                    abs(first_point[0] - last_point[0]) < tolerance
+                    and abs(first_point[1] - last_point[1]) < tolerance
+                    and abs(first_point[2] - last_point[2]) < tolerance
+                )
 
-                # Erstelle geschlossenes Polygon (füge ersten Punkt am Ende hinzu)
-                closed_coords = point_coords + [point_coords[0]]
-                
-                # Erstelle PolyLine aus PyVista
+                # Erzeuge IMMER ein explizit geschlossenes Polygon:
+                # - Wenn bereits geschlossen → verwende Punkte unverändert
+                # - Wenn offen          → füge ersten Punkt am Ende hinzu
+                if is_already_closed:
+                    closed_coords = point_coords.copy()
+                    print(
+                        f"[DEBUG 3D-Plot] Surface '{surface_id}': Polygon bereits geschlossen "
+                        f"({len(closed_coords)} Punkte, letzter = erster)"
+                    )
+                else:
+                    closed_coords = point_coords + [point_coords[0]]
+                    print(
+                        f"[DEBUG 3D-Plot] Surface '{surface_id}': Polygon nicht geschlossen - "
+                        f"füge ersten Punkt als Abschluss hinzu ({len(closed_coords)} Punkte)"
+                    )
+
+                # Erstelle PolyLine aus PyVista.
+                # VTK-Format für eine einzelne PolyLine:
+                # [N, idx0, idx1, ..., idx(N-1)]
+                # Die Segmente werden zwischen aufeinanderfolgenden Punkten gezogen.
+                # Da der letzte Punkt == erster Punkt ist, entsteht automatisch die
+                # schließende Kante zurück zum Startpunkt.
                 polyline = self.pv.PolyData(closed_coords)
-                polyline.lines = [len(closed_coords)] + list(range(len(closed_coords)))
+                n_points = len(closed_coords)
+                polyline.lines = [n_points] + list(range(n_points))
+                print(
+                    f"[DEBUG 3D-Plot] Surface '{surface_id}': PolyLine mit {n_points} Punkten (geschlossen)"
+                )
                 # Entferne Vertex-Zellen, damit keine Punkte an den Eckpunkten gerendert werden
                 try:
                     polyline.verts = np.empty(0, dtype=np.int64)
@@ -217,29 +297,41 @@ class SPL3DOverlayRenderer:
                     except Exception:
                         pass
                 
-                # 🎯 Unterscheide zwischen enabled/disabled und aktivem/inaktivem Surface
-                if DEBUG_SURFACE_GEOMETRY:
-                    y_vals = [p[1] for p in point_coords]
-                    z_vals = [p[2] for p in point_coords]
-                    print(
-                        "[SurfaceOverlay]",
-                        surface_id,
-                        "enabled" if enabled else "disabled",
-                        f"y-range=({min(y_vals):.2f}, {max(y_vals):.2f})",
-                        f"z-range=({min(z_vals):.2f}, {max(z_vals):.2f})",
+                actor_name = None
+                # Wenn enabled aber keine Sources vorhanden, behandle wie disabled Surface
+                if enabled and not has_speaker_arrays:
+                    # Enabled Surface ohne Sources: wie disabled Surface (gestrichelte schwarze Linien)
+                    dashed_pattern = 0xAAAA  # Gestricheltes Muster
+                    line_color = '#000000'  # Schwarze Linien
+                    opacity = 0.7 if is_active else 0.6
+                    print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Enabled Surface ohne Sources → wie disabled (gestrichelte schwarze Linien)")
+                    
+                    # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
+                    actor_name = self._add_overlay_mesh(
+                        polyline,
+                        color=line_color,
+                        line_width=1.2,
+                        opacity=opacity,
+                        line_pattern=dashed_pattern,
+                        line_repeat=2,
+                        category='surfaces',
+                        show_vertices=False,
+                        render_lines_as_tubes=True,
                     )
-
-                if enabled:
+                elif enabled and has_speaker_arrays:
+                    # Enabled Surface mit Sources: normale enabled Surface Logik
                     if is_active:
-                        # Aktives enabled Surface: Rote Umrandung, etwas hervorgehoben
+                        # Aktives enabled Surface mit Sources: Rote Umrandung, etwas hervorgehoben
+                        surface_color = '#FF0000'  # Immer Rot für aktives Surface mit Sources
+                        print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Aktives Surface mit Sources → Farbe: {surface_color}")
                         polyline_render = polyline
                         try:
                             polyline_render = polyline.tube(radius=0.02, n_sides=24, capping=True)
                         except Exception:
                             pass
-                        self._add_overlay_mesh(
+                        actor_name = self._add_overlay_mesh(
                             polyline_render,
-                            color='#FF0000',  # Immer Rot für aktives Surface
+                            color=surface_color,
                             line_width=1.2,
                             opacity=0.95,
                             category='surfaces',
@@ -248,14 +340,16 @@ class SPL3DOverlayRenderer:
                         )
                     else:
                         # Inaktives enabled Surface: sehr schlanke Linienführung
+                        surface_color = color  # Verwendet Surface-Farbe
+                        print(f"[DEBUG 3D-Plot] Surface '{surface_id}': Inaktives enabled Surface → Farbe: {surface_color}")
                         polyline_render = polyline
                         try:
                             polyline_render = polyline.tube(radius=0.015, n_sides=24, capping=True)
                         except Exception:
                             pass
-                        self._add_overlay_mesh(
+                        actor_name = self._add_overlay_mesh(
                             polyline_render,
-                            color=color,
+                            color=surface_color,
                             line_width=1.2,
                             opacity=0.75,
                             category='surfaces',
@@ -269,7 +363,7 @@ class SPL3DOverlayRenderer:
                     opacity = 0.7 if is_active else 0.6
 
                     # Für gestrichelte Linien müssen wir Polylines verwenden (Tube-Meshes unterstützen kein line_pattern)
-                    self._add_overlay_mesh(
+                    actor_name = self._add_overlay_mesh(
                         polyline,
                         color=line_color,
                         line_width=1.2,
@@ -280,8 +374,13 @@ class SPL3DOverlayRenderer:
                         show_vertices=False,
                         render_lines_as_tubes=True,
                     )
-            except (ValueError, TypeError, AttributeError, Exception):
+                surfaces_drawn += 1
+                print(f"[DEBUG 3D-Plot] Surface '{surface_id}' erfolgreich gezeichnet (Actor: {actor_name})")
+            except (ValueError, TypeError, AttributeError, Exception) as e:
+                print(f"[DEBUG 3D-Plot] Fehler beim Zeichnen von Surface '{surface_id}': {e}")
                 continue
+        
+        print(f"[DEBUG 3D-Plot] draw_surfaces() ENDE - {surfaces_drawn} Surfaces gezeichnet")
 
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
         speaker_arrays = getattr(settings, 'speaker_arrays', {})

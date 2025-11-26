@@ -139,6 +139,13 @@ class SurfaceGridCalculator(ModuleBase):
         # SCHRITT 3: 2D-Meshgrid erstellen
         # ============================================================
         X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
+        if DEBUG_SURFACE_GRID:
+            total_points = int(X_grid.size)
+            print(
+                "[SurfaceGridCalculator] Berechnungs-Grid:",
+                f"shape={X_grid.shape} (ny, nx),",
+                f"total_points={total_points}",
+            )
         
         # ============================================================
         # SCHRITT 4: Resolution-Check (optional, gibt Warnung aus)
@@ -157,6 +164,14 @@ class SurfaceGridCalculator(ModuleBase):
         else:
             # Keine Surfaces → alle Punkte sind gültig
             surface_mask = np.ones_like(X_grid, dtype=bool)
+        if DEBUG_SURFACE_GRID:
+            mask_true = int(np.count_nonzero(surface_mask))
+            print(
+                "[SurfaceGridCalculator] Surface-Maske:",
+                f"true_points={mask_true},",
+                f"masked_points={int(surface_mask.size - mask_true)},",
+                f"total_points={int(surface_mask.size)}",
+            )
         
         # ============================================================
         # SCHRITT 6: Z-Koordinaten interpolieren
@@ -164,6 +179,13 @@ class SurfaceGridCalculator(ModuleBase):
         Z_grid = np.zeros_like(X_grid, dtype=float)  # Standard: Z=0
         if enabled_surfaces:
             Z_grid = self._interpolate_z_coordinates(X_grid, Y_grid, enabled_surfaces, surface_mask)
+        if DEBUG_SURFACE_GRID:
+            nonzero_z = int(np.count_nonzero(Z_grid))
+            print(
+                "[SurfaceGridCalculator] Z-Grid:",
+                f"nonzero_points={nonzero_z},",
+                f"total_points={int(Z_grid.size)}",
+            )
         
         self._last_surface_meshes = self._build_surface_meshes(enabled_surfaces, resolution)
         self._last_surface_samples = self._build_surface_samples(self._last_surface_meshes)
@@ -408,6 +430,19 @@ class SurfaceGridCalculator(ModuleBase):
                     plane_model=plane_model,
                 )
             )
+        if DEBUG_SURFACE_GRID and meshes:
+            total_cells = 0
+            total_points = 0
+            for mesh in meshes:
+                ny, nx = mesh.mask.shape
+                total_cells += int(np.count_nonzero(mesh.mask))
+                total_points += int(ny * nx)
+            print(
+                "[SurfaceGridCalculator] Surface-Meshes:",
+                f"count={len(meshes)},",
+                f"mesh_grid_points={total_points},",
+                f"active_cells={total_cells}",
+            )
         return meshes
 
     def _build_surface_samples(
@@ -432,6 +467,13 @@ class SurfaceGridCalculator(ModuleBase):
                     indices=indices,
                     grid_shape=mesh.mask.shape,
                 )
+            )
+        if DEBUG_SURFACE_GRID and samples:
+            total_sample_points = sum(int(s.coordinates.shape[0]) for s in samples)
+            print(
+                "[SurfaceGridCalculator] Surface-Samples:",
+                f"surfaces={len(samples)},",
+                f"sample_points_total={total_sample_points}",
             )
         return samples
     

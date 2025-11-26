@@ -155,7 +155,6 @@ class DrawPlotsMainwindow(ModuleBase):
             raise ImportError(
                 "PyVista und PyVistaQt sind nicht verfügbar. Bitte installieren, um den 3D-SPL-Plot zu verwenden."
             )
-        self._camera_debug("_initialize_spl_plotter -> creating DrawSPLPlot3D")
         self.draw_spl_plotter = DrawSPLPlot3D(self.main_window.ui.SPLPlot, self.settings, self.colorbar_ax)
         self.draw_spl_plotter.set_time_slider_callback(self._on_time_slider_changed)
         # Prüfe ob "SPL over time" aktiv ist
@@ -295,10 +294,8 @@ class DrawPlotsMainwindow(ModuleBase):
 
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
-            self._camera_debug(f"show_empty_plots -> initialize_empty_scene(preserve_camera={preserve_camera})")
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
             if not preserve_camera and view == "top":
-                self._camera_debug("show_empty_plots -> forcing top view")
                 plotter.set_view_top()
             plotter.update_overlays(self.settings, self.container)
             self.colorbar_canvas.draw()
@@ -578,6 +575,11 @@ class DrawPlotsMainwindow(ModuleBase):
         elif hasattr(self.main_window, 'plot_spl'):
             # Nur Plot-Update (wenn bereits Daten vorhanden)
             self.main_window.plot_spl(update_axes=False)
+        else:
+            # Keine Source vorhanden, aber Surfaces existieren → zeige leeren Plot mit Surfaces
+            # Stelle sicher, dass der Plotter initialisiert ist
+            if self.draw_spl_plotter is not None:
+                self.draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
         
         # ============================================================
         # SCHRITT 4: Overlays aktualisieren (für visuelle Darstellung)
@@ -586,6 +588,8 @@ class DrawPlotsMainwindow(ModuleBase):
         # - enabled + nicht-hidden → Normale Linien (SPL Plot)
         # - disabled + nicht-hidden → Gestrichelte Linien (Empty Plot)
         # - hidden → Nicht geplottet
+        # WICHTIG: update_overlays() IMMER aufrufen, auch wenn keine Source existiert,
+        # damit Surfaces auch ohne Source gezeichnet werden
         if self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
             self.draw_spl_plotter.update_overlays(self.settings, self.container)
 
@@ -600,7 +604,6 @@ class DrawPlotsMainwindow(ModuleBase):
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
         plot_mode = getattr(settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
-        print(f"[DEBUG] WindowPlotsMainwindow.plot_spl() START: speaker_array_id={speaker_array_id}, update_axes={update_axes}, plot_mode={plot_mode}")
         self.settings = settings
         self._update_plot_mode_availability()
         plot_mode = getattr(self.settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
@@ -618,7 +621,6 @@ class DrawPlotsMainwindow(ModuleBase):
 
         if not self.container.calculation_spl.get("show_in_plot", True):
             if draw_spl_plotter is not None:
-                self._camera_debug("plot_spl -> initialize_empty_scene(True) because no data")
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
                 draw_spl_plotter.update_overlays(self.settings, self.container)
                 self.colorbar_canvas.draw()
@@ -662,24 +664,6 @@ class DrawPlotsMainwindow(ModuleBase):
             )
         
         if not has_data:
-            # Debug: Warum greift der Fallback?
-            calc_spl = self.container.calculation_spl
-            debug_info = []
-            debug_info.append(f"is_dict={isinstance(calc_spl, dict)}")
-            debug_info.append(f"len={len(calc_spl) if isinstance(calc_spl, dict) else 0}")
-            debug_info.append(f"has_x={'sound_field_x' in calc_spl if isinstance(calc_spl, dict) else False}")
-            debug_info.append(f"has_y={'sound_field_y' in calc_spl if isinstance(calc_spl, dict) else False}")
-            debug_info.append(f"has_value={field_key in calc_spl if isinstance(calc_spl, dict) else False}")
-            if isinstance(calc_spl, dict):
-                x_len = len(calc_spl.get('sound_field_x', []))
-                y_len = len(calc_spl.get('sound_field_y', []))
-                v_len = len(calc_spl.get(field_key, []))
-                debug_info.append(f"len_x={x_len}, len_y={y_len}, len_value={v_len}")
-                if field_key in calc_spl:
-                    is_empty = self._is_empty_data(calc_spl[field_key], allow_all_zero=allow_zero_phase)
-                    debug_info.append(f"is_empty={is_empty}")
-            print(f"[Plot SPL] Fallback zu leerem Plot aktiviert. Prüfung: {', '.join(debug_info)}")
-            
             # Keine Daten - zeige leere Szene
             if draw_spl_plotter is not None:
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
@@ -720,7 +704,6 @@ class DrawPlotsMainwindow(ModuleBase):
             sound_field_values,
             self.settings.colorization_mode,
         )
-        self._camera_debug("plot_spl -> after update_spl_plot")
         draw_spl_plotter.update_overlays(self.settings, self.container)
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
@@ -1100,7 +1083,7 @@ class DrawPlotsMainwindow(ModuleBase):
     def _resolve_camera_debug_flag(self) -> bool:
         env_value = os.environ.get("LFO_DEBUG_CAMERA")
         if env_value is None:
-            return True
+            return False
         env_value = env_value.strip().lower()
         if env_value in {"0", "false", "off"}:
             return False

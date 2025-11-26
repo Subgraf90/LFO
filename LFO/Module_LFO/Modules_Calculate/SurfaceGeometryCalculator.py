@@ -627,6 +627,13 @@ def prepare_plot_geometry(
     plot_x = source_x.copy()
     plot_y = source_y.copy()
     plot_vals = values.copy()
+    if DEBUG_SURFACE_GEOMETRY:
+        total_points = int(plot_x.size * plot_y.size)
+        print(
+            "[SurfaceGeometry] Ausgangs-Plot-Grid:",
+            f"shape=({plot_y.size}, {plot_x.size}) (ny, nx),",
+            f"total_points={total_points}",
+        )
 
     z_coords = _extract_plot_z_coordinates(container, len(source_y), len(source_x))
     surface_mask = _extract_surface_mask(container, len(source_y), len(source_x))
@@ -701,6 +708,13 @@ def prepare_plot_geometry(
         print("[SurfaceGeometry] Fehler: Keine gültige Surface-Maske – breche Rendering ab.")
         raise RuntimeError("Surface mask missing for plot geometry.")
     _debug_surface_info(settings, plot_x, plot_y, plot_mask, "plot mask")
+    if DEBUG_SURFACE_GEOMETRY and z_coords is not None:
+        nonzero_z = int(np.count_nonzero(z_coords))
+        print(
+            "[SurfaceGeometry] Plot-Z-Grid:",
+            f"nonzero_points={nonzero_z},",
+            f"total_points={int(z_coords.size)}",
+        )
 
     requires_resample = not (
         np.array_equal(plot_x, source_x) and np.array_equal(plot_y, source_y)
@@ -762,6 +776,29 @@ def _recompute_z_coordinates_in_plot_grid(
     
     if not surfaces_with_models:
         return None
+
+    # Schneller Pfad: Alle aktiven Surfaces sind plan und liegen bei z≈0
+    # → kein Bedarf für teure Punkt-in-Polygon-Schleifen, Z-Gitter bleibt überall 0.
+    try:
+        all_constant = all(
+            str(model.get("mode", "constant")) == "constant"
+            for _, model in surfaces_with_models
+        )
+        if all_constant:
+            bases = np.array(
+                [float(model.get("base", 0.0)) for _, model in surfaces_with_models],
+                dtype=float,
+            )
+            if bases.size and np.all(np.abs(bases) <= 1e-6):
+                if DEBUG_SURFACE_GEOMETRY:
+                    print(
+                        "[SurfaceGeometry] Z-Neuberechnung übersprungen:"
+                        " alle aktiven Surfaces sind z≈0 (plan, konstant)."
+                    )
+                return np.zeros((plot_y.size, plot_x.size), dtype=float)
+    except Exception:
+        # Falls etwas schiefgeht, normal weiterrechnen
+        pass
     
     # Erstelle Plot-Grid
     X, Y = np.meshgrid(plot_x, plot_y, indexing="xy")

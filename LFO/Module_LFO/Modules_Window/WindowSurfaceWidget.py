@@ -932,6 +932,7 @@ class SurfaceDockWidget(QDockWidget):
         elif column == 2:
             hidden = item.checkState(2) == Qt.Checked
             self._surface_set(surface_data, "hidden", hidden)
+            self.settings.set_surface_hidden(surface_id, hidden)
             
             # 🎯 Trigger Calc/Plot Update: Hide-Status ändert sich
             # (Hide-Status-Änderung kann Berechnung beeinflussen wenn Surface enabled ist, beeinflusst immer Overlay)

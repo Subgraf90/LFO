@@ -83,6 +83,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._phase_mode_active = False
         self._colorbar_override: dict | None = None
         self._has_plotted_data = False  # Flag: ob bereits ein Plot mit Daten durchgeführt wurde
+        # Flag: ob der initiale Zoom auf das Default-Surface bereits gesetzt wurde
+        self._did_initial_overlay_zoom = False
 
         if not hasattr(self.plotter, '_cmap_to_lut'):
             self.plotter._cmap_to_lut = types.MethodType(self._fallback_cmap_to_lut, self.plotter)  # type: ignore[attr-defined]
@@ -109,11 +111,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         # Guard gegen reentrante Render-Aufrufe (z. B. Kamera-Callbacks).
         self._is_rendering = False
 
-        self._camera_debug("DrawSPLPlot3D.__init__ -> initialize_empty_scene(False)")
+        # initialize_empty_scene(preserve_camera=False) setzt bereits die Top-Ansicht via set_view_top()
+        # daher ist der explizite Aufruf hier nicht nötig und würde den Zoom unnötig zweimal ändern
         self.initialize_empty_scene(preserve_camera=False)
-        # Erzwinge beim UI-Start eine definierte Top-Down-Ansicht.
-        self._camera_debug("DrawSPLPlot3D.__init__ -> set_view_top() after init scene")
-        self.set_view_top()
         self._setup_view_controls()
         self._setup_time_control()
 
@@ -179,7 +179,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     # ------------------------------------------------------------------
     def initialize_empty_scene(self, preserve_camera: bool = True):
         """Zeigt eine leere Szene und bewahrt optional die Kameraposition."""
-        self._camera_debug(f"initialize_empty_scene(preserve_camera={preserve_camera})")
         if preserve_camera:
             camera_state = self._camera_state or self._capture_camera()
         else:
@@ -187,21 +186,30 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Wenn Kamera nicht erhalten wird, Flag zurücksetzen, damit beim nächsten Plot mit Daten Zoom maximiert wird
             self._has_plotted_data = False
 
+        # Debug: Liste alle Actors vor dem Löschen
+        actors_before = list(self.plotter.renderer.actors.keys())
+        print(f"[DEBUG 3D-Plot] initialize_empty_scene() - Actors vor clear(): {actors_before}")
+        
         self.plotter.clear()
         self.overlay_helper.clear()
         self.has_data = False
         self.surface_mesh = None
         self._last_overlay_signatures = {}
+        # 🎯 Setze auch _last_surfaces_state zurück, damit Surfaces nach initialize_empty_scene() neu gezeichnet werden
+        if hasattr(self.overlay_helper, '_last_surfaces_state'):
+            self.overlay_helper._last_surfaces_state = None
+        
+        # Debug: Liste alle Actors nach dem Löschen
+        actors_after = list(self.plotter.renderer.actors.keys())
+        print(f"[DEBUG 3D-Plot] initialize_empty_scene() - Actors nach clear(): {actors_after}")
 
         # Konfiguriere Plotter nur bei Bedarf (nicht die Kamera überschreiben)
         self._configure_plotter(configure_camera=not preserve_camera)
-        # Grundfläche entfernt, damit keine zusätzliche Fläche gerendert wird
-        self._add_scene_frame()
+        # scene_frame wurde entfernt - nicht mehr benötigt
 
         if camera_state is not None:
             self._restore_camera(camera_state)
         else:
-            self._camera_debug("initialize_empty_scene -> no camera_state, fallback set_view_top()")
             self.set_view_top()
             camera_state = self._camera_state
             if camera_state is not None:
@@ -214,7 +222,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._save_camera_state()
         if self.time_control is not None:
             self.time_control.hide()
-        self._camera_debug("initialize_empty_scene -> completed")
 
     def update_spl_plot(
         self,
@@ -224,11 +231,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         colorization_mode: str = "Gradient",
     ):
         """Aktualisiert die SPL-Fläche."""
-        print(f"[DEBUG] PlotSPL3D.update_spl_plot() START: colorization_mode={colorization_mode}")
-        
+        print(f"[DEBUG 3D-Plot] update_spl_plot() START - colorization_mode={colorization_mode}")
         camera_state = self._camera_state or self._capture_camera()
 
         if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
+            print(f"[DEBUG 3D-Plot] Keine gültigen Daten - rufe initialize_empty_scene() auf")
             self.initialize_empty_scene(preserve_camera=True)
             return
 
@@ -376,6 +383,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
         if actor is None or self.surface_mesh is None:
+            print(f"[DEBUG 3D-Plot] Erstelle neue SPL-Surface (spl_surface) - Actor existiert noch nicht")
             self.surface_mesh = mesh.copy(deep=True)
             actor = self.plotter.add_mesh(
                 self.surface_mesh,
@@ -388,12 +396,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 reset_camera=False,
                 interpolate_before_map=False,
             )
+            print(f"[DEBUG 3D-Plot] SPL-Surface (spl_surface) erstellt - Actors im Plotter: {list(self.plotter.renderer.actors.keys())}")
             if hasattr(actor, 'prop') and actor.prop is not None:
                 try:
                     actor.prop.interpolation = 'flat'
                 except Exception:  # noqa: BLE001
                     pass
         else:
+            print(f"[DEBUG 3D-Plot] Aktualisiere bestehende SPL-Surface (spl_surface)")
             self.surface_mesh.deep_copy(mesh)
             mapper = actor.mapper
             if mapper is not None:
@@ -436,8 +446,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.render()
         self._save_camera_state()
         self._colorbar_override = None
-        print(f"[DEBUG] PlotSPL3D.update_spl_plot() ENDE: Plot aktualisiert, time_mode={time_mode}, phase_mode={phase_mode}")
-        self._camera_debug("update_spl_plot -> finished, camera saved")
+        print(f"[DEBUG 3D-Plot] update_spl_plot() ENDE - Finale Actors im Plotter: {list(self.plotter.renderer.actors.keys())}")
 
     def update_time_frame_values(
         self,
@@ -505,6 +514,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
+        print(f"[DEBUG 3D-Plot] update_overlays() START")
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
         self.container = container
         
@@ -513,36 +523,82 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         # und erneutes Hinzufügen zahlreicher PyVista-Actor.
         signatures = self._compute_overlay_signatures(settings, container)
         previous = self._last_overlay_signatures or {}
+        print(f"[DEBUG 3D-Plot] Signatures: {list(signatures.keys())}, Previous: {list(previous.keys())}")
         if not previous:
             categories_to_refresh = set(signatures.keys())
+            print(f"[DEBUG 3D-Plot] Keine vorherigen Signaturen - alle Kategorien werden aktualisiert: {categories_to_refresh}")
         else:
             categories_to_refresh = {
                 key for key, value in signatures.items() if value != previous.get(key)
             }
+            print(f"[DEBUG 3D-Plot] Kategorien zum Aktualisieren: {categories_to_refresh}")
+            # Debug: Prüfe speziell surfaces-Signatur
+            if 'surfaces' in signatures and 'surfaces' in previous:
+                print(f"[DEBUG 3D-Plot] Surfaces-Signatur-Vergleich:")
+                print(f"  Neue Signatur: {signatures['surfaces']}")
+                print(f"  Alte Signatur: {previous['surfaces']}")
+                print(f"  Gleich? {signatures['surfaces'] == previous['surfaces']}")
+                # Signatur hat jetzt 2 Elemente: (surfaces_signature_tuple, active_surface_id)
+                if len(signatures['surfaces']) >= 2 and len(previous['surfaces']) >= 2:
+                    new_active = signatures['surfaces'][1]
+                    old_active = previous['surfaces'][1]
+                    print(f"  Neue active_surface_id: {new_active}")
+                    print(f"  Alte active_surface_id: {old_active}")
+                    print(f"  active_surface_id geändert? {new_active != old_active}")
         if not categories_to_refresh:
+            print(f"[DEBUG 3D-Plot] Keine Kategorien zum Aktualisieren - update_overlays() beendet")
             self._last_overlay_signatures = signatures
             if not self._rotate_active and not self._pan_active:
                 self._save_camera_state()
             return
 
+        print(f"[DEBUG 3D-Plot] Vor Overlay-Zeichnung - Actors im Plotter: {list(self.plotter.renderer.actors.keys())}")
         prev_debug_state = getattr(self.overlay_helper, 'DEBUG_ON_TOP', False)
         try:
             self.overlay_helper.DEBUG_ON_TOP = True
             if 'axis' in categories_to_refresh:
+                print(f"[DEBUG 3D-Plot] Zeichne Axis-Linien...")
                 self.overlay_helper.draw_axis_lines(settings)
             if 'surfaces' in categories_to_refresh:
+                print(f"[DEBUG 3D-Plot] Zeichne Surfaces...")
                 self.overlay_helper.draw_surfaces(settings)
             if 'speakers' in categories_to_refresh:
+                print(f"[DEBUG 3D-Plot] Zeichne Speakers...")
                 cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
                 self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
             if 'impulse' in categories_to_refresh:
+                print(f"[DEBUG 3D-Plot] Zeichne Impulse-Punkte...")
                 self.overlay_helper.draw_impulse_points(settings)
         finally:
             self.overlay_helper.DEBUG_ON_TOP = prev_debug_state
         self._last_overlay_signatures = signatures
+        actors_after_overlays = list(self.plotter.renderer.actors.keys())
+        print(f"[DEBUG 3D-Plot] Nach Overlay-Zeichnung - Actors im Plotter: {actors_after_overlays}")
+        # Debug: Prüfe ob spl_surface vorhanden ist
+        if self.SURFACE_NAME in actors_after_overlays:
+            print(f"[DEBUG 3D-Plot] WARNUNG: spl_surface ist noch vorhanden nach update_overlays()!")
+        # Debug: Zähle nur Surface-Overlays (nicht Axis, Speakers, etc.)
+        surface_actors = self.overlay_helper._category_actors.get('surfaces', [])
+        print(f"[DEBUG 3D-Plot] Anzahl Surface-Overlays (nur surfaces-Kategorie): {len(surface_actors)}")
+        print(f"[DEBUG 3D-Plot] Surface-Actor-Namen: {surface_actors}")
+        # Debug: Zähle auch andere Kategorien
+        axis_actors = self.overlay_helper._category_actors.get('axis', [])
+        speakers_actors = self.overlay_helper._category_actors.get('speakers', [])
+        impulse_actors = self.overlay_helper._category_actors.get('impulse', [])
+        print(f"[DEBUG 3D-Plot] Andere Overlays - Axis: {len(axis_actors)}, Speakers: {len(speakers_actors)}, Impulse: {len(impulse_actors)}")
+        
+        # 🎯 Beim ersten Start: Zoom auf Default-Surface einstellen (nach dem Zeichnen aller Overlays)
+        if (not getattr(self, "_did_initial_overlay_zoom", False)) and 'surfaces' in categories_to_refresh:
+            print(
+                f"[DEBUG 3D-Plot] _did_initial_overlay_zoom={self._did_initial_overlay_zoom}, "
+                "rufe _zoom_to_default_surface() auf..."
+            )
+            self._zoom_to_default_surface()
+        
         self.render()
         if not self._rotate_active and not self._pan_active:
             self._save_camera_state()
+        print(f"[DEBUG 3D-Plot] update_overlays() ENDE")
 
     def _debug_dump_soundfield(self, x: np.ndarray, y: np.ndarray, pressure: np.ndarray) -> None:
         if not DEBUG_SPL_DUMP:
@@ -578,7 +634,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if hasattr(self, 'view_control_widget'):
                 self.view_control_widget.raise_()
             if not self._skip_next_render_restore and self._camera_state is not None:
-                self._camera_debug("render -> restoring saved camera state")
                 self._restore_camera(self._camera_state)
             self._skip_next_render_restore = False
             self._save_camera_state()
@@ -596,7 +651,21 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         state = self._capture_camera()
         if state is not None:
             self._camera_state = state
-            self._camera_debug(f"_save_camera_state -> position={state.get('position')}")
+            # 🎯 Debug: Logge jeden Kamera-Zustand (jedes Mal, wenn sich der 3D-Plot bewegt / gerendert wird)
+            try:
+                pos = state.get('position')
+                fp = state.get('focal_point')
+                dist = state.get('distance', None)
+                par = state.get('parallel_projection', None)
+                pscale = state.get('parallel_scale', None)
+                vang = state.get('view_angle', None)
+                print(
+                    "[DEBUG 3D-Plot] CameraState update: "
+                    f"position={pos}, focal_point={fp}, distance={dist}, "
+                    f"parallel_projection={par}, parallel_scale={pscale}, view_angle={vang}"
+                )
+            except Exception:
+                pass
 
     def _capture_camera(self) -> Optional[dict]:
         if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
@@ -633,8 +702,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     def _init_camera_debug_flag(self) -> bool:
         env_value = os.environ.get("LFO_DEBUG_CAMERA")
         if env_value is None:
-            # Debug standardmäßig aktiv, damit der Startablauf analysiert werden kann.
-            return True
+            # Debug standardmäßig deaktiviert
+            return False
         env_value = env_value.strip().lower()
         if env_value in {"0", "false", "off"}:
             return False
@@ -651,7 +720,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
             return
         cam = self.plotter.camera
-        self._camera_debug(f"_restore_camera -> target position={camera_state.get('position')}")
         try:
             cam.position = camera_state['position']
             cam.focal_point = camera_state['focal_point']
@@ -772,18 +840,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._time_slider_callback = callback
 
     def update_time_control(self, active: bool, frames: int, value: int, simulation_time: float = 0.2):
-        print(f"[DEBUG] PlotSPL3D.update_time_control() aufgerufen: active={active}, frames={frames}, value={value}, simulation_time={simulation_time}")
         if self.time_control is None:
-            print(f"[DEBUG] PlotSPL3D.update_time_control() - time_control ist None, überspringe")
             return
         if not active:
-            print(f"[DEBUG] PlotSPL3D.update_time_control() - active=False, verstecke time_control")
             self.time_control.hide()
             return
-        print(f"[DEBUG] PlotSPL3D.update_time_control() - Konfiguriere time_control mit frames={frames}, value={value}")
         self.time_control.configure(frames, value, simulation_time)
         self.time_control.show()
-        print(f"[DEBUG] PlotSPL3D.update_time_control() - time_control angezeigt")
 
     def _handle_time_slider_change(self, value: int):
         if callable(self._time_slider_callback):
@@ -939,7 +1002,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 if hasattr(cam, 'view_angle'):
                     angle = float(cam.view_angle) * (0.55 if not add_padding else 0.65)
                     cam.view_angle = max(3.0, min(60.0, angle))
-                    self._camera_debug(f"_maximize_camera_view -> new angle {cam.view_angle}")
                 if hasattr(cam, 'ResetClippingRange'):
                     try:
                         cam.ResetClippingRange()
@@ -948,47 +1010,142 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except Exception:
             pass
 
-    def _add_scene_frame(self) -> None:
-        if not hasattr(self.plotter, 'add_mesh'):
-            return
+    # _add_scene_frame() wurde entfernt - nicht mehr benötigt
+    
+    def _zoom_to_default_surface(self) -> None:
+        """Stellt den Zoom auf das Default-Surface ein."""
+        print(f"[DEBUG 3D-Plot] _zoom_to_default_surface() START")
         try:
-            width = getattr(self.settings, 'width', 50.0)
-            length = getattr(self.settings, 'length', 50.0)
-            frame_height = getattr(self.settings, 'scene_frame_height', 0.1)
-            frame_color = getattr(self.settings, 'scene_frame_color', '#999999')
-            frame_offset = getattr(self.settings, 'scene_frame_offset', 2.5)
+            # Hole Default-Surface aus Settings
+            default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
+            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+            print(f"[DEBUG 3D-Plot] default_surface_id: {default_surface_id}, surface_definitions keys: {list(surface_definitions.keys())}")
+            
+            if default_surface_id not in surface_definitions:
+                print(f"[DEBUG 3D-Plot] Default-Surface '{default_surface_id}' nicht in surface_definitions gefunden")
+                return
+            
+            surface_def = surface_definitions[default_surface_id]
+            if isinstance(surface_def, dict):
+                points = surface_def.get('points', [])
+            else:
+                points = getattr(surface_def, 'points', []) or []
+            
+            if not points or len(points) < 3:
+                return
+            
+            # Berechne Bounds aus Surface-Punkten
+            x_coords = [float(p.get('x', 0.0)) for p in points]
+            y_coords = [float(p.get('y', 0.0)) for p in points]
+            z_coords = [float(p.get('z', 0.0)) for p in points]
+            
+            if not x_coords or not y_coords:
+                return
+            
+            min_x, max_x = min(x_coords), max(x_coords)
+            min_y, max_y = min(y_coords), max(y_coords)
+            min_z, max_z = min(z_coords), max(z_coords)
+            
+            # Berechne die Ausdehnung des Surfaces
+            width = abs(max_x - min_x) if max_x != min_x else 1.0
+            height = abs(max_y - min_y) if max_y != min_y else 1.0
+            max_extent = max(width, height)
+            
+            print(f"[DEBUG 3D-Plot] Surface-Bounds: x=[{min_x:.2f}, {max_x:.2f}], y=[{min_y:.2f}, {max_y:.2f}], z=[{min_z:.2f}, {max_z:.2f}]")
+            print(f"[DEBUG 3D-Plot] Surface-Ausdehnung: width={width:.2f}, height={height:.2f}, max_extent={max_extent:.2f}")
+            
+            # Setze Bounds im Plotter und zoome darauf
+            if hasattr(self.plotter, 'camera') and self.plotter.camera is not None:
+                # Setze die Kamera-Position auf die Mitte des Surfaces
+                center_x = (min_x + max_x) / 2.0
+                center_y = (min_y + max_y) / 2.0
+                center_z = (min_z + max_z) / 2.0
+                
+                print(f"[DEBUG 3D-Plot] Surface-Mitte: ({center_x:.2f}, {center_y:.2f}, {center_z:.2f})")
+                
+                # Stelle sicher, dass die Kamera auf die Top-Ansicht eingestellt ist
+                self.plotter.view_xy()
+                
+                # Setze die Kamera-Position
+                cam = self.plotter.camera
+                if hasattr(cam, 'position'):
+                    # Aktiviere Parallelprojektion für die Draufsicht, damit der Zoom
+                    # ausschließlich über parallel_scale gesteuert wird (orthografische Ansicht).
+                    if hasattr(cam, "parallel_projection"):
+                        cam.parallel_projection = True
 
-            x_min = -width / 2 - frame_offset
-            x_max = width / 2 + frame_offset
-            y_min = -length / 2 - frame_offset
-            y_max = length / 2 + frame_offset
+                    # Positioniere die Kamera über dem Surface mit moderatem Abstand.
+                    # Der Abstand ist bei Parallelprojektion weniger kritisch, sollte aber
+                    # groß genug sein, um numerische Effekte zu vermeiden.
+                    distance = max_extent * 1.0
+                    min_distance = 20.0
+                    distance = max(distance, min_distance)
+                    print(f"[DEBUG 3D-Plot] Kamera-Abstand: {distance:.2f} (max_extent={max_extent:.2f}, Faktor=1.0)")
+                    cam.position = (center_x, center_y, center_z + distance)
+                    cam.focal_point = (center_x, center_y, center_z)
+                    cam.up = (0, 1, 0)
+                
+                # Setze den Zoom basierend auf den Bounds mit mehr Padding
+                # Parallelprojektion: parallel_scale bestimmt die halbe sichtbare Höhe.
+                # Wir wählen einen Faktor so, dass das Surface ca. 90–95% der Widget-Höhe füllt.
+                if getattr(cam, 'parallel_projection', False):
+                    if hasattr(cam, 'parallel_scale'):
+                        # Für eine fast widget-füllende Darstellung:
+                        # visible_height ≈ 2 * parallel_scale
+                        # Wir wollen max_extent (Breite oder Höhe) ≈ 0.9 * visible_height
+                        # → parallel_scale ≈ max_extent / (2 * 0.9) ≈ max_extent * 0.56
+                        scale = max_extent * 0.56
+                        print(f"[DEBUG 3D-Plot] Parallel Scale: {scale:.2f} (max_extent={max_extent:.2f})")
+                        cam.parallel_scale = scale
+                else:
+                    if hasattr(cam, 'view_angle'):
+                        # Berechne view_angle basierend auf der Entfernung
+                        # Verwende einen etwas kleineren Faktor (1.1), damit wir etwas näher dran sind
+                        # Der Winkel sollte so sein, dass max_extent * 1.1 im Sichtfeld ist
+                        visible_extent = max_extent * 1.1
+                        angle = 2.0 * np.arctan(visible_extent / (2.0 * distance)) * 180.0 / np.pi
+                        angle = max(30.0, min(60.0, angle))  # Mindestwinkel erhöht auf 30°
+                        print(f"[DEBUG 3D-Plot] View Angle: {angle:.2f}° (visible_extent={visible_extent:.2f}, distance={distance:.2f})")
+                        cam.view_angle = angle
 
-            corners = [
-                (x_min, y_min, frame_height),
-                (x_max, y_min, frame_height),
-                (x_max, y_max, frame_height),
-                (x_min, y_max, frame_height),
-            ]
+                # Zusätzlicher Debug-Print für den eingestellten Zoom (unabhängig von Projektionsart)
+                try:
+                    proj_mode = "parallel" if getattr(cam, "parallel_projection", False) else "perspective"
+                    parallel_scale = getattr(cam, "parallel_scale", None)
+                    view_angle = getattr(cam, "view_angle", None)
+                    cam_pos = getattr(cam, "position", None)
+                    cam_fp = getattr(cam, "focal_point", None)
+                    print(
+                        "[DEBUG 3D-Plot] Eingestellter Zoom: "
+                        f"mode={proj_mode}, parallel_scale={parallel_scale}, "
+                        f"view_angle={view_angle}, position={cam_pos}, focal_point={cam_fp}"
+                    )
+                except Exception:
+                    pass
+                
+                # Reset Clipping Range
+                if hasattr(cam, 'ResetClippingRange'):
+                    try:
+                        cam.ResetClippingRange()
+                    except Exception:
+                        pass
 
-            lines = []
-            for i in range(len(corners)):
-                start = corners[i]
-                end = corners[(i + 1) % len(corners)]
-                line = pv.Line(start, end)
-                lines.append(line)
+                # Merke, dass der initiale Overlay-Zoom gesetzt wurde
+                self._did_initial_overlay_zoom = True
 
-            frame = pv.MultiBlock(lines)
-            self.plotter.add_mesh(
-                frame.merge(clean=True),
-                name='scene_frame',
-                color=frame_color,
-                line_width=1.2,
-                opacity=1.0,
-                render_lines_as_tubes=True,
-                reset_camera=False,
-            )
-        except Exception:
+                # Verhindere, dass render() direkt danach einen alten Kamera-State wiederherstellt
+                self._skip_next_render_restore = True
+                # Render, um die Änderungen anzuzeigen
+                self.render()
+                # Nach dem Rendern den aktuellen Kamera-State als neuen Referenzzustand speichern
+                self._camera_state = self._capture_camera()
+                print(f"[DEBUG 3D-Plot] Zoom auf Default-Surface erfolgreich eingestellt (Kamera-State übernommen)")
+        except Exception as e:
+            print(f"[DEBUG 3D-Plot] Fehler beim Zoomen auf Default-Surface: {e}")
+            import traceback
+            traceback.print_exc()
             pass
+        print(f"[DEBUG 3D-Plot] _zoom_to_default_surface() ENDE")
 
     def _create_view_button(self, orientation: str, tooltip: str, callback) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self.widget)
@@ -1491,15 +1648,20 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 ))
         surfaces_signature_tuple = tuple(surfaces_signature)
         
-        # 🎯 Füge active_surface_id zur Signatur hinzu, damit Auswahländerungen erkannt werden
+        # 🎯 WICHTIG: has_speaker_arrays wird NICHT in die Signatur aufgenommen,
+        # da Surfaces unabhängig von der Anwesenheit von Sources gezeichnet werden sollen.
+        # has_speaker_arrays beeinflusst nur die Darstellung (gestrichelt vs. durchgezogen),
+        # nicht ob Surfaces gezeichnet werden.
+        # Die Signatur besteht nur aus den Surface-Definitionen und active_surface_id.
         active_surface_id = getattr(settings, 'active_surface_id', None)
+        
         surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id)
 
         return {
             'axis': axis_signature,
             'speakers': speakers_signature_tuple,
             'impulse': impulse_signature_tuple,
-            'surfaces': surfaces_signature_with_active,  # Enthält jetzt active_surface_id
+            'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id und has_speaker_arrays
         }
 
 

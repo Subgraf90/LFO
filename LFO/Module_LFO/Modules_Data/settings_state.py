@@ -369,6 +369,12 @@ class Settings:
             raise KeyError(f"Surface with ID '{surface_id}' not found.")
         surface.enabled = bool(enabled)
 
+    def set_surface_hidden(self, surface_id, hidden):
+        surface = self._ensure_surface_object(surface_id)
+        if surface is None:
+            raise KeyError(f"Surface with ID '{surface_id}' not found.")
+        surface.hidden = bool(hidden)
+
     def is_surface_enabled(self, surface_id):
         surface = self.surface_definitions.get(surface_id)
         if surface is None:
