@@ -642,6 +642,399 @@ def build_surface_mesh(
     return mesh
 
 
+def build_full_floor_mesh(
+    x: np.ndarray,
+    y: np.ndarray,
+    scalars: np.ndarray,
+    *,
+    z_coords: Optional[np.ndarray] = None,
+    pv_module: Any = None,
+) -> Any:
+    """
+    Erstellt ein vollständiges SPL-Teppich-Mesh OHNE Surface-Maskierung.
+    Dieses Mesh wird später an den Surface-Kanten geclippt.
+    
+    Args:
+        x, y: Plot-Grid-Koordinaten
+        scalars: SPL-Werte für Plot-Grid
+        z_coords: Z-Koordinaten für Plot-Grid
+        pv_module: PyVista-Modul
+    """
+    if pv_module is None:
+        try:
+            import pyvista as pv_module  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise ImportError(
+                "PyVista wird benötigt, um ein Floor-Mesh zu erstellen."
+            ) from exc
+    
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    values = np.asarray(scalars, dtype=float)
+    if z_coords is not None:
+        z = np.asarray(z_coords, dtype=float)
+    else:
+        z = None
+
+    ny, nx = values.shape
+    if ny != len(y) or nx != len(x):
+        raise ValueError("scalars müssen Shape (len(y), len(x)) besitzen.")
+
+    # Erzeuge Punktkoordinaten (alle Punkte, keine Maskierung)
+    xm, ym = np.meshgrid(x, y, indexing="xy")
+    if z is not None and z.shape == (ny, nx):
+        zm = z
+    elif z is not None and z.size == ny * nx:
+        zm = z.reshape(ny, nx)
+    else:
+        zm = np.zeros_like(xm, dtype=float)
+
+    points = np.column_stack((xm.ravel(), ym.ravel(), zm.ravel()))
+
+    # Definiere ALLE Quad-Zellen (keine Filterung)
+    face_list: List[int] = []
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            idx0 = j * nx + i
+            idx1 = idx0 + 1
+            idx2 = idx0 + nx + 1
+            idx3 = idx0 + nx
+            face_list.extend([4, idx0, idx1, idx2, idx3])
+
+    faces = np.asarray(face_list, dtype=np.int64)
+    if faces.size > 0:
+        mesh = pv_module.PolyData(points, faces)
+    else:
+        mesh = pv_module.PolyData(points)
+
+    mesh["plot_scalars"] = values.ravel()
+    return mesh
+
+
+def build_surface_clipping_mesh(
+    surface_id: str,
+    points: List[Dict[str, float]],
+    plane_model: Optional[Dict[str, float]],
+    *,
+    pv_module: Any = None,
+    resolution: float = 0.1,
+) -> Any:
+    """
+    Erstellt ein 3D-Mesh für eine Surface, das zum Clipping verwendet wird.
+    Das Mesh repräsentiert die Surface-Oberfläche mit korrekter Z-Steigung.
+    
+    Args:
+        surface_id: ID der Surface
+        points: Polygon-Punkte der Surface (2D: x, y)
+        plane_model: Planar-Modell für Z-Berechnung
+        pv_module: PyVista-Modul
+        resolution: Auflösung für das Clipping-Mesh (in Metern)
+    
+    Returns:
+        PyVista PolyData-Mesh, das die Surface-Oberfläche repräsentiert
+    """
+    if pv_module is None:
+        try:
+            import pyvista as pv_module  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise ImportError(
+                "PyVista wird benötigt, um ein Clipping-Mesh zu erstellen."
+            ) from exc
+    
+    if len(points) < 3:
+        raise ValueError(f"Surface '{surface_id}' benötigt mindestens 3 Punkte.")
+    
+    # Extrahiere X/Y-Koordinaten des Polygons
+    poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+    poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+    
+    # Berechne Bounding-Box
+    x_min, x_max = float(np.min(poly_x)), float(np.max(poly_x))
+    y_min, y_max = float(np.min(poly_y)), float(np.max(poly_y))
+    
+    # Erstelle feines Grid innerhalb der Bounding-Box
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    
+    # Anzahl der Punkte basierend auf resolution
+    nx = max(2, int(np.ceil(x_range / resolution)) + 1)
+    ny = max(2, int(np.ceil(y_range / resolution)) + 1)
+    
+    x_grid = np.linspace(x_min, x_max, nx)
+    y_grid = np.linspace(y_min, y_max, ny)
+    X, Y = np.meshgrid(x_grid, y_grid, indexing="xy")
+    
+    # Prüfe für jeden Punkt, ob er im Polygon liegt
+    from matplotlib.path import Path
+    poly_path = Path(np.column_stack((poly_x, poly_y)))
+    points_2d = np.column_stack((X.ravel(), Y.ravel()))
+    inside_mask = poly_path.contains_points(points_2d)
+    
+    # Berechne Z-Werte für Punkte innerhalb des Polygons
+    if plane_model is None:
+        # Fallback: Z = 0
+        Z = np.zeros_like(X)
+    else:
+        # Verwende evaluate_surface_plane für jeden Punkt
+        Z = np.zeros_like(X)
+        for j in range(ny):
+            for i in range(nx):
+                if inside_mask[j * nx + i]:
+                    Z[j, i] = evaluate_surface_plane(plane_model, X[j, i], Y[j, i])
+    
+    # Erstelle Punkte-Array (nur für Punkte innerhalb des Polygons)
+    points_3d = []
+    for j in range(ny):
+        for i in range(nx):
+            if inside_mask[j * nx + i]:
+                points_3d.append([X[j, i], Y[j, i], Z[j, i]])
+    
+    if len(points_3d) == 0:
+        # Keine Punkte im Polygon → erstelle minimales Mesh
+        # Verwende die Polygon-Punkte selbst mit Z-Werten
+        points_3d = []
+        for p in points:
+            x_val = p.get("x", 0.0)
+            y_val = p.get("y", 0.0)
+            if plane_model is None:
+                z_val = 0.0
+            else:
+                z_val = evaluate_surface_plane(plane_model, x_val, y_val)
+            points_3d.append([x_val, y_val, z_val])
+    
+    points_array = np.array(points_3d, dtype=float)
+    
+    # Erstelle Mesh aus Punkten (Delaunay-Triangulation)
+    mesh = pv_module.PolyData(points_array)
+    if len(points_array) >= 3:
+        # 2D-Delaunay-Triangulation (projiziert auf XY-Ebene, behält Z)
+        mesh = mesh.delaunay_2d(alpha=0.0, tol=0.0)
+    
+    return mesh
+
+
+def clip_floor_with_surfaces(
+    floor_mesh: Any,
+    surface_definitions: Dict[str, Any],
+    *,
+    pv_module: Any = None,
+) -> Any:
+    """
+    Clippt den Floor-Mesh an allen enabled Surfaces.
+    Für jede Surface wird der Floor-Mesh an der Surface-Geometrie weggeschnitten.
+    
+    Args:
+        floor_mesh: Vollständiges Floor-Mesh (PyVista PolyData)
+        surface_definitions: Dict mit Surface-Definitionen
+        pv_module: PyVista-Modul
+    
+    Returns:
+        Geclipptes Floor-Mesh
+    """
+    if pv_module is None:
+        try:
+            import pyvista as pv_module  # type: ignore
+        except Exception:  # noqa: BLE001
+            raise ImportError("PyVista wird benötigt für Clipping.")
+    
+    clipped_mesh = floor_mesh.copy(deep=True)
+    
+    # Sammle alle enabled Surfaces
+    enabled_surfaces = []
+    for surface_id, surface_def in surface_definitions.items():
+        if isinstance(surface_def, SurfaceDefinition):
+            enabled = bool(getattr(surface_def, "enabled", False))
+            hidden = bool(getattr(surface_def, "hidden", False))
+            points = getattr(surface_def, "points", []) or []
+            plane_model = getattr(surface_def, "plane_model", None)
+        else:
+            enabled = bool(surface_def.get("enabled", False))
+            hidden = bool(surface_def.get("hidden", False))
+            points = surface_def.get("points", [])
+            plane_model = surface_def.get("plane_model")
+        
+        if not enabled or hidden or len(points) < 3:
+            continue
+        
+        enabled_surfaces.append((surface_id, points, plane_model))
+    
+    # Wenn keine Surfaces vorhanden, gebe unverändertes Mesh zurück
+    if not enabled_surfaces:
+        return clipped_mesh
+    
+    # Versuche clip_surface pro Surface anzuwenden
+    # Falls das fehlschlägt, verwende manuelles Clipping als Fallback
+    use_manual_clipping = False
+    
+    # Iteriere über alle Surfaces und wende clip_surface an
+    for surface_id, points, plane_model in enabled_surfaces:
+        try:
+            # Erstelle Clipping-Mesh für diese Surface
+            # Höhere Auflösung für glattere Clipping-Ränder
+            clipping_mesh = build_surface_clipping_mesh(
+                surface_id,
+                points,
+                plane_model,
+                pv_module=pv_module,
+                resolution=0.05,  # 5cm Auflösung für präziseres Clipping
+            )
+            
+            # Prüfe ob Clipping-Mesh gültig ist
+            if clipping_mesh.n_points == 0 or clipping_mesh.n_cells == 0:
+                if DEBUG_SURFACE_GEOMETRY:
+                    print(
+                        f"[SurfaceGeometry] Clipping-Mesh für '{surface_id}' ist leer, "
+                        f"überspringe diese Surface"
+                    )
+                continue
+            
+            # Prüfe ob Floor-Mesh noch gültig ist
+            if clipped_mesh.n_cells == 0:
+                if DEBUG_SURFACE_GEOMETRY:
+                    print(
+                        f"[SurfaceGeometry] Floor-Mesh ist leer nach vorherigem Clipping, "
+                        f"überspringe weitere Surfaces"
+                    )
+                break
+            
+            # Versuche clip_surface anzuwenden
+            try:
+                # Berechne durchschnittliche Normale der Surface für korrekte Orientierung
+                clipping_mesh_with_normals = clipping_mesh.compute_normals(point_normals=True, cell_normals=False)
+                use_invert = False
+                if clipping_mesh_with_normals.n_points > 0:
+                    normals = clipping_mesh_with_normals.point_data.get("Normals")
+                    if normals is not None and len(normals) > 0:
+                        avg_normal = np.mean(normals, axis=0)
+                        # clip_surface mit invert=False entfernt Zellen auf der Seite entgegen der Normalen
+                        # clip_surface mit invert=True entfernt Zellen auf der Seite in Richtung der Normalen
+                        # Wir wollen Zellen oberhalb der Surface entfernen (Z > Surface-Z)
+                        # Wenn Normale nach oben zeigt (Z > 0), müssen wir invert=True verwenden
+                        # Wenn Normale nach unten zeigt (Z < 0), müssen wir die Surface flippen und invert=True verwenden
+                        if avg_normal[2] > 0:
+                            # Normale zeigt nach oben: verwende invert=True um Zellen oberhalb zu entfernen
+                            use_invert = True
+                        elif avg_normal[2] < 0:
+                            # Normale zeigt nach unten: invertiere Surface, dann verwende invert=True
+                            clipping_mesh = clipping_mesh.flip_normals()
+                            use_invert = True
+                        # Wenn avg_normal[2] == 0, ist die Surface horizontal - verwende Standard-Logik
+                
+                # Clippe: Entferne Zellen, die die Surface schneiden oder darüber liegen
+                cells_before = clipped_mesh.n_cells
+                clipped_mesh = clipped_mesh.clip_surface(clipping_mesh, invert=use_invert)
+                cells_after = clipped_mesh.n_cells
+                
+                # Validierung: Prüfe ob Clipping sinnvoll war
+                if cells_after >= cells_before:
+                    # Keine Zellen entfernt - möglicherweise Problem mit Orientierung
+                    if DEBUG_SURFACE_GEOMETRY:
+                        print(
+                            f"[SurfaceGeometry] clip_surface für '{surface_id}' entfernte keine Zellen "
+                            f"({cells_before} -> {cells_after}), versuche invertierte Orientierung"
+                        )
+                    # Versuche mit invertiertem Parameter
+                    clipped_mesh = clipped_mesh.clip_surface(clipping_mesh, invert=not use_invert)
+                    cells_after = clipped_mesh.n_cells
+                
+                if DEBUG_SURFACE_GEOMETRY:
+                    print(
+                        f"[SurfaceGeometry] Floor geclippt an Surface '{surface_id}': "
+                        f"{cells_after} Zellen verbleiben (von {cells_before})"
+                    )
+                
+            except Exception as clip_exc:
+                # clip_surface fehlgeschlagen - markiere für manuelles Clipping
+                if DEBUG_SURFACE_GEOMETRY:
+                    print(
+                        f"[SurfaceGeometry] clip_surface fehlgeschlagen für '{surface_id}': {clip_exc}"
+                    )
+                use_manual_clipping = True
+                break
+        
+        except Exception as exc:  # noqa: BLE001
+            if DEBUG_SURFACE_GEOMETRY:
+                print(
+                    f"[SurfaceGeometry] Fehler beim Clipping mit Surface '{surface_id}': {exc}"
+                )
+            use_manual_clipping = True
+            break
+    
+    # Falls clip_surface fehlgeschlagen ist, verwende manuelles Clipping
+    if use_manual_clipping:
+        # Manuelles Clipping für alle Surfaces in einem Durchgang
+        # Starte mit frischem Mesh
+        clipped_mesh = floor_mesh.copy(deep=True)
+        
+        if DEBUG_SURFACE_GEOMETRY:
+            print(
+                f"[SurfaceGeometry] Verwende manuelles Clipping für {len(enabled_surfaces)} Surfaces"
+            )
+        
+        from matplotlib.path import Path
+        
+        # Berechne Zell-Zentren einmal
+        cell_centers = clipped_mesh.cell_centers().points
+        if len(cell_centers) == 0:
+            return clipped_mesh
+        
+        # Erstelle Polygon-Pfade und Z-Schwellenwerte für alle Surfaces
+        surface_polygons = []
+        for surface_id, points, plane_model in enabled_surfaces:
+            try:
+                # Erstelle Clipping-Mesh für diese Surface
+                # Höhere Auflösung für glattere Clipping-Ränder
+                clipping_mesh = build_surface_clipping_mesh(
+                    surface_id,
+                    points,
+                    plane_model,
+                    pv_module=pv_module,
+                    resolution=0.05,  # 5cm Auflösung für präziseres Clipping
+                )
+                
+                surface_points = clipping_mesh.points
+                if len(surface_points) > 0:
+                    poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+                    poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+                    z_surface_max = np.max(surface_points[:, 2])
+                    poly_path = Path(np.column_stack((poly_x, poly_y)))
+                    surface_polygons.append((poly_path, z_surface_max + 0.01, surface_id))
+            except Exception as exc:  # noqa: BLE001
+                if DEBUG_SURFACE_GEOMETRY:
+                    print(
+                        f"[SurfaceGeometry] Fehler beim Erstellen des Clipping-Meshes für '{surface_id}': {exc}"
+                    )
+                continue
+        
+        # Prüfe jede Zelle gegen alle Surfaces
+        cells_to_keep = []
+        for i in range(clipped_mesh.n_cells):
+            cell_center = cell_centers[i]
+            keep_cell = True
+            
+            # Prüfe gegen alle Surfaces
+            for poly_path, z_threshold, surface_id in surface_polygons:
+                if poly_path.contains_point((cell_center[0], cell_center[1])):
+                    # Zelle liegt im Polygon: Entferne wenn über Surface
+                    if cell_center[2] > z_threshold:
+                        keep_cell = False
+                        break
+            
+            if keep_cell:
+                cells_to_keep.append(i)
+        
+        if len(cells_to_keep) < clipped_mesh.n_cells:
+            clipped_mesh = clipped_mesh.extract_cells(cells_to_keep)
+            if DEBUG_SURFACE_GEOMETRY:
+                total_cells_before = floor_mesh.n_cells
+                print(
+                    f"[SurfaceGeometry] Floor geclippt an {len(surface_polygons)} Surfaces (manuell): "
+                    f"{clipped_mesh.n_cells} Zellen verbleiben (von {total_cells_before})"
+                )
+    
+    return clipped_mesh
+
+
 def build_vertical_surface_mesh(
     geom: VerticalPlotGeometry,
     *,
@@ -875,12 +1268,6 @@ def _build_surface_mesh_with_pyvista_sample(
             enabled = bool(surface_def.get("enabled", False))
             hidden = bool(surface_def.get("hidden", False))
             points = surface_def.get("points", [])
-        
-        if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] Surface '{surface_id}': enabled={enabled}, hidden={hidden}, "
-                f"points={len(points)}"
-            )
         
         if enabled and not hidden and len(points) >= 3:
             enabled_surfaces.append((surface_id, points))
@@ -1132,12 +1519,6 @@ def _build_surface_mesh_with_pyvista_sample(
             # Erhöhe Auflösung für dieses Surface
             surface_resolution = np.sqrt(surface_area / MAX_POINTS_PER_SURFACE)
             surface_resolution = max(surface_resolution, 0.10)  # Mindestens 10cm für große Surfaces
-            if DEBUG_SURFACE_GEOMETRY:
-                print(
-                    f"[PERF] Surface '{surface_id}': "
-                    f"Zu viele Punkte erwartet ({expected_points:.0f}), "
-                    f"erhöhe Auflösung auf {surface_resolution:.3f}m (statt {fine_resolution:.3f}m)"
-                )
         
         # 🎯 WICHTIG: Erweitere Grid, damit es GARANTIERT bis an die Polygon-Grenzen reicht
         # np.arange stoppt, wenn der nächste Schritt über das Ziel hinausgehen würde
@@ -1184,14 +1565,6 @@ def _build_surface_mesh_with_pyvista_sample(
         
         points_in_surface = np.count_nonzero(point_mask_surface)
         
-        if DEBUG_SURFACE_GEOMETRY:
-            total_grid_points_surface = X_fine_surface.size
-            print(
-                f"[PERF] Surface '{surface_id}': "
-                f"Grid erstellt: {len(fine_x_surface)}x{len(fine_y_surface)}={total_grid_points_surface:,} Punkte, "
-                f"{points_in_surface:,} im Polygon ({100.0*points_in_surface/total_grid_points_surface:.1f}%), "
-                f"PIP-Prüfung: {t_pip_time*1000:.1f}ms"
-            )
         
         # Debug: Zeige Polygon-Bereich und gefilterte Punkte-Bereich
         if DEBUG_SURFACE_GEOMETRY:
@@ -1210,30 +1583,6 @@ def _build_surface_mesh_with_pyvista_sample(
             y_min_in_grid = np.any(np.abs(fine_y_surface - poly_y_min) < surface_resolution * 0.1)
             y_max_in_grid = np.any(np.abs(fine_y_surface - poly_y_max) < surface_resolution * 0.1)
             
-            if not (x_min_in_grid and x_max_in_grid and y_min_in_grid and y_max_in_grid):
-                print(
-                    f"[DEBUG Grid] Surface '{surface_id}': Polygon-Grenzen nicht vollständig im Grid! "
-                    f"Polygon: x=[{poly_x_min:.3f}, {poly_x_max:.3f}], y=[{poly_y_min:.3f}, {poly_y_max:.3f}] | "
-                    f"Grid: x=[{grid_x_min:.3f}, {grid_x_max:.3f}], y=[{grid_y_min:.3f}, {grid_y_max:.3f}] | "
-                    f"Enthalten: x_min={x_min_in_grid}, x_max={x_max_in_grid}, y_min={y_min_in_grid}, y_max={y_max_in_grid}"
-                )
-            
-            # Berechne Bereich der gefilterten Punkte
-            x_filtered = X_fine_surface[point_mask_surface]
-            y_filtered = Y_fine_surface[point_mask_surface]
-            filtered_x_min = float(np.min(x_filtered)) if len(x_filtered) > 0 else float('nan')
-            filtered_x_max = float(np.max(x_filtered)) if len(x_filtered) > 0 else float('nan')
-            filtered_y_min = float(np.min(y_filtered)) if len(y_filtered) > 0 else float('nan')
-            filtered_y_max = float(np.max(y_filtered)) if len(y_filtered) > 0 else float('nan')
-            
-            print(
-                f"[DEBUG Filter] Surface '{surface_id}' Punkt-Filter: "
-                f"Polygon x=[{poly_x_min:.3f}, {poly_x_max:.3f}], y=[{poly_y_min:.3f}, {poly_y_max:.3f}], "
-                f"{len(points)} Punkte | "
-                f"Gefilterte Punkte x=[{filtered_x_min:.3f}, {filtered_x_max:.3f}], "
-                f"y=[{filtered_y_min:.3f}, {filtered_y_max:.3f}], "
-                f"{points_in_surface}/{X_fine_surface.size} Punkte"
-            )
         
         if points_in_surface == 0:
             if DEBUG_SURFACE_GEOMETRY:
@@ -1333,13 +1682,6 @@ def _build_surface_mesh_with_pyvista_sample(
             ref_point_idx = int(np.argmin(distances))
             ref_point = points_inside_surface[ref_point_idx]
             
-            print(
-                f"[DEBUG Mesh] Surface '{surface_id}': "
-                f"Referenzpunkt beim Mesh erstellen: "
-                f"BBox-Mitte=({ref_x:.3f}, {ref_y:.3f}), "
-                f"Mesh-Punkt=({ref_point[0]:.3f}, {ref_point[1]:.3f}, {ref_point[2]:.3f}) "
-                f"[Punkt {ref_point_idx}/{len(points_inside_surface)}]"
-            )
         
         if DEBUG_SURFACE_GEOMETRY:
             print(
@@ -1391,12 +1733,6 @@ def _build_surface_mesh_with_pyvista_sample(
             if is_regular_grid and len(unique_y) > 1 and len(unique_x) > 1:
                 # 🎯 SCHNELLER PFAD: Erstelle Quad-Zellen direkt aus dem Gitter
                 # Das ist O(n) statt O(n log n) für Triangulation!
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[PERF] Surface '{surface_id}': "
-                        f"Erkenne regelmäßiges Gitter ({len(unique_y)}x{len(unique_x)}), "
-                        f"verwende direkte Quad-Zellen-Erstellung (schneller als Triangulation)"
-                    )
                 
                 # Erstelle Mapping von (x, y) zu Index in points_inside_surface
                 # WICHTIG: sorted_indices zeigt auf die ursprünglichen Indizes
@@ -1440,11 +1776,6 @@ def _build_surface_mesh_with_pyvista_sample(
                     t_tri_time = time.time() - t_tri_start
                     use_quad_cells = True
                     
-                    if DEBUG_SURFACE_GEOMETRY:
-                        print(
-                            f"[PERF] Surface '{surface_id}': "
-                            f"Direkte Quad-Zellen-Erstellung: {len(face_list)//5:,} Zellen in {t_tri_time*1000:.1f}ms"
-                        )
                 else:
                     # Fallback auf Triangulation wenn keine Zellen erstellt werden konnten
                     raise ValueError("Keine Quad-Zellen erstellt")
@@ -1454,11 +1785,6 @@ def _build_surface_mesh_with_pyvista_sample(
                 
         except Exception as exc:
             # Fallback: Delaunay-Triangulation für unregelmäßige Punkte
-            if DEBUG_SURFACE_GEOMETRY:
-                print(
-                    f"[PERF] Surface '{surface_id}': "
-                    f"Kein regelmäßiges Gitter erkannt, verwende Triangulation: {exc}"
-                )
             
             # 🚨 PERFORMANCE: Begrenze Anzahl der Punkte für Triangulation
             # Delaunay-Triangulation ist O(n log n) bis O(n²), bei vielen Punkten extrem langsam
@@ -1518,26 +1844,6 @@ def _build_surface_mesh_with_pyvista_sample(
                     mesh_ys = points_inside_surface[:, 1]
                     mesh_x_min, mesh_x_max = float(np.min(mesh_xs)), float(np.max(mesh_xs))
                     mesh_y_min, mesh_y_max = float(np.min(mesh_ys)), float(np.max(mesh_ys))
-                    print(
-                        f"[DEBUG Filter] Surface '{surface_id}' Polygon: "
-                        f"x=[{poly_x_min:.3f}, {poly_x_max:.3f}], "
-                        f"y=[{poly_y_min:.3f}, {poly_y_max:.3f}], "
-                        f"{len(points)} Punkte"
-                    )
-                    if DEBUG_SURFACE_GEOMETRY:
-                        # Zeige alle Polygon-Punkte für detaillierte Geometrie-Info
-                        poly_coords = ", ".join([f"({p.get('x', 0.0):.3f},{p.get('y', 0.0):.3f})" for p in points])
-                        print(
-                            f"[DEBUG Filter] Surface '{surface_id}' Polygon-Punkte: "
-                            f"[{poly_coords}]"
-                        )
-                    print(
-                        f"[DEBUG Filter] Surface '{surface_id}' Mesh-Punkte: "
-                        f"x=[{mesh_x_min:.3f}, {mesh_x_max:.3f}], "
-                        f"y=[{mesh_y_min:.3f}, {mesh_y_max:.3f}], "
-                        f"{len(points_inside_surface)} Punkte, "
-                        f"{surface_mesh.n_cells} Zellen vor Filter"
-                    )
                 
                 # 🚀 PERFORMANCE-OPTIMIERUNG: Vektorisierte Punkt-in-Polygon-Prüfung
                 # Statt jede Zelle einzeln zu prüfen, sammle alle Prüfpunkte und prüfe sie auf einmal
@@ -1711,34 +2017,6 @@ def _build_surface_mesh_with_pyvista_sample(
                                 x_range_cells = kept_x_max - kept_x_min
                                 y_range_cells = kept_y_max - kept_y_min
                                 
-                                print(
-                                    f"[DEBUG Filter] Surface '{surface_id}' Zellen-Filter: "
-                                    f"{invalid_count} Zellen entfernt ({reason_str}), "
-                                    f"{len(valid_cells)} Zellen behalten | "
-                                    f"Behaltene Zellen-Bereich: x=[{kept_x_min:.3f}, {kept_x_max:.3f}], "
-                                    f"y=[{kept_y_min:.3f}, {kept_y_max:.3f}] | "
-                                    f"Polygon-Bereich: x=[{poly_x_min:.3f}, {poly_x_max:.3f}], "
-                                    f"y=[{poly_y_min:.3f}, {poly_y_max:.3f}]"
-                                )
-                                print(
-                                    f"[DEBUG Filter] Surface '{surface_id}' Geometrie-Vergleich (nach Filter): "
-                                    f"Bereichs-Abweichungen: X=[{x_min_diff:+.3f}, {x_max_diff:+.3f}]m, "
-                                    f"Y=[{y_min_diff:+.3f}, {y_max_diff:+.3f}]m | "
-                                    f"Bereichs-Verhältnis: X={x_range_cells/x_range_poly:.3f}, Y={y_range_cells/y_range_poly:.3f} "
-                                    f"(Grid-Auflösung: {fine_resolution:.3f}m)"
-                                )
-                                print(
-                                    f"[DEBUG Filter] Surface '{surface_id}' Geometrie-Vergleich (nach Filter): "
-                                    f"Bereichs-Abweichungen: X=[{x_min_diff:+.3f}, {x_max_diff:+.3f}]m, "
-                                    f"Y=[{y_min_diff:+.3f}, {y_max_diff:+.3f}]m | "
-                                    f"Bereichs-Verhältnis: X={x_range_cells/x_range_poly:.3f}, Y={y_range_cells/y_range_poly:.3f}"
-                                )
-                            else:
-                                print(
-                                    f"[DEBUG Filter] Surface '{surface_id}': "
-                                    f"{invalid_count} Zellen entfernt ({reason_str}), "
-                                    f"{len(valid_cells)} Zellen behalten"
-                                )
                     else:
                         if DEBUG_SURFACE_GEOMETRY:
                             print(
@@ -1748,25 +2026,6 @@ def _build_surface_mesh_with_pyvista_sample(
                         surface_mesh = pv_module.PolyData(points_inside_surface)
             
             t_filter_time = time.time() - t_filter_start if not use_quad_cells else 0.0
-            
-            if DEBUG_SURFACE_GEOMETRY:
-                if use_quad_cells:
-                    print(
-                        f"[PERF] Surface '{surface_id}': "
-                        f"Direkte Quad-Zellen: {t_tri_time*1000:.1f}ms, "
-                        f"Finale Zellen: {surface_mesh.n_cells:,}"
-                    )
-                else:
-                    print(
-                        f"[PERF] Surface '{surface_id}': "
-                        f"Triangulation: {t_tri_time*1000:.1f}ms, "
-                        f"Zellen-Filter: {t_filter_time*1000:.1f}ms, "
-                        f"Finale Zellen: {surface_mesh.n_cells:,}"
-                    )
-                print(
-                    f"[SurfaceGeometry] Surface {surface_id} trianguliert: "
-                    f"points={surface_mesh.n_points}, cells={surface_mesh.n_cells}"
-                )
             
             if DEBUG_SURFACE_GEOMETRY:
                 print(
@@ -2269,15 +2528,6 @@ def _build_surface_mesh_with_pyvista_sample(
                             coarse_nearest_idx = int(np.argmin(coarse_distances))
                             coarse_spl = float(coarse_values_surface[coarse_nearest_idx])
                             coarse_nearest_point = coarse_points_surface[coarse_nearest_idx]
-                            print(
-                                f"[DEBUG Interp] Surface '{surface_id}': "
-                                f"Referenzpunkt SPL-Vergleich: "
-                                f"Mesh-Punkt=({coarse_ref_x:.3f}, {coarse_ref_y:.3f}) → "
-                                f"Grobes Grid @ ({coarse_nearest_point[0]:.3f}, {coarse_nearest_point[1]:.3f}) "
-                                f"= {coarse_spl:.2f} dB, "
-                                f"Interpoliert = {interp_spl:.2f} dB "
-                                f"[Diff: {interp_spl - coarse_spl:.2f} dB]"
-                    )
             
             # Weise interpolierte Werte diesem Surface zu
             all_interpolated_values.append(interpolated_values)

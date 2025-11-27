@@ -24,6 +24,8 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     prepare_plot_geometry,
     prepare_vertical_plot_geometry,
     VerticalPlotGeometry,
+    build_full_floor_mesh,
+    clip_floor_with_surfaces,
 )
 
 DEBUG_SPL_DUMP = bool(int(os.environ.get("LFO_DEBUG_SPL", "0")))
@@ -916,11 +918,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     spl_min = float(np.nanmin(spl_db))
                     spl_max = float(np.nanmax(spl_db))
                     spl_mean = float(np.nanmean(spl_db))
-                    print(
-                        "[Plot Debug] |p| "
-                        f"[min={p_min:.3e}, max={p_max:.3e}, mean={p_mean:.3e}] | "
-                        f"SPL [min={spl_min:.2f} dB, max={spl_max:.2f} dB, mean={spl_mean:.2f} dB]"
-                    )
                 except Exception:
                     pass
                 try:
@@ -930,9 +927,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         y_idx = int(np.argmin(np.abs(y - distance)))
                         value = float(spl_db[y_idx, x_idx])
                         actual_y = float(y[y_idx])
-                        print(
-                            f"[Plot Debug] SPL @ (x=0.0 m, y={actual_y:.2f} m) = {value:.2f} dB"
-                        )
                 except Exception:
                     pass
   
@@ -1110,13 +1104,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                     source_str = f", Source-Grid SPL={source_spl:.2f} dB" if source_spl is not None else ""
                                     diff_str = f" [Diff: {plot_spl - source_spl:.2f} dB]" if plot_spl is not None and source_spl is not None else ""
                                     
-                                    print(
-                                        f"[DEBUG Plot] Surface '{surface_id}': "
-                                        f"Referenzpunkt beim Plotten: "
-                                        f"Mesh-Punkt=({debug_plot_x:.3f}, {debug_plot_y:.3f}, {debug_plot_z:.3f})"
-                                        f"{spl_str}{source_str}{diff_str} "
-                                        f"[Punkt {nearest_idx}/{mesh.n_points}]"
-                                    )
 
         if time_mode:
             cmap_object = 'RdBu_r'
@@ -1152,6 +1139,61 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 mapper.scalar_range = (cbar_min, cbar_max)
                 mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
                 mapper.interpolate_before_map = False
+
+        # ------------------------------------------------------------
+        # 🎯 NEU: Vollständiger SPL-Teppich mit Clipping an Surface-Kanten
+        # ------------------------------------------------------------
+        # Erstelle vollständigen Floor-Mesh (ohne Surface-Maskierung)
+        floor_mesh = build_full_floor_mesh(
+            plot_x,
+            plot_y,
+            scalars,
+            z_coords=z_coords,
+            pv_module=pv,
+        )
+        
+        # Clippe Floor-Mesh an allen enabled Surfaces
+        surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
+        if isinstance(surface_definitions, dict) and len(surface_definitions) > 0:
+            try:
+                clipped_floor_mesh = clip_floor_with_surfaces(
+                    floor_mesh,
+                    surface_definitions,
+                    pv_module=pv,
+                )
+                
+                # Plotte geclippten Floor-Mesh
+                floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
+                if floor_actor is None:
+                    self.plotter.add_mesh(
+                        clipped_floor_mesh,
+                        name=self.FLOOR_NAME,
+                        scalars='plot_scalars',
+                        cmap=cmap_object,
+                        clim=(cbar_min, cbar_max),
+                        smooth_shading=False,
+                        show_scalar_bar=False,
+                        reset_camera=False,
+                        interpolate_before_map=False,
+                    )
+                else:
+                    # Update bestehenden Floor-Actor
+                    if not hasattr(self, 'floor_mesh'):
+                        self.floor_mesh = clipped_floor_mesh.copy(deep=True)
+                    else:
+                        self.floor_mesh.deep_copy(clipped_floor_mesh)
+                    mapper = floor_actor.mapper
+                    if mapper is not None:
+                        mapper.array_name = 'plot_scalars'
+                        mapper.scalar_range = (cbar_min, cbar_max)
+                        mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
+                        mapper.interpolate_before_map = False
+            except Exception as floor_exc:  # noqa: BLE001
+                # Bei Fehler: Überspringe Floor-Plotting, aber Surface-Meshes werden weiterhin geplottet
+                if DEBUG_SPL_DUMP:
+                    print(f"[Plot SPL3D] Fehler beim Floor-Clipping: {floor_exc}")
+                    import traceback
+                    traceback.print_exc()
 
         self._update_colorbar(colorization_mode_used, tick_step=tick_step)
 
@@ -1293,9 +1335,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._last_overlay_signatures = signatures
             if not self._rotate_active and not self._pan_active:
                 self._save_camera_state()
-            if DEBUG_OVERLAY_PERF:
-                t_total = time.perf_counter() - t_start
-                print(f"[Overlay Perf] update_overlays (keine Änderungen): {t_total*1000:.2f}ms")
             return
         
         prev_debug_state = getattr(self.overlay_helper, 'DEBUG_ON_TOP', False)
@@ -1353,23 +1392,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             t_cabinet = (t_cabinet_lookup - t_speakers_start) * 1000 if 'speakers' in categories_to_refresh else 0
             t_impulse = (t_impulse_end - t_impulse_start) * 1000 if 'impulse' in categories_to_refresh else 0
             t_zoom = (t_zoom_end - t_zoom_start) * 1000
-            print(f"[Overlay Perf] update_overlays GESAMT: {t_total:.2f}ms")
-            print(f"  ├─ Container/Setup: {(t_container-t_start)*1000:.2f}ms")
-            print(f"  ├─ Clear: {(t_clear-t_container)*1000:.2f}ms")
-            print(f"  ├─ Signaturen berechnen: {t_sig:.2f}ms")
-            print(f"  ├─ Signaturen vergleichen: {t_compare_time:.2f}ms")
-            print(f"  ├─ Zeichnen gesamt: {t_draw_total:.2f}ms")
-            if t_axis > 0:
-                print(f"  │  ├─ Axis: {t_axis:.2f}ms")
-            if t_surfaces > 0:
-                print(f"  │  ├─ Surfaces: {t_surfaces:.2f}ms")
-            if t_speakers > 0:
-                print(f"  │  ├─ Speakers (gesamt): {t_speakers:.2f}ms")
-                print(f"  │  │  └─ Cabinet Lookup: {t_cabinet:.2f}ms")
-            if t_impulse > 0:
-                print(f"  │  ├─ Impulse: {t_impulse:.2f}ms")
-            if t_zoom > 0:
-                print(f"  │  └─ Zoom: {t_zoom:.2f}ms")
             print(f"  ├─ Signaturen speichern: {(t_signature_save-t_draw_end)*1000:.2f}ms")
             print(f"  └─ Rest (Timer/Save): {(t_end-t_signature_save)*1000:.2f}ms")
 
@@ -1431,9 +1453,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._pending_render = False
             self.render()
             if DEBUG_OVERLAY_PERF and t_render_start is not None:
-                t_render_end = time.perf_counter()
-                count = getattr(self, '_render_schedule_count', 0)
-                print(f"[Overlay Perf] _delayed_render: {(t_render_end-t_render_start)*1000:.2f}ms (geplant: {count}x)")
                 self._render_schedule_count = 0
 
     def _get_vertical_color_limits(self) -> tuple[float, float]:
@@ -2624,12 +2643,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id und has_speaker_arrays
         }
         
-        if DEBUG_OVERLAY_PERF:
-            t_end = time.perf_counter()
-            t_total = (t_end - t_start) * 1000
-            num_surfaces = len(surfaces_signature) if isinstance(surface_definitions, dict) else 0
-            num_speakers = len(speakers_signature) if isinstance(speaker_arrays, dict) else 0
-            print(f"[Overlay Perf] _compute_overlay_signatures: {t_total:.2f}ms (Surfaces: {num_surfaces}, Speakers: {num_speakers})")
         
         return result
 

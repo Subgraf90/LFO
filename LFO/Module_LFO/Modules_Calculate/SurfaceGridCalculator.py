@@ -897,13 +897,14 @@ def _interpolate_z_coordinates_impl(
     y_flat = y_coords.flatten()
     mask_flat = surface_mask.flatten()
     
-    indices = np.where(mask_flat)[0]
+    # Punkte innerhalb der (erweiterten) Surface-Maske:
+    masked_indices = np.where(mask_flat)[0]
     points_with_z = 0
     points_without_z = 0
     edge_points = []
     
     # Erste Runde: Interpoliere Z für Punkte innerhalb der Polygone
-    for idx in indices:
+    for idx in masked_indices:
         x_point = x_flat[idx]  # X fest
         y_point = y_flat[idx]  # Y fest
         
@@ -927,7 +928,11 @@ def _interpolate_z_coordinates_impl(
     # eigentlichen Polygone). Statt eines lokalen Nachbarschafts-Mittels (führt zu
     # Treppen/Stufen) verwenden wir hier eine saubere planare Fortsetzung der
     # jeweiligen Surface-Ebene(n).
-    for idx in indices:
+    #
+    # Wichtig:
+    # - Wir betrachten nur Punkte innerhalb der erweiterten Maske.
+    # - Bereits gesetzte Z-Werte (aus Runde 1) werden nicht überschrieben.
+    for idx in masked_indices:
         iy, ix = np.unravel_index(idx, x_coords.shape)
         if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
             continue
@@ -960,7 +965,7 @@ def _interpolate_z_coordinates_impl(
     if DEBUG_SURFACE_GRID:
         print(
             f"[SurfaceGridCalculator] Z-Interpolation: "
-            f"mask_points={len(indices)}, "
+            f"mask_points={len(masked_indices)}, "
             f"with_z={points_with_z}, "
             f"without_z={points_without_z}"
         )

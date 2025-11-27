@@ -492,10 +492,6 @@ class SPL3DOverlayRenderer:
             t_sig = (t_sig_end - t_sig_start) * 1000 if t_sig_end and t_sig_start else 0
             t_clear = (t_clear_end - t_clear_start) * 1000 if t_clear_end and t_clear_start else 0
             t_draw = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
-            print(f"[Overlay Perf] draw_surfaces GESAMT: {t_total:.2f}ms (gezeichnet: {surfaces_drawn})")
-            print(f"  ├─ Signatur erstellen: {t_sig:.2f}ms")
-            print(f"  ├─ Clear category: {t_clear:.2f}ms")
-            print(f"  └─ Surfaces zeichnen: {t_draw:.2f}ms")
 
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
