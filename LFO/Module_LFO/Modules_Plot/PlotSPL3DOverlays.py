@@ -325,69 +325,165 @@ class SPL3DOverlayRenderer:
             except Exception:
                 pass
         
-        # 🎯 Zeichne inaktive Surfaces EINZELN mit IDs für Picking
-        # Speichere Mapping von Actor-Namen zu Surface-IDs
-        if not hasattr(self, '_surface_actor_to_id'):
-            self._surface_actor_to_id = {}
-        
-        # Lösche alte Mappings für inaktive Surfaces (die nicht mehr existieren)
-        current_inactive_actor_names = {f"surface_line_{sid}" for sid in inactive_surface_ids}
+        # 🎯 Zeichne inaktive Surfaces als transparente hellgraue Flächen
+        # Lösche alte inaktive Surface-Actors (die nicht mehr existieren)
+        # Batch-Actors haben feste Namen
         old_inactive_actors = [
-            name for name, sid in self._surface_actor_to_id.items()
-            if name.startswith("surface_line_") and name not in current_inactive_actor_names
+            name for name in self.overlay_actor_names
+            if name in ("surface_disabled_polygons_batch", "surface_disabled_edges_batch")
         ]
         for name in old_inactive_actors:
             try:
                 self.plotter.remove_actor(name)
             except Exception:
                 pass
-            self._surface_actor_to_id.pop(name, None)
             if name in self.overlay_actor_names:
                 self.overlay_actor_names.remove(name)
             if 'surfaces' in self._category_actors and name in self._category_actors['surfaces']:
                 self._category_actors['surfaces'].remove(name)
         
-        # Zeichne jede inaktive Surface einzeln
+        # 🎯 OPTIMIERUNG: Zeichne inaktive Surfaces als Batch (für Performance)
+        # Sammle gültige Polygone und Linien für Batch-Zeichnen
+        valid_inactive_polygons = []  # Liste von (points, surface_id) für gültige Polygone
+        valid_inactive_lines = []     # Liste von (points, surface_id) für gültige Linien
+        
         for idx, surface_id in enumerate(inactive_surface_ids):
             if idx < len(inactive_points_list):
                 try:
                     points = inactive_points_list[idx]
                     n_pts = len(points)
                     
-                    polyline = self.pv.PolyData(points)
-                    lines_array = [n_pts] + list(range(n_pts))
-                    polyline.lines = lines_array
+                    # Prüfe ob Polygon gültig ist (mindestens 3 Punkte, nicht alle auf einer Linie)
+                    if n_pts < 3:
+                        continue
+                    
+                    # Prüfe ob alle Punkte unterschiedlich sind (nicht alle identisch)
+                    points_array = np.array(points)
+                    if len(points_array) < 3:
+                        continue
+                    
+                    # Prüfe ob Punkte nicht alle auf einer Linie liegen
+                    # Berechne Vektoren zwischen benachbarten Punkten
+                    vectors = points_array[1:] - points_array[:-1]
+                    # Prüfe ob alle Vektoren parallel sind (Kreuzprodukt = 0)
+                    if len(vectors) >= 2:
+                        # Normalisiere ersten Vektor
+                        v1 = vectors[0]
+                        v1_norm = np.linalg.norm(v1)
+                        if v1_norm < 1e-6:  # Zu kurzer Vektor
+                            continue
+                        v1_normalized = v1 / v1_norm
+                        
+                        # Prüfe ob alle anderen Vektoren parallel zu v1 sind
+                        all_parallel = True
+                        for v in vectors[1:]:
+                            v_norm = np.linalg.norm(v)
+                            if v_norm < 1e-6:  # Zu kurzer Vektor
+                                all_parallel = False
+                                break
+                            v_normalized = v / v_norm
+                            # Prüfe ob Vektoren parallel sind (Kreuzprodukt sollte ~0 sein)
+                            cross = np.cross(v1_normalized, v_normalized)
+                            if np.linalg.norm(cross) > 1e-3:  # Nicht parallel
+                                all_parallel = False
+                                break
+                        
+                        if all_parallel:
+                            # Alle Punkte liegen auf einer Linie - zeichne nur als Linie, nicht als Fläche
+                            valid_inactive_lines.append((points, surface_id))
+                            continue
+                    
+                    # Polygon ist gültig - füge zu beiden Listen hinzu
+                    valid_inactive_polygons.append((points, surface_id))
+                    valid_inactive_lines.append((points, surface_id))
+                except Exception:
+                    continue
+        
+        # Zeichne alle gültigen Polygone als Batch (transparente Flächen)
+        if valid_inactive_polygons:
+            try:
+                # Sammle alle Punkte und Faces für Batch-Zeichnen
+                all_polygon_points = []
+                all_polygon_faces = []
+                point_offset = 0
+                
+                for points, surface_id in valid_inactive_polygons:
+                    n_pts = len(points)
+                    all_polygon_points.append(points)
+                    # Face-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                    face = [n_pts] + [point_offset + i for i in range(n_pts)]
+                    all_polygon_faces.extend(face)
+                    point_offset += n_pts
+                
+                if all_polygon_points:
+                    all_points = np.vstack(all_polygon_points)
+                    polygon_mesh = self.pv.PolyData(all_points)
+                    polygon_mesh.faces = all_polygon_faces
+                    
+                    actor_name = "surface_disabled_polygons_batch"
+                    self.plotter.add_mesh(
+                        polygon_mesh,
+                        name=actor_name,
+                        color='#D3D3D3',  # Hellgrau
+                        opacity=0.1,  # 10% Opacity (90% Transparenz)
+                        smooth_shading=False,
+                        show_scalar_bar=False,
+                        reset_camera=False,
+                        show_edges=False,
+                    )
+                    
+                    if actor_name not in self.overlay_actor_names:
+                        self.overlay_actor_names.append(actor_name)
+                    self._category_actors.setdefault('surfaces', []).append(actor_name)
+            except Exception:
+                pass
+        
+        # Zeichne alle gültigen Linien als Batch (opake schwarze Linien)
+        if valid_inactive_lines:
+            try:
+                # Sammle alle Punkte und Lines für Batch-Zeichnen
+                all_line_points = []
+                all_line_arrays = []
+                point_offset = 0
+                
+                for points, surface_id in valid_inactive_lines:
+                    n_pts = len(points)
+                    all_line_points.append(points)
+                    # Line-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                    line_array = [n_pts] + [point_offset + i for i in range(n_pts)]
+                    all_line_arrays.extend(line_array)
+                    point_offset += n_pts
+                
+                if all_line_points:
+                    all_points = np.vstack(all_line_points)
+                    polyline_mesh = self.pv.PolyData(all_points)
+                    polyline_mesh.lines = all_line_arrays
                     try:
-                        polyline.verts = np.empty(0, dtype=np.int64)
+                        polyline_mesh.verts = np.empty(0, dtype=np.int64)
                     except Exception:
                         try:
-                            polyline.verts = []
+                            polyline_mesh.verts = []
                         except Exception:
                             pass
                     
-                    # Erstelle eindeutigen Actor-Namen mit Surface-ID
-                    actor_name = f"surface_line_{surface_id}"
-                    actor = self.plotter.add_mesh(
-                        polyline,
-                        name=actor_name,
-                        color='#000000',
+                    edge_actor_name = "surface_disabled_edges_batch"
+                    self.plotter.add_mesh(
+                        polyline_mesh,
+                        name=edge_actor_name,
+                        color='#000000',  # Schwarz
                         line_width=1.5,
-                        opacity=0.85,
+                        opacity=1.0,  # Vollständig opak
                         smooth_shading=False,
                         show_scalar_bar=False,
                         reset_camera=False,
                         render_lines_as_tubes=False,
                     )
                     
-                    # Speichere Mapping
-                    self._surface_actor_to_id[actor_name] = str(surface_id)
-                    
-                    # Füge zu Overlay-Listen hinzu
-                    if actor_name not in self.overlay_actor_names:
-                        self.overlay_actor_names.append(actor_name)
-                    self._category_actors.setdefault('surfaces', []).append(actor_name)
-                except Exception:
-                    continue
+                    if edge_actor_name not in self.overlay_actor_names:
+                        self.overlay_actor_names.append(edge_actor_name)
+                    self._category_actors.setdefault('surfaces', []).append(edge_actor_name)
+            except Exception:
+                pass
         
         t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         

@@ -289,13 +289,21 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         
                         print(f"[DEBUG Click] actor_name={actor_name}")
                         
-                        # Prüfe ob es eine Surface-Linie ist (disabled Surfaces)
-                        if actor_name and isinstance(actor_name, str) and actor_name.startswith('surface_line_'):
-                            # Extrahiere Surface-ID aus Actor-Namen
-                            surface_id = actor_name.replace('surface_line_', '')
-                            print(f"[DEBUG Click] Found surface line, surface_id={surface_id}")
-                            self._select_surface_in_treewidget(surface_id)
-                            return
+                        # Prüfe ob es eine disabled Surface-Batch-Fläche ist
+                        # (Batch-Actors haben feste Namen, Picking erfolgt über point-in-polygon-Prüfung)
+                        if actor_name and isinstance(actor_name, str) and actor_name in ('surface_disabled_polygons_batch', 'surface_disabled_edges_batch'):
+                            # Batch-Actor - hole 3D-Koordinaten vom Picker und prüfe point-in-polygon
+                            if picked_point and len(picked_point) >= 3:
+                                x_click, y_click = picked_point[0], picked_point[1]
+                                print(f"[DEBUG Click] Found disabled surface batch actor, picked point: x={x_click:.2f}, y={y_click:.2f}")
+                                # Rufe _handle_spl_surface_click auf für point-in-polygon-Prüfung
+                                self._handle_spl_surface_click(click_pos)
+                                return
+                            else:
+                                # Kein Punkt vom Picker - verwende mesh-basierten Lookup
+                                print(f"[DEBUG Click] Found disabled surface batch actor but no point, using mesh lookup")
+                                self._handle_spl_surface_click(click_pos)
+                                return
                         
                         # Prüfe ob es die SPL-Surface ist (für enabled Surfaces)
                         if actor_name == self.SURFACE_NAME:
@@ -366,64 +374,112 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     
                     print(f"[DEBUG Click] Picker result: cell_id={picked_cell_id}, point={picked_point}")
                     
-                    # Wenn Picker keine Zelle findet, verwende einen alternativen Ansatz:
-                    # Finde die Zelle im Mesh direkt an der geklickten Position
-                    if picked_cell_id < 0 or picked_point is None:
-                        print(f"[DEBUG Click] Picker found no cell, using mesh-based coordinate lookup")
+                    # Hilfsfunktion für mesh-basierten Lookup
+                    def use_mesh_lookup():
+                        print(f"[DEBUG Click] Using mesh-based coordinate lookup")
                         
-                        # Versuche die Zelle direkt im Mesh zu finden
-                        if self.surface_mesh is not None and hasattr(self.surface_mesh, 'points'):
-                            # Verwende Kamera, um einen Ray zu erzeugen und die Schnittstelle mit dem Mesh zu finden
-                            camera = renderer.GetActiveCamera()
-                            if camera is None:
-                                print(f"[DEBUG Click] No camera available")
-                                return
+                        # Verwende Kamera, um einen Ray zu erzeugen und die Schnittstelle mit der Z=0 Ebene zu finden
+                        camera = renderer.GetActiveCamera()
+                        if camera is None:
+                            print(f"[DEBUG Click] No camera available")
+                            return None
+                        
+                        # Konvertiere 2D-Koordinaten zu einem Ray
+                        renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 0.0)
+                        renderer.DisplayToWorld()
+                        world_point_near = renderer.GetWorldPoint()
+                        
+                        renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 1.0)
+                        renderer.DisplayToWorld()
+                        world_point_far = renderer.GetWorldPoint()
+                        
+                        if world_point_near[3] != 0.0 and world_point_far[3] != 0.0:
+                            ray_start = np.array([
+                                world_point_near[0] / world_point_near[3],
+                                world_point_near[1] / world_point_near[3],
+                                world_point_near[2] / world_point_near[3]
+                            ])
+                            ray_end = np.array([
+                                world_point_far[0] / world_point_far[3],
+                                world_point_far[1] / world_point_far[3],
+                                world_point_far[2] / world_point_far[3]
+                            ])
                             
-                            # Konvertiere 2D-Koordinaten zu einem Ray
-                            renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 0.0)
-                            renderer.DisplayToWorld()
-                            world_point_near = renderer.GetWorldPoint()
-                            
-                            renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 1.0)
-                            renderer.DisplayToWorld()
-                            world_point_far = renderer.GetWorldPoint()
-                            
-                            if world_point_near[3] != 0.0 and world_point_far[3] != 0.0:
-                                ray_start = np.array([
-                                    world_point_near[0] / world_point_near[3],
-                                    world_point_near[1] / world_point_near[3],
-                                    world_point_near[2] / world_point_near[3]
-                                ])
-                                ray_end = np.array([
-                                    world_point_far[0] / world_point_far[3],
-                                    world_point_far[1] / world_point_far[3],
-                                    world_point_far[2] / world_point_far[3]
-                                ])
+                            # Berechne Schnittpunkt des Rays mit der Z=0 Ebene
+                            ray_dir = ray_end - ray_start
+                            if abs(ray_dir[2]) > 1e-6:  # Ray ist nicht parallel zur Z-Ebene
+                                # Parametrische Form: point = ray_start + t * ray_dir
+                                # Z = 0: ray_start[2] + t * ray_dir[2] = 0
+                                t = -ray_start[2] / ray_dir[2]
+                                intersection = ray_start + t * ray_dir
                                 
-                                # Finde nächsten Punkt im Mesh entlang des Rays
-                                mesh_points = self.surface_mesh.points
-                                if mesh_points.size > 0:
-                                    # Finde Punkt im Mesh, der am nächsten zur Ray-Mitte liegt
-                                    ray_mid = (ray_start + ray_end) / 2.0
-                                    distances = np.linalg.norm(mesh_points - ray_mid, axis=1)
-                                    nearest_idx = int(np.argmin(distances))
-                                    nearest_point = mesh_points[nearest_idx]
-                                    
-                                    x_click, y_click, z_click = nearest_point[0], nearest_point[1], nearest_point[2]
+                                print(f"[DEBUG Click] Ray intersection with Z=0 plane: x={intersection[0]:.2f}, y={intersection[1]:.2f}, z={intersection[2]:.2f}")
+                                return (intersection[0], intersection[1], intersection[2])
+                            else:
+                                # Ray ist parallel zur Z-Ebene - verwende Ray-Mitte
+                                ray_mid = (ray_start + ray_end) / 2.0
+                                print(f"[DEBUG Click] Ray parallel to Z plane, using ray midpoint: x={ray_mid[0]:.2f}, y={ray_mid[1]:.2f}, z={ray_mid[2]:.2f}")
+                                return (ray_mid[0], ray_mid[1], ray_mid[2])
+                        else:
+                            print(f"[DEBUG Click] Invalid ray conversion")
+                            return None
+                    
+                    # Wenn Picker keine Zelle findet, verwende mesh-basierten Lookup
+                    if picked_cell_id < 0 or picked_point is None:
+                        result = use_mesh_lookup()
+                        if result is None:
+                            return
+                        x_click, y_click, z_click = result
+                        print(f"[DEBUG Click] Found nearest mesh point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
+                    else:
+                        # Picker hat einen Punkt gefunden - prüfe ob er im gültigen Bereich liegt
+                        x_click, y_click, z_click = picked_point[0], picked_point[1], picked_point[2]
+                        
+                        # Berechne gültigen Bereich aus allen enabled Surfaces
+                        surface_definitions = getattr(self.settings, 'surface_definitions', {})
+                        if isinstance(surface_definitions, dict):
+                            valid_x_min, valid_x_max = None, None
+                            valid_y_min, valid_y_max = None, None
+                            
+                            for surface_def in surface_definitions.values():
+                                if isinstance(surface_def, SurfaceDefinition):
+                                    enabled = bool(getattr(surface_def, 'enabled', False))
+                                    points = getattr(surface_def, 'points', []) or []
+                                else:
+                                    enabled = surface_def.get('enabled', False)
+                                    points = surface_def.get('points', [])
+                                
+                                if enabled and len(points) >= 3:
+                                    surface_xs = [p.get('x', 0.0) if isinstance(p, dict) else getattr(p, 'x', 0.0) for p in points]
+                                    surface_ys = [p.get('y', 0.0) if isinstance(p, dict) else getattr(p, 'y', 0.0) for p in points]
+                                    if surface_xs and surface_ys:
+                                        if valid_x_min is None:
+                                            valid_x_min, valid_x_max = min(surface_xs), max(surface_xs)
+                                            valid_y_min, valid_y_max = min(surface_ys), max(surface_ys)
+                                        else:
+                                            valid_x_min = min(valid_x_min, min(surface_xs))
+                                            valid_x_max = max(valid_x_max, max(surface_xs))
+                                            valid_y_min = min(valid_y_min, min(surface_ys))
+                                            valid_y_max = max(valid_y_max, max(surface_ys))
+                            
+                            # Prüfe ob Picker-Punkt im gültigen Bereich liegt (mit Toleranz)
+                            tolerance = 5.0  # 5 Meter Toleranz
+                            if valid_x_min is not None:
+                                if (x_click < valid_x_min - tolerance or x_click > valid_x_max + tolerance or
+                                    y_click < valid_y_min - tolerance or y_click > valid_y_max + tolerance):
+                                    print(f"[DEBUG Click] Picker point ({x_click:.2f}, {y_click:.2f}) outside valid range "
+                                          f"({valid_x_min:.2f}..{valid_x_max:.2f}, {valid_y_min:.2f}..{valid_y_max:.2f}), using mesh lookup")
+                                    result = use_mesh_lookup()
+                                    if result is None:
+                                        return
+                                    x_click, y_click, z_click = result
                                     print(f"[DEBUG Click] Found nearest mesh point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
                                 else:
-                                    print(f"[DEBUG Click] Mesh has no points")
-                                    return
+                                    print(f"[DEBUG Click] Using picker point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
                             else:
-                                print(f"[DEBUG Click] Invalid ray conversion")
-                                return
+                                print(f"[DEBUG Click] No enabled surfaces found, using picker point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
                         else:
-                            print(f"[DEBUG Click] Surface mesh not available")
-                            return
-                    else:
-                        # Picker hat einen Punkt gefunden
-                        x_click, y_click, z_click = picked_point[0], picked_point[1], picked_point[2]
-                        print(f"[DEBUG Click] Using picker point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
+                            print(f"[DEBUG Click] Using picker point: x={x_click:.2f}, y={y_click:.2f}, z={z_click:.2f}")
                 else:
                     print(f"[DEBUG Click] Invalid widget size for SPL click")
                     return
@@ -436,19 +492,20 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 traceback.print_exc()
                 return
             
-            # Prüfe welche enabled Surface diesen Punkt enthält
+            # Prüfe welche Surface (enabled oder disabled) diesen Punkt enthält
             surface_definitions = getattr(self.settings, 'surface_definitions', {})
             print(f"[DEBUG Click] surface_definitions count: {len(surface_definitions) if isinstance(surface_definitions, dict) else 0}")
             if not isinstance(surface_definitions, dict):
                 print(f"[DEBUG Click] surface_definitions is not a dict")
                 return
             
-            # Durchsuche alle enabled Surfaces
+            # Durchsuche alle Surfaces (enabled und disabled)
             checked_count = 0
             skipped_disabled = 0
             skipped_hidden = 0
             skipped_too_few_points = 0
             
+            # Zuerst prüfe enabled Surfaces (höhere Priorität)
             for surface_id, surface_def in surface_definitions.items():
                 if isinstance(surface_def, SurfaceDefinition):
                     enabled = bool(getattr(surface_def, 'enabled', False))
@@ -459,14 +516,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     hidden = surface_def.get('hidden', False)
                     points = surface_def.get('points', [])
                 
-                if not enabled:
-                    skipped_disabled += 1
-                    continue
                 if hidden:
                     skipped_hidden += 1
                     continue
                 if len(points) < 3:
                     skipped_too_few_points += 1
+                    continue
+                
+                if not enabled:
+                    skipped_disabled += 1
+                    # Prüfe disabled Surfaces später (niedrigere Priorität)
                     continue
                 
                 checked_count += 1
@@ -495,6 +554,40 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         return
                 else:
                     print(f"[DEBUG Click] Surface {surface_id}: No valid points")
+            
+            # Wenn keine enabled Surface gefunden wurde, prüfe disabled Surfaces
+            # (immer prüfen, auch wenn enabled Surfaces gefunden wurden, falls der Klick auf disabled Surface war)
+            if skipped_disabled > 0:
+                # Prüfe disabled Surfaces
+                for surface_id, surface_def in surface_definitions.items():
+                    if isinstance(surface_def, SurfaceDefinition):
+                        enabled = bool(getattr(surface_def, 'enabled', False))
+                        hidden = bool(getattr(surface_def, 'hidden', False))
+                        points = getattr(surface_def, 'points', []) or []
+                    else:
+                        enabled = surface_def.get('enabled', False)
+                        hidden = surface_def.get('hidden', False)
+                        points = surface_def.get('points', [])
+                    
+                    if enabled or hidden or len(points) < 3:
+                        continue
+                    
+                    # Prüfe ob Punkt in diesem Polygon liegt
+                    surface_xs = [p.get('x', 0.0) for p in points]
+                    surface_ys = [p.get('y', 0.0) for p in points]
+                    if surface_xs and surface_ys:
+                        min_x, max_x = min(surface_xs), max(surface_xs)
+                        min_y, max_y = min(surface_ys), max(surface_ys)
+                        
+                        # Schnelle Bounding-Box-Prüfung zuerst
+                        if x_click < min_x or x_click > max_x or y_click < min_y or y_click > max_y:
+                            continue
+                        
+                        is_inside = self._point_in_polygon(x_click, y_click, points)
+                        if is_inside:
+                            print(f"[DEBUG Click] Found matching disabled surface: {surface_id}")
+                            self._select_surface_in_treewidget(str(surface_id))
+                            return
             
             print(f"[DEBUG Click] Checked {checked_count} enabled surfaces, skipped: disabled={skipped_disabled}, "
                   f"hidden={skipped_hidden}, too_few_points={skipped_too_few_points}, no match found")

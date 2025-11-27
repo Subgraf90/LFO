@@ -225,7 +225,7 @@ class Settings:
             # Visualisierung: PyVista sample() für feines Surface-Mesh (eliminiert Zacken an Rändern)
             # False = Alte Methode (kartesisches Grid mit Masken-Clipping)
             # True  = PyVista sample() auf feinem Surface-Mesh (glatte Ränder, keine Zacken)
-            'spl_plot_use_pyvista_sample': True,
+            'spl_plot_use_pyvista_sample': False,
             'impulse_points': [],
             'polar_frequencies': {
                 'red': 31.5,

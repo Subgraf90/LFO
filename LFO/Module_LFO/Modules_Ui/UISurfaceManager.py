@@ -865,8 +865,53 @@ class UISurfaceManager(ModuleBase):
         
         item = find_item()
         if item:
-            self.surface_tree_widget.setCurrentItem(item)
-            self.surface_tree_widget.scrollToItem(item)
+            # Blockiere Signale während der programmatischen Auswahl, um unnötige Plot-Updates zu vermeiden
+            self.surface_tree_widget.blockSignals(True)
+            try:
+                self.surface_tree_widget.setCurrentItem(item)
+                self.surface_tree_widget.scrollToItem(item)
+                
+                # Expandiere Parent-Gruppe falls vorhanden
+                parent = item.parent()
+                if parent:
+                    parent.setExpanded(True)
+            finally:
+                # Signale wieder aktivieren
+                self.surface_tree_widget.blockSignals(False)
+            
+            # Manuell die Auswahl-Handler aufrufen, aber ohne Plot-Update
+            # (nur für UI-Synchronisation, z.B. Tab-Anzeige)
+            try:
+                # Aktualisiere nur die Tabs, nicht die Overlays
+                self.show_surfaces_tab()
+                
+                # Setze highlight_ids direkt, ohne update_overlays aufzurufen
+                # (update_overlays wird später durch den normalen Plot-Update-Mechanismus aufgerufen)
+                item_type = item.data(0, Qt.UserRole + 1)
+                highlight_ids = []
+                surface_store = getattr(self.settings, "surface_definitions", {}) or {}
+                
+                if item_type == "surface":
+                    surface_id_data = item.data(0, Qt.UserRole)
+                    if isinstance(surface_id_data, dict):
+                        surface_id_data = surface_id_data.get("id")
+                    if isinstance(surface_id_data, str) and surface_id_data in surface_store:
+                        highlight_ids = [surface_id_data]
+                        setattr(self.settings, "active_surface_id", surface_id_data)
+                elif item_type == "group":
+                    group_id_data = item.data(0, Qt.UserRole)
+                    if isinstance(group_id_data, dict):
+                        group_id = group_id_data.get("id")
+                    else:
+                        group_id = group_id_data
+                    if group_id:
+                        highlight_ids = self._collect_all_surfaces_from_group(group_id, surface_store)
+                    setattr(self.settings, "active_surface_id", None)
+                
+                setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
+            except Exception:
+                # Fehler hier sollen die Auswahl nicht blockieren
+                pass
     
     def load_dxf(self):
         """Lädt DXF-Dateien über SurfaceDataImporter"""
