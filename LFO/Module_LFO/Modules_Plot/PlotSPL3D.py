@@ -2703,6 +2703,71 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         )
         return interp
 
+    @staticmethod
+    def _nearest_interpolate_grid(
+        source_x: np.ndarray,
+        source_y: np.ndarray,
+        values: np.ndarray,
+        xq: np.ndarray,
+        yq: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Nearest-Neighbor Interpolation auf einem regulären Grid.
+        Jeder Abfragepunkt erhält exakt den Wert des nächstgelegenen Grid-Punkts.
+        Behält die Randbehandlung (Clipping) bei.
+
+        source_x: 1D-Array der X-Koordinaten (nx)
+        source_y: 1D-Array der Y-Koordinaten (ny)
+        values  : 2D-Array (ny, nx) mit SPL-Werten
+        xq, yq  : 1D-Arrays mit Abfragepunkten
+        """
+        source_x = np.asarray(source_x, dtype=float).reshape(-1)
+        source_y = np.asarray(source_y, dtype=float).reshape(-1)
+        vals = np.asarray(values, dtype=float)
+        xq = np.asarray(xq, dtype=float).reshape(-1)
+        yq = np.asarray(yq, dtype=float).reshape(-1)
+
+        ny, nx = vals.shape
+        if ny != len(source_y) or nx != len(source_x):
+            raise ValueError(
+                f"_nearest_interpolate_grid: Shape mismatch values={vals.shape}, "
+                f"expected=({len(source_y)}, {len(source_x)})"
+            )
+
+        # 🎯 Randbehandlung: Punkte außerhalb des Grids werden auf den Rand geclippt
+        x_min, x_max = source_x[0], source_x[-1]
+        y_min, y_max = source_y[0], source_y[-1]
+        xq_clip = np.clip(xq, x_min, x_max)
+        yq_clip = np.clip(yq, y_min, y_max)
+
+        # Finde nächstgelegenen Index für X
+        idx_x = np.searchsorted(source_x, xq_clip, side="left")
+        idx_x = np.clip(idx_x, 0, nx - 1)
+        # Korrektur: wirklich nächsten Nachbarn wählen (links/rechts vergleichen)
+        left_x = idx_x - 1
+        right_x = idx_x
+        left_x = np.clip(left_x, 0, nx - 1)
+        dist_left_x = np.abs(xq_clip - source_x[left_x])
+        dist_right_x = np.abs(xq_clip - source_x[right_x])
+        use_left_x = dist_left_x < dist_right_x
+        idx_x[use_left_x] = left_x[use_left_x]
+
+        # Finde nächstgelegenen Index für Y
+        idx_y = np.searchsorted(source_y, yq_clip, side="left")
+        idx_y = np.clip(idx_y, 0, ny - 1)
+        # Korrektur: wirklich nächsten Nachbarn wählen (oben/unten vergleichen)
+        left_y = idx_y - 1
+        right_y = idx_y
+        left_y = np.clip(left_y, 0, ny - 1)
+        dist_left_y = np.abs(yq_clip - source_y[left_y])
+        dist_right_y = np.abs(yq_clip - source_y[right_y])
+        use_left_y = dist_left_y < dist_right_y
+        idx_y[use_left_y] = left_y[use_left_y]
+
+        # Weise jedem Abfragepunkt den Wert des nächstgelegenen Grid-Punkts zu
+        result = vals[idx_y, idx_x]
+        return result
+
     def _render_surfaces_textured(
         self,
         geometry,
@@ -2924,8 +2989,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
                     plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
                     
-                    # Bilineare Interpolation auf (u,v)-Grid
-                    spl_flat_uv = self._bilinear_interpolate_grid(
+                    # Nearest-Neighbor Interpolation auf (u,v)-Grid (exakt Grid-Punkte, keine Verfälschung)
+                    spl_flat_uv = self._nearest_interpolate_grid(
                         plot_u_geom,
                         plot_v_geom,
                         plot_values_geom,
@@ -3134,8 +3199,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         )
                     continue
 
-                # SPL bilinear vom coarse Grid interpolieren
-                spl_flat = self._bilinear_interpolate_grid(
+                # SPL Nearest-Neighbor vom coarse Grid interpolieren (exakt Grid-Punkte, keine Verfälschung)
+                spl_flat = self._nearest_interpolate_grid(
                     source_x,
                     source_y,
                     values,
