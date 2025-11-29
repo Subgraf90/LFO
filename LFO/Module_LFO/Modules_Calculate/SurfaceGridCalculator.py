@@ -65,9 +65,6 @@ class SurfaceSamplingPoints:
         }
 
 
-DEBUG_SURFACE_GRID = bool(int(os.environ.get("LFO_DEBUG_SURFACE_GRID", "0")))
-
-
 class SurfaceGridCalculator(ModuleBase):
     """
     Berechnet und verwaltet Grids für Soundfield-Berechnungen basierend auf Surfaces.
@@ -141,26 +138,12 @@ class SurfaceGridCalculator(ModuleBase):
         # SCHRITT 3: 2D-Meshgrid erstellen
         # ============================================================
         X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-        # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
-        total_points = int(X_grid.size)
-        nx_points = len(sound_field_x)
-        ny_points = len(sound_field_y)
-        print(
-            "[SurfaceGridCalculator] Berechnungs-Grid erstellt:",
-            f"resolution={resolution:.3f}m, "
-            f"shape={X_grid.shape} (ny={ny_points}, nx={nx_points}), "
-            f"total_points={total_points}, "
-            f"Bereich x=[{float(sound_field_x[0]):.2f}, {float(sound_field_x[-1]):.2f}]m, "
-            f"y=[{float(sound_field_y[0]):.2f}, {float(sound_field_y[-1]):.2f}]m"
-        )
         
         # ============================================================
         # SCHRITT 4: Resolution-Check (optional, gibt Warnung aus)
         # ============================================================
         if enabled_surfaces:
             is_adequate, warning = self._check_resolution_adequacy(enabled_surfaces, resolution)
-            if warning:
-                print(f"[SurfaceGridCalculator] {warning}")
         
         # ============================================================
         # SCHRITT 5: Surface-Maske erstellen (ERWEITERT für Berechnung)
@@ -171,14 +154,6 @@ class SurfaceGridCalculator(ModuleBase):
         else:
             # Keine Surfaces → alle Punkte sind gültig
             surface_mask = np.ones_like(X_grid, dtype=bool)
-        if DEBUG_SURFACE_GRID:
-            mask_true = int(np.count_nonzero(surface_mask))
-            print(
-                "[SurfaceGridCalculator] Surface-Maske:",
-                f"true_points={mask_true},",
-                f"masked_points={int(surface_mask.size - mask_true)},",
-                f"total_points={int(surface_mask.size)}",
-            )
         
         # ============================================================
         # SCHRITT 6: Z-Koordinaten interpolieren
@@ -186,13 +161,6 @@ class SurfaceGridCalculator(ModuleBase):
         Z_grid = np.zeros_like(X_grid, dtype=float)  # Standard: Z=0
         if enabled_surfaces:
             Z_grid = self._interpolate_z_coordinates(X_grid, Y_grid, enabled_surfaces, surface_mask)
-        if DEBUG_SURFACE_GRID:
-            nonzero_z = int(np.count_nonzero(Z_grid))
-            print(
-                "[SurfaceGridCalculator] Z-Grid:",
-                f"nonzero_points={nonzero_z},",
-                f"total_points={int(Z_grid.size)}",
-            )
         
         self._last_surface_meshes = self._build_surface_meshes(enabled_surfaces, resolution)
         # Horizontale/geneigte Flächen über reguläre Meshes
@@ -431,14 +399,6 @@ class SurfaceGridCalculator(ModuleBase):
                             'grid_idx': (y_idx, x_idx),
                             'bbox_center': (ref_x, ref_y)
                         }
-                        
-                        print(
-                            f"[DEBUG Grid] Surface '{surface_id}': "
-                            f"Referenzpunkt beim Grid erstellen: "
-                            f"BBox-Mitte=({ref_x:.3f}, {ref_y:.3f}), "
-                            f"Grid-Punkt=({grid_x:.3f}, {grid_y:.3f}, {grid_z:.3f}) "
-                            f"[idx=({y_idx}, {x_idx})]"
-                        )
         
         # 🎯 ERWEITERE MASKE FÜR BERECHNUNG: Erfasse auch Randpunkte
         if include_edges:
@@ -551,19 +511,6 @@ class SurfaceGridCalculator(ModuleBase):
                     plane_model=plane_model,
                 )
             )
-        if DEBUG_SURFACE_GRID and meshes:
-            total_cells = 0
-            total_points = 0
-            for mesh in meshes:
-                ny, nx = mesh.mask.shape
-                total_cells += int(np.count_nonzero(mesh.mask))
-                total_points += int(ny * nx)
-            print(
-                "[SurfaceGridCalculator] Surface-Meshes:",
-                f"count={len(meshes)},",
-                f"mesh_grid_points={total_points},",
-                f"active_cells={total_cells}",
-            )
         return meshes
 
     def _build_surface_samples(
@@ -589,13 +536,6 @@ class SurfaceGridCalculator(ModuleBase):
                         grid_shape=mesh.mask.shape,
                         is_vertical=False,
                 )
-            )
-        if DEBUG_SURFACE_GRID and samples:
-            total_sample_points = sum(int(s.coordinates.shape[0]) for s in samples)
-            print(
-                "[SurfaceGridCalculator] Surface-Samples:",
-                f"surfaces={len(samples)},",
-                f"sample_points_total={total_sample_points}",
             )
         return samples
 
@@ -752,13 +692,6 @@ class SurfaceGridCalculator(ModuleBase):
                     )
                 )
 
-        if DEBUG_SURFACE_GRID and vertical_samples:
-            total_points = sum(int(s.coordinates.shape[0]) for s in vertical_samples)
-            print(
-                "[SurfaceGridCalculator] Vertikale Surface-Samples:",
-                f"surfaces={len(vertical_samples)},",
-                f"sample_points_total={total_points}",
-            )
         return vertical_samples
 
 
@@ -850,13 +783,6 @@ def _interpolate_z_coordinates_impl(
         # Wenn ein Plan-Modell existiert, ist die Fläche NICHT senkrecht
         # (Steigung < 180°) → normale Berechnung.
         if model is not None:
-            if DEBUG_SURFACE_GRID:
-                print(
-                    "[SurfaceGridCalculator] plane",
-                    name,
-                    f"mode={model.get('mode')}",
-                    f"params={model}",
-                )
             normalized_surfaces.append(
                 (points, model, surface_def.get("name", surface_id))
             )
@@ -874,18 +800,9 @@ def _interpolate_z_coordinates_impl(
             # → Echte senkrechte Fläche: hier NICHT in das horizontale Z-Grid
             # einmischen. Sie wird ausschließlich über die vertikalen
             # Surface-Samples behandelt.
-            print(
-                f"[SurfaceGridCalculator] Surface '{name}' wird als SENKRECHT "
-                f"klassifiziert (Δx={x_span:.6f}, Δy={y_span:.6f}, Δz={z_span:.6f}) – "
-                "wird im horizontalen SPL-Surface-Plot ignoriert und nur "
-                "über vertikale Surface-Samples berechnet."
-            )
             continue
 
         # Weder planar noch sinnvolle senkrechte Fläche → komplett ignorieren.
-        print(
-            f"[SurfaceGridCalculator] Surface '{name}' wird ignoriert: {error}"
-        )
         continue
     
     if not normalized_surfaces:
@@ -962,24 +879,7 @@ def _interpolate_z_coordinates_impl(
             points_with_z += 1
             points_without_z -= 1
     
-    if DEBUG_SURFACE_GRID:
-        print(
-            f"[SurfaceGridCalculator] Z-Interpolation: "
-            f"mask_points={len(masked_indices)}, "
-            f"with_z={points_with_z}, "
-            f"without_z={points_without_z}"
-        )
-        if Z_grid.size > 0 and np.any(Z_grid != 0.0):
-            z_vals = Z_grid[Z_grid != 0.0]
-            z_min = float(np.nanmin(z_vals))
-            z_max = float(np.nanmax(z_vals))
-            z_mean = float(np.nanmean(z_vals))
-            print(
-                f"[SurfaceGridCalculator] Z-Statistik: "
-                f"min={z_min:.3f}, max={z_max:.3f}, mean={z_mean:.3f}"
-            )
-    
-    return Z_grid
+        return Z_grid
 
 def _point_in_polygon_core(
     x: float,

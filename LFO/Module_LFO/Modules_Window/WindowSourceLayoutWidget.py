@@ -37,7 +37,6 @@ class Draw_Source_Layout_Widget(ModuleBase):
     def update_source_layout_widget(self, selected_speaker_array_id):
         try:
             if selected_speaker_array_id is None:
-                print("Kein Lautsprecherarray ausgewählt.")
                 return
 
             self.ax.clear()

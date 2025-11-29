@@ -941,7 +941,6 @@ class UiSettings(QtWidgets.QWidget):
                 self.settings.humidity
             )
             self.settings.air_density = air_density
-            print(f"[INFO] Luftdichte initialisiert: {air_density:.4f} kg/m³ bei {self.settings.temperature}°C und {self.settings.humidity}% Luftfeuchtigkeit")
 
     def on_Temperature_changed(self):
         try:

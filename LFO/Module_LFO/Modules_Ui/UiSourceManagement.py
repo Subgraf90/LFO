@@ -2299,7 +2299,6 @@ class Sources(ModuleBase):
         selected_item = self.sources_tree_widget.currentItem() if hasattr(self, 'sources_tree_widget') else None
 
         if not selected_item:
-            print("Kein Lautsprecherarray ausgewählt")
             return
         
         # Prüfe, ob es sich um eine Gruppe handelt

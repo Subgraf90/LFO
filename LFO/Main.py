@@ -152,9 +152,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def plot_spl(self, update_axes: bool = True, reset_camera: bool = False):
         """Zeichnet den SPL-Plot (Sound Pressure Level)."""
-        print(f"[DEBUG] Main.plot_spl() aufgerufen: update_axes={update_axes}, reset_camera={reset_camera}")
         if not self.container.calculation_spl.get("show_in_plot", True):
-            print(f"[DEBUG] Main.plot_spl() - show_in_plot=False, zeige leeren Plot")
             self.draw_plots.show_empty_spl()
             if update_axes:
                 self.draw_plots.show_empty_axes()
@@ -166,17 +164,13 @@ class MainWindow(QtWidgets.QMainWindow):
             if array_ids:
                 speaker_array_id = array_ids[0]
                 self._last_selected_speaker_array_id = speaker_array_id
-                print(f"[WARN] Main.plot_spl() - keine Auswahl, fallback auf speaker_array_id={speaker_array_id}")
             else:
-                print("[WARN] Main.plot_spl() - keine Speaker-Arrays verfügbar, zeige leeren Plot")
                 self.draw_plots.show_empty_spl()
                 if update_axes:
                     self.draw_plots.show_empty_axes()
                     self.draw_plots.show_empty_polar()
                 return
-        print(f"[DEBUG] Main.plot_spl() - Rufe draw_plots.plot_spl() auf mit speaker_array_id={speaker_array_id}")
         self.draw_plots.plot_spl(self.settings, speaker_array_id, update_axes=update_axes, reset_camera=reset_camera)
-        print(f"[DEBUG] Main.plot_spl() - draw_plots.plot_spl() abgeschlossen")
 
     def plot_xaxis(self):
         """Zeichnet den X-Achsen-Plot."""

@@ -7,6 +7,14 @@ from typing import List, Dict, Tuple, Optional, Any
 
 DEBUG_SOUNDFIELD = bool(int(__import__("os").environ.get("LFO_DEBUG_SOUNDFIELD", "1")))
 
+# Optional: ShadowCalculator für Schattenberechnung
+try:
+    from Module_LFO.Modules_Calculate.ShadowCalculator import ShadowCalculator
+    SHADOW_CALCULATOR_AVAILABLE = True
+except ImportError:
+    SHADOW_CALCULATOR_AVAILABLE = False
+    ShadowCalculator = None
+
 
 class SoundFieldCalculator(ModuleBase):
     def __init__(self, settings, data, calculation_spl):
@@ -25,6 +33,14 @@ class SoundFieldCalculator(ModuleBase):
         
         # 🎯 GRID-CALCULATOR: Separate Instanz für Grid-Erstellung
         self._grid_calculator = SurfaceGridCalculator(settings)
+        
+        # 🎯 SHADOW-CALCULATOR: Optional für Schattenberechnung (nur bei Superposition)
+        self._shadow_calculator = None
+        if SHADOW_CALCULATOR_AVAILABLE:
+            try:
+                self._shadow_calculator = ShadowCalculator(settings)
+            except Exception:
+                self._shadow_calculator = None
    
     def calculate_soundfield_pressure(self):
         (
@@ -69,7 +85,6 @@ class SoundFieldCalculator(ModuleBase):
             balloon_data = self._data_container.get_balloon_data(speaker_name, use_averaged=False)
 
         if balloon_data is None:
-            print(f"❌ Keine Balloon-Daten für {speaker_name}")
             return None, None
         
         # Direkte Nutzung der optimierten Balloon-Daten
@@ -78,7 +93,6 @@ class SoundFieldCalculator(ModuleBase):
         vertical_angles = balloon_data.get('vertical_angles')
         
         if magnitude is None or phase is None or vertical_angles is None:
-            print(f"Fehlende Daten in Balloon-Daten für {speaker_name}")
             return None, None
         
         # Verwende die gleiche Interpolationslogik für beide Datentypen
@@ -111,7 +125,6 @@ class SoundFieldCalculator(ModuleBase):
         # 🔄 FALLBACK: Verwende originale Daten
         balloon_data = self._data_container.get_balloon_data(speaker_name, use_averaged=False)
         if balloon_data is None:
-            print(f"❌ Keine Balloon-Daten für {speaker_name}")
             return None, None
         
         magnitude = balloon_data.get('magnitude')
@@ -119,7 +132,6 @@ class SoundFieldCalculator(ModuleBase):
         vertical_angles = balloon_data.get('vertical_angles')
         
         if magnitude is None or phase is None or vertical_angles is None:
-            print(f"Fehlende Daten in Balloon-Daten für {speaker_name}")
             return None, None
         
         return self._interpolate_angle_data_batch(magnitude, phase, vertical_angles, azimuths, elevations)
@@ -164,18 +176,74 @@ class SoundFieldCalculator(ModuleBase):
         resolution = self.settings.resolution
         nx_points = len(sound_field_x)
         ny_points = len(sound_field_y)
-        print(
-            "[SoundFieldCalculator] Berechnungs-Grid verwendet:",
-            f"resolution={resolution:.3f}m, "
-            f"shape={X_grid.shape} (ny={ny_points}, nx={nx_points}), "
-            f"total_points={total_points}, "
-            f"active_points_in_mask={active_points} "
-            f"({100.0*active_points/total_points:.1f}% der Punkte aktiv)"
-        )
         surface_meshes = self._grid_calculator.get_surface_meshes()
         surface_samples = self._grid_calculator.get_surface_sampling_points()
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         surface_mask_flat = surface_mask.reshape(-1)
+        
+        # ============================================================
+        # SCHATTEN-BERECHNUNG (nur bei Superposition)
+        # ============================================================
+        # Bei Superposition verhält sich Schall wie Licht: direkter Schatten,
+        # keine Beugung. Punkte im Schatten werden NICHT berechnet.
+        # Bei FEM/FDTD wird Schatten NICHT angewendet, da Beugung berücksichtigt wird.
+        shadow_mask_flat = None
+        if self._shadow_calculator is not None and enabled_surfaces:
+            # Prüfe ob Schattenberechnung aktiviert ist
+            use_shadow = getattr(self.settings, "enable_shadow_calculation", True)
+            if use_shadow:
+                try:
+                    # Sammle alle Quellpositionen
+                    source_positions = []
+                    for speaker_array in self.settings.speaker_arrays.values():
+                        if speaker_array.mute or speaker_array.hide:
+                            continue
+                        source_position_x = getattr(
+                            speaker_array,
+                            'source_position_calc_x',
+                            getattr(speaker_array, 'source_position_x', None),
+                        )
+                        source_position_y = getattr(
+                            speaker_array,
+                            'source_position_calc_y',
+                            getattr(speaker_array, 'source_position_y', None),
+                        )
+                        source_position_z = getattr(
+                            speaker_array,
+                            'source_position_calc_z',
+                            getattr(speaker_array, 'source_position_z', None),
+                        )
+                        if source_position_x is not None and source_position_y is not None:
+                            num_sources = len(source_position_x)
+                            for i in range(num_sources):
+                                z_pos = source_position_z[i] if source_position_z is not None and i < len(source_position_z) else 0.0
+                                source_positions.append((
+                                    float(source_position_x[i]),
+                                    float(source_position_y[i]),
+                                    float(z_pos),
+                                ))
+                    
+                    if source_positions:
+                        # Berechne Schatten-Maske
+                        shadow_mask_flat = self._shadow_calculator.compute_shadow_mask(
+                            grid_points,
+                            source_positions,
+                            enabled_surfaces,
+                        )
+                        if DEBUG_SOUNDFIELD:
+                            num_shadow = np.count_nonzero(shadow_mask_flat)
+                            print(
+                                f"[SoundFieldCalculator] Schattenberechnung: "
+                                f"{num_shadow}/{len(grid_points)} Punkte im Schatten "
+                                f"({100.0*num_shadow/len(grid_points):.1f}%), "
+                                f"{len(enabled_surfaces)} Surfaces, {len(source_positions)} Quellen"
+                            )
+                except Exception as exc:
+                    if DEBUG_SOUNDFIELD:
+                        print(f"[SoundFieldCalculator] Fehler bei Schattenberechnung: {exc}")
+                        import traceback
+                        traceback.print_exc()
+                    shadow_mask_flat = None
         surface_field_buffers: Dict[str, np.ndarray] = {}
         surface_point_buffers: Dict[str, np.ndarray] = {}
         if surface_samples:
@@ -237,7 +305,6 @@ class SoundFieldCalculator(ModuleBase):
                     index = speaker_names.index(speaker_name)
                     speaker_indices.append(index)
                 except ValueError:
-                    print(f"Warnung: Lautsprecher {speaker_name} nicht gefunden")
                     speaker_indices.append(0)
             
             source_indices = np.array(speaker_indices)
@@ -360,9 +427,21 @@ class SoundFieldCalculator(ModuleBase):
                         "polarity": polarity_flag,
                         "distances": source_dists.reshape(-1),
                     }
+                    # Kombiniere Surface-Maske mit Schatten-Maske
+                    # Bei Superposition: Punkte im Schatten werden NICHT berechnet
+                    combined_mask = surface_mask_flat.copy() if surface_mask_flat is not None else None
+                    if shadow_mask_flat is not None:
+                        # Invertiere Schatten-Maske: True = sichtbar, False = im Schatten
+                        visible_mask = ~shadow_mask_flat
+                        if combined_mask is not None:
+                            # Kombiniere: Punkt muss in Surface UND sichtbar sein
+                            combined_mask = combined_mask & visible_mask
+                        else:
+                            combined_mask = visible_mask
+                    
                     mask_options = {
                         "min_distance": 0.001,
-                        "additional_mask": surface_mask_flat,
+                        "additional_mask": combined_mask,
                     }
                     wave_flat = self._compute_wave_for_points(
                         grid_points,
@@ -485,6 +564,13 @@ class SoundFieldCalculator(ModuleBase):
                 self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
             else:
                 self.calculation_spl['surface_mask_strict'] = surface_mask.astype(bool).tolist()
+            
+            # 🎯 Speichere Schatten-Maske für Visualisierung (auch bei FEM/FDTD nützlich)
+            if shadow_mask_flat is not None:
+                shadow_mask_2d = shadow_mask_flat.reshape(X_grid.shape)
+                self.calculation_spl['shadow_mask'] = shadow_mask_2d.astype(bool).tolist()
+            else:
+                self.calculation_spl['shadow_mask'] = None
             if surface_meshes:
                 self.calculation_spl['surface_meshes'] = [
                     mesh.to_payload() for mesh in surface_meshes
@@ -713,8 +799,6 @@ class SoundFieldCalculator(ModuleBase):
             return mag_value, phase_value
             
         except IndexError:
-            print(f"Indexfehler beim Zugriff auf Balloon-Daten bei Azimut {azimuth}° und Elevation {elevation}°")
-            print(f"Array-Form: Magnitude {magnitude.shape}, Phase {phase.shape}")
             return None, None
 
     def _interpolate_angle_data_batch(self, magnitude, phase, vertical_angles, azimuths, elevations):
@@ -838,9 +922,6 @@ class SoundFieldCalculator(ModuleBase):
             return mag_values, phase_values
             
         except Exception as e:
-            print(f"Fehler in Batch-Interpolation: {e}")
-            print(f"Array-Form: Magnitude {magnitude.shape}, Phase {phase.shape}")
-            print(f"Azimuths: {azimuths.shape}, Elevations: {elevations.shape}")
             return None, None
 
 

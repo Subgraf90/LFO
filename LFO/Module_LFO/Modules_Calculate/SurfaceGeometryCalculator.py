@@ -526,21 +526,6 @@ def build_surface_mesh(
                 "PyVista wird benötigt, um ein Surface-Mesh zu erstellen."
             ) from exc
     
-    # 🎯 NEUER MODUS: PyVista sample() für glatte Ränder
-    use_pyvista_sample = bool(getattr(settings, "spl_plot_use_pyvista_sample", False)) if settings else False
-    if use_pyvista_sample and source_x is not None and source_y is not None and source_scalars is not None:
-        try:
-            return _build_surface_mesh_with_pyvista_sample(
-                x, y, scalars, z_coords, surface_mask,
-                source_x, source_y, source_scalars,
-                settings, container, pv_module
-            )
-        except Exception as exc:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] PyVista sample-Modus fehlgeschlagen, fallback auf altes Verfahren: {exc}")
-            # Fallback auf altes Verfahren
-            pass
-
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     values = np.asarray(scalars, dtype=float)
@@ -604,11 +589,7 @@ def build_surface_mesh(
             rendered_cells += 1
     
     if DEBUG_SURFACE_GEOMETRY:
-        print(
-            f"[SurfaceGeometry] build_surface_mesh clipping: "
-            f"total_cells={total_cells}, rendered={rendered_cells}, "
-            f"filtered={total_cells - rendered_cells}"
-        )
+        pass
 
     faces = np.asarray(face_list, dtype=np.int64)
 
@@ -631,11 +612,7 @@ def build_surface_mesh(
                 if flat_indices.size > 0:
                     mesh = mesh.extract_cells(flat_indices)
             if DEBUG_SURFACE_GEOMETRY:
-                print(
-                    "[SurfaceGeometry] normals:",
-                    f"cells={mesh.n_cells}",
-                    f"removed={normals.shape[0] - flat_mask.sum()}",
-                )
+                pass
     except Exception:
         pass
 
@@ -882,19 +859,15 @@ def clip_floor_with_surfaces(
             # Prüfe ob Clipping-Mesh gültig ist
             if clipping_mesh.n_points == 0 or clipping_mesh.n_cells == 0:
                 if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] Clipping-Mesh für '{surface_id}' ist leer, "
-                        f"überspringe diese Surface"
-                    )
+                    pass
+
                 continue
             
             # Prüfe ob Floor-Mesh noch gültig ist
             if clipped_mesh.n_cells == 0:
                 if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] Floor-Mesh ist leer nach vorherigem Clipping, "
-                        f"überspringe weitere Surfaces"
-                    )
+                    pass
+
                 break
             
             # Versuche clip_surface anzuwenden
@@ -929,34 +902,26 @@ def clip_floor_with_surfaces(
                 if cells_after >= cells_before:
                     # Keine Zellen entfernt - möglicherweise Problem mit Orientierung
                     if DEBUG_SURFACE_GEOMETRY:
-                        print(
-                            f"[SurfaceGeometry] clip_surface für '{surface_id}' entfernte keine Zellen "
-                            f"({cells_before} -> {cells_after}), versuche invertierte Orientierung"
-                        )
+                        pass
                     # Versuche mit invertiertem Parameter
                     clipped_mesh = clipped_mesh.clip_surface(clipping_mesh, invert=not use_invert)
                     cells_after = clipped_mesh.n_cells
                 
                 if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] Floor geclippt an Surface '{surface_id}': "
-                        f"{cells_after} Zellen verbleiben (von {cells_before})"
-                    )
+                    pass
                 
             except Exception as clip_exc:
                 # clip_surface fehlgeschlagen - markiere für manuelles Clipping
                 if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] clip_surface fehlgeschlagen für '{surface_id}': {clip_exc}"
-                    )
+                    pass
+
                 use_manual_clipping = True
                 break
         
         except Exception as exc:  # noqa: BLE001
             if DEBUG_SURFACE_GEOMETRY:
-                print(
-                    f"[SurfaceGeometry] Fehler beim Clipping mit Surface '{surface_id}': {exc}"
-                )
+                pass
+
             use_manual_clipping = True
             break
     
@@ -967,9 +932,7 @@ def clip_floor_with_surfaces(
         clipped_mesh = floor_mesh.copy(deep=True)
         
         if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] Verwende manuelles Clipping für {len(enabled_surfaces)} Surfaces"
-            )
+            pass
         
         from matplotlib.path import Path
         
@@ -1001,9 +964,8 @@ def clip_floor_with_surfaces(
                     surface_polygons.append((poly_path, z_surface_max + 0.01, surface_id))
             except Exception as exc:  # noqa: BLE001
                 if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] Fehler beim Erstellen des Clipping-Meshes für '{surface_id}': {exc}"
-                    )
+                    pass
+
                 continue
         
         # Prüfe jede Zelle gegen alle Surfaces
@@ -1027,10 +989,6 @@ def clip_floor_with_surfaces(
             clipped_mesh = clipped_mesh.extract_cells(cells_to_keep)
             if DEBUG_SURFACE_GEOMETRY:
                 total_cells_before = floor_mesh.n_cells
-                print(
-                    f"[SurfaceGeometry] Floor geclippt an {len(surface_polygons)} Surfaces (manuell): "
-                    f"{clipped_mesh.n_cells} Zellen verbleiben (von {total_cells_before})"
-                )
     
     return clipped_mesh
 
@@ -1115,11 +1073,7 @@ def build_vertical_surface_mesh(
             rendered_cells += 1
 
     if DEBUG_SURFACE_GEOMETRY:
-        print(
-            f"[SurfaceGeometry] build_vertical_surface_mesh clipping: "
-            f"total_cells={total_cells}, rendered={rendered_cells}, "
-            f"filtered={total_cells - rendered_cells}"
-        )
+        pass
 
     faces = np.asarray(face_list, dtype=np.int64)
     if faces.size > 0:
@@ -1130,1461 +1084,6 @@ def build_vertical_surface_mesh(
     mesh["plot_scalars"] = values.ravel()
     return mesh
 
-
-def _build_surface_mesh_with_pyvista_sample(
-    plot_x: np.ndarray,  # Nicht verwendet, aber für Signatur-Kompatibilität
-    plot_y: np.ndarray,  # Nicht verwendet, aber für Signatur-Kompatibilität
-    plot_scalars: np.ndarray,  # Nicht verwendet, aber für Signatur-Kompatibilität
-    plot_z_coords: Optional[np.ndarray],  # Nicht verwendet
-    plot_surface_mask: Optional[np.ndarray],  # Nicht verwendet
-    source_x: np.ndarray,
-    source_y: np.ndarray,
-    source_scalars: np.ndarray,
-    settings: Any,
-    container: Any,
-    pv_module: Any,
-) -> Any:
-    """
-    🎯 NEUER MODUS: Erstellt ein feines Surface-Mesh basierend auf der echten Surface-Geometrie
-    und mappt SPL-Werte vom groben Berechnungs-Grid mit PyVista sample().
-    
-    Vorteile:
-    - Glatte Ränder ohne Zacken (Mesh folgt exakt der Surface-Geometrie)
-    - Vollständige Flächenabdeckung
-    - Bessere Darstellung bei schrägen/diagonalen Surfaces
-    """
-    if DEBUG_SURFACE_GEOMETRY:
-        print("[SurfaceGeometry] Verwende PyVista sample()-Modus für feines Surface-Mesh")
-    
-    # SCHRITT 1: Erstelle grobes Berechnungs-Grid als PyVista StructuredGrid
-    source_x_arr = np.asarray(source_x, dtype=float)
-    source_y_arr = np.asarray(source_y, dtype=float)
-    source_scalars_arr = np.asarray(source_scalars, dtype=float)
-    
-    # 🎯 Validierung: Stelle sicher, dass source_scalars die korrekte Shape hat
-    if source_scalars_arr.ndim != 2:
-        if source_scalars_arr.size == len(source_y_arr) * len(source_x_arr):
-            source_scalars_arr = source_scalars_arr.reshape(len(source_y_arr), len(source_x_arr))
-        else:
-            raise ValueError(
-                f"source_scalars muss Shape (len(y), len(x)) besitzen. "
-                f"Erhalten: {source_scalars_arr.shape}, erwartet: ({len(source_y_arr)}, {len(source_x_arr)})"
-            )
-    
-    # Zusätzliche Validierung: Prüfe ob Shape exakt übereinstimmt
-    if source_scalars_arr.shape != (len(source_y_arr), len(source_x_arr)):
-        raise ValueError(
-            f"source_scalars Shape stimmt nicht überein mit (len(y), len(x)). "
-            f"Erhalten: {source_scalars_arr.shape}, erwartet: ({len(source_y_arr)}, {len(source_x_arr)})"
-        )
-    
-    # Hole Z-Koordinaten für grobes Grid
-    source_z = None
-    if container is not None and hasattr(container, "calculation_spl"):
-        calc_spl = getattr(container, "calculation_spl", {}) or {}
-        z_list = calc_spl.get("sound_field_z")
-        if z_list is not None:
-            try:
-                z_arr = np.asarray(z_list, dtype=float)
-                if z_arr.size == len(source_y_arr) * len(source_x_arr):
-                    source_z = z_arr.reshape(len(source_y_arr), len(source_x_arr))
-            except Exception:
-                pass
-    
-    if source_z is None:
-        source_z = np.zeros((len(source_y_arr), len(source_x_arr)), dtype=float)
-    
-    # Erstelle StructuredGrid aus grobem Berechnungs-Grid
-    # 🎯 WICHTIG: PyVista StructuredGrid erwartet indexing='ij' für korrekte Dimensionen
-    # Bei meshgrid(indexing="ij"): X variiert entlang der ersten Dimension (i), Y entlang der zweiten Dimension (j)
-    # Shape ist (len(x), len(y)) = (nx, ny), was PyVista StructuredGrid erwartet
-    # 🎯 KORREKTUR: Verwende indexing='ij' statt 'xy' für PyVista StructuredGrid
-    X_coarse, Y_coarse = np.meshgrid(source_x_arr, source_y_arr, indexing="ij")
-    # 🎯 WICHTIG: source_z hat Shape (len(y), len(x)) = (ny, nx), muss transponiert werden zu (nx, ny)
-    # damit es mit X_coarse und Y_coarse übereinstimmt
-    Z_coarse = source_z.T
-    # PyVista StructuredGrid(X, Y, Z) erwartet Arrays mit Shape (nx, ny) bei indexing='ij'
-    coarse_grid = pv_module.StructuredGrid(X_coarse, Y_coarse, Z_coarse)
-    # Werte müssen in der gleichen Reihenfolge wie die Koordinaten geravelt werden
-    # Bei indexing='ij' und Shape (nx, ny) müssen wir die Werte entsprechend anpassen
-    # source_scalars_arr hat Shape (len(y), len(x)) = (ny, nx)
-    # Wir müssen sie transponieren, damit sie zu (nx, ny) passen
-    # 🎯 WICHTIG: Bei indexing='ij' sollte Fortran-Order ('F') verwendet werden
-    # Fortran-Order iteriert zuerst über die erste Dimension (i), dann über die zweite (j)
-    coarse_grid["spl_values"] = source_scalars_arr.T.ravel(order="F")
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        # Debug: Prüfe ob die Werte korrekt sind
-        source_scalars_min = float(np.nanmin(source_scalars_arr))
-        source_scalars_max = float(np.nanmax(source_scalars_arr))
-        source_scalars_mean = float(np.nanmean(source_scalars_arr))
-        coarse_values_check = coarse_grid["spl_values"]
-        coarse_values_min = float(np.nanmin(coarse_values_check))
-        coarse_values_max = float(np.nanmax(coarse_values_check))
-        coarse_values_mean = float(np.nanmean(coarse_values_check))
-        # Berechne tatsächliche Resolution aus Koordinaten
-        if len(source_x_arr) > 1:
-            actual_resolution_x = float(np.mean(np.diff(source_x_arr)))
-        else:
-            actual_resolution_x = 0.0
-        if len(source_y_arr) > 1:
-            actual_resolution_y = float(np.mean(np.diff(source_y_arr)))
-        else:
-            actual_resolution_y = 0.0
-        print(
-            f"[SurfaceGeometry] Grobes Grid: "
-            f"shape=({len(source_y_arr)}x{len(source_x_arr)}), "
-            f"points={coarse_grid.n_points}, "
-            f"resolution_x={actual_resolution_x:.3f}m, resolution_y={actual_resolution_y:.3f}m"
-        )
-        print(
-            f"[SurfaceGeometry] Source Scalars: SPL=[{source_scalars_min:.2f}, {source_scalars_max:.2f}], "
-            f"mean={source_scalars_mean:.2f} dB"
-        )
-        print(
-            f"[SurfaceGeometry] Coarse Grid Values: SPL=[{coarse_values_min:.2f}, {coarse_values_max:.2f}], "
-            f"mean={coarse_values_mean:.2f} dB"
-        )
-        # Prüfe ob Werte übereinstimmen (nach Transposition mit Fortran-Order)
-        source_scalars_flat = source_scalars_arr.T.ravel(order="F")
-        if not np.allclose(source_scalars_flat, coarse_values_check, equal_nan=True):
-            print(
-                f"[SurfaceGeometry] WARNUNG: Source Scalars (transponiert, Fortran-Order) und Coarse Grid Values stimmen nicht überein!"
-            )
-    
-    # SCHRITT 2: Erstelle feines Surface-Mesh aus Surface-Definitionen
-    surface_definitions = getattr(settings, "surface_definitions", {}) or {}
-    if not isinstance(surface_definitions, dict):
-        raise RuntimeError("Keine gültigen Surface-Definitionen gefunden.")
-    
-    # Sammle alle enabled, nicht-hidden Surfaces
-    enabled_surfaces = []
-    for surface_id, surface_def in surface_definitions.items():
-        if isinstance(surface_def, SurfaceDefinition):
-            enabled = bool(getattr(surface_def, "enabled", False))
-            hidden = bool(getattr(surface_def, "hidden", False))
-            points = getattr(surface_def, "points", []) or []
-        else:
-            enabled = bool(surface_def.get("enabled", False))
-            hidden = bool(surface_def.get("hidden", False))
-            points = surface_def.get("points", [])
-        
-        if enabled and not hidden and len(points) >= 3:
-            enabled_surfaces.append((surface_id, points))
-            if DEBUG_SURFACE_GEOMETRY:
-                # Zeige Bounding-Box dieser Surface
-                xs = [p.get("x", 0.0) for p in points]
-                ys = [p.get("y", 0.0) for p in points]
-                print(
-                    f"[SurfaceGeometry] Surface '{surface_id}' hinzugefügt: "
-                    f"x=[{min(xs):.2f}, {max(xs):.2f}], y=[{min(ys):.2f}, {max(ys):.2f}], "
-                    f"{len(points)} Punkte"
-                )
-    
-    if not enabled_surfaces:
-        raise RuntimeError("Keine enabled Surfaces für feines Mesh gefunden.")
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        print(f"[SurfaceGeometry] Gesamt {len(enabled_surfaces)} enabled Surfaces gefunden")
-    
-    # 🎯 WICHTIG: Beschränke feines Grid auf den SCHNITT von:
-    # 1. Grobes Berechnungs-Grid (wo SPL-Werte berechnet wurden)
-    # 2. Surface-Bounding-Box (nur enabled Surfaces)
-    # So werden nur Punkte erstellt, die sowohl im Grid als auch in den Surfaces liegen
-    
-    grid_min_x = float(np.min(source_x_arr))
-    grid_max_x = float(np.max(source_x_arr))
-    grid_min_y = float(np.min(source_y_arr))
-    grid_max_y = float(np.max(source_y_arr))
-    
-    # Berechne Bounding-Box der enabled Surfaces
-    surface_min_x = min(p.get("x", 0.0) for _, pts in enabled_surfaces for p in pts)
-    surface_max_x = max(p.get("x", 0.0) for _, pts in enabled_surfaces for p in pts)
-    surface_min_y = min(p.get("y", 0.0) for _, pts in enabled_surfaces for p in pts)
-    surface_max_y = max(p.get("y", 0.0) for _, pts in enabled_surfaces for p in pts)
-    
-    # Schnitt: Verwende den Bereich, der sowohl im Grid als auch in den Surfaces liegt
-    fine_min_x = max(grid_min_x, surface_min_x)
-    fine_max_x = min(grid_max_x, surface_max_x)
-    fine_min_y = max(grid_min_y, surface_min_y)
-    fine_max_y = min(grid_max_y, surface_max_y)
-    
-    # Prüfe ob Schnitt nicht leer ist
-    if fine_min_x >= fine_max_x or fine_min_y >= fine_max_y:
-        raise RuntimeError(
-            f"Kein Schnitt zwischen Grid-Bereich "
-            f"(x=[{grid_min_x:.2f}, {grid_max_x:.2f}], y=[{grid_min_y:.2f}, {grid_max_y:.2f}]) "
-            f"und Surface-Bereich "
-            f"(x=[{surface_min_x:.2f}, {surface_max_x:.2f}], y=[{surface_min_y:.2f}, {surface_max_y:.2f}])"
-        )
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        print(
-            f"[SurfaceGeometry] Grobes Grid-Bereich: "
-            f"x=[{grid_min_x:.2f}, {grid_max_x:.2f}], y=[{grid_min_y:.2f}, {grid_max_y:.2f}]"
-        )
-        print(
-            f"[SurfaceGeometry] Surface-Bereich: "
-            f"x=[{surface_min_x:.2f}, {surface_max_x:.2f}], y=[{surface_min_y:.2f}, {surface_max_y:.2f}]"
-        )
-        print(
-            f"[SurfaceGeometry] Feines Grid-Bereich (Schnitt): "
-            f"x=[{fine_min_x:.2f}, {fine_max_x:.2f}], y=[{fine_min_y:.2f}, {fine_max_y:.2f}]"
-        )
-    
-    # Feine Auflösung: ca. 5-6x feiner als Berechnungs-Grid für bessere Randabdeckung
-    # Verwende source_x/source_y für Auflösungsberechnung (nicht plot_x/plot_y)
-    source_dx = np.mean(np.diff(source_x_arr)) if len(source_x_arr) > 1 else 0.1
-    source_dy = np.mean(np.diff(source_y_arr)) if len(source_y_arr) > 1 else 0.1
-    
-    # 🎯 ADAPTIVE AUFLÖSUNG: Analysiere Surface-Geometrie und passe Auflösung an
-    # Berechne minimale Feature-Größe für alle enabled Surfaces
-    min_feature_size = float('inf')
-    for surface_id, points in enabled_surfaces:
-        if len(points) < 3:
-            continue
-        
-        # Berechne minimale Kantenlänge im Polygon
-        poly_xs = np.array([p.get("x", 0.0) for p in points], dtype=float)
-        poly_ys = np.array([p.get("y", 0.0) for p in points], dtype=float)
-        
-        # Berechne Abstände zwischen benachbarten Punkten
-        for i in range(len(points)):
-            j = (i + 1) % len(points)
-            dx = poly_xs[j] - poly_xs[i]
-            dy = poly_ys[j] - poly_ys[i]
-            edge_length = np.sqrt(dx*dx + dy*dy)
-            if edge_length > 0:
-                min_feature_size = min(min_feature_size, edge_length)
-        
-        # Berechne auch minimale Bounding-Box-Dimension
-        if len(poly_xs) > 0:
-            bbox_width = float(np.max(poly_xs) - np.min(poly_xs))
-            bbox_height = float(np.max(poly_ys) - np.min(poly_ys))
-            min_dimension = min(bbox_width, bbox_height)
-            if min_dimension > 0:
-                min_feature_size = min(min_feature_size, min_dimension)
-    
-    # Setze Auflösung basierend auf minimaler Feature-Größe
-    # Regel: Auflösung sollte ≤ 1/20 der kleinsten Feature-Größe sein (aggressiver für bessere Genauigkeit)
-    # Aber nicht kleiner als 0.5cm (Performance) und nicht größer als 5cm (Standard)
-    if min_feature_size < float('inf'):
-        geometry_based_resolution = min_feature_size / 20.0  # Aggressiver: 1/20 statt 1/10
-        geometry_based_resolution = max(geometry_based_resolution, 0.005)  # Mindestens 0.5cm (feiner)
-        geometry_based_resolution = min(geometry_based_resolution, 0.05)  # Maximal 5cm
-    else:
-        geometry_based_resolution = 0.05  # Fallback
-    
-    # Standard-Auflösung basierend auf source Grid
-    standard_resolution = min(source_dx / 5, source_dy / 5, 0.05)
-    standard_resolution = max(standard_resolution, 0.02)  # Minimal 2cm
-    
-    # Verwende die feinere Auflösung (kleinere Zahl = feinere Auflösung)
-    fine_resolution = min(geometry_based_resolution, standard_resolution)
-    
-    # 🚨 PERFORMANCE: Begrenze feine Auflösung basierend auf erwarteter Punktanzahl
-    # Bei sehr großen Surfaces wird die Punktanzahl exponentiell groß
-    area = (fine_max_x - fine_min_x) * (fine_max_y - fine_min_y)
-    max_points_estimate = area / (fine_resolution * fine_resolution)
-    MAX_POINTS_LIMIT = 1000000  # Max. 1 Million Punkte pro Surface
-    
-    if max_points_estimate > MAX_POINTS_LIMIT:
-        # Erhöhe Auflösung, um Punktanzahl zu reduzieren
-        required_resolution = np.sqrt(area / MAX_POINTS_LIMIT)
-        fine_resolution = max(required_resolution, 0.05)  # Mindestens 5cm
-        if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] PERFORMANCE: Große Surface erkannt (Area={area:.1f}m²), "
-                f"begrenze Auflösung auf {fine_resolution:.3f}m "
-                f"(statt {min(geometry_based_resolution, standard_resolution):.3f}m)"
-            )
-    elif DEBUG_SURFACE_GEOMETRY and min_feature_size < float('inf'):
-        print(
-            f"[SurfaceGeometry] ADAPTIVE AUFLÖSUNG: Minimale Feature-Größe={min_feature_size:.3f}m, "
-            f"Geometrie-basierte Auflösung={geometry_based_resolution:.3f}m, "
-            f"Standard-Auflösung={standard_resolution:.3f}m, "
-            f"Finale Auflösung={fine_resolution:.3f}m"
-        )
-    
-    # Erstelle feines Grid nur im Schnitt-Bereich (Grid ∩ Surfaces)
-    # Erweitere leicht über die Surface-Grenzen hinaus, um Randpunkte zu erfassen
-    margin = fine_resolution * 2  # 2x Auflösung als Rand
-    fine_x = np.arange(fine_min_x - margin, fine_max_x + margin + fine_resolution, fine_resolution)
-    fine_y = np.arange(fine_min_y - margin, fine_max_y + margin + fine_resolution, fine_resolution)
-    X_fine, Y_fine = np.meshgrid(fine_x, fine_y, indexing="xy")
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        print(
-            f"[SurfaceGeometry] Feines Grid erstellt: shape=({len(fine_y)}x{len(fine_x)}), "
-            f"total_points={X_fine.size}, resolution={fine_resolution:.3f}m"
-        )
-    
-    # 🎯 WICHTIG: Prüfe ob Z-Koordinaten im groben Grid vorhanden sind (VOR der Surface-Schleife)
-    # Dies wird später in der Surface-Schleife verwendet
-    has_z_in_coarse = np.any(np.abs(Z_coarse) > 1e-6)
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        z_coarse_min = float(np.min(Z_coarse))
-        z_coarse_max = float(np.max(Z_coarse))
-        z_coarse_mean = float(np.mean(Z_coarse))
-        print(
-            f"[SurfaceGeometry] Grobes Grid Z-Bereich: min={z_coarse_min:.3f}, max={z_coarse_max:.3f}, "
-            f"mean={z_coarse_mean:.3f}, has_z={has_z_in_coarse}"
-        )
-    
-    # Berechne Z-Koordinaten für feines Grid (aus Surface-Ebenen)
-    # UND prüfe ob Punkt innerhalb der Surfaces liegt
-    Z_fine = np.zeros_like(X_fine, dtype=float)
-    fine_mask = np.zeros_like(X_fine, dtype=bool)
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        total_points = X_fine.size
-        print(
-            f"[SurfaceGeometry] Starte Z-Koordinaten-Berechnung für {len(enabled_surfaces)} Surfaces, "
-            f"{total_points} Punkte..."
-        )
-    
-    # 🎯 WICHTIG: Jedes Surface wird EINZELN verarbeitet, damit sich der Plot pro Surface nicht ändert
-    # Erstelle für jedes Surface ein separates feines Mesh und kombiniere sie dann
-    surface_meshes = []
-    
-    t_start_total = time.time()
-    t_start_surface_loop = time.time()
-    
-    # 🚀 OPTIMIERUNG: Berechne gemeinsame Daten für alle Surfaces auf einmal
-    # (Plane-Models, Bounding-Boxes, etc.) - reduziert Redundanz in der Schleife
-    surface_prep_data = []
-    for surface_idx, (surface_id, points) in enumerate(enabled_surfaces):
-        # Plane-Model vorberechnen
-        plane_model, _ = derive_surface_plane(points)
-        if plane_model is None:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Surface {surface_id}: Kein Ebenenmodell erstellt, überspringe")
-            continue
-        
-        # Bounding-Box vorberechnen
-        surface_xs = [p.get("x", 0.0) for p in points]
-        surface_ys = [p.get("y", 0.0) for p in points]
-        surface_min_x = min(surface_xs)
-        surface_max_x = max(surface_xs)
-        surface_min_y = min(surface_ys)
-        surface_max_y = max(surface_ys)
-        
-        # Schnitt: Nur Bereich, der sowohl im Grid als auch in diesem Surface liegt
-        fine_min_x_surface = max(grid_min_x, surface_min_x)
-        fine_max_x_surface = min(grid_max_x, surface_max_x)
-        fine_min_y_surface = max(grid_min_y, surface_min_y)
-        fine_max_y_surface = min(grid_max_y, surface_max_y)
-        
-        if fine_min_x_surface >= fine_max_x_surface or fine_min_y_surface >= fine_max_y_surface:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Surface {surface_id}: Kein Schnitt mit Grid-Bereich, überspringe")
-            continue
-        
-        surface_prep_data.append({
-            'surface_id': surface_id,
-            'points': points,
-            'plane_model': plane_model,
-            'fine_min_x_surface': fine_min_x_surface,
-            'fine_max_x_surface': fine_max_x_surface,
-            'fine_min_y_surface': fine_min_y_surface,
-            'fine_max_y_surface': fine_max_y_surface,
-        })
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        print(f"[SurfaceGeometry] {len(surface_prep_data)} Surfaces vorbereitet für Batch-Verarbeitung")
-    
-    # 🚀 BATCH-VERARBEITUNG: Verarbeite alle Surfaces mit vorbereiteten Daten
-    for surface_idx, prep in enumerate(surface_prep_data):
-        surface_id = prep['surface_id']
-        points = prep['points']
-        plane_model = prep['plane_model']
-        fine_min_x_surface = prep['fine_min_x_surface']
-        fine_max_x_surface = prep['fine_max_x_surface']
-        fine_min_y_surface = prep['fine_min_y_surface']
-        fine_max_y_surface = prep['fine_max_y_surface']
-        
-        if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry] Verarbeite Surface {surface_idx+1}/{len(surface_prep_data)}: {surface_id}")
-        
-        # 🚀 Daten sind bereits vorbereitet - verwende direkt die vorberechneten Werte
-        
-        # 🚨 PERFORMANCE: Begrenze Auflösung pro Surface, wenn zu viele Punkte erwartet werden
-        surface_area = (fine_max_x_surface - fine_min_x_surface) * (fine_max_y_surface - fine_min_y_surface)
-        surface_resolution = fine_resolution
-        MAX_POINTS_PER_SURFACE = 50000  # Max. 50k Punkte pro Surface (für schnelle Triangulation)
-        
-        expected_points = surface_area / (surface_resolution * surface_resolution)
-        if expected_points > MAX_POINTS_PER_SURFACE:
-            # Erhöhe Auflösung für dieses Surface
-            surface_resolution = np.sqrt(surface_area / MAX_POINTS_PER_SURFACE)
-            surface_resolution = max(surface_resolution, 0.10)  # Mindestens 10cm für große Surfaces
-        
-        # 🎯 WICHTIG: Erweitere Grid, damit es GARANTIERT bis an die Polygon-Grenzen reicht
-        # np.arange stoppt, wenn der nächste Schritt über das Ziel hinausgehen würde
-        # Daher müssen wir sicherstellen, dass die Polygon-Grenzen enthalten sind
-        margin = surface_resolution * 2
-        
-        # Erstelle Grid mit np.arange (schneller als linspace)
-        # Füge einen zusätzlichen Schritt hinzu, um sicherzustellen, dass max enthalten ist
-        fine_x_surface = np.arange(fine_min_x_surface - margin, fine_max_x_surface + margin + surface_resolution * 1.5, surface_resolution)
-        fine_y_surface = np.arange(fine_min_y_surface - margin, fine_max_y_surface + margin + surface_resolution * 1.5, surface_resolution)
-        
-        # 🎯 KRITISCH: Stelle sicher, dass die exakten Polygon-Grenzen enthalten sind
-        # Füge sie explizit hinzu, falls sie nicht durch np.arange erfasst wurden
-        # Toleranz für numerische Fehler
-        tol = surface_resolution * 0.01  # 1% der Auflösung
-        
-        # Prüfe und füge min_x hinzu, falls nicht vorhanden
-        if not np.any(np.abs(fine_x_surface - fine_min_x_surface) < tol):
-            fine_x_surface = np.sort(np.unique(np.concatenate([fine_x_surface, [fine_min_x_surface]])))
-        # Prüfe und füge max_x hinzu, falls nicht vorhanden
-        if not np.any(np.abs(fine_x_surface - fine_max_x_surface) < tol):
-            fine_x_surface = np.sort(np.unique(np.concatenate([fine_x_surface, [fine_max_x_surface]])))
-        # Prüfe und füge min_y hinzu, falls nicht vorhanden
-        if not np.any(np.abs(fine_y_surface - fine_min_y_surface) < tol):
-            fine_y_surface = np.sort(np.unique(np.concatenate([fine_y_surface, [fine_min_y_surface]])))
-        # Prüfe und füge max_y hinzu, falls nicht vorhanden
-        if not np.any(np.abs(fine_y_surface - fine_max_y_surface) < tol):
-            fine_y_surface = np.sort(np.unique(np.concatenate([fine_y_surface, [fine_max_y_surface]])))
-        # 🎯 WICHTIG: meshgrid mit indexing="xy" erstellt:
-        # - X hat Shape (len(y), len(x)) - X variiert entlang Spalten (zweite Dimension)
-        # - Y hat Shape (len(y), len(x)) - Y variiert entlang Zeilen (erste Dimension)
-        # Bei meshgrid(indexing="xy"): X[i,j] = x[j], Y[i,j] = y[i]
-        X_fine_surface, Y_fine_surface = np.meshgrid(fine_x_surface, fine_y_surface, indexing="xy")
-        
-        # Vektorisierte Punkt-im-Polygon-Prüfung NUR für dieses Surface
-        t_pip_start = time.time()
-        point_mask_surface = _points_in_polygon_batch_plot(X_fine_surface, Y_fine_surface, points)
-        t_pip_time = time.time() - t_pip_start
-        
-        if point_mask_surface is None:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Surface {surface_id}: Punkt-im-Polygon-Prüfung fehlgeschlagen")
-            continue
-        
-        points_in_surface = np.count_nonzero(point_mask_surface)
-        
-        
-        # Debug: Zeige Polygon-Bereich und gefilterte Punkte-Bereich
-        if DEBUG_SURFACE_GEOMETRY:
-            poly_xs = [p.get("x", 0.0) for p in points]
-            poly_ys = [p.get("y", 0.0) for p in points]
-            poly_x_min, poly_x_max = min(poly_xs), max(poly_xs)
-            poly_y_min, poly_y_max = min(poly_ys), max(poly_ys)
-            
-            # Prüfe ob Grid-Grenzen die Polygon-Grenzen enthalten
-            grid_x_min, grid_x_max = float(np.min(fine_x_surface)), float(np.max(fine_x_surface))
-            grid_y_min, grid_y_max = float(np.min(fine_y_surface)), float(np.max(fine_y_surface))
-            
-            # Prüfe ob Polygon-Grenzen im Grid sind
-            x_min_in_grid = np.any(np.abs(fine_x_surface - poly_x_min) < surface_resolution * 0.1)
-            x_max_in_grid = np.any(np.abs(fine_x_surface - poly_x_max) < surface_resolution * 0.1)
-            y_min_in_grid = np.any(np.abs(fine_y_surface - poly_y_min) < surface_resolution * 0.1)
-            y_max_in_grid = np.any(np.abs(fine_y_surface - poly_y_max) < surface_resolution * 0.1)
-            
-        
-        if points_in_surface == 0:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Surface {surface_id}: Keine Punkte im Polygon gefunden")
-            continue
-        
-        # Berechne Z-Koordinaten für dieses Surface
-        mode = plane_model.get("mode", "xy")
-        # 🎯 KORREKTUR: Stelle sicher, dass X/Y in der richtigen Reihenfolge extrahiert werden
-        # Bei meshgrid(indexing="xy"): X variiert entlang Spalten (zweite Dimension), Y entlang Zeilen (erste Dimension)
-        x_points = X_fine_surface[point_mask_surface]  # X-Koordinaten (horizontal)
-        y_points = Y_fine_surface[point_mask_surface]  # Y-Koordinaten (vertikal)
-        
-        # Debug: Prüfe ob die Reihenfolge korrekt ist
-        if DEBUG_SURFACE_GEOMETRY and len(x_points) > 0 and len(y_points) > 0:
-            x_min, x_max = float(np.min(x_points)), float(np.max(x_points))
-            y_min, y_max = float(np.min(y_points)), float(np.max(y_points))
-            # Prüfe ob X/Y-Bereich mit erwarteten Surface-Bereichen übereinstimmt
-            surface_xs = [p.get("x", 0.0) for p in points]
-            surface_ys = [p.get("y", 0.0) for p in points]
-            expected_x_min, expected_x_max = min(surface_xs), max(surface_xs)
-            expected_y_min, expected_y_max = min(surface_ys), max(surface_ys)
-            
-            if abs(x_min - expected_x_min) > abs(y_min - expected_x_min):
-                print(
-                    f"[SurfaceGeometry] WARNUNG: Surface {surface_id} - "
-                    f"Möglicherweise X/Y vertauscht! "
-                    f"Extrahierte X-Bereich=[{x_min:.2f}, {x_max:.2f}], "
-                    f"erwarteter X-Bereich=[{expected_x_min:.2f}, {expected_x_max:.2f}], "
-                    f"Extrahierte Y-Bereich=[{y_min:.2f}, {y_max:.2f}], "
-                    f"erwarteter Y-Bereich=[{expected_y_min:.2f}, {expected_y_max:.2f}]"
-                )
-        
-        if mode == "constant":
-            z_values = np.full_like(x_points, float(plane_model.get("base", 0.0)))
-        elif mode == "x":
-            slope = float(plane_model.get("slope", 0.0))
-            intercept = float(plane_model.get("intercept", 0.0))
-            z_values = slope * x_points + intercept
-        elif mode == "y":
-            slope = float(plane_model.get("slope", 0.0))
-            intercept = float(plane_model.get("intercept", 0.0))
-            z_values = slope * y_points + intercept
-        else:  # mode == "xy" (default)
-            slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
-            slope_y = float(plane_model.get("slope_y", 0.0))
-            intercept = float(plane_model.get("intercept", 0.0))
-            z_values = slope_x * x_points + slope_y * y_points + intercept
-        
-        # Wenn grobes Grid keine Z-Koordinaten hat, setze Z=0
-        if not has_z_in_coarse:
-            z_values = np.zeros_like(z_values)
-        
-        # Erstelle Punkte-Array für dieses Surface
-        # 🎯 WICHTIG: PyVista erwartet Koordinaten in der Reihenfolge (X, Y, Z)
-        # X = horizontal (links-rechts), Y = vertikal (vorn-hinten), Z = Höhe
-        points_inside_surface = np.column_stack((
-            x_points,  # X-Koordinate (horizontal)
-            y_points,  # Y-Koordinate (vertikal/vorn-hinten)
-            z_values   # Z-Koordinate (Höhe)
-        ))
-        
-        # Debug: Prüfe ob X/Y korrekt zugeordnet sind
-        if DEBUG_SURFACE_GEOMETRY and len(x_points) > 0:
-            surface_xs = [p.get("x", 0.0) for p in points]
-            surface_ys = [p.get("y", 0.0) for p in points]
-            expected_x_range = (min(surface_xs), max(surface_xs))
-            expected_y_range = (min(surface_ys), max(surface_ys))
-            actual_x_range = (float(np.min(x_points)), float(np.max(x_points)))
-            actual_y_range = (float(np.min(y_points)), float(np.max(y_points)))
-            
-            # Prüfe ob X/Y vertauscht sein könnten
-            x_matches_x = abs(actual_x_range[0] - expected_x_range[0]) < 0.1 and abs(actual_x_range[1] - expected_x_range[1]) < 0.1
-            y_matches_y = abs(actual_y_range[0] - expected_y_range[0]) < 0.1 and abs(actual_y_range[1] - expected_y_range[1]) < 0.1
-            
-            if not (x_matches_x and y_matches_y):
-                print(
-                    f"[SurfaceGeometry] Surface {surface_id} Koordinaten-Prüfung: "
-                    f"Erwartete X=[{expected_x_range[0]:.2f}, {expected_x_range[1]:.2f}], "
-                    f"Tatsächliche X={actual_x_range}, "
-                    f"Erwartete Y=[{expected_y_range[0]:.2f}, {expected_y_range[1]:.2f}], "
-                    f"Tatsächliche Y={actual_y_range}"
-                )
-        
-        # 🎯 DEBUG: Referenzpunkt pro Surface beim Mesh erstellen
-        # Wähle den Mittelpunkt als Referenzpunkt (gleicher Punkt wie in Grid-Erstellung)
-        if len(points_inside_surface) > 0:
-            # Berechne Mittelpunkt der Bounding-Box (konsistent mit Grid-Erstellung)
-            ref_x = float(np.mean(x_points))
-            ref_y = float(np.mean(y_points))
-            ref_z = float(np.mean(z_values))
-            
-            # Finde nächstgelegenen Punkt im Surface
-            points_2d = np.column_stack((x_points, y_points))
-            ref_point_2d = np.array([ref_x, ref_y])
-            distances = np.linalg.norm(points_2d - ref_point_2d, axis=1)
-            ref_point_idx = int(np.argmin(distances))
-            ref_point = points_inside_surface[ref_point_idx]
-            
-        
-        if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] Surface {surface_id}: {len(points_inside_surface)} Punkte erstellt, "
-                f"Bereich x=[{np.min(x_points):.2f}, {np.max(x_points):.2f}], "
-                f"y=[{np.min(y_points):.2f}, {np.max(y_points):.2f}]"
-            )
-        
-        # 🚀 PERFORMANCE-OPTIMIERUNG: Versuche direkt Quad-Zellen aus dem regelmäßigen Gitter zu erstellen
-        # Das ist viel schneller als Delaunay-Triangulation, wenn die Punkte aus einem regelmäßigen Gitter kommen
-        # WICHTIG: Mache das VOR dem Subsampling, damit die Gitter-Struktur erhalten bleibt!
-        t_tri_start = time.time()
-        
-        # Prüfe ob es ein einfaches Rechteck ist (4 Punkte, achsenparallel)
-        is_simple_rectangle = len(points) == 4
-        if is_simple_rectangle:
-            # Prüfe ob alle Punkte achsenparallel sind (Rechteck)
-            poly_xs = [p.get("x", 0.0) for p in points]
-            poly_ys = [p.get("y", 0.0) for p in points]
-            unique_xs = len(set(poly_xs))
-            unique_ys = len(set(poly_ys))
-            is_simple_rectangle = unique_xs == 2 and unique_ys == 2
-        
-        use_quad_cells = False
-        try:
-            # Versuche, die ursprüngliche Gitter-Struktur zu rekonstruieren
-            # Die Punkte kommen aus np.meshgrid, sollten also regelmäßig sein
-            # Sortiere Punkte nach Y, dann nach X
-            sorted_indices = np.lexsort((x_points, y_points))
-            sorted_x = x_points[sorted_indices]
-            sorted_y = y_points[sorted_indices]
-            
-            # Finde eindeutige X- und Y-Werte
-            unique_y = np.unique(sorted_y)
-            unique_x = np.unique(sorted_x)
-            
-            # Prüfe ob die Punkte ein regelmäßiges Gitter bilden
-            # (Toleranz für numerische Fehler)
-            y_diffs = np.diff(unique_y)
-            x_diffs = np.diff(unique_x)
-            y_regular = len(np.unique(np.round(y_diffs, 6))) <= 1 if len(y_diffs) > 0 else True
-            x_regular = len(np.unique(np.round(x_diffs, 6))) <= 1 if len(x_diffs) > 0 else True
-            
-            # Prüfe ob die Anzahl der Punkte mit der erwarteten Gitter-Größe übereinstimmt
-            expected_points = len(unique_y) * len(unique_x)
-            is_regular_grid = (y_regular and x_regular and 
-                             abs(len(points_inside_surface) - expected_points) < len(unique_y) + len(unique_x))
-            
-            if is_regular_grid and len(unique_y) > 1 and len(unique_x) > 1:
-                # 🎯 SCHNELLER PFAD: Erstelle Quad-Zellen direkt aus dem Gitter
-                # Das ist O(n) statt O(n log n) für Triangulation!
-                
-                # Erstelle Mapping von (x, y) zu Index in points_inside_surface
-                # WICHTIG: sorted_indices zeigt auf die ursprünglichen Indizes
-                # Wir müssen sie auf die tatsächlichen Indizes in points_inside_surface mappen
-                point_map = {}
-                for pos_idx, orig_idx in enumerate(sorted_indices):
-                    px, py = sorted_x[pos_idx], sorted_y[pos_idx]
-                    # Verwende den Position-Index (0, 1, 2, ...) als Index in points_inside_surface
-                    point_map[(px, py)] = pos_idx
-                
-                # Erstelle Quad-Zellen aus dem Gitter
-                face_list = []
-                ny_grid = len(unique_y)
-                nx_grid = len(unique_x)
-                
-                for j in range(ny_grid - 1):
-                    for i in range(nx_grid - 1):
-                        # Vier Ecken des Quadrats
-                        x0, y0 = unique_x[i], unique_y[j]
-                        x1, y1 = unique_x[i+1], unique_y[j]
-                        x2, y2 = unique_x[i+1], unique_y[j+1]
-                        x3, y3 = unique_x[i], unique_y[j+1]
-                        
-                        # Prüfe ob alle vier Ecken vorhanden sind
-                        if ((x0, y0) in point_map and (x1, y1) in point_map and
-                            (x2, y2) in point_map and (x3, y3) in point_map):
-                            # Indizes sind bereits korrekt (0-basiert in points_inside_surface)
-                            idx0 = point_map[(x0, y0)]
-                            idx1 = point_map[(x1, y1)]
-                            idx2 = point_map[(x2, y2)]
-                            idx3 = point_map[(x3, y3)]
-                            
-                            # Quad-Zelle: [4, idx0, idx1, idx2, idx3]
-                            face_list.extend([4, idx0, idx1, idx2, idx3])
-                
-                if len(face_list) > 0:
-                    # Erstelle points_inside_surface in sortierter Reihenfolge
-                    points_sorted = points_inside_surface[sorted_indices]
-                    faces_array = np.array(face_list, dtype=np.int64)
-                    surface_mesh = pv_module.PolyData(points_sorted, faces_array)
-                    t_tri_time = time.time() - t_tri_start
-                    use_quad_cells = True
-                    
-                else:
-                    # Fallback auf Triangulation wenn keine Zellen erstellt werden konnten
-                    raise ValueError("Keine Quad-Zellen erstellt")
-            else:
-                # Kein regelmäßiges Gitter → verwende Triangulation
-                raise ValueError("Punkte bilden kein regelmäßiges Gitter")
-                
-        except Exception as exc:
-            # Fallback: Delaunay-Triangulation für unregelmäßige Punkte
-            
-            # 🚨 PERFORMANCE: Begrenze Anzahl der Punkte für Triangulation
-            # Delaunay-Triangulation ist O(n log n) bis O(n²), bei vielen Punkten extrem langsam
-            MAX_TRIANGULATION_POINTS = 50000  # Max. 50k Punkte für Triangulation (für akzeptable Performance)
-            
-            points_for_triangulation = points_inside_surface
-            if len(points_inside_surface) > MAX_TRIANGULATION_POINTS:
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] WARNUNG: Surface {surface_id} hat {len(points_inside_surface)} Punkte, "
-                        f"begrenze auf {MAX_TRIANGULATION_POINTS} für Triangulation (Performance)"
-                    )
-                # Subsampling: Wähle gleichmäßig verteilte Punkte
-                step = int(np.ceil(len(points_inside_surface) / MAX_TRIANGULATION_POINTS))
-                indices = np.arange(0, len(points_inside_surface), step)
-                points_for_triangulation = points_inside_surface[indices]
-                
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] Surface {surface_id}: Reduziert auf {len(points_for_triangulation)} Punkte "
-                        f"(Subsampling-Faktor: {step})"
-            )
-        
-        # Erstelle PolyData-Mesh für dieses Surface
-            surface_mesh = pv_module.PolyData(points_for_triangulation)
-        
-        # Delaunay-Triangulation für vollständige Flächenabdeckung
-        # WICHTIG: Trianguliere jedes Surface einzeln für bessere Randabdeckung
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Starte Triangulation für Surface {surface_id} ({len(points_for_triangulation)} Punkte)...")
-            
-            # Verwende 2D-Delaunay für bessere Flächenabdeckung
-            # alpha=0.0 = keine Löcher, tol=0.0 = keine Toleranz für Randpunkte
-            surface_mesh = surface_mesh.delaunay_2d(alpha=0.0, tol=0.0)
-            t_tri_time = time.time() - t_tri_start
-            
-            # 🎯 WICHTIG: Filtere Zellen, die außerhalb des Surface-Polygons liegen
-            # Delaunay-Triangulation kann Zellen erstellen, die über die Polygon-Grenzen hinausgehen.
-            # Für einfache Rechtecke: Nur Schwerpunkt-Prüfung (viel schneller!)
-            # Für komplexe Formen: Strengere Prüfung
-            # WICHTIG: Nur bei Triangulation, nicht bei Quad-Zellen!
-            t_filter_start = time.time()
-            
-            # Aktualisiere points_inside_surface für Filter (falls subsampled)
-            points_inside_surface = points_for_triangulation
-            
-            # Nur filtern wenn Triangulation verwendet wurde (nicht bei Quad-Zellen)
-            # Bei Quad-Zellen sind die Zellen bereits korrekt, da sie direkt aus dem Gitter erstellt wurden
-            if not use_quad_cells and surface_mesh.n_cells > 0:
-                # Debug: Polygon-Bereich für Vergleich
-                if DEBUG_SURFACE_GEOMETRY:
-                    poly_xs = [p.get("x", 0.0) for p in points]
-                    poly_ys = [p.get("y", 0.0) for p in points]
-                    poly_x_min, poly_x_max = min(poly_xs), max(poly_xs)
-                    poly_y_min, poly_y_max = min(poly_ys), max(poly_ys)
-                    mesh_xs = points_inside_surface[:, 0]
-                    mesh_ys = points_inside_surface[:, 1]
-                    mesh_x_min, mesh_x_max = float(np.min(mesh_xs)), float(np.max(mesh_xs))
-                    mesh_y_min, mesh_y_max = float(np.min(mesh_ys)), float(np.max(mesh_ys))
-                
-                # 🚀 PERFORMANCE-OPTIMIERUNG: Vektorisierte Punkt-in-Polygon-Prüfung
-                # Statt jede Zelle einzeln zu prüfen, sammle alle Prüfpunkte und prüfe sie auf einmal
-                valid_cells = []
-                invalid_count = 0
-                invalid_reasons = {
-                    "invalid_indices": 0, 
-                    "vertices_outside": 0,
-                    "centroid_outside": 0,
-                    "edge_midpoint_outside": 0,
-                    "bbox_outside": 0,
-                }
-                
-                # Sammle alle Zell-Daten
-                cell_data = []
-                for cell_idx in range(surface_mesh.n_cells):
-                    cell = surface_mesh.get_cell(cell_idx)
-                    point_ids = cell.point_ids
-                    
-                    # Prüfe ob alle Punkt-Indizes gültig sind
-                    cell_points = []
-                    all_valid = True
-                    for pt_id in point_ids:
-                        if pt_id >= len(points_inside_surface):
-                            all_valid = False
-                            break
-                        cell_points.append(points_inside_surface[pt_id])
-                    
-                    if not all_valid or len(cell_points) < 3:
-                        invalid_count += 1
-                        invalid_reasons["invalid_indices"] += 1
-                        continue
-                    
-                    cell_points = np.array(cell_points, dtype=float)
-                    centroid = np.mean(cell_points, axis=0)
-                    
-                    # Berechne Kanten-Mittelpunkte
-                    n_points = len(cell_points)
-                    edge_midpoints = []
-                    for i in range(n_points):
-                        j = (i + 1) % n_points
-                        edge_midpoints.append((cell_points[i] + cell_points[j]) / 2.0)
-                    edge_midpoints = np.array(edge_midpoints, dtype=float)
-                    
-                    cell_data.append({
-                        "idx": cell_idx,
-                        "vertices": cell_points,
-                        "centroid": centroid,
-                        "edge_midpoints": edge_midpoints,
-                    })
-                
-                if len(cell_data) == 0:
-                    # Keine gültigen Zellen
-                    if DEBUG_SURFACE_GEOMETRY:
-                        print(f"[DEBUG Filter] WARNUNG: Surface '{surface_id}': Keine gültigen Zellen nach Filter")
-                    surface_mesh = pv_module.PolyData(points_inside_surface)
-                else:
-                    # 🚀 MAXIMALE PERFORMANCE-OPTIMIERUNG: Nur Schwerpunkt für ALLE Zellen
-                    # Das reduziert die Anzahl der Prüfpunkte drastisch:
-                    # - Rechtecke: 1 Punkt pro Zelle (statt 7+)
-                    # - Komplexe Formen: 1 Punkt pro Zelle (statt 4+)
-                    # 
-                    # Begründung: Delaunay-Triangulation erstellt Zellen innerhalb des Punkt-Sets,
-                    # die bereits durch den Punkt-Filter gegangen sind. Daher ist die Wahrscheinlichkeit,
-                    # dass eine Zelle außerhalb liegt, gering. Der Schwerpunkt ist ein guter Indikator.
-                    
-                    # Sammle nur Schwerpunkte aller Zellen
-                    centroids_x = np.array([cd["centroid"][0] for cd in cell_data], dtype=float)
-                    centroids_y = np.array([cd["centroid"][1] for cd in cell_data], dtype=float)
-                    
-                    # 🚀 PERFORMANCE: Schnelle Bounding-Box-Vorprüfung
-                    # Berechne Polygon-Bounding-Box einmal
-                    poly_xs = np.array([p.get("x", 0.0) for p in points], dtype=float)
-                    poly_ys = np.array([p.get("y", 0.0) for p in points], dtype=float)
-                    poly_min_x, poly_max_x = float(np.min(poly_xs)), float(np.max(poly_xs))
-                    poly_min_y, poly_max_y = float(np.min(poly_ys)), float(np.max(poly_ys))
-                    
-                    # Erweitere Bounding-Box leicht für Randpunkte (Grid-Auflösung)
-                    # Das stellt sicher, dass Randpunkte nicht fälschlicherweise ausgeschlossen werden
-                    margin = 0.1  # 10 cm Margin
-                    bbox_mask = (
-                        (centroids_x >= poly_min_x - margin) & 
-                        (centroids_x <= poly_max_x + margin) & 
-                        (centroids_y >= poly_min_y - margin) & 
-                        (centroids_y <= poly_max_y + margin)
-                    )
-                    
-                    # Nur Punkte innerhalb der Bounding-Box müssen mit der teuren Prüfung getestet werden
-                    if np.any(bbox_mask):
-                        centroids_in_bbox_x = centroids_x[bbox_mask]
-                        centroids_in_bbox_y = centroids_y[bbox_mask]
-                        centroids_in_bbox_indices = np.where(bbox_mask)[0]
-                        
-                        # Format für _points_in_polygon_batch_plot: (n, 1) Shape
-                        centroids_x_2d = centroids_in_bbox_x.reshape(-1, 1)
-                        centroids_y_2d = centroids_in_bbox_y.reshape(-1, 1)
-                        
-                        # 🚀 VEKTORISIERTE PRÜFUNG: Prüfe nur Punkte innerhalb der Bounding-Box
-                        centroids_mask_bbox = _points_in_polygon_batch_plot(
-                            centroids_x_2d, 
-                            centroids_y_2d, 
-                            points
-                        )
-                        
-                        # Erstelle vollständige Maske für alle Punkte
-                        centroids_mask = np.zeros(len(centroids_x), dtype=bool)
-                        if centroids_mask_bbox is not None:
-                            centroids_mask[centroids_in_bbox_indices] = centroids_mask_bbox.flatten()
-                    else:
-                        # Keine Punkte in der Bounding-Box -> alle außerhalb
-                        centroids_mask = np.zeros(len(centroids_x), dtype=bool)
-                    
-                    valid_cells = []
-                    
-                    # centroids_mask ist jetzt immer ein NumPy-Array
-                    if centroids_mask.size > 0:
-                        # Jeder Prüfpunkt entspricht einer Zelle (Schwerpunkt)
-                        for cell_idx, is_inside in enumerate(centroids_mask):
-                            if is_inside:
-                                valid_cells.append(cell_data[cell_idx]["idx"])
-                            else:
-                                invalid_count += 1
-                                invalid_reasons["centroid_outside"] += 1
-                    else:
-                        # Fallback: Alle Zellen behalten
-                        valid_cells = [cd["idx"] for cd in cell_data]
-                
-                # Wenn keine Zellen gefiltert wurden, behalte alle
-                if len(valid_cells) == 0 and len(cell_data) > 0:
-                    valid_cells = [cd["idx"] for cd in cell_data]
-                
-                if invalid_count > 0:
-                    # Sammle Punkt-IDs der behaltenen Zellen (vor Erstellen des neuen Meshes)
-                    kept_point_ids = set()
-                    if DEBUG_SURFACE_GEOMETRY:
-                        original_mesh_before_filter = surface_mesh
-                        for cell_idx in valid_cells:
-                            cell = original_mesh_before_filter.get_cell(cell_idx)
-                            kept_point_ids.update(cell.point_ids)
-                    
-                    # Erstelle neues Mesh nur mit gültigen Zellen
-                    filtered_cells = []
-                    for cell_idx in valid_cells:
-                        cell = surface_mesh.get_cell(cell_idx)
-                        point_ids = cell.point_ids
-                        if len(point_ids) >= 3:
-                            filtered_cells.extend([len(point_ids)] + list(point_ids))
-                    
-                    if filtered_cells:
-                        filtered_cells_array = np.array(filtered_cells, dtype=np.int64)
-                        surface_mesh = pv_module.PolyData(points_inside_surface, filtered_cells_array)
-                        
-                        if DEBUG_SURFACE_GEOMETRY:
-                            reason_str = ", ".join([f"{k}={v}" for k, v in invalid_reasons.items() if v > 0])
-                            
-                            # Berechne Bereich der behaltenen Zellen
-                            if len(kept_point_ids) > 0:
-                                kept_indices = np.array(list(kept_point_ids))
-                                kept_xs = points_inside_surface[kept_indices, 0]
-                                kept_ys = points_inside_surface[kept_indices, 1]
-                                kept_x_min, kept_x_max = float(np.min(kept_xs)), float(np.max(kept_xs))
-                                kept_y_min, kept_y_max = float(np.min(kept_ys)), float(np.max(kept_ys))
-                                
-                                # Berechne Abweichungen zwischen Polygon und behaltenen Zellen
-                                x_min_diff = kept_x_min - poly_x_min
-                                x_max_diff = kept_x_max - poly_x_max
-                                y_min_diff = kept_y_min - poly_y_min
-                                y_max_diff = kept_y_max - poly_y_max
-                                x_range_poly = poly_x_max - poly_x_min
-                                y_range_poly = poly_y_max - poly_y_min
-                                x_range_cells = kept_x_max - kept_x_min
-                                y_range_cells = kept_y_max - kept_y_min
-                                
-                    else:
-                        if DEBUG_SURFACE_GEOMETRY:
-                            print(
-                                f"[DEBUG Filter] WARNUNG: Surface '{surface_id}': "
-                                f"Keine gültigen Zellen nach Filter, verwende leeres Mesh"
-                            )
-                        surface_mesh = pv_module.PolyData(points_inside_surface)
-            
-            t_filter_time = time.time() - t_filter_start if not use_quad_cells else 0.0
-            
-            if DEBUG_SURFACE_GEOMETRY:
-                print(
-                    f"[SurfaceGeometry] Surface {surface_id} trianguliert: "
-                    f"points={surface_mesh.n_points}, cells={surface_mesh.n_cells}"
-                )
-        except Exception as exc:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Surface {surface_id}: Delaunay-Triangulation fehlgeschlagen: {exc}, verwende Punkte ohne Zellen")
-            # Fallback: Wenn Triangulation fehlschlägt, verwende nur Punkte
-            # Das Mesh wird dann später beim Kombinieren trianguliert
-        
-        # Interpoliere SPL-Werte für dieses Surface-Mesh
-        # (wird später gemacht, nachdem alle Surface-Meshes erstellt sind)
-        # Speichere auch die Surface-Definition (points) für die Interpolation
-        surface_meshes.append((surface_id, surface_mesh, points_inside_surface, points))
-    
-    if not surface_meshes:
-        raise RuntimeError("Keine Surface-Meshes erstellt.")
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        print(f"[SurfaceGeometry] {len(surface_meshes)} Surface-Meshes erstellt, kombiniere sie jetzt...")
-    
-    # Kombiniere alle Surface-Meshes zu einem einzigen Mesh
-    # WICHTIG: Verwende PyVista merge() um die bereits triangulierten Meshes zu kombinieren
-    # Dies behält die Zellen-Struktur bei und verhindert Randprobleme
-    if len(surface_meshes) == 1:
-        # Nur ein Surface: Verwende direkt das triangulierte Mesh
-        surface_id, fine_mesh, points_inside, _ = surface_meshes[0]
-        combined_points = fine_mesh.points
-        if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] Einzelnes Surface-Mesh verwendet: "
-                f"points={fine_mesh.n_points}, cells={fine_mesh.n_cells}"
-            )
-    else:
-        # Mehrere Surfaces: Kombiniere mit merge()
-        try:
-            # PyVista merge() kombiniert Meshes und behält Zellen-Struktur bei
-            meshes_to_merge = [mesh for _, mesh, _, _ in surface_meshes]
-            fine_mesh = pv_module.merge(meshes_to_merge)
-            combined_points = fine_mesh.points
-        except Exception as exc:
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Fehler beim Kombinieren mit merge(): {exc}, verwende manuelle Kombination")
-            # Fallback: Kombiniere Punkte und Zellen manuell
-            all_points = []
-            all_cells = []
-            point_offset = 0
-            
-            for surface_id, surface_mesh, points_inside, _ in surface_meshes:
-                n_points = surface_mesh.n_points
-                all_points.append(surface_mesh.points)
-                
-                # Kombiniere Zellen mit korrigierten Indizes
-                if surface_mesh.n_cells > 0:
-                    cells = surface_mesh.cells
-                    # PyVista Zellen-Format: [n, i1, i2, i3, ...] für jede Zelle
-                    cell_array = cells.copy()
-                    idx = 0
-                    while idx < len(cell_array):
-                        n_verts = int(cell_array[idx])
-                        if n_verts > 0:
-                            # Verschiebe Indizes um point_offset
-                            cell_array[idx + 1:idx + 1 + n_verts] += point_offset
-                            idx += n_verts + 1
-                        else:
-                            idx += 1
-                    all_cells.append(cell_array)
-                
-                point_offset += n_points
-            
-            combined_points = np.vstack(all_points)
-            
-            if all_cells:
-                combined_cells = np.concatenate(all_cells)
-                fine_mesh = pv_module.PolyData(combined_points, combined_cells)
-            else:
-                fine_mesh = pv_module.PolyData(combined_points)
-                # Trianguliere neu
-                try:
-                    fine_mesh = fine_mesh.delaunay_2d(alpha=0.0, tol=0.0)
-                except Exception:
-                    fine_mesh = fine_mesh.delaunay_2d()
-        
-        if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] Kombiniertes Mesh aus {len(surface_meshes)} Surfaces: "
-                f"points={fine_mesh.n_points}, cells={fine_mesh.n_cells} "
-                f"(Zellen aus individuellen Triangulationen beibehalten)"
-            )
-    
-    # Setze fine_mask für Debug-Zwecke (nicht mehr verwendet für Mesh-Erstellung)
-    fine_mask = np.ones(len(combined_points), dtype=bool)
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        total_points_in_mask = np.count_nonzero(fine_mask)
-        total_points_in_grid = X_fine.size
-        coverage_percent = 100.0 * total_points_in_mask / total_points_in_grid if total_points_in_grid > 0 else 0.0
-        print(
-            f"[SurfaceGeometry] Z-Koordinaten-Berechnung abgeschlossen: "
-            f"{total_points_in_mask} Punkte in Surfaces (von {total_points_in_grid} total, "
-            f"{coverage_percent:.1f}% Abdeckung)"
-        )
-        
-        # Prüfe ob Surface-Polygon-Punkte im feinen Grid-Bereich liegen
-        for surface_id, points in enabled_surfaces:
-            poly_x = [p.get("x", 0.0) for p in points]
-            poly_y = [p.get("y", 0.0) for p in points]
-            poly_x_min, poly_x_max = min(poly_x), max(poly_x)
-            poly_y_min, poly_y_max = min(poly_y), max(poly_y)
-            print(
-                f"[SurfaceGeometry] Surface '{surface_id}' Polygon-Bereich: "
-                f"x=[{poly_x_min:.2f}, {poly_x_max:.2f}], y=[{poly_y_min:.2f}, {poly_y_max:.2f}]"
-            )
-            print(
-                f"[SurfaceGeometry] Feines Grid-Bereich: "
-                f"x=[{fine_min_x:.2f}, {fine_max_x:.2f}], y=[{fine_min_y:.2f}, {fine_max_y:.2f}]"
-            )
-            # Prüfe ob Polygon vollständig im Grid-Bereich liegt
-            poly_in_grid = (
-                poly_x_min >= fine_min_x - 1e-6 and poly_x_max <= fine_max_x + 1e-6 and
-                poly_y_min >= fine_min_y - 1e-6 and poly_y_max <= fine_max_y + 1e-6
-            )
-            print(
-                f"[SurfaceGeometry] Polygon vollständig im Grid-Bereich: {poly_in_grid}"
-            )
-    
-    # 🎯 WICHTIG: Die Z-Koordinaten im feinen Mesh müssen mit denen im groben Grid übereinstimmen
-    # für korrekte Interpolation. Wenn das grobe Grid Z=0 hat, müssen wir die Z-Koordinaten
-    # im feinen Mesh entsprechend anpassen (oder umgekehrt).
-    
-    # Prüfe ob Z-Koordinaten im groben Grid vorhanden sind (VOR der Surface-Schleife)
-    has_z_in_coarse = np.any(np.abs(Z_coarse) > 1e-6)
-    
-    if DEBUG_SURFACE_GEOMETRY:
-        z_coarse_min = float(np.min(Z_coarse))
-        z_coarse_max = float(np.max(Z_coarse))
-        z_coarse_mean = float(np.mean(Z_coarse))
-        print(
-            f"[SurfaceGeometry] Grobes Grid Z-Bereich: min={z_coarse_min:.3f}, max={z_coarse_max:.3f}, "
-            f"mean={z_coarse_mean:.3f}, has_z={has_z_in_coarse}"
-        )
-    
-    # fine_mesh wurde bereits oben aus kombinierten Surface-Meshes erstellt
-    if DEBUG_SURFACE_GEOMETRY:
-        print(
-            f"[SurfaceGeometry] Kombiniertes feines Mesh: points={fine_mesh.n_points}, "
-            f"cells={fine_mesh.n_cells}, resolution={fine_resolution:.3f}m"
-        )
-        # Prüfe Z-Koordinaten-Bereich im feinen Mesh
-        if fine_mesh.n_points > 0:
-            fine_z_coords = fine_mesh.points[:, 2]
-            z_fine_min = float(np.min(fine_z_coords))
-            z_fine_max = float(np.max(fine_z_coords))
-            z_fine_mean = float(np.mean(fine_z_coords))
-            print(
-                f"[SurfaceGeometry] Feines Mesh Z-Bereich: min={z_fine_min:.3f}, max={z_fine_max:.3f}, mean={z_fine_mean:.3f}"
-            )
-    
-    # SCHRITT 3: Mappe SPL-Werte vom groben Grid auf feines Mesh
-    # 🎯 WICHTIG: Interpoliere für jedes Surface EINZELN, damit sich der Plot pro Surface nicht ändert
-    try:
-        if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry] Starte Interpolation für {len(surface_meshes)} Surfaces...")
-        
-        # Interpoliere Werte für jedes Surface einzeln
-        all_interpolated_values = []
-        
-        for surface_idx, (surface_id, surface_mesh, points_inside, points) in enumerate(surface_meshes):
-            if DEBUG_SURFACE_GEOMETRY:
-                print(
-                    f"[SurfaceGeometry] Interpoliere SPL-Werte für Surface {surface_idx+1}/{len(surface_meshes)}: "
-                    f"{surface_id} ({len(points_inside)} Punkte)"
-                )
-            
-            # Speichere ursprüngliche Punkte für dieses Surface
-            original_points = points_inside.copy()
-            original_n_points = len(original_points)
-            
-            # Berechne Radius für Interpolation basierend auf Grid-Auflösung
-            source_dx = np.mean(np.diff(source_x_arr)) if len(source_x_arr) > 1 else 0.1
-            source_dy = np.mean(np.diff(source_y_arr)) if len(source_y_arr) > 1 else 0.1
-            # Radius sollte groß genug sein, um mehrere Nachbarn zu erfassen
-            interpolation_radius = max(source_dx, source_dy) * 2.0  # 2x Grid-Schrittweite
-            
-            if DEBUG_SURFACE_GEOMETRY:
-                print(f"[SurfaceGeometry] Interpolations-Radius: {interpolation_radius:.3f}m")
-            
-            # 🎯 WICHTIG: Erstelle Surface-spezifische Maske im groben Grid
-            # Nur Werte innerhalb dieser Surface sollten für die Interpolation verwendet werden
-            # Dies verhindert, dass sich der Plot für dieses Surface ändert, wenn andere Surfaces enabled werden
-            
-            # Berechne Bounding Box für dieses Surface
-            surface_xs = [p.get("x", 0.0) for p in points]
-            surface_ys = [p.get("y", 0.0) for p in points]
-            surface_min_x = min(surface_xs)
-            surface_max_x = max(surface_xs)
-            surface_min_y = min(surface_ys)
-            surface_max_y = max(surface_ys)
-            
-            # Erweitere Bounding Box leicht für Interpolation (2x Grid-Schrittweite)
-            source_dx = np.mean(np.diff(source_x_arr)) if len(source_x_arr) > 1 else 0.1
-            source_dy = np.mean(np.diff(source_y_arr)) if len(source_y_arr) > 1 else 0.1
-            margin = max(source_dx, source_dy) * 2.0
-            surface_min_x -= margin
-            surface_max_x += margin
-            surface_min_y -= margin
-            surface_max_y += margin
-            
-            # Erstelle Maske für Punkte im groben Grid, die für dieses Surface relevant sind
-            # Extrahiere Punkte und Werte aus grobem Grid (einmal für alle Surfaces)
-            if surface_idx == 0:
-                coarse_points = coarse_grid.points
-                coarse_values = coarse_grid["spl_values"]
-                
-                if DEBUG_SURFACE_GEOMETRY:
-                    # Analysiere grobes Grid (nur einmal)
-                    coarse_x_min = float(np.min(coarse_points[:, 0]))
-                    coarse_x_max = float(np.max(coarse_points[:, 0]))
-                    coarse_y_min = float(np.min(coarse_points[:, 1]))
-                    coarse_y_max = float(np.max(coarse_points[:, 1]))
-                    coarse_z_min = float(np.min(coarse_points[:, 2]))
-                    coarse_z_max = float(np.max(coarse_points[:, 2]))
-                    coarse_val_min = float(np.nanmin(coarse_values))
-                    coarse_val_max = float(np.nanmax(coarse_values))
-                    coarse_val_mean = float(np.nanmean(coarse_values))
-                    print(
-                        f"[SurfaceGeometry] Grobes Grid Analyse: "
-                        f"points={len(coarse_points)}, "
-                        f"x=[{coarse_x_min:.2f}, {coarse_x_max:.2f}], "
-                        f"y=[{coarse_y_min:.2f}, {coarse_y_max:.2f}], "
-                        f"z=[{coarse_z_min:.3f}, {coarse_z_max:.3f}], "
-                        f"SPL=[{coarse_val_min:.2f}, {coarse_val_max:.2f}], mean={coarse_val_mean:.2f} dB"
-                    )
-                    # Debug: Prüfe ob Punkte und Werte die gleiche Länge haben
-                    if len(coarse_points) != len(coarse_values):
-                        print(
-                            f"[SurfaceGeometry] FEHLER: Punkte ({len(coarse_points)}) und Werte ({len(coarse_values)}) "
-                            f"haben unterschiedliche Längen!"
-                        )
-            
-            # Erstelle Maske für dieses Surface im groben Grid
-            # Schritt 1: Bounding-Box-Filter (schnell)
-            surface_mask_coarse_bbox = (
-                (coarse_points[:, 0] >= surface_min_x) & (coarse_points[:, 0] <= surface_max_x) &
-                (coarse_points[:, 1] >= surface_min_y) & (coarse_points[:, 1] <= surface_max_y)
-            )
-            
-            # Schritt 2: Präzise Punkt-in-Polygon-Prüfung
-            # _points_in_polygon_batch_plot erwartet 2D-Arrays (meshgrid-Format)
-            # Rekonstruiere 2D-Form aus source_x_arr und source_y_arr
-            ny, nx = len(source_y_arr), len(source_x_arr)
-            if len(coarse_points) == ny * nx:
-                # Reshape zu 2D-Meshgrid-Format für vektorisierte Prüfung
-                X_coarse_2d = coarse_points[:, 0].reshape(ny, nx)
-                Y_coarse_2d = coarse_points[:, 1].reshape(ny, nx)
-                surface_mask_polygon_2d = _points_in_polygon_batch_plot(X_coarse_2d, Y_coarse_2d, points)
-                if surface_mask_polygon_2d is not None:
-                    surface_mask_polygon = surface_mask_polygon_2d.ravel()
-                    
-                    if DEBUG_SURFACE_GEOMETRY:
-                        polygon_count = int(np.count_nonzero(surface_mask_polygon))
-                        print(
-                            f"[SurfaceGeometry] Surface {surface_id} Polygon-Maske: "
-                            f"{polygon_count}/{len(coarse_points)} Punkte im Polygon"
-                        )
-                else:
-                    # Fallback: Nur Bounding-Box
-                    if DEBUG_SURFACE_GEOMETRY:
-                        print(
-                            f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                            f"Polygon-Maske ist None, verwende nur Bounding-Box"
-                        )
-                    surface_mask_polygon = surface_mask_coarse_bbox
-            else:
-                # Fallback: Punkt-für-Punkt-Prüfung (sollte nicht vorkommen)
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                        f"Unerwartete Punkt-Anzahl ({len(coarse_points)} != {ny * nx}), "
-                        f"verwende Punkt-für-Punkt-Prüfung"
-                    )
-                coarse_points_xy = coarse_points[:, :2]
-                surface_mask_polygon = np.array([
-                    _point_in_polygon_simple(pt[0], pt[1], points)
-                    for pt in coarse_points_xy
-                ], dtype=bool)
-            
-            if surface_mask_polygon is not None:
-                # 🎯 WICHTIG: Verwende NUR die Polygon-Maske (ohne Dilatation)
-                # Die Dilatation würde Punkte außerhalb des Polygons erfassen, was zu falschen Werten führt
-                # Für die Interpolation verwenden wir nur Punkte, die wirklich im Surface-Polygon liegen
-                surface_mask_coarse = surface_mask_polygon
-                
-                if DEBUG_SURFACE_GEOMETRY:
-                    # Debug: Prüfe wie viele Punkte in der Polygon-Maske sind
-                    polygon_count = int(np.count_nonzero(surface_mask_polygon))
-                    bbox_count = int(np.count_nonzero(surface_mask_coarse_bbox))
-                    print(
-                        f"[SurfaceGeometry] Surface {surface_id} Maske: "
-                        f"Polygon={polygon_count}, BoundingBox={bbox_count}, "
-                        f"Final={polygon_count} (nur Polygon, keine Dilatation)"
-                    )
-            else:
-                # Fallback: Verwende nur Bounding-Box-Maske (sollte nicht vorkommen)
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                        f"Polygon-Maske ist None, verwende nur Bounding-Box"
-                    )
-                surface_mask_coarse = surface_mask_coarse_bbox
-            
-            # Extrahiere nur relevante Punkte und Werte für dieses Surface
-            coarse_points_surface = coarse_points[surface_mask_coarse]
-            coarse_values_surface = coarse_values[surface_mask_coarse]
-            
-            if DEBUG_SURFACE_GEOMETRY:
-                # Debug: Prüfe ob die Werte korrekt extrahiert wurden
-                if len(coarse_points_surface) > 0:
-                    surface_points_x_min = float(np.min(coarse_points_surface[:, 0]))
-                    surface_points_x_max = float(np.max(coarse_points_surface[:, 0]))
-                    surface_points_y_min = float(np.min(coarse_points_surface[:, 1]))
-                    surface_points_y_max = float(np.max(coarse_points_surface[:, 1]))
-                    surface_values_min = float(np.nanmin(coarse_values_surface))
-                    surface_values_max = float(np.nanmax(coarse_values_surface))
-                    surface_values_mean = float(np.nanmean(coarse_values_surface))
-                    
-                    # Prüfe ob extrahierte Punkte innerhalb des Surface-Polygons liegen
-                    surface_poly_x_min = min(p.get("x", 0.0) for p in points)
-                    surface_poly_x_max = max(p.get("x", 0.0) for p in points)
-                    surface_poly_y_min = min(p.get("y", 0.0) for p in points)
-                    surface_poly_y_max = max(p.get("y", 0.0) for p in points)
-                    
-                    print(
-                        f"[SurfaceGeometry] Surface {surface_id}: "
-                        f"Verwende {len(coarse_points_surface)}/{len(coarse_points)} Punkte aus grobem Grid "
-                        f"(Bounding-Box: x=[{surface_min_x:.2f}, {surface_max_x:.2f}], "
-                        f"y=[{surface_min_y:.2f}, {surface_max_y:.2f}])"
-                    )
-                    print(
-                        f"[SurfaceGeometry] Surface {surface_id} Polygon-Bereich: "
-                        f"x=[{surface_poly_x_min:.2f}, {surface_poly_x_max:.2f}], "
-                        f"y=[{surface_poly_y_min:.2f}, {surface_poly_y_max:.2f}]"
-                    )
-                    print(
-                        f"[SurfaceGeometry] Surface {surface_id} extrahierte Punkte: "
-                        f"x=[{surface_points_x_min:.2f}, {surface_points_x_max:.2f}], "
-                        f"y=[{surface_points_y_min:.2f}, {surface_points_y_max:.2f}], "
-                        f"SPL=[{surface_values_min:.2f}, {surface_values_max:.2f}], mean={surface_values_mean:.2f} dB"
-                    )
-                    
-                    # Warnung wenn extrahierte Punkte außerhalb des Polygons liegen
-                    if (surface_points_x_min < surface_poly_x_min - 0.1 or 
-                        surface_points_x_max > surface_poly_x_max + 0.1 or
-                        surface_points_y_min < surface_poly_y_min - 0.1 or 
-                        surface_points_y_max > surface_poly_y_max + 0.1):
-                        print(
-                            f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                            f"Extrahierte Punkte liegen außerhalb des Polygon-Bereichs! "
-                            f"Das deutet auf ein Problem mit der Maske hin."
-                    )
-                else:
-                    print(
-                        f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                        f"Keine Punkte im groben Grid gefunden!"
-                    )
-            
-            # Prüfe ob genug Punkte vorhanden sind
-            if len(coarse_points_surface) < 3:
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                        f"Zu wenige Punkte im groben Grid ({len(coarse_points_surface)}), "
-                        f"verwende alle Punkte"
-                    )
-                coarse_points_surface = coarse_points
-                coarse_values_surface = coarse_values
-            
-            # Manuelle Interpolation: Für jeden Punkt in diesem Surface
-            interpolated_values = np.full(original_n_points, np.nan, dtype=float)
-            
-            # Batch-Verarbeitung: Erstelle PointSet für alle Punkte gleichzeitig
-            # Aber PyVista interpolate() reduziert das Mesh, daher müssen wir es anders machen
-            # Verwende scipy.spatial.cKDTree für schnelle Nearest-Neighbor-Suche
-            try:
-                from scipy.spatial import cKDTree
-                
-                # 🎯 WICHTIG: Prüfe nochmal, ob alle Punkte wirklich im Polygon liegen
-                # Zusätzliche Sicherheitsprüfung: Filtere Punkte, die außerhalb des Polygons liegen
-                if DEBUG_SURFACE_GEOMETRY:
-                    # Prüfe alle extrahierten Punkte nochmal mit Punkt-in-Polygon
-                    points_in_polygon_check = np.array([
-                        _point_in_polygon_simple(pt[0], pt[1], points)
-                        for pt in coarse_points_surface[:, :2]
-                    ], dtype=bool)
-                    invalid_count = np.count_nonzero(~points_in_polygon_check)
-                    if invalid_count > 0:
-                        print(
-                            f"[SurfaceGeometry] WARNUNG: Surface {surface_id}: "
-                            f"{invalid_count}/{len(coarse_points_surface)} extrahierte Punkte "
-                            f"liegen NICHT im Polygon! Filtere sie heraus."
-                        )
-                        # Filtere ungültige Punkte heraus
-                        coarse_points_surface = coarse_points_surface[points_in_polygon_check]
-                        coarse_values_surface = coarse_values_surface[points_in_polygon_check]
-                
-                # Erstelle KD-Tree aus Surface-spezifischen Punkten im groben Grid
-                # WICHTIG: Verwende nur X/Y für KD-Tree, da Z-Koordinaten möglicherweise nicht übereinstimmen
-                # (z.B. wenn grobes Grid Z=0 hat, aber feines Mesh Z aus Surface-Ebenen hat)
-                coarse_points_xy = coarse_points_surface[:, :2]  # Nur X/Y, nur für dieses Surface
-                fine_points_xy = original_points[:, :2]  # Nur X/Y
-                
-                if len(coarse_points_xy) == 0:
-                    if DEBUG_SURFACE_GEOMETRY:
-                        print(
-                            f"[SurfaceGeometry] FEHLER: Surface {surface_id}: "
-                            f"Keine gültigen Punkte nach Filterung! Verwende alle Punkte im groben Grid."
-                        )
-                    # Fallback: Verwende alle Punkte (sollte nicht vorkommen)
-                    coarse_points_xy = coarse_points[:, :2]
-                    coarse_values_surface = coarse_values
-                
-                tree = cKDTree(coarse_points_xy)
-                
-                # 🎯 NEAREST NEIGHBOR: Keine Interpolation - jeder Punkt bekommt exakt den Wert des nächstgelegenen Calc-Punkts
-                # Jeder Calc-Punkt hat eine feste Farbe in seinem Einflussbereich
-                distances, indices = tree.query(fine_points_xy, k=1)
-                
-                # Weise jedem feinen Mesh-Punkt den Wert des nächstgelegenen groben Grid-Punkts zu
-                # (keine Gewichtung, keine Interpolation)
-                valid = distances < np.inf
-                interpolated_values[valid] = coarse_values_surface[indices[valid]]
-                
-                if DEBUG_SURFACE_GEOMETRY:
-                    valid_count = np.count_nonzero(np.isfinite(interpolated_values))
-                    if valid_count > 0:
-                        interp_min = float(np.nanmin(interpolated_values))
-                        interp_max = float(np.nanmax(interpolated_values))
-                        interp_mean = float(np.nanmean(interpolated_values))
-                        print(
-                            f"[SurfaceGeometry] Surface {surface_id} Nearest-Neighbor-Zuordnung: "
-                            f"points={len(interpolated_values)}, "
-                            f"valid={valid_count}/{len(interpolated_values)} "
-                            f"({100.0*valid_count/len(interpolated_values):.1f}%), "
-                            f"SPL=[{interp_min:.2f}, {interp_max:.2f}], mean={interp_mean:.2f} dB"
-                        )
-                    else:
-                        print(
-                            f"[SurfaceGeometry] Surface {surface_id} Nearest-Neighbor-Zuordnung: "
-                            f"points={len(interpolated_values)}, "
-                            f"valid={valid_count}/{len(interpolated_values)} "
-                            f"({100.0*valid_count/len(interpolated_values):.1f}%) - WARNUNG: Keine gültigen Werte!"
-                        )
-            except ImportError:
-                # Fallback: Einfache Nearest-Neighbor-Interpolation ohne scipy
-                if DEBUG_SURFACE_GEOMETRY:
-                    print(f"[SurfaceGeometry] Surface {surface_id}: scipy nicht verfügbar, verwende einfache Nearest-Neighbor-Interpolation")
-                
-                # Einfache Nearest-Neighbor-Suche
-                # WICHTIG: Verwende nur Surface-spezifische Punkte
-                for i, point in enumerate(original_points):
-                    # Finde nächstgelegenen Punkt im Surface-spezifischen groben Grid
-                    dists = np.linalg.norm(coarse_points_surface - point, axis=1)
-                    nearest_idx = np.argmin(dists)
-                    interpolated_values[i] = coarse_values_surface[nearest_idx]
-                
-                if DEBUG_SURFACE_GEOMETRY:
-                    valid_count = np.count_nonzero(np.isfinite(interpolated_values))
-                    print(
-                        f"[SurfaceGeometry] Surface {surface_id} Nearest-Neighbor-Interpolation: "
-                        f"points={len(interpolated_values)}, "
-                        f"valid={valid_count}/{len(interpolated_values)} "
-                        f"({100.0*valid_count/len(interpolated_values):.1f}%)"
-                    )
-            
-            # 🎯 DEBUG: Zeige SPL-Wert am Referenzpunkt nach Interpolation
-            if len(interpolated_values) > 0 and original_n_points == len(interpolated_values):
-                # Finde Referenzpunkt-Index (gleicher wie beim Mesh erstellen)
-                if len(original_points) > 0:
-                    # Berechne Mittelpunkt (konsistent mit Mesh-Erstellung)
-                    ref_x = float(np.mean(original_points[:, 0]))
-                    ref_y = float(np.mean(original_points[:, 1]))
-                    ref_point_2d = np.array([ref_x, ref_y])
-                    points_2d = original_points[:, :2]
-                    distances = np.linalg.norm(points_2d - ref_point_2d, axis=1)
-                    ref_point_idx = int(np.argmin(distances))
-                    
-                    if ref_point_idx < len(interpolated_values):
-                        interp_spl = float(interpolated_values[ref_point_idx])
-                        ref_point_interp = original_points[ref_point_idx]
-                        
-                        # Finde SPL-Wert am Referenzpunkt im groben Grid zum Vergleich
-                        coarse_ref_x = float(ref_point_interp[0])
-                        coarse_ref_y = float(ref_point_interp[1])
-                        coarse_ref_point_2d = np.array([coarse_ref_x, coarse_ref_y])
-                        if len(coarse_points_surface) > 0:
-                            coarse_points_xy = coarse_points_surface[:, :2]
-                            coarse_distances = np.linalg.norm(coarse_points_xy - coarse_ref_point_2d, axis=1)
-                            coarse_nearest_idx = int(np.argmin(coarse_distances))
-                            coarse_spl = float(coarse_values_surface[coarse_nearest_idx])
-                            coarse_nearest_point = coarse_points_surface[coarse_nearest_idx]
-            
-            # Weise interpolierte Werte diesem Surface zu
-            all_interpolated_values.append(interpolated_values)
-        
-        # Kombiniere alle interpolierten Werte
-        combined_interpolated_values = np.concatenate(all_interpolated_values)
-        
-        if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry] Alle Surfaces interpoliert: "
-                f"total_points={len(combined_interpolated_values)}, "
-                f"valid={np.count_nonzero(np.isfinite(combined_interpolated_values))}"
-            )
-        
-        # Weise kombinierte interpolierte Werte dem kombinierten feinen Mesh zu
-        fine_mesh["plot_scalars"] = combined_interpolated_values
-        
-        if DEBUG_SURFACE_GEOMETRY:
-            valid_values = np.count_nonzero(np.isfinite(fine_mesh["plot_scalars"]))
-            if fine_mesh.n_points > 0:
-                spl_min = float(np.nanmin(fine_mesh["plot_scalars"]))
-                spl_max = float(np.nanmax(fine_mesh["plot_scalars"]))
-                spl_mean = float(np.nanmean(fine_mesh["plot_scalars"]))
-                print(
-                    f"[SurfaceGeometry] Sample-Ergebnis: valid_values={valid_values}/{fine_mesh.n_points} "
-                    f"({100.0*valid_values/fine_mesh.n_points:.1f}%), "
-                    f"SPL=[{spl_min:.2f}, {spl_max:.2f}], mean={spl_mean:.2f} dB"
-                )
-                # Prüfe Bereich der Punkte mit gültigen Werten
-                valid_mask = np.isfinite(fine_mesh["plot_scalars"])
-                if np.any(valid_mask):
-                    valid_points = fine_mesh.points[valid_mask]
-                    print(
-                        f"[SurfaceGeometry] Gültige Punkte Bereich: "
-                        f"x=[{np.min(valid_points[:, 0]):.2f}, {np.max(valid_points[:, 0]):.2f}], "
-                        f"y=[{np.min(valid_points[:, 1]):.2f}, {np.max(valid_points[:, 1]):.2f}], "
-                        f"count={len(valid_points)}"
-                    )
-            else:
-                print(f"[SurfaceGeometry] Sample-Ergebnis: Mesh ist leer!")
-        
-        # Entferne Punkte ohne gültige Werte (außerhalb des Berechnungsbereichs)
-        valid_mask = np.isfinite(fine_mesh["plot_scalars"])
-        if not np.all(valid_mask):
-            if DEBUG_SURFACE_GEOMETRY:
-                removed = np.count_nonzero(~valid_mask)
-                print(f"[SurfaceGeometry] Entferne {removed} Punkte ohne gültige Werte")
-            fine_mesh = fine_mesh.extract_points(valid_mask, include_cells=True)
-        
-        if fine_mesh.n_points == 0:
-            raise RuntimeError("Nach Entfernen ungültiger Punkte ist das Mesh leer.")
-        
-        return fine_mesh
-    except Exception as exc:
-        if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry] PyVista sample() fehlgeschlagen: {exc}")
-        raise
 
 
 def prepare_plot_geometry(
@@ -2619,10 +1118,7 @@ def prepare_plot_geometry(
     upscale_factor = max(1, upscale_factor)
     if upscale_factor > 6:
         if DEBUG_SURFACE_GEOMETRY:
-            print(
-                "[SurfaceGeometry] plot_upscale_factor zu hoch, clamp auf 6 "
-                f"(requested={upscale_factor})"
-            )
+            pass
         upscale_factor = 6
 
     plot_x = source_x.copy()
@@ -2630,11 +1126,6 @@ def prepare_plot_geometry(
     plot_vals = values.copy()
     if DEBUG_SURFACE_GEOMETRY:
         total_points = int(plot_x.size * plot_y.size)
-        print(
-            "[SurfaceGeometry] Ausgangs-Plot-Grid:",
-            f"shape=({plot_y.size}, {plot_x.size}) (ny, nx),",
-            f"total_points={total_points}",
-        )
 
     z_coords = _extract_plot_z_coordinates(container, len(source_y), len(source_x))
     surface_mask = _extract_surface_mask(container, len(source_y), len(source_x))
@@ -2652,26 +1143,10 @@ def prepare_plot_geometry(
         expanded_y = _expand_axis_for_plot(plot_y, upscale_factor)
 
         # 📌 Upscaling der SPL-Werte:
-        # Umschaltbar zwischen Nearest-Neighbour (blockig, exakt) und
-        # linearer Interpolation (glattere Darstellung).
-        use_linear = bool(getattr(settings, "spl_plot_use_linear_resample", False))
-        if use_linear:
-            plot_vals = _resample_values_to_grid(
-                plot_vals, orig_plot_x, orig_plot_y, expanded_x, expanded_y
-            )
-        else:
-            plot_vals = _resample_values_to_grid_nearest(
-                plot_vals, orig_plot_x, orig_plot_y, expanded_x, expanded_y
-            )
-
-        if DEBUG_SURFACE_GEOMETRY:
-            mode = "linear" if use_linear else "nearest"
-            print(
-                "[SurfaceGeometry] Upscaling aktiv:",
-                f"mode={mode}, upscale_factor={upscale_factor}, "
-                f"source_grid=({orig_plot_y.size}x{orig_plot_x.size}), "
-                f"plot_grid=({expanded_y.size}x{expanded_x.size})",
-            )
+        # Immer Nearest-Neighbour (exakt zu Berechnungszellen, keine Interpolation)
+        plot_vals = _resample_values_to_grid_nearest(
+            plot_vals, orig_plot_x, orig_plot_y, expanded_x, expanded_y
+        )
 
         # Erstelle zwei Masken:
         # 1. Erweiterte Maske (optional, aktuell nicht für Z verwendet)
@@ -2684,14 +1159,9 @@ def prepare_plot_geometry(
             # 🎯 Z-Werte ebenfalls auf das hochskalierte Raster bringen, damit
             # die Geometrie konsistent zur SPL-Darstellung bleibt.
             orig_z_coords = z_coords.copy()
-            if use_linear:
-                z_coords = _resample_values_to_grid(
-                    orig_z_coords, orig_plot_x, orig_plot_y, expanded_x, expanded_y
-                )
-            else:
-                z_coords = _resample_values_to_grid_nearest(
-                    orig_z_coords, orig_plot_x, orig_plot_y, expanded_x, expanded_y
-                )
+            z_coords = _resample_values_to_grid_nearest(
+                orig_z_coords, orig_plot_x, orig_plot_y, expanded_x, expanded_y
+            )
         if surface_mask is not None:
             surface_mask = _resample_mask_to_grid(surface_mask, orig_plot_x, orig_plot_y, expanded_x, expanded_y)
 
@@ -2708,16 +1178,10 @@ def prepare_plot_geometry(
     if plot_mask is None and surface_mask is not None:
         plot_mask = _convert_point_mask_to_cell_mask(surface_mask)
     if plot_mask is None:
-        print("[SurfaceGeometry] Fehler: Keine gültige Surface-Maske – breche Rendering ab.")
         raise RuntimeError("Surface mask missing for plot geometry.")
     _debug_surface_info(settings, plot_x, plot_y, plot_mask, "plot mask")
     if DEBUG_SURFACE_GEOMETRY and z_coords is not None:
         nonzero_z = int(np.count_nonzero(z_coords))
-        print(
-            "[SurfaceGeometry] Plot-Z-Grid:",
-            f"nonzero_points={nonzero_z},",
-            f"total_points={int(z_coords.size)}",
-        )
 
     requires_resample = not (
         np.array_equal(plot_x, source_x) and np.array_equal(plot_y, source_y)
@@ -2811,7 +1275,7 @@ def prepare_vertical_plot_geometry(
     surface_fields = calc_spl.get("surface_fields")
     if not isinstance(sample_payloads, list) or not isinstance(surface_fields, dict):
         if DEBUG_SURFACE_GEOMETRY:
-            print("[SurfaceGeometry][Vertical] Keine gültigen surface_samples / surface_fields vorhanden.")
+            pass
         return None
 
     payload = None
@@ -2826,27 +1290,25 @@ def prepare_vertical_plot_geometry(
         break
     if payload is None:
         if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry][Vertical] Kein vertical-Payload für Surface '{surface_id}' gefunden.")
+            pass
         return None
 
     coords = np.asarray(payload.get("coordinates", []), dtype=float)
     if coords.size == 0:
         if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry][Vertical] Payload für '{surface_id}' enthält keine Koordinaten.")
+            pass
         return None
     coords = coords.reshape(-1, 3)
     field_values = surface_fields.get(surface_id)
     if field_values is None:
         if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry][Vertical] Keine Feldwerte für Surface '{surface_id}' gefunden.")
+            pass
         return None
     field_arr = np.asarray(field_values, dtype=complex).reshape(-1)
     if field_arr.size != coords.shape[0]:
         if DEBUG_SURFACE_GEOMETRY:
-            print(
-                f"[SurfaceGeometry][Vertical] Feldlänge passt nicht zu Koordinaten: "
-                f"{field_arr.size} vs {coords.shape[0]}"
-            )
+            pass
+
         return None
 
     # Lokale Sample-Koordinaten (u_s, v_s)
@@ -2860,7 +1322,7 @@ def prepare_vertical_plot_geometry(
 
     if u_samples.size == 0 or v_samples.size == 0:
         if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry][Vertical] Leere u/v-Samples für Surface '{surface_id}'.")
+            pass
         return None
 
     # Rekonstruiere das lokale (u, v)-Raster aus den Sample-Punkten:
@@ -2870,7 +1332,7 @@ def prepare_vertical_plot_geometry(
     v_axis = np.unique(v_samples)
     if u_axis.size < 2 or v_axis.size < 2:
         if DEBUG_SURFACE_GEOMETRY:
-            print(f"[SurfaceGeometry][Vertical] Zu wenig Stützstellen für '{surface_id}'.")
+            pass
         return None
 
     # 2D-Gitter der komplexen Feldwerte aufbauen:
@@ -3019,10 +1481,7 @@ def _recompute_z_coordinates_in_plot_grid(
             )
             if bases.size and np.all(np.abs(bases) <= 1e-6):
                 if DEBUG_SURFACE_GEOMETRY:
-                    print(
-                        "[SurfaceGeometry] Z-Neuberechnung übersprungen:"
-                        " alle aktiven Surfaces sind z≈0 (plan, konstant)."
-                    )
+                    pass
                 return np.zeros((plot_y.size, plot_x.size), dtype=float)
     except Exception:
         # Falls etwas schiefgeht, normal weiterrechnen
@@ -3136,14 +1595,7 @@ def _recompute_z_coordinates_in_plot_grid(
     points_with_z_after = int(np.sum(Z_grid != 0.0))
     if DEBUG_SURFACE_GEOMETRY:
         mask_points = int(np.sum(point_mask))
-        print(
-            f"[SurfaceGeometry] Z-Füllung: mask_points={mask_points}, "
-            f"vorher={points_with_z_before}, "
-            f"nachher={points_with_z_after}, "
-            f"gefüllt={points_with_z_after - points_with_z_before}, "
-            f"iterationen={iteration + 1}"
-        )
-    
+
     return Z_grid
 
 
@@ -3590,13 +2042,6 @@ def _debug_surface_info(settings, plot_x, plot_y, mask, source: str) -> None:
     if mask is not None:
         true_count = int(np.sum(mask))
         mask_info = f"mask true={true_count} / total={mask.size}"
-    print(
-        "[SurfaceGeometry] build_surface_mesh:",
-        f"source={source}",
-        f"active_surfaces={active_ids}",
-        f"grid=({plot_x.size}x{plot_y.size})",
-        mask_info,
-    )
 
 
 def _resample_values_to_grid(

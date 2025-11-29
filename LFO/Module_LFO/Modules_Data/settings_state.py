@@ -218,17 +218,7 @@ class Settings:
                 'step': 3,
                 'tick_step': 6
             },
-            # Visualisierung: Upscaling/Interpolation der SPL-Fläche im 3D-Plot
-            # False = Nearest-Neighbour (blockig, aber exakt zu Berechnungszellen)
-            # True  = Lineare Interpolation (glattere Darstellung, weniger Zacken)
-            'spl_plot_use_linear_resample': True,
-            # Visualisierung: PyVista sample() für feines Surface-Mesh (eliminiert Zacken an Rändern)
-            # False = Alte Methode (kartesisches Grid mit Masken-Clipping)
-            # True  = PyVista sample() auf feinem Surface-Mesh (glatte Ränder, keine Zacken)
-            'spl_plot_use_pyvista_sample': False,
             'impulse_points': [],
-            'spl_surface_render_mode': "texture",
-            #texture oder mesh
             'polar_frequencies': {
                 'red': 31.5,
                 'yellow': 40,

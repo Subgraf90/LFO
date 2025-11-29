@@ -708,7 +708,6 @@ class DrawPlotsMainwindow(ModuleBase):
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
         # damit der Fader nicht von initialize_empty_scene() versteckt wird
-        print(f"[DEBUG] WindowPlotsMainwindow.plot_spl() - Vor update_time_control(): time_mode_enabled={time_mode_enabled}")
         if draw_spl_plotter is not None:
             if time_mode_enabled:
                 if time_snapshot is not None:
@@ -734,8 +733,6 @@ class DrawPlotsMainwindow(ModuleBase):
         self.colorbar_canvas.draw()
         if reset_camera:
             self.reset_zoom()
-        
-        print(f"[DEBUG] WindowPlotsMainwindow.plot_spl() ENDE: Plot-Update abgeschlossen")
 
         if update_axes:
             self.plot_xaxis()
