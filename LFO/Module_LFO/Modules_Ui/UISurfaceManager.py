@@ -539,6 +539,57 @@ class UISurfaceManager(ModuleBase):
         return item
 
     # ---- Auswahl-Handling für rote Umrandung ------------------------
+    
+    def _find_tree_item_by_id(self, item_id):
+        """
+        Findet ein TreeWidgetItem anhand seiner ID (rekursiv durchsucht den Tree).
+        
+        Args:
+            item_id: Die ID des gesuchten Items (aus Qt.UserRole)
+            
+        Returns:
+            QTreeWidgetItem oder None, falls nicht gefunden
+        """
+        if not hasattr(self, 'surface_tree_widget') or not self.surface_tree_widget:
+            return None
+        
+        def search_item(parent_item):
+            """Rekursive Suche durch Tree-Items"""
+            if parent_item is None:
+                # Suche auf Top-Level
+                for i in range(self.surface_tree_widget.topLevelItemCount()):
+                    item = self.surface_tree_widget.topLevelItem(i)
+                    try:
+                        if item.data(0, Qt.UserRole) == item_id:
+                            return item
+                        # Suche rekursiv in Children
+                        result = search_item(item)
+                        if result:
+                            return result
+                    except RuntimeError:
+                        # Item wurde gelöscht, überspringe
+                        continue
+            else:
+                # Suche in Children des Parent-Items
+                try:
+                    for i in range(parent_item.childCount()):
+                        child = parent_item.child(i)
+                        try:
+                            if child.data(0, Qt.UserRole) == item_id:
+                                return child
+                            # Suche rekursiv in Children
+                            result = search_item(child)
+                            if result:
+                                return result
+                        except RuntimeError:
+                            # Item wurde gelöscht, überspringe
+                            continue
+                except RuntimeError:
+                    # Parent-Item wurde gelöscht
+                    return None
+            return None
+        
+        return search_item(None)
 
     def _collect_all_surfaces_from_group(self, group_id: str, surface_store: Dict) -> List[str]:
         """
@@ -1275,10 +1326,12 @@ class UISurfaceManager(ModuleBase):
         scroll_layout.addStretch()
         
         # Apply Changes Button
+        # Extrahiere group_id vor dem Lambda, um zu vermeiden, dass auf ein gelöschtes Item zugegriffen wird
+        group_id = group_item.data(0, Qt.UserRole) if group_item else None
         apply_button = QPushButton("Apply Changes")
         apply_button.setFont(font)
         apply_button.setFixedHeight(30)
-        apply_button.clicked.connect(lambda: self.apply_group_changes(group_item))
+        apply_button.clicked.connect(lambda checked, gid=group_id: self.apply_group_changes_by_id(gid))
         scroll_layout.addWidget(apply_button)
         
         scroll_area.setWidget(scroll_content)
@@ -1509,9 +1562,9 @@ class UISurfaceManager(ModuleBase):
         self.group_rel_y_edit.setText(f"{rel_pos.get('y', 0.0):.2f}")
         self.group_rel_z_edit.setText(f"{rel_pos.get('z', 0.0):.2f}")
     
-    def apply_group_changes(self, group_item):
-        """Wendet die Gruppen-Änderungen auf alle Child-Surfaces an"""
-        if not group_item:
+    def apply_group_changes_by_id(self, group_id):
+        """Wendet die Gruppen-Änderungen auf alle Child-Surfaces an (verwendet group_id statt group_item)"""
+        if not group_id:
             return
         
         # Hole die eingegebenen Werte
@@ -1522,9 +1575,6 @@ class UISurfaceManager(ModuleBase):
         except ValueError:
             print("Fehler: Ungültige Eingabewerte")
             return
-        
-        # Finde die Gruppen-ID
-        group_id = group_item.data(0, Qt.UserRole)
         
         # Stelle sicher, dass Gruppen-Daten existieren
         if group_id not in self.surface_groups:
@@ -1548,40 +1598,70 @@ class UISurfaceManager(ModuleBase):
         # Hole ursprüngliche Surface-Positionen (sollten bereits beim Hinzufügen zur Gruppe gespeichert sein)
         original_positions = self.surface_groups[group_id].get('original_surface_positions', {})
         
+        # Versuche, das Tree-Item zu finden, falls es noch existiert
+        group_item = None
+        if hasattr(self, 'surface_tree_widget') and self.surface_tree_widget:
+            group_item = self._find_tree_item_by_id(group_id)
+        
         # Sammle alle Child-Surface-IDs
-        child_count = group_item.childCount()
         child_surface_ids = []
-        for i in range(child_count):
-            child_item = group_item.child(i)
-            child_type = child_item.data(0, Qt.UserRole + 1)
-            
-            if child_type == "surface":
-                surface_id = child_item.data(0, Qt.UserRole)
-                if isinstance(surface_id, dict):
-                    surface_id = surface_id.get('id')
-                
-                if surface_id is not None:
-                    child_surface_ids.append(surface_id)
+        
+        # Versuche zuerst, die IDs aus dem Tree-Item zu holen (falls es noch existiert)
+        if group_item:
+            try:
+                child_count = group_item.childCount()
+                for i in range(child_count):
+                    child_item = group_item.child(i)
+                    child_type = child_item.data(0, Qt.UserRole + 1)
                     
-                    # Falls ursprüngliche Positionen noch nicht gespeichert sind, speichere sie jetzt
-                    if surface_id not in original_positions:
-                        surface = self._get_surface(surface_id)
-                        if surface:
-                            points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
-                            if points:
-                                x_coords = [p.get('x', 0.0) for p in points]
-                                y_coords = [p.get('y', 0.0) for p in points]
-                                z_coords = [p.get('z', 0.0) for p in points]
-                                
-                                center_x = sum(x_coords) / len(x_coords) if x_coords else 0.0
-                                center_y = sum(y_coords) / len(y_coords) if y_coords else 0.0
-                                center_z = sum(z_coords) / len(z_coords) if z_coords else 0.0
-                                
-                                original_positions[surface_id] = {
-                                    'x': center_x,
-                                    'y': center_y,
-                                    'z': center_z
-                                }
+                    if child_type == "surface":
+                        surface_id = child_item.data(0, Qt.UserRole)
+                        if isinstance(surface_id, dict):
+                            surface_id = surface_id.get('id')
+                        
+                        if surface_id is not None:
+                            child_surface_ids.append(surface_id)
+            except RuntimeError:
+                # Item wurde gelöscht, verwende Fallback
+                group_item = None
+        
+        # Fallback: Hole Child-Surface-IDs aus der Gruppe oder aus gespeicherten Daten
+        if not child_surface_ids:
+            # Versuche aus gespeicherten Daten
+            if 'child_surface_ids' in self.surface_groups[group_id]:
+                child_surface_ids = self.surface_groups[group_id]['child_surface_ids']
+            
+            # Falls immer noch leer, hole aus der Gruppe selbst
+            if not child_surface_ids:
+                group = self._group_controller.get_group(group_id)
+                if group:
+                    child_surface_ids = getattr(group, 'surface_ids', [])
+                    # Speichere für zukünftige Verwendung
+                    self.surface_groups[group_id]['child_surface_ids'] = child_surface_ids
+        
+        # Speichere die Child-Surface-IDs für zukünftige Verwendung
+        self.surface_groups[group_id]['child_surface_ids'] = child_surface_ids
+        
+        # Sammle ursprüngliche Positionen für alle Surfaces
+        for surface_id in child_surface_ids:
+            if surface_id not in original_positions:
+                surface = self._get_surface(surface_id)
+                if surface:
+                    points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                    if points:
+                        x_coords = [p.get('x', 0.0) for p in points]
+                        y_coords = [p.get('y', 0.0) for p in points]
+                        z_coords = [p.get('z', 0.0) for p in points]
+                        
+                        center_x = sum(x_coords) / len(x_coords) if x_coords else 0.0
+                        center_y = sum(y_coords) / len(y_coords) if y_coords else 0.0
+                        center_z = sum(z_coords) / len(z_coords) if z_coords else 0.0
+                        
+                        original_positions[surface_id] = {
+                            'x': center_x,
+                            'y': center_y,
+                            'z': center_z
+                        }
         
         # Speichere aktualisierte ursprüngliche Positionen
         if original_positions:
