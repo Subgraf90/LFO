@@ -12,13 +12,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import BoundaryNorm, Normalize, LinearSegmentedColormap, ListedColormap
+from matplotlib.path import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
-from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+from Module_LFO.Modules_Calculate\
+    .SurfaceGeometryCalculator import (
     SurfaceDefinition,
+    DEBUG_SURFACE_GEOMETRY,
     build_surface_mesh,
     build_vertical_surface_mesh,
     prepare_plot_geometry,
@@ -30,6 +33,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
 
 DEBUG_SPL_DUMP = bool(int(os.environ.get("LFO_DEBUG_SPL", "0")))
 DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
+DEBUG_SURFACE_REF = bool(int(os.environ.get("LFO_DEBUG_SURFACE_REF", "1")))
 
 # Steuerung des Anti-Aliasing-Modus für PyVista:
 # Mögliche Werte (abhängig von PyVista/VTK-Version):
@@ -115,6 +119,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.cbar = None
         self.has_data = False
         self.surface_mesh = None  # type: pv.DataSet | None
+        # Einzelne Actors pro horizontaler Surface (SPL-Flächen, Mesh-Modus)
+        self._surface_actors: dict[str, Any] = {}
+        # Textur-Actors pro horizontaler Surface (Texture-Modus)
+        # Struktur: {surface_id: {'actor': actor, 'metadata': {...}}}
+        self._surface_texture_actors: dict[str, dict[str, Any]] = {}
         self._plot_geometry_cache = None  # Cache für Plot-Geometrie (plot_x, plot_y)
         # Zusätzliche SPL-Meshes für senkrechte Flächen (werden über calculation_spl gespeist)
         self._vertical_surface_meshes: dict[str, Any] = {}
@@ -380,50 +389,81 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     def use_mesh_lookup():
                         print(f"[DEBUG Click] Using mesh-based coordinate lookup")
                         
-                        # Verwende Kamera, um einen Ray zu erzeugen und die Schnittstelle mit der Z=0 Ebene zu finden
-                        camera = renderer.GetActiveCamera()
-                        if camera is None:
-                            print(f"[DEBUG Click] No camera available")
-                            return None
-                        
-                        # Konvertiere 2D-Koordinaten zu einem Ray
-                        renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 0.0)
-                        renderer.DisplayToWorld()
-                        world_point_near = renderer.GetWorldPoint()
-                        
-                        renderer.SetDisplayPoint(click_pos.x(), size.height() - click_pos.y(), 1.0)
-                        renderer.DisplayToWorld()
-                        world_point_far = renderer.GetWorldPoint()
-                        
-                        if world_point_near[3] != 0.0 and world_point_far[3] != 0.0:
-                            ray_start = np.array([
-                                world_point_near[0] / world_point_near[3],
-                                world_point_near[1] / world_point_near[3],
-                                world_point_near[2] / world_point_near[3]
-                            ])
-                            ray_end = np.array([
-                                world_point_far[0] / world_point_far[3],
-                                world_point_far[1] / world_point_far[3],
-                                world_point_far[2] / world_point_far[3]
-                            ])
+                        try:
+                            # Verwende VTK Renderer mit normalisierten Display-Koordinaten
+                            # VTK Renderer erwartet normalisierte Koordinaten (0-1) in SetDisplayPoint
+                            # Aber SetDisplayPoint verwendet Viewport-Koordinaten (nicht Pixel)
+                            # Wir müssen die normalisierten Koordinaten korrekt konvertieren
                             
-                            # Berechne Schnittpunkt des Rays mit der Z=0 Ebene
-                            ray_dir = ray_end - ray_start
-                            if abs(ray_dir[2]) > 1e-6:  # Ray ist nicht parallel zur Z-Ebene
-                                # Parametrische Form: point = ray_start + t * ray_dir
-                                # Z = 0: ray_start[2] + t * ray_dir[2] = 0
-                                t = -ray_start[2] / ray_dir[2]
-                                intersection = ray_start + t * ray_dir
-                                
-                                print(f"[DEBUG Click] Ray intersection with Z=0 plane: x={intersection[0]:.2f}, y={intersection[1]:.2f}, z={intersection[2]:.2f}")
-                                return (intersection[0], intersection[1], intersection[2])
+                            # Hole Viewport-Größe vom Renderer
+                            viewport = renderer.GetViewport()
+                            render_size = renderer.GetSize()
+                            
+                            if render_size[0] <= 0 or render_size[1] <= 0:
+                                print(f"[DEBUG Click] Invalid renderer size: {render_size}")
+                                return None
+                            
+                            # Konvertiere normalisierte Koordinaten (0-1) zu Viewport-Koordinaten
+                            viewport_width = render_size[0]
+                            viewport_height = render_size[1]
+                            
+                            # Viewport-Koordinaten: (0,0) ist unten links, (width, height) ist oben rechts
+                            # x_norm und y_norm sind bereits normalisiert (0-1), y_norm ist invertiert (oben = 0)
+                            viewport_x = x_norm * viewport_width
+                            viewport_y = y_norm * viewport_height
+                            
+                            print(f"[DEBUG Click] Viewport coords: x={viewport_x:.1f}, y={viewport_y:.1f} (size={viewport_width}x{viewport_height})")
+                            
+                            # Konvertiere Display-Koordinaten (Viewport) zu World-Koordinaten
+                            renderer.SetDisplayPoint(viewport_x, viewport_y, 0.0)
+                            renderer.DisplayToWorld()
+                            world_point_near = renderer.GetWorldPoint()
+                            
+                            renderer.SetDisplayPoint(viewport_x, viewport_y, 1.0)
+                            renderer.DisplayToWorld()
+                            world_point_far = renderer.GetWorldPoint()
+                            
+                            if world_point_near is not None and world_point_far is not None and len(world_point_near) >= 4:
+                                # VTK gibt homogene Koordinaten zurück [x, y, z, w]
+                                if abs(world_point_near[3]) > 1e-6 and abs(world_point_far[3]) > 1e-6:
+                                    ray_start = np.array([
+                                        world_point_near[0] / world_point_near[3],
+                                        world_point_near[1] / world_point_near[3],
+                                        world_point_near[2] / world_point_near[3]
+                                    ])
+                                    ray_end = np.array([
+                                        world_point_far[0] / world_point_far[3],
+                                        world_point_far[1] / world_point_far[3],
+                                        world_point_far[2] / world_point_far[3]
+                                    ])
+                                    
+                                    print(f"[DEBUG Click] Ray start: {ray_start}, Ray end: {ray_end}")
+                                    
+                                    # Berechne Schnittpunkt des Rays mit der Z=0 Ebene
+                                    ray_dir = ray_end - ray_start
+                                    if abs(ray_dir[2]) > 1e-6:  # Ray ist nicht parallel zur Z-Ebene
+                                        # Parametrische Form: point = ray_start + t * ray_dir
+                                        # Z = 0: ray_start[2] + t * ray_dir[2] = 0
+                                        t = -ray_start[2] / ray_dir[2]
+                                        intersection = ray_start + t * ray_dir
+                                        
+                                        print(f"[DEBUG Click] Ray intersection with Z=0 plane: x={intersection[0]:.2f}, y={intersection[1]:.2f}, z={intersection[2]:.2f}")
+                                        return (float(intersection[0]), float(intersection[1]), float(intersection[2]))
+                                    else:
+                                        # Ray ist parallel zur Z-Ebene - verwende Ray-Mitte
+                                        ray_mid = (ray_start + ray_end) / 2.0
+                                        print(f"[DEBUG Click] Ray parallel to Z plane, using ray midpoint: x={ray_mid[0]:.2f}, y={ray_mid[1]:.2f}, z={ray_mid[2]:.2f}")
+                                        return (float(ray_mid[0]), float(ray_mid[1]), float(ray_mid[2]))
+                                else:
+                                    print(f"[DEBUG Click] Invalid homogeneous coordinates (w=0)")
+                                    return None
                             else:
-                                # Ray ist parallel zur Z-Ebene - verwende Ray-Mitte
-                                ray_mid = (ray_start + ray_end) / 2.0
-                                print(f"[DEBUG Click] Ray parallel to Z plane, using ray midpoint: x={ray_mid[0]:.2f}, y={ray_mid[1]:.2f}, z={ray_mid[2]:.2f}")
-                                return (ray_mid[0], ray_mid[1], ray_mid[2])
-                        else:
-                            print(f"[DEBUG Click] Invalid ray conversion")
+                                print(f"[DEBUG Click] Invalid world point conversion")
+                                return None
+                        except Exception as e:
+                            print(f"[DEBUG Click] Exception in use_mesh_lookup: {e}")
+                            import traceback
+                            traceback.print_exc()
                             return None
                     
                     # Wenn Picker keine Zelle findet, verwende mesh-basierten Lookup
@@ -1112,88 +1152,276 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             cmap_object = 'jet'
 
-        actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
-        if actor is None or self.surface_mesh is None:
-            self.surface_mesh = mesh.copy(deep=True)
-            actor = self.plotter.add_mesh(
-                self.surface_mesh,
-                name=self.SURFACE_NAME,
-                scalars='plot_scalars',
-                cmap=cmap_object,
-                clim=(cbar_min, cbar_max),
-                smooth_shading=False,
-                show_scalar_bar=False,
-                reset_camera=False,
-                interpolate_before_map=False,
-            )
-            if hasattr(actor, 'prop') and actor.prop is not None:
-                try:
-                    actor.prop.interpolation = 'flat'
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            self.surface_mesh.deep_copy(mesh)
-            mapper = actor.mapper
-            if mapper is not None:
-                mapper.array_name = 'plot_scalars'
-                mapper.scalar_range = (cbar_min, cbar_max)
-                mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
-                mapper.interpolate_before_map = False
+        # ------------------------------------------------------------------
+        # Horizontale SPL-Surfaces
+        # ------------------------------------------------------------------
+        render_mode = getattr(self.settings, "spl_surface_render_mode", "mesh") or "mesh"
 
-        # ------------------------------------------------------------
-        # 🎯 NEU: Vollständiger SPL-Teppich mit Clipping an Surface-Kanten
-        # ------------------------------------------------------------
-        # Erstelle vollständigen Floor-Mesh (ohne Surface-Maskierung)
-        floor_mesh = build_full_floor_mesh(
-            plot_x,
-            plot_y,
-            scalars,
-            z_coords=z_coords,
-            pv_module=pv,
-        )
-        
-        # Clippe Floor-Mesh an allen enabled Surfaces
+        # Kombiniertes Mesh für Click-Handling behalten
+        if mesh is not None and mesh.n_points > 0:
+            self.surface_mesh = mesh.copy(deep=True)
+
         surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
-        if isinstance(surface_definitions, dict) and len(surface_definitions) > 0:
-            try:
-                clipped_floor_mesh = clip_floor_with_surfaces(
-                    floor_mesh,
-                    surface_definitions,
-                    pv_module=pv,
-                )
-                
-                # Plotte geclippten Floor-Mesh
-                floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
-                if floor_actor is None:
-                    self.plotter.add_mesh(
-                        clipped_floor_mesh,
-                        name=self.FLOOR_NAME,
-                        scalars='plot_scalars',
-                        cmap=cmap_object,
-                        clim=(cbar_min, cbar_max),
-                        smooth_shading=False,
-                        show_scalar_bar=False,
-                        reset_camera=False,
-                        interpolate_before_map=False,
-                    )
+        enabled_surfaces: list[tuple[str, list[dict[str, float]]]] = []
+        if isinstance(surface_definitions, dict):
+            for surface_id, surface_def in surface_definitions.items():
+                if isinstance(surface_def, SurfaceDefinition):
+                    enabled = bool(getattr(surface_def, "enabled", False))
+                    hidden = bool(getattr(surface_def, "hidden", False))
+                    points = getattr(surface_def, "points", []) or []
                 else:
-                    # Update bestehenden Floor-Actor
-                    if not hasattr(self, 'floor_mesh'):
-                        self.floor_mesh = clipped_floor_mesh.copy(deep=True)
-                    else:
-                        self.floor_mesh.deep_copy(clipped_floor_mesh)
-                    mapper = floor_actor.mapper
+                    enabled = bool(surface_def.get("enabled", False))
+                    hidden = bool(surface_def.get("hidden", False))
+                    points = surface_def.get("points", []) or []
+                if enabled and not hidden and len(points) >= 3:
+                    enabled_surfaces.append((str(surface_id), points))
+
+        if render_mode.lower() == "texture":
+            # Entferne existierende Mesh-Actors für horizontale Surfaces
+            base_actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
+            if base_actor is not None:
+                try:
+                    self.plotter.remove_actor(base_actor)
+                except Exception:
+                    pass
+            for sid, actor in list(self._surface_actors.items()):
+                try:
+                    self.plotter.remove_actor(actor)
+                except Exception:
+                    pass
+                self._surface_actors.pop(sid, None)
+
+            # Zeichne alle aktiven Surfaces als Texturflächen
+            self._render_surfaces_textured(
+                geometry,
+                original_plot_values,
+                cbar_min,
+                cbar_max,
+                cmap_object,
+                colorization_mode_used,
+                cbar_step,
+            )
+        else:
+            # Klassischer Mesh-Pfad
+            if mesh is None or mesh.n_cells == 0 or not enabled_surfaces:
+                # Fallback: wie bisher ein einzelner Actor für das gesamte Mesh
+                actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
+                if actor is None or self.surface_mesh is None:
+                    self.surface_mesh = mesh.copy(deep=True) if mesh is not None else None
+                    if self.surface_mesh is not None:
+                        actor = self.plotter.add_mesh(
+                            self.surface_mesh,
+                            name=self.SURFACE_NAME,
+                            scalars='plot_scalars',
+                            cmap=cmap_object,
+                            clim=(cbar_min, cbar_max),
+                            smooth_shading=False,
+                            show_scalar_bar=False,
+                            reset_camera=False,
+                            interpolate_before_map=False,
+                        )
+                        if hasattr(actor, 'prop') and actor.prop is not None:
+                            try:
+                                actor.prop.interpolation = 'flat'
+                            except Exception:  # noqa: BLE001
+                                pass
+                else:
+                    self.surface_mesh.deep_copy(mesh)
+                    mapper = actor.mapper
                     if mapper is not None:
                         mapper.array_name = 'plot_scalars'
                         mapper.scalar_range = (cbar_min, cbar_max)
                         mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
                         mapper.interpolate_before_map = False
-            except Exception as floor_exc:  # noqa: BLE001
-                # Bei Fehler: Überspringe Floor-Plotting, aber Surface-Meshes werden weiterhin geplottet
-                if DEBUG_SPL_DUMP:
-                    print(f"[Plot SPL3D] Fehler beim Floor-Clipping: {floor_exc}")
-                    import traceback
-                    traceback.print_exc()
+            else:
+                # Mehrere aktive Surfaces: pro Surface ein eigener Actor
+                t_total_start = time.perf_counter()
+                # Berechne Zellzentren einmal
+                cell_centers = mesh.cell_centers().points  # (n_cells, 3)
+                cell_xy = cell_centers[:, :2]
+
+                # Entferne Actors für Surfaces, die nicht mehr aktiv sind
+                active_ids = {sid for sid, _ in enabled_surfaces}
+                for sid in list(self._surface_actors.keys()):
+                    if sid not in active_ids:
+                        actor = self._surface_actors.pop(sid, None)
+                        if actor is not None:
+                            try:
+                                self.plotter.remove_actor(actor)
+                            except Exception:  # noqa: BLE001
+                                pass
+
+                for surface_id, points in enabled_surfaces:
+                    t_surf_start = time.perf_counter()
+
+                    poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+                    poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+                    if poly_x.size == 0 or poly_y.size == 0:
+                        continue
+
+                    poly_path = Path(np.column_stack((poly_x, poly_y)))
+                    inside = poly_path.contains_points(cell_xy)
+                    cell_indices = np.nonzero(inside)[0]
+
+                    if cell_indices.size == 0:
+                        if DEBUG_SURFACE_GEOMETRY:
+                            print(
+                                f"[SurfaceGeometry] Plot-Surface '{surface_id}': "
+                                f"keine Zellen im Polygon gefunden"
+                            )
+                        # Falls diese Surface zuvor einen Actor hatte, entfernen
+                        old_actor = self._surface_actors.pop(surface_id, None)
+                        if old_actor is not None:
+                            try:
+                                self.plotter.remove_actor(old_actor)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        continue
+
+                    t_clip_ms = (time.perf_counter() - t_surf_start) * 1000.0
+
+                    # Teilmesh extrahieren
+                    submesh = mesh.extract_cells(cell_indices)
+                    t_extract_ms = (time.perf_counter() - t_surf_start) * 1000.0 - t_clip_ms
+
+                    # Actor anlegen oder aktualisieren
+                    actor = self._surface_actors.get(surface_id)
+                    if actor is None:
+                        actor_name = f"{self.SURFACE_NAME}_{surface_id}"
+                        actor = self.plotter.add_mesh(
+                            submesh,
+                            name=actor_name,
+                            scalars="plot_scalars",
+                            cmap=cmap_object,
+                            clim=(cbar_min, cbar_max),
+                            smooth_shading=False,
+                            show_scalar_bar=False,
+                            reset_camera=False,
+                            interpolate_before_map=False,
+                        )
+                        self._surface_actors[surface_id] = actor
+                        if hasattr(actor, "prop") and actor.prop is not None:
+                            try:
+                                actor.prop.interpolation = "flat"
+                            except Exception:  # noqa: BLE001
+                                pass
+                    else:
+                        # Update bestehenden Actor
+                        actor_mesh = actor.mapper.GetInput() if hasattr(actor, "mapper") else None
+                        if actor_mesh is not None:
+                            try:
+                                actor_mesh.ShallowCopy(submesh)
+                            except Exception:
+                                # Fallback: ersetze Actor
+                                try:
+                                    self.plotter.remove_actor(actor)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                actor_name = f"{self.SURFACE_NAME}_{surface_id}"
+                                actor = self.plotter.add_mesh(
+                                    submesh,
+                                    name=actor_name,
+                                    scalars="plot_scalars",
+                                    cmap=cmap_object,
+                                    clim=(cbar_min, cbar_max),
+                                    smooth_shading=False,
+                                    show_scalar_bar=False,
+                                    reset_camera=False,
+                                    interpolate_before_map=False,
+                                )
+                                self._surface_actors[surface_id] = actor
+
+                        mapper = actor.mapper
+                        if mapper is not None:
+                            mapper.array_name = "plot_scalars"
+                            mapper.scalar_range = (cbar_min, cbar_max)
+                            mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
+                            mapper.interpolate_before_map = False
+
+                    t_actor_ms = (time.perf_counter() - t_surf_start) * 1000.0 - t_clip_ms
+                    if DEBUG_SURFACE_GEOMETRY:
+                        print(
+                            f"[SurfaceGeometry] Plot-Surface '{surface_id}': "
+                            f"cells={submesh.n_cells}, "
+                            f"clip={t_clip_ms:.2f}ms, "
+                            f"extract+actor={t_actor_ms:.2f}ms"
+                        )
+
+                if DEBUG_SURFACE_GEOMETRY:
+                    t_total_ms = (time.perf_counter() - t_total_start) * 1000.0
+                    print(
+                        f"[SurfaceGeometry] Plot-Surfaces: {len(enabled_surfaces)} Actors, "
+                        f"gesamt {t_total_ms:.2f}ms"
+                    )
+
+        # ------------------------------------------------------------
+        # 🎯 SPL-Teppich (Floor) nur anzeigen, wenn KEINE Surfaces aktiv sind
+        # ------------------------------------------------------------
+        surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
+        has_enabled_surfaces = False
+        if isinstance(surface_definitions, dict) and len(surface_definitions) > 0:
+            for surface_id, surface_def in surface_definitions.items():
+                try:
+                    # Kompatibel zu SurfaceDefinition-Objekten und Dicts
+                    enabled = bool(getattr(surface_def, "enabled", False)) if hasattr(
+                        surface_def, "enabled"
+                    ) else bool(surface_def.get("enabled", False))
+                    hidden = bool(getattr(surface_def, "hidden", False)) if hasattr(
+                        surface_def, "hidden"
+                    ) else bool(surface_def.get("hidden", False))
+                    points = (
+                        getattr(surface_def, "points", []) if hasattr(surface_def, "points") else surface_def.get("points", [])
+                    ) or []
+                    if enabled and not hidden and len(points) >= 3:
+                        has_enabled_surfaces = True
+                        break
+                except Exception:  # noqa: BLE001
+                    # Bei inkonsistenten Oberflächen-Konfigurationen Floor lieber anzeigen
+                    continue
+
+        if not has_enabled_surfaces:
+            # Erstelle vollständigen Floor-Mesh (ohne Surface-Maskierung oder Clipping)
+            floor_mesh = build_full_floor_mesh(
+                plot_x,
+                plot_y,
+                scalars,
+                z_coords=z_coords,
+                pv_module=pv,
+            )
+
+            # Plotte (oder update) den Floor nur, wenn keine Surfaces aktiv sind
+            floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
+            if floor_actor is None:
+                self.plotter.add_mesh(
+                    floor_mesh,
+                    name=self.FLOOR_NAME,
+                    scalars="plot_scalars",
+                    cmap=cmap_object,
+                    clim=(cbar_min, cbar_max),
+                    smooth_shading=False,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    interpolate_before_map=False,
+                )
+            else:
+                if not hasattr(self, "floor_mesh"):
+                    self.floor_mesh = floor_mesh.copy(deep=True)
+                else:
+                    self.floor_mesh.deep_copy(floor_mesh)
+                mapper = floor_actor.mapper
+                if mapper is not None:
+                    mapper.array_name = "plot_scalars"
+                    mapper.scalar_range = (cbar_min, cbar_max)
+                    mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
+                    mapper.interpolate_before_map = False
+        else:
+            # Wenn Surfaces aktiv sind, Floor ausblenden (falls vorher gezeichnet)
+            floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
+            if floor_actor is not None:
+                try:
+                    self.plotter.remove_actor(floor_actor)
+                except Exception:  # noqa: BLE001
+                    pass
 
         self._update_colorbar(colorization_mode_used, tick_step=tick_step)
 
@@ -1238,6 +1466,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.render()
         self._save_camera_state()
         self._colorbar_override = None
+        
+        # 🎯 DEBUG: Automatischer Aufruf der Surface-Referenzierungs-Analyse
+        # 🎯 DEBUG: Automatischer Aufruf der Surface-Referenzierungs-Analyse
+        # (nur wenn Environment-Variable gesetzt ist)
+        if DEBUG_SURFACE_REF:
+            self.debug_positioning_comparison()  # Vergleich Overlays vs. SPL-Plots
+            self.debug_surface_referencing()     # Detaillierte Referenzierung
 
     def update_time_frame_values(
         self,
@@ -2386,12 +2621,1133 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         return False
 
+    # ------------------------------------------------------------------
+    # Bilineare Interpolation und Textur-Rendering für horizontale Surfaces
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _bilinear_interpolate_grid(
+        source_x: np.ndarray,
+        source_y: np.ndarray,
+        values: np.ndarray,
+        xq: np.ndarray,
+        yq: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Bilineare Interpolation auf einem regulären Grid.
+
+        source_x: 1D-Array der X-Koordinaten (nx)
+        source_y: 1D-Array der Y-Koordinaten (ny)
+        values  : 2D-Array (ny, nx) mit SPL-Werten
+        xq, yq  : 1D-Arrays mit Abfragepunkten
+        """
+        source_x = np.asarray(source_x, dtype=float).reshape(-1)
+        source_y = np.asarray(source_y, dtype=float).reshape(-1)
+        vals = np.asarray(values, dtype=float)
+        xq = np.asarray(xq, dtype=float).reshape(-1)
+        yq = np.asarray(yq, dtype=float).reshape(-1)
+
+        ny, nx = vals.shape
+        if ny != len(source_y) or nx != len(source_x):
+            raise ValueError(
+                f"_bilinear_interpolate_grid: Shape mismatch values={vals.shape}, "
+                f"expected=({len(source_y)}, {len(source_x)})"
+            )
+
+        # Punkte außerhalb des Grids werden auf den Rand geclippt
+        x_min, x_max = source_x[0], source_x[-1]
+        y_min, y_max = source_y[0], source_y[-1]
+        xq_clip = np.clip(xq, x_min, x_max)
+        yq_clip = np.clip(yq, y_min, y_max)
+
+        # Linken/unteren Index finden
+        ix1 = np.searchsorted(source_x, xq_clip, side="right") - 1
+        iy1 = np.searchsorted(source_y, yq_clip, side="right") - 1
+        ix1 = np.clip(ix1, 0, nx - 2)
+        iy1 = np.clip(iy1, 0, ny - 2)
+        ix2 = ix1 + 1
+        iy2 = iy1 + 1
+
+        x1 = source_x[ix1]
+        x2 = source_x[ix2]
+        y1 = source_y[iy1]
+        y2 = source_y[iy2]
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tx = np.where(x2 != x1, (xq_clip - x1) / (x2 - x1), 0.0)
+            ty = np.where(y2 != y1, (yq_clip - y1) / (y2 - y1), 0.0)
+
+        v11 = vals[iy1, ix1]
+        v21 = vals[iy1, ix2]
+        v12 = vals[iy2, ix1]
+        v22 = vals[iy2, ix2]
+
+        interp = (
+            (1 - tx) * (1 - ty) * v11
+            + tx * (1 - ty) * v21
+            + (1 - tx) * ty * v12
+            + tx * ty * v22
+        )
+        return interp
+
+    def _render_surfaces_textured(
+        self,
+        geometry,
+        original_plot_values: np.ndarray,
+        cbar_min: float,
+        cbar_max: float,
+        cmap_object: str | Any,
+        colorization_mode: str,
+        cbar_step: float,
+    ) -> None:
+        """
+        Renderpfad für horizontale Surfaces als 2D-Texturen.
+
+        - Pro Surface wird ein lokales 2D-Bild in Welt-X/Y berechnet.
+        - SPL-Werte stammen aus original_plot_values (coarse Grid) via bilinearer Interpolation.
+        - Die Textur wird auf ein flaches StructuredGrid in derselben XY-Position gelegt.
+        """
+        if not hasattr(self, "plotter") or self.plotter is None:
+            return
+
+        try:
+            import pyvista as pv  # type: ignore
+        except Exception:
+            # Fallback: kein Texture-Rendering möglich
+            if DEBUG_SURFACE_GEOMETRY:
+                print("[SurfaceGeometry] Texture-Rendering nicht verfügbar (PyVista-Import fehlgeschlagen).")
+            return
+
+        # Quelle: Berechnungsraster
+        source_x = np.asarray(getattr(geometry, "source_x", []), dtype=float)
+        source_y = np.asarray(getattr(geometry, "source_y", []), dtype=float)
+        values = np.asarray(original_plot_values, dtype=float)
+        if values.shape != (len(source_y), len(source_x)):
+            if DEBUG_SURFACE_GEOMETRY:
+                print(
+                    "[SurfaceGeometry] Texture-Rendering abgebrochen: "
+                    f"Shape-Mismatch original_values={values.shape}, "
+                    f"source=({len(source_y)}, {len(source_x)})"
+                )
+            return
+
+        # Auflösung der Textur in Metern (XY)
+        tex_res = float(getattr(self.settings, "spl_surface_texture_resolution", 0.05) or 0.05)
+
+        # Colormap vorbereiten
+        if isinstance(cmap_object, str):
+            base_cmap = cm.get_cmap(cmap_object)
+        else:
+            base_cmap = cmap_object
+        norm = Normalize(vmin=cbar_min, vmax=cbar_max)
+        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
+
+        # Aktive Surfaces ermitteln
+        surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
+        enabled_surfaces: list[tuple[str, list[dict[str, float]], Any]] = []
+        if isinstance(surface_definitions, dict):
+            for surface_id, surface_def in surface_definitions.items():
+                if isinstance(surface_def, SurfaceDefinition):
+                    enabled = bool(getattr(surface_def, "enabled", False))
+                    hidden = bool(getattr(surface_def, "hidden", False))
+                    points = getattr(surface_def, "points", []) or []
+                    surface_obj = surface_def
+                else:
+                    enabled = bool(surface_def.get("enabled", False))
+                    hidden = bool(surface_def.get("hidden", False))
+                    points = surface_def.get("points", []) or []
+                    surface_obj = surface_def
+                if enabled and not hidden and len(points) >= 3:
+                    enabled_surfaces.append((str(surface_id), points, surface_obj))
+
+        # Nicht mehr benötigte Textur-Actors entfernen
+        active_ids = {sid for sid, _, _ in enabled_surfaces}
+        for sid, texture_data in list(self._surface_texture_actors.items()):
+            if sid not in active_ids:
+                try:
+                    actor = texture_data.get('actor') if isinstance(texture_data, dict) else texture_data
+                    if actor is not None:
+                        self.plotter.remove_actor(actor)
+                except Exception:
+                    pass
+                self._surface_texture_actors.pop(sid, None)
+
+        if not enabled_surfaces:
+            print(f"[SurfaceGeometry] Texture-Rendering: Keine enabled Surfaces gefunden")
+            return
+
+        print(f"[SurfaceGeometry] Texture-Rendering: {len(enabled_surfaces)} enabled Surface(s) gefunden")
+        for surface_id, points, surface_obj in enabled_surfaces:
+            try:
+                t_start = time.perf_counter()
+                poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+                poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+                if poly_x.size == 0 or poly_y.size == 0:
+                    continue
+
+                xmin, xmax = float(poly_x.min()), float(poly_x.max())
+                ymin, ymax = float(poly_y.min()), float(poly_y.max())
+
+                # Leicht erweitern, damit wir über den Rand hinausrechnen können
+                margin = tex_res * 2.0
+                # 🎯 FIX: Symmetrischer Margin - erstelle Grid mit exakt symmetrischen Margins
+                # Berechne die Anzahl der Punkte, die benötigt werden, um von xmin-margin bis xmax+margin zu gehen
+                x_start = xmin - margin
+                x_end = xmax + margin
+                y_start = ymin - margin
+                y_end = ymax + margin
+                
+                # Berechne Anzahl Punkte (inklusive Endpunkte)
+                num_x = int(np.ceil((x_end - x_start) / tex_res)) + 1
+                num_y = int(np.ceil((y_end - y_start) / tex_res)) + 1
+                
+                # Erstelle Grid mit exakt symmetrischen Margins
+                xs = np.linspace(x_start, x_end, num_x, dtype=float)
+                ys = np.linspace(y_start, y_end, num_y, dtype=float)
+                if xs.size < 2 or ys.size < 2:
+                    continue
+
+                # Erstelle meshgrid mit indexing="xy" für korrekte Zuordnung
+                # Bei indexing="xy": X[j, i] = xs[i], Y[j, i] = ys[j]
+                # Shape ist (len(ys), len(xs)) = (ny, nx)
+                X, Y = np.meshgrid(xs, ys, indexing="xy")
+                points_2d = np.column_stack((X.ravel(), Y.ravel()))
+
+                # Maske im Polygon
+                poly_path = Path(np.column_stack((poly_x, poly_y)))
+                inside = poly_path.contains_points(points_2d)
+                inside = inside.reshape(X.shape)
+
+                if not np.any(inside):
+                    if DEBUG_SURFACE_GEOMETRY:
+                        print(
+                            f"[SurfaceGeometry] Texture-Surface '{surface_id}': "
+                            f"keine Pixel im Polygon gefunden"
+                        )
+                    continue
+
+                # SPL bilinear vom coarse Grid interpolieren
+                spl_flat = self._bilinear_interpolate_grid(
+                    source_x,
+                    source_y,
+                    values,
+                    X.ravel(),
+                    Y.ravel(),
+                )
+                spl_img = spl_flat.reshape(X.shape)
+
+                # Werte clippen
+                spl_clipped = np.clip(spl_img, cbar_min, cbar_max)
+                # Optional in Stufen quantisieren (Color step)
+                if is_step_mode:
+                    spl_clipped = self._quantize_to_steps(spl_clipped, cbar_step)
+
+                # In Farbe umsetzen
+                rgba = base_cmap(norm(spl_clipped))  # float [0,1], shape (H,W,4)
+
+                # Alpha: nur Pixel im Polygon und mit gültigen Werten sichtbar
+                alpha_mask = inside & np.isfinite(spl_clipped)
+                rgba[..., 3] = np.where(alpha_mask, 1.0, 0.0)
+
+                # Nach uint8 wandeln
+                img_rgba = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
+
+                # Flache Z=0-Ebene (für horizontale Surfaces)
+                Z = np.zeros_like(X, dtype=float)
+                grid = pv.StructuredGrid(X, Y, Z)
+
+                # Verwende PyVista's texture_map_to_plane() für automatische Textur-Koordinaten
+                # Dies stellt sicher, dass PyVista die Textur-Koordinaten erkennt
+                try:
+                    grid.texture_map_to_plane(inplace=True)
+                    # Hole die generierten Textur-Koordinaten
+                    t_coords = grid.point_data.get("TCoords")
+                except Exception as tex_map_exc:
+                    if DEBUG_SURFACE_GEOMETRY:
+                        print(f"[SurfaceGeometry] texture_map_to_plane() fehlgeschlagen für '{surface_id}': {tex_map_exc}")
+                    t_coords = None
+
+                # Texture-Koordinaten manuell anpassen (basierend auf Welt-Koordinaten für korrekte Orientierung)
+                bounds = None
+                try:
+                    bounds = grid.bounds  # (xmin, xmax, ymin, ymax, zmin, zmax)
+                    xmin_grid, xmax_grid = bounds[0], bounds[1]
+                    ymin_grid, ymax_grid = bounds[2], bounds[3]
+                    
+                    # 🎯 KORREKTE Textur-Koordinaten-Berechnung:
+                    # Das Bild img_rgba hat Shape (H, W, 4) wo:
+                    #   H = len(ys) = Anzahl Y-Punkte (von ymin nach ymax)
+                    #   W = len(xs) = Anzahl X-Punkte (von xmin nach xmax)
+                    # 
+                    # Im Bild-Array: img_rgba[j, i, :] entspricht:
+                    #   i = Index in xs (0 = xmin, W-1 = xmax)
+                    #   j = Index in ys (0 = ymin, H-1 = ymax)
+                    #
+                    # Textur-Koordinaten (u, v):
+                    #   u = X-Position im Bild (0 = links/xmin, 1 = rechts/xmax)
+                    #   v = Y-Position im Bild (0 = unten/ymin, 1 = oben/ymax)
+                    # 
+                    # WICHTIG: In Bild-Arrays ist j=0 oben und j=H-1 unten (invertiert zu v)
+                    # Aber bei meshgrid mit indexing="xy": Y[j, i] = ys[j], X[j, i] = xs[i]
+                    #   j=0 entspricht ymin (unten), j=H-1 entspricht ymax (oben)
+                    #   i=0 entspricht xmin (links), i=W-1 entspricht xmax (rechts)
+                    #
+                    # Für Textur-Koordinaten müssen wir:
+                    #   u = (X - xmin) / (xmax - xmin)  -> 0 (xmin/links) bis 1 (xmax/rechts)
+                    #   v = (Y - ymin) / (ymax - ymin)  -> 0 (ymin/unten) bis 1 (ymax/oben)
+                    #
+                    # Das Bild wurde erstellt mit: spl_img[j, i] = spl_flat[j*W + i]
+                    #   wobei X[j, i] = xs[i] und Y[j, i] = ys[j]
+                    # Also: img_rgba[j, i] entspricht Welt-Koordinate (xs[i], ys[j])
+                    #
+                    # Textur-Koordinate für Punkt (X[j,i], Y[j,i]) sollte sein:
+                    #   u = (i) / (W-1) = (xs[i] - xmin) / (xmax - xmin)  (bei gleichmäßiger Verteilung)
+                    #   v = (j) / (H-1) = (ys[j] - ymin) / (ymax - ymin)  (bei gleichmäßiger Verteilung)
+                    
+                    # Berechne Textur-Koordinaten direkt aus Welt-Koordinaten
+                    x_span = xmax_grid - xmin_grid
+                    y_span = ymax_grid - ymin_grid
+                    
+                    if x_span > 1e-10 and y_span > 1e-10:
+                        # Überschreibe die automatisch generierten Textur-Koordinaten mit manuell berechneten
+                        # für exakte Zuordnung zwischen Welt-Koordinaten und Bild-Pixeln
+                        # Normalisiere Welt-Koordinaten auf [0, 1]
+                        # u: 0 = xmin (links), 1 = xmax (rechts)
+                        # v: 0 = ymin (unten), 1 = ymax (oben)
+                        u_coords = (X - xmin_grid) / x_span
+                        v_coords_raw = (Y - ymin_grid) / y_span
+                        
+                        # Stelle sicher, dass u und v im Bereich [0, 1] sind (aufgrund numerischer Ungenauigkeiten)
+                        u_coords = np.clip(u_coords, 0.0, 1.0)
+                        v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
+                        
+                        # 🎯 WICHTIG: Spiegle v-Koordinate für PyVista-Konvention
+                        # PyVista erwartet: v=0 oben, v=1 unten (Standard-Textur-Koordinaten)
+                        # Wir haben: v_raw=0 unten (ymin), v_raw=1 oben (ymax)
+                        # Also: v = 1 - v_raw
+                        v_coords = 1.0 - v_coords_raw
+                        
+                        # 🎯 ACHSEN-INVERTIERUNG: Konfigurierbar pro Surface
+                        # Prüfe, ob X- und/oder Y-Achsen invertiert werden sollen
+                        # Defaults (werden verwendet, wenn Attribute nicht gesetzt sind)
+                        invert_x = False
+                        invert_y = True
+                        swap_axes = False 
+                        
+                        if isinstance(surface_obj, SurfaceDefinition):
+                            # Nur überschreiben, wenn Attribut existiert
+                            if hasattr(surface_obj, "invert_texture_x"):
+                                invert_x = bool(getattr(surface_obj, "invert_texture_x"))
+                            if hasattr(surface_obj, "invert_texture_y"):
+                                invert_y = bool(getattr(surface_obj, "invert_texture_y"))
+                            if hasattr(surface_obj, "swap_texture_axes"):
+                                swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
+                        elif isinstance(surface_obj, dict):
+                            # Nur überschreiben, wenn Key existiert
+                            if "invert_texture_x" in surface_obj:
+                                invert_x = bool(surface_obj["invert_texture_x"])
+                            if "invert_texture_y" in surface_obj:
+                                invert_y = bool(surface_obj["invert_texture_y"])
+                            if "swap_texture_axes" in surface_obj:
+                                swap_axes = bool(surface_obj["swap_texture_axes"])
+                        
+                        # Debug-Ausgabe (immer anzeigen, damit wir sehen, was passiert)
+                        print(
+                            f"[Texture-Achsen] Surface '{surface_id}': "
+                            f"invert_x={invert_x}, invert_y={invert_y}, swap_axes={swap_axes}"
+                        )
+                        
+                        # 🎯 Wende Bild-Spiegelung an (wenn nötig), BEVOR wir die Textur erstellen
+                        # Wenn wir das Bild spiegeln, müssen wir die Texturkoordinaten NICHT zusätzlich invertieren
+                        img_rgba_final = img_rgba.copy()
+                        if invert_x:
+                            # Spiegle das Bild horizontal (links <-> rechts)
+                            img_rgba_final = np.fliplr(img_rgba_final)
+                            # Invertiere U-Koordinaten, damit sie zum gespiegelten Bild passen
+                            u_coords = 1.0 - u_coords
+                        if invert_y:
+                            # Spiegle das Bild vertikal (oben <-> unten)
+                            img_rgba_final = np.flipud(img_rgba_final)
+                            # Invertiere V-Koordinaten, damit sie zum gespiegelten Bild passen
+                            v_coords = 1.0 - v_coords
+                        if swap_axes:
+                            # Transponiere das Bild (X <-> Y)
+                            img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
+                            # Vertausche U und V Koordinaten
+                            u_coords, v_coords = v_coords.copy(), u_coords.copy()
+                        
+                        # Textur-Koordinaten als (N, 2) Array: [u, v]
+                        # u = X-Koordinate, v = Y-Koordinate
+                        t_coords = np.column_stack((u_coords.ravel(), v_coords.ravel()))
+                        grid.point_data["TCoords"] = t_coords
+                        
+                        # Verwende das gespiegelte Bild
+                        img_rgba = img_rgba_final
+                    else:
+                        # Fallback für degenerierte Fälle
+                        if t_coords is None:
+                            ny, nx = X.shape
+                            u_coords = np.linspace(0, 1, nx)
+                            v_coords_raw = np.linspace(0, 1, ny)
+                            # Spiegle v für PyVista-Konvention (v=0 oben, v=1 unten)
+                            v_coords = 1.0 - v_coords_raw
+                            U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
+                            t_coords = np.column_stack((U.ravel(), V.ravel()))
+                        grid.point_data["TCoords"] = t_coords
+                    
+                    # ANALYSE: Koordinaten-Referenzierung
+                    if DEBUG_SURFACE_GEOMETRY:
+                        n_points = grid.n_points
+                        ny_grid, nx_grid = Y.shape[0], X.shape[1]
+                        
+                        # Indizes für Ecken: (0,0), (0,nx-1), (ny-1,0), (ny-1,nx-1)
+                        corner_indices = [
+                            (0, 0, "links-unten"),
+                            (0, nx_grid - 1, "rechts-unten"),
+                            (ny_grid - 1, 0, "links-oben"),
+                            (ny_grid - 1, nx_grid - 1, "rechts-oben"),
+                        ]
+                        
+                        print(f"\n[Texture-Analyse] Surface '{surface_id}':")
+                        print(f"  Grid-Bounds: x=[{bounds[0]:.3f}, {bounds[1]:.3f}], y=[{bounds[2]:.3f}, {bounds[3]:.3f}]")
+                        print(f"  Grid-Shape: {ny_grid}x{nx_grid} (ny x nx)")
+                        print(f"  Bild-Shape: {img_rgba.shape} (H x W x 4)")
+                        print(f"  Polygon-Punkte: {len(poly_x)} Punkte")
+                        print(f"    X-Bereich: [{xmin:.3f}, {xmax:.3f}]")
+                        print(f"    Y-Bereich: [{ymin:.3f}, {ymax:.3f}]")
+                        print(f"  Grid-X-Bereich: [{xs.min():.3f}, {xs.max():.3f}] ({xs.size} Punkte)")
+                        print(f"  Grid-Y-Bereich: [{ys.min():.3f}, {ys.max():.3f}] ({ys.size} Punkte)")
+                        
+                        if t_coords is not None and t_coords.shape[0] == n_points:
+                            print(f"  Textur-Koordinaten vorhanden: {t_coords.shape}")
+                            print(f"  Ecken-Referenzierung:")
+                            for j, i, name in corner_indices:
+                                idx_1d = j * nx_grid + i
+                                if idx_1d < n_points:
+                                    world_x = X[j, i]
+                                    world_y = Y[j, i]
+                                    tex_u = t_coords[idx_1d, 0]
+                                    tex_v = t_coords[idx_1d, 1]
+                                    # Bild-Pixel-Position (vor Flip)
+                                    img_i = i  # X-Index im Bild
+                                    img_j = j  # Y-Index im Bild
+                                    # Nach Flip: img_i_flipped = (xs.size - 1) - i
+                                    img_i_flipped = (xs.size - 1) - i
+                                    print(
+                                        f"    {name:15s}: "
+                                        f"Welt=({world_x:7.3f}, {world_y:7.3f}) | "
+                                        f"Tex=(u={tex_u:.3f}, v={tex_v:.3f}) | "
+                                        f"Bild-Pixel=({img_i:3d}, {img_j:3d}) | "
+                                        f"Nach-Flip=({img_i_flipped:3d}, {img_j:3d})"
+                                    )
+                        else:
+                            print(f"  ⚠️ Textur-Koordinaten fehlen oder haben falsche Shape")
+                            print(f"     t_coords={t_coords is not None}, shape={t_coords.shape if t_coords is not None else None}, n_points={n_points}")
+                        
+                        # Erste und letzte Polygon-Punkte
+                        print(f"  Polygon-Punkte (erste 3):")
+                        for idx in range(min(3, len(poly_x))):
+                            print(f"    P{idx}: ({poly_x[idx]:7.3f}, {poly_y[idx]:7.3f})")
+                        if len(poly_x) > 3:
+                            print(f"    ... ({len(poly_x) - 3} weitere Punkte)")
+                            print(f"    P{len(poly_x)-1}: ({poly_x[-1]:7.3f}, {poly_y[-1]:7.3f})")
+                        
+                except Exception as tex_exc:
+                    error_msg = f"[SurfaceGeometry] Texture-Surface '{surface_id}' FEHLER bei Textur-Koordinaten-Setzung: {tex_exc}"
+                    print(error_msg)
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+                # Prüfe ob bounds und t_coords gesetzt wurden
+                if bounds is None:
+                    bounds = grid.bounds
+                if t_coords is None:
+                    # Fallback: Hole TCoords vom Grid falls verfügbar
+                    t_coords = grid.point_data.get("TCoords")
+                
+                # Validiere Textur-Koordinaten vor dem Rendern
+                if "TCoords" not in grid.point_data:
+                    error_msg = f"[SurfaceGeometry] Texture-Surface '{surface_id}': TCoords nicht im Grid gefunden!"
+                    print(error_msg)
+                    continue
+                
+                # Prüfe ob TCoords die richtige Shape haben
+                tcoords_data = grid.point_data["TCoords"]
+                if tcoords_data is None or tcoords_data.shape[0] != grid.n_points:
+                    error_msg = f"[SurfaceGeometry] Texture-Surface '{surface_id}': TCoords haben falsche Shape! Erwartet: ({grid.n_points}, 2), erhalten: {tcoords_data.shape if tcoords_data is not None else None}"
+                    print(error_msg)
+                    continue
+
+                tex = pv.Texture(img_rgba)
+                tex.interpolate = True
+
+                actor_name = f"{self.SURFACE_NAME}_tex_{surface_id}"
+                # Alten Actor ggf. entfernen
+                old_actor = None
+                old_texture_data = self._surface_texture_actors.get(surface_id)
+                if old_texture_data is not None:
+                    old_actor = old_texture_data.get('actor') if isinstance(old_texture_data, dict) else old_texture_data
+                if old_actor is not None:
+                    try:
+                        self.plotter.remove_actor(old_actor)
+                    except Exception:
+                        pass
+
+                actor = self.plotter.add_mesh(
+                    grid,
+                    name=actor_name,
+                    texture=tex,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                )
+                
+                # 🎯 Speichere Metadaten zusammen mit dem Actor
+                # Diese können für Click-Handling, Koordinaten-Transformation, etc. verwendet werden
+                metadata = {
+                    'actor': actor,
+                    'grid': grid,
+                    'texture': tex,
+                    'grid_bounds': tuple(bounds) if bounds is not None else None,  # (xmin, xmax, ymin, ymax, zmin, zmax)
+                    'world_coords_x': xs.copy(),  # 1D-Array der X-Koordinaten in Metern
+                    'world_coords_y': ys.copy(),  # 1D-Array der Y-Koordinaten in Metern
+                    'world_coords_grid_x': X.copy(),  # 2D-Meshgrid der X-Koordinaten
+                    'world_coords_grid_y': Y.copy(),  # 2D-Meshgrid der Y-Koordinaten
+                    'texture_resolution': tex_res,  # Auflösung der Textur in Metern
+                    'texture_size': (ys.size, xs.size),  # (H, W) in Pixeln
+                    'image_shape': img_rgba.shape,  # (H, W, 4)
+                    'polygon_bounds': {
+                        'xmin': xmin,
+                        'xmax': xmax,
+                        'ymin': ymin,
+                        'ymax': ymax,
+                    },
+                    'polygon_points': points,  # Original Polygon-Punkte
+                    't_coords': t_coords.copy() if t_coords is not None else None,  # Textur-Koordinaten
+                    'surface_id': surface_id,
+                }
+                
+                self._surface_texture_actors[surface_id] = metadata
+
+                if DEBUG_SURFACE_GEOMETRY:
+                    t_ms = (time.perf_counter() - t_start) * 1000.0
+                    valid_count = int(alpha_mask.sum())
+                    print(
+                        f"[SurfaceGeometry] Texture-Surface '{surface_id}': "
+                        f"tex_res={tex_res:.3f}m, size={ys.size}x{xs.size}, "
+                        f"pixels_in_polygon={valid_count}, render={t_ms:.2f}ms"
+                    )
+            except Exception as exc:
+                error_msg = f"[SurfaceGeometry] Texture-Surface '{surface_id}' FEHLER: {exc}"
+                print(error_msg)
+                import traceback
+                traceback.print_exc()
+                continue
+
     def _remove_actor(self, name: str):
         try:
             self.plotter.remove_actor(name)
         except KeyError:
             pass
 
+    def get_texture_metadata(self, surface_id: str) -> Optional[dict[str, Any]]:
+        """
+        Gibt die Metadaten einer Texture-Surface zurück.
+        
+        Args:
+            surface_id: ID der Surface
+            
+        Returns:
+            Dict mit Metadaten oder None, falls Surface nicht gefunden wurde.
+            Metadaten enthalten:
+            - 'actor': PyVista Actor
+            - 'grid': StructuredGrid mit Weltkoordinaten
+            - 'texture': PyVista Texture-Objekt
+            - 'grid_bounds': (xmin, xmax, ymin, ymax, zmin, zmax)
+            - 'world_coords_x': 1D-Array der X-Koordinaten in Metern
+            - 'world_coords_y': 1D-Array der Y-Koordinaten in Metern
+            - 'world_coords_grid_x': 2D-Meshgrid der X-Koordinaten
+            - 'world_coords_grid_y': 2D-Meshgrid der Y-Koordinaten
+            - 'texture_resolution': Auflösung in Metern
+            - 'texture_size': (H, W) in Pixeln
+            - 'image_shape': (H, W, 4) Shape des Bildes
+            - 'polygon_bounds': Dict mit xmin, xmax, ymin, ymax
+            - 'polygon_points': Original Polygon-Punkte
+            - 't_coords': Textur-Koordinaten (n_points, 2)
+            - 'surface_id': Surface-ID
+        """
+        texture_data = self._surface_texture_actors.get(surface_id)
+        if texture_data is None:
+            return None
+        if isinstance(texture_data, dict) and 'metadata' in texture_data:
+            return texture_data['metadata']
+        if isinstance(texture_data, dict) and 'actor' in texture_data:
+            # Neue Struktur: Dict mit Metadaten
+            return texture_data
+        # Alte Struktur: Nur Actor (für Rückwärtskompatibilität)
+        return None
+
+    def get_texture_world_coords(self, surface_id: str, texture_u: float, texture_v: float) -> Optional[tuple[float, float, float]]:
+        """
+        Konvertiert Textur-Koordinaten (u, v) zu Weltkoordinaten (x, y, z).
+        
+        Args:
+            surface_id: ID der Surface
+            texture_u: U-Koordinate [0, 1] (horizontal)
+            texture_v: V-Koordinate [0, 1] (vertikal)
+            
+        Returns:
+            (x, y, z) Weltkoordinaten in Metern oder None bei Fehler
+        """
+        metadata = self.get_texture_metadata(surface_id)
+        if metadata is None:
+            return None
+        
+        try:
+            bounds = metadata.get('grid_bounds')
+            if bounds is None or len(bounds) < 6:
+                return None
+            
+            xmin, xmax = bounds[0], bounds[1]
+            ymin, ymax = bounds[2], bounds[3]
+            zmin, zmax = bounds[4], bounds[5]
+            
+            # Konvertiere normalisierte Textur-Koordinaten zu Weltkoordinaten
+            x = xmin + texture_u * (xmax - xmin)
+            y = ymin + texture_v * (ymax - ymin)
+            z = zmin  # Für horizontale Surfaces ist Z konstant
+            
+            return (x, y, z)
+        except Exception:
+            return None
+
+    def get_world_coords_to_texture_coords(self, surface_id: str, world_x: float, world_y: float) -> Optional[tuple[float, float]]:
+        """
+        Konvertiert Weltkoordinaten (x, y) zu Textur-Koordinaten (u, v).
+        
+        Args:
+            surface_id: ID der Surface
+            world_x: X-Koordinate in Metern
+            world_y: Y-Koordinate in Metern
+            
+        Returns:
+            (u, v) Textur-Koordinaten [0, 1] oder None bei Fehler
+        """
+        metadata = self.get_texture_metadata(surface_id)
+        if metadata is None:
+            return None
+        
+        try:
+            bounds = metadata.get('grid_bounds')
+            if bounds is None or len(bounds) < 6:
+                return None
+            
+            xmin, xmax = bounds[0], bounds[1]
+            ymin, ymax = bounds[2], bounds[3]
+            
+            # Konvertiere Weltkoordinaten zu normalisierten Textur-Koordinaten
+            if xmax > xmin:
+                u = (world_x - xmin) / (xmax - xmin)
+            else:
+                u = 0.0
+            
+            if ymax > ymin:
+                v = (world_y - ymin) / (ymax - ymin)
+            else:
+                v = 0.0
+            
+            # Clippe auf [0, 1]
+            u = max(0.0, min(1.0, u))
+            v = max(0.0, min(1.0, v))
+            
+            return (u, v)
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Debug-Funktionen für Surface-Referenzierung
+    # ------------------------------------------------------------------
+    def debug_positioning_comparison(self, surface_id: Optional[str] = None) -> None:
+        """
+        Vergleicht die Positionierung von Surface-Rändern (Overlays) und SPL-Plots.
+        
+        Analysiert die Koordinaten-Diskrepanz zwischen:
+        - Surface-Ränder (Overlays): Direkte Polygon-Punkte
+        - SPL-Plots (Textures): Grid-basierte Koordinaten mit Margin
+        
+        Args:
+            surface_id: Optional - spezifische Surface-ID zum Debuggen.
+                       Wenn None, werden alle Surfaces analysiert.
+        """
+        if not DEBUG_SURFACE_REF:
+            return
+        
+        print("\n" + "=" * 80)
+        print("🔍 DEBUG: Positionierungs-Vergleich (Overlays vs. SPL-Plots)")
+        print("=" * 80)
+        
+        surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
+        if not isinstance(surface_definitions, dict):
+            print("❌ Keine Surface-Definitionen gefunden")
+            return
+        
+        # Filtere nach surface_id falls angegeben
+        surfaces_to_analyze = {}
+        if surface_id is not None:
+            if surface_id in surface_definitions:
+                surfaces_to_analyze[surface_id] = surface_definitions[surface_id]
+            else:
+                print(f"❌ Surface '{surface_id}' nicht gefunden")
+                return
+        else:
+            surfaces_to_analyze = surface_definitions
+        
+        print(f"\n📋 Analysiere {len(surfaces_to_analyze)} Surface(s)")
+        
+        # Hole Texture-Metadaten
+        render_mode = getattr(self.settings, "spl_surface_render_mode", "mesh") or "mesh"
+        is_texture_mode = render_mode.lower() == "texture"
+        
+        for surf_id, surf_def in surfaces_to_analyze.items():
+            print("\n" + "-" * 80)
+            print(f"🎯 SURFACE: {surf_id}")
+            print("-" * 80)
+            
+            # 1. Surface-Definition (Quelle)
+            if isinstance(surf_def, SurfaceDefinition):
+                enabled = bool(getattr(surf_def, "enabled", False))
+                hidden = bool(getattr(surf_def, "hidden", False))
+                points = getattr(surf_def, "points", []) or []
+            else:
+                enabled = bool(surf_def.get("enabled", False))
+                hidden = bool(surf_def.get("hidden", False))
+                points = surf_def.get("points", [])
+            
+            if not points:
+                print("  ⚠️  Keine Polygon-Punkte gefunden")
+                continue
+            
+            # Extrahiere Koordinaten aus Surface-Definition
+            poly_x = np.array([float(p.get('x', 0.0)) for p in points])
+            poly_y = np.array([float(p.get('y', 0.0)) for p in points])
+            poly_z = np.array([float(p.get('z', 0.0)) for p in points])
+            
+            # Overlay-Koordinaten (wie sie geplottet werden)
+            overlay_x_min, overlay_x_max = float(poly_x.min()), float(poly_x.max())
+            overlay_y_min, overlay_y_max = float(poly_y.min()), float(poly_y.max())
+            overlay_z_min, overlay_z_max = float(poly_z.min()), float(poly_z.max())
+            
+            print(f"\n  📐 OVERLAY-KOORDINATEN (Surface-Ränder):")
+            print(f"  {'─' * 78}")
+            print(f"    Polygon-Bounds:")
+            print(f"      X: [{overlay_x_min:.3f}, {overlay_x_max:.3f}] m")
+            print(f"      Y: [{overlay_y_min:.3f}, {overlay_y_max:.3f}] m")
+            print(f"      Z: [{overlay_z_min:.3f}, {overlay_z_max:.3f}] m")
+            print(f"    Polygon-Punkte: {len(points)}")
+            print(f"    Erster Punkt: ({poly_x[0]:.3f}, {poly_y[0]:.3f}, {poly_z[0]:.3f})")
+            if len(points) > 1:
+                print(f"    Letzter Punkt: ({poly_x[-1]:.3f}, {poly_y[-1]:.3f}, {poly_z[-1]:.3f})")
+            
+            # 2. SPL-Plot-Koordinaten (Texture-Mode)
+            if is_texture_mode and enabled and not hidden:
+                texture_metadata = self.get_texture_metadata(surf_id)
+                if texture_metadata:
+                    print(f"\n  📊 SPL-PLOT-KOORDINATEN (Texture-Grid):")
+                    print(f"  {'─' * 78}")
+                    
+                    bounds = texture_metadata.get('grid_bounds')
+                    if bounds is not None and len(bounds) >= 6:
+                        spl_x_min, spl_x_max = bounds[0], bounds[1]
+                        spl_y_min, spl_y_max = bounds[2], bounds[3]
+                        spl_z_min, spl_z_max = bounds[4], bounds[5]
+                        
+                        print(f"    Grid-Bounds:")
+                        print(f"      X: [{spl_x_min:.3f}, {spl_x_max:.3f}] m")
+                        print(f"      Y: [{spl_y_min:.3f}, {spl_y_max:.3f}] m")
+                        print(f"      Z: [{spl_z_min:.3f}, {spl_z_max:.3f}] m")
+                        
+                        # Berechne Diskrepanz
+                        x_offset_min = spl_x_min - overlay_x_min
+                        x_offset_max = spl_x_max - overlay_x_max
+                        y_offset_min = spl_y_min - overlay_y_min
+                        y_offset_max = spl_y_max - overlay_y_max
+                        
+                        print(f"\n    ⚠️  DISKREPANZ (Grid - Polygon):")
+                        print(f"      X-Min Offset: {x_offset_min:+.3f} m")
+                        print(f"      X-Max Offset: {x_offset_max:+.3f} m")
+                        print(f"      Y-Min Offset: {y_offset_min:+.3f} m")
+                        print(f"      Y-Max Offset: {y_offset_max:+.3f} m")
+                        
+                        # Erwarteter Margin (aus Code: margin = tex_res * 2.0)
+                        tex_res = texture_metadata.get('texture_resolution')
+                        if tex_res is not None:
+                            expected_margin = tex_res * 2.0
+                            print(f"\n    📏 Erwarteter Margin: {expected_margin:.3f} m (= 2 * tex_res)")
+                            print(f"    Tatsächlicher Margin X-Min: {abs(x_offset_min):.3f} m")
+                            print(f"    Tatsächlicher Margin X-Max: {abs(x_offset_max):.3f} m")
+                            print(f"    Tatsächlicher Margin Y-Min: {abs(y_offset_min):.3f} m")
+                            print(f"    Tatsächlicher Margin Y-Max: {abs(y_offset_max):.3f} m")
+                            
+                            # Prüfe ob Margin korrekt ist
+                            margin_tolerance = 0.01  # 1cm Toleranz
+                            if abs(abs(x_offset_min) - expected_margin) > margin_tolerance:
+                                print(f"    ❌ FEHLER: X-Min Margin stimmt nicht! Erwartet: {expected_margin:.3f}, Tatsächlich: {abs(x_offset_min):.3f}")
+                            if abs(abs(x_offset_max) - expected_margin) > margin_tolerance:
+                                print(f"    ❌ FEHLER: X-Max Margin stimmt nicht! Erwartet: {expected_margin:.3f}, Tatsächlich: {abs(x_offset_max):.3f}")
+                            if abs(abs(y_offset_min) - expected_margin) > margin_tolerance:
+                                print(f"    ❌ FEHLER: Y-Min Margin stimmt nicht! Erwartet: {expected_margin:.3f}, Tatsächlich: {abs(y_offset_min):.3f}")
+                            if abs(abs(y_offset_max) - expected_margin) > margin_tolerance:
+                                print(f"    ❌ FEHLER: Y-Max Margin stimmt nicht! Erwartet: {expected_margin:.3f}, Tatsächlich: {abs(y_offset_max):.3f}")
+                        
+                        # Polygon-Bounds aus Metadaten
+                        polygon_bounds = texture_metadata.get('polygon_bounds')
+                        if polygon_bounds:
+                            meta_x_min = polygon_bounds.get('xmin')
+                            meta_y_min = polygon_bounds.get('ymin')
+                            meta_x_max = polygon_bounds.get('xmax')
+                            meta_y_max = polygon_bounds.get('ymax')
+                            
+                            print(f"\n    🔍 VALIDIERUNG (Metadaten vs. Overlay):")
+                            print(f"      Polygon X: Overlay=[{overlay_x_min:.3f}, {overlay_x_max:.3f}], Metadata=[{meta_x_min:.3f}, {meta_x_max:.3f}]")
+                            print(f"      Polygon Y: Overlay=[{overlay_y_min:.3f}, {overlay_y_max:.3f}], Metadata=[{meta_y_min:.3f}, {meta_y_max:.3f}]")
+                            
+                            # Prüfe Konsistenz
+                            if meta_x_min is not None and abs(meta_x_min - overlay_x_min) > 0.001:
+                                print(f"      ❌ FEHLER: X-Min stimmt nicht überein! Differenz: {abs(meta_x_min - overlay_x_min):.3f} m")
+                            if meta_x_max is not None and abs(meta_x_max - overlay_x_max) > 0.001:
+                                print(f"      ❌ FEHLER: X-Max stimmt nicht überein! Differenz: {abs(meta_x_max - overlay_x_max):.3f} m")
+                            if meta_y_min is not None and abs(meta_y_min - overlay_y_min) > 0.001:
+                                print(f"      ❌ FEHLER: Y-Min stimmt nicht überein! Differenz: {abs(meta_y_min - overlay_y_min):.3f} m")
+                            if meta_y_max is not None and abs(meta_y_max - overlay_y_max) > 0.001:
+                                print(f"      ❌ FEHLER: Y-Max stimmt nicht überein! Differenz: {abs(meta_y_max - overlay_y_max):.3f} m")
+                        
+                        # Erste und letzte Grid-Punkte
+                        world_x = texture_metadata.get('world_coords_x')
+                        world_y = texture_metadata.get('world_coords_y')
+                        if world_x is not None and world_y is not None and len(world_x) > 0 and len(world_y) > 0:
+                            print(f"\n    🔍 GRID-KOORDINATEN-DETAILS:")
+                            print(f"      Grid X: [{world_x[0]:.3f}, ..., {world_x[-1]:.3f}] ({len(world_x)} Punkte)")
+                            print(f"      Grid Y: [{world_y[0]:.3f}, ..., {world_y[-1]:.3f}] ({len(world_y)} Punkte)")
+                            print(f"      Grid-Punkt (0,0): ({world_x[0]:.3f}, {world_y[0]:.3f})")
+                            print(f"      Polygon-Punkt (0): ({poly_x[0]:.3f}, {poly_y[0]:.3f})")
+                            print(f"      Differenz: ({world_x[0] - poly_x[0]:+.3f}, {world_y[0] - poly_y[0]:+.3f})")
+                else:
+                    print(f"\n  ❌ Keine Texture-Metadaten gefunden für Surface '{surf_id}'")
+                    print(f"     (Surface ist möglicherweise disabled oder hidden)")
+            else:
+                print(f"\n  ⚠️  Texture-Modus nicht aktiv oder Surface disabled/hidden")
+                print(f"     Render-Modus: {render_mode}, enabled={enabled}, hidden={hidden}")
+        
+        print("\n" + "=" * 80)
+    
+    def debug_surface_referencing(self, surface_id: Optional[str] = None) -> None:
+        """
+        Debug-Ausgabe für die Referenzierung von Surfaces im Plot.
+        
+        Analysiert und zeigt:
+        - Surface-Actors (Mesh- und Texture-Modus)
+        - Weltkoordinaten
+        - Textur-Koordinaten (TCoords)
+        - Mapping zwischen Koordinaten-Systemen
+        
+        Args:
+            surface_id: Optional - spezifische Surface-ID zum Debuggen. 
+                       Wenn None, werden alle Surfaces analysiert.
+        """
+        # Funktion kann auch manuell aufgerufen werden (ohne Environment-Variable)
+        # Für automatischen Aufruf: Setze LFO_DEBUG_SURFACE_REF=1
+        
+        print("\n" + "=" * 80)
+        print("🔍 DEBUG: Surface-Referenzierung im 3D-Plot")
+        print("=" * 80)
+        
+        render_mode = getattr(self.settings, "spl_surface_render_mode", "mesh") or "mesh"
+        print(f"\n📊 Render-Modus: {render_mode.upper()}")
+        
+        surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
+        if not isinstance(surface_definitions, dict):
+            print("❌ Keine Surface-Definitionen gefunden")
+            return
+        
+        # Filtere nach surface_id falls angegeben
+        surfaces_to_analyze = {}
+        if surface_id is not None:
+            if surface_id in surface_definitions:
+                surfaces_to_analyze[surface_id] = surface_definitions[surface_id]
+            else:
+                print(f"❌ Surface '{surface_id}' nicht gefunden")
+                return
+        else:
+            surfaces_to_analyze = surface_definitions
+        
+        print(f"\n📋 Analysiere {len(surfaces_to_analyze)} Surface(s)")
+        
+        for surf_id, surf_def in surfaces_to_analyze.items():
+            print("\n" + "-" * 80)
+            print(f"🎯 SURFACE: {surf_id}")
+            print("-" * 80)
+            
+            # Surface-Definition
+            if isinstance(surf_def, SurfaceDefinition):
+                enabled = bool(getattr(surf_def, "enabled", False))
+                hidden = bool(getattr(surf_def, "hidden", False))
+                points = getattr(surf_def, "points", []) or []
+            else:
+                enabled = bool(surf_def.get("enabled", False))
+                hidden = bool(surf_def.get("hidden", False))
+                points = surf_def.get("points", [])
+            
+            print(f"  Status: enabled={enabled}, hidden={hidden}")
+            print(f"  Polygon-Punkte: {len(points)}")
+            
+            if points:
+                poly_x = [float(p.get('x', 0.0)) for p in points]
+                poly_y = [float(p.get('y', 0.0)) for p in points]
+                poly_z = [float(p.get('z', 0.0)) for p in points]
+                
+                print(f"  Polygon-Bounds:")
+                print(f"    X: [{min(poly_x):.3f}, {max(poly_x):.3f}] m")
+                print(f"    Y: [{min(poly_y):.3f}, {max(poly_y):.3f}] m")
+                print(f"    Z: [{min(poly_z):.3f}, {max(poly_z):.3f}] m")
+                
+                if len(points) <= 6:
+                    print(f"  Polygon-Punkte (alle):")
+                    for i, p in enumerate(points):
+                        print(f"    P{i}: ({p.get('x', 0.0):.3f}, {p.get('y', 0.0):.3f}, {p.get('z', 0.0):.3f})")
+                else:
+                    print(f"  Polygon-Punkte (erste 3):")
+                    for i, p in enumerate(points[:3]):
+                        print(f"    P{i}: ({p.get('x', 0.0):.3f}, {p.get('y', 0.0):.3f}, {p.get('z', 0.0):.3f})")
+                    print(f"    ... ({len(points) - 3} weitere Punkte)")
+            
+            # Analyse basierend auf Render-Modus
+            if render_mode.lower() == "texture":
+                self._debug_texture_surface_ref(surf_id, enabled, hidden)
+            else:
+                self._debug_mesh_surface_ref(surf_id, enabled, hidden)
+        
+        print("\n" + "=" * 80)
+    
+    def _debug_texture_surface_ref(self, surface_id: str, enabled: bool, hidden: bool) -> None:
+        """Debug-Ausgabe für Texture-Surface."""
+        if not enabled or hidden:
+            print(f"  ⚠️  Surface ist disabled oder hidden - keine Actor-Daten verfügbar")
+            return
+        
+        texture_data = self._surface_texture_actors.get(surface_id)
+        if texture_data is None:
+            print(f"  ❌ Keine Texture-Actor-Daten gefunden")
+            return
+        
+        # Hole Metadaten (neue Struktur) oder Actor (alte Struktur)
+        if isinstance(texture_data, dict) and 'actor' in texture_data:
+            metadata = texture_data
+            actor = metadata.get('actor')
+        else:
+            actor = texture_data
+            metadata = None
+        
+        print(f"\n  📐 TEXTURE-MODUS")
+        print(f"  {'─' * 78}")
+        
+        if metadata:
+            print(f"\n  ✅ Metadaten verfügbar")
+            
+            bounds = metadata.get('grid_bounds')
+            if bounds is not None and len(bounds) >= 6:
+                print(f"  Grid-Bounds (Weltkoordinaten):")
+                print(f"    X: [{bounds[0]:.3f}, {bounds[1]:.3f}] m")
+                print(f"    Y: [{bounds[2]:.3f}, {bounds[3]:.3f}] m")
+                print(f"    Z: [{bounds[4]:.3f}, {bounds[5]:.3f}] m")
+                print(f"    Breite: {bounds[1] - bounds[0]:.3f} m")
+                print(f"    Höhe: {bounds[3] - bounds[2]:.3f} m")
+            
+            world_x = metadata.get('world_coords_x')
+            world_y = metadata.get('world_coords_y')
+            if world_x is not None and world_y is not None:
+                print(f"  Weltkoordinaten-Arrays:")
+                print(f"    X: {len(world_x)} Punkte, [{world_x[0]:.3f}, ..., {world_x[-1]:.3f}] m")
+                print(f"    Y: {len(world_y)} Punkte, [{world_y[0]:.3f}, ..., {world_y[-1]:.3f}] m")
+            
+            grid_x = metadata.get('world_coords_grid_x')
+            grid_y = metadata.get('world_coords_grid_y')
+            if grid_x is not None and grid_y is not None:
+                print(f"  Grid-Meshgrid:")
+                print(f"    Shape X: {grid_x.shape}")
+                print(f"    Shape Y: {grid_y.shape}")
+                print(f"    Beispiel-Punkt (0,0): x={grid_x[0,0]:.3f}m, y={grid_y[0,0]:.3f}m")
+                if grid_x.shape[0] > 1 and grid_x.shape[1] > 1:
+                    print(f"    Beispiel-Punkt (letztes): x={grid_x[-1,-1]:.3f}m, y={grid_y[-1,-1]:.3f}m")
+            
+            tex_res = metadata.get('texture_resolution')
+            if tex_res is not None:
+                print(f"  Texture-Auflösung: {tex_res:.4f} m")
+            
+            tex_size = metadata.get('texture_size')
+            if tex_size is not None:
+                print(f"  Texture-Größe: {tex_size[0]}x{tex_size[1]} Pixel")
+            
+            img_shape = metadata.get('image_shape')
+            if img_shape is not None:
+                print(f"  Bild-Shape: {img_shape}")
+            
+            t_coords = metadata.get('t_coords')
+            if t_coords is not None:
+                print(f"  Textur-Koordinaten (TCoords):")
+                print(f"    Shape: {t_coords.shape}")
+                print(f"    U-Bereich: [{np.min(t_coords[:, 0]):.3f}, {np.max(t_coords[:, 0]):.3f}]")
+                print(f"    V-Bereich: [{np.min(t_coords[:, 1]):.3f}, {np.max(t_coords[:, 1]):.3f}]")
+                
+                # Beispiel-Mapping
+                if t_coords.shape[0] > 0:
+                    idx_example = 0
+                    u_example = t_coords[idx_example, 0]
+                    v_example = t_coords[idx_example, 1]
+                    print(f"    Beispiel TCoords[0]: u={u_example:.3f}, v={v_example:.3f}")
+                    
+                    # Konvertiere zu Weltkoordinaten
+                    world_coords = self.get_texture_world_coords(surface_id, u_example, v_example)
+                    if world_coords:
+                        print(f"      → Weltkoordinaten: x={world_coords[0]:.3f}m, y={world_coords[1]:.3f}m, z={world_coords[2]:.3f}m")
+                    
+                    # Rück-Konvertierung
+                    if grid_x is not None and grid_y is not None:
+                        x_actual = grid_x.ravel()[idx_example] if grid_x.size > idx_example else None
+                        y_actual = grid_y.ravel()[idx_example] if grid_y.size > idx_example else None
+                        if x_actual is not None and y_actual is not None:
+                            tex_back = self.get_world_coords_to_texture_coords(surface_id, float(x_actual), float(y_actual))
+                            if tex_back:
+                                print(f"      → Rück-Konvertierung: u={tex_back[0]:.3f}, v={tex_back[1]:.3f}")
+            
+            polygon_bounds = metadata.get('polygon_bounds')
+            if polygon_bounds:
+                print(f"  Polygon-Bounds (aus Metadaten):")
+                print(f"    X: [{polygon_bounds.get('xmin', 0):.3f}, {polygon_bounds.get('xmax', 0):.3f}] m")
+                print(f"    Y: [{polygon_bounds.get('ymin', 0):.3f}, {polygon_bounds.get('ymax', 0):.3f}] m")
+            
+            # Prüfe Grid im Actor
+            if actor is not None:
+                try:
+                    grid = metadata.get('grid')
+                    if grid is not None and hasattr(grid, 'points'):
+                        grid_points = grid.points
+                        if grid_points is not None and len(grid_points) > 0:
+                            print(f"  Grid im Actor:")
+                            print(f"    Anzahl Punkte: {len(grid_points)}")
+                            print(f"    Erster Punkt: ({grid_points[0,0]:.3f}, {grid_points[0,1]:.3f}, {grid_points[0,2]:.3f}) m")
+                            print(f"    Letzter Punkt: ({grid_points[-1,0]:.3f}, {grid_points[-1,1]:.3f}, {grid_points[-1,2]:.3f}) m")
+                            
+                            # Vergleiche mit Metadaten
+                            if bounds is not None:
+                                grid_bounds_actual = grid.bounds
+                                print(f"    Grid-Bounds (vom Grid):")
+                                print(f"      X: [{grid_bounds_actual[0]:.3f}, {grid_bounds_actual[1]:.3f}] m")
+                                print(f"      Y: [{grid_bounds_actual[2]:.3f}, {grid_bounds_actual[3]:.3f}] m")
+                                
+                                # Validierung
+                                if abs(bounds[0] - grid_bounds_actual[0]) > 0.001:
+                                    print(f"    ⚠️  WARNUNG: X-Min stimmt nicht überein!")
+                                if abs(bounds[1] - grid_bounds_actual[1]) > 0.001:
+                                    print(f"    ⚠️  WARNUNG: X-Max stimmt nicht überein!")
+                                
+                            # Prüfe TCoords im Grid
+                            if hasattr(grid, 'point_data'):
+                                grid_tcoords = grid.point_data.get('TCoords')
+                                if grid_tcoords is not None:
+                                    print(f"    TCoords im Grid:")
+                                    print(f"      Shape: {grid_tcoords.shape}")
+                                    print(f"      Erste TCoords: u={grid_tcoords[0,0]:.3f}, v={grid_tcoords[0,1]:.3f}")
+                except Exception as e:
+                    print(f"  ⚠️  Fehler beim Lesen des Grids: {e}")
+        
+        else:
+            print(f"  ⚠️  Alte Struktur (nur Actor, keine Metadaten)")
+            if actor is not None:
+                print(f"  Actor gefunden: {type(actor).__name__}")
+                try:
+                    if hasattr(actor, 'mapper') and actor.mapper is not None:
+                        mesh = actor.mapper.GetInput()
+                        if mesh is not None and hasattr(mesh, 'points'):
+                            points = mesh.points
+                            if points is not None and len(points) > 0:
+                                print(f"    Mesh-Punkte: {len(points)}")
+                                print(f"    Erster Punkt: ({points[0,0]:.3f}, {points[0,1]:.3f}, {points[0,2]:.3f}) m")
+                except Exception as e:
+                    print(f"    ⚠️  Fehler beim Lesen des Actors: {e}")
+    
+    def _debug_mesh_surface_ref(self, surface_id: str, enabled: bool, hidden: bool) -> None:
+        """Debug-Ausgabe für Mesh-Surface."""
+        if not enabled or hidden:
+            print(f"  ⚠️  Surface ist disabled oder hidden - keine Actor-Daten verfügbar")
+            return
+        
+        actor = self._surface_actors.get(surface_id)
+        if actor is None:
+            # Prüfe ob es im kombinierten Mesh ist
+            base_actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
+            if base_actor is not None:
+                print(f"\n  📐 MESH-MODUS (kombiniertes Mesh)")
+                print(f"  {'─' * 78}")
+                print(f"  ✅ Surface ist Teil des kombinierten Mesh-Actors '{self.SURFACE_NAME}'")
+                try:
+                    if hasattr(base_actor, 'mapper') and base_actor.mapper is not None:
+                        mesh = base_actor.mapper.GetInput()
+                        if mesh is not None and hasattr(mesh, 'points'):
+                            points = mesh.points
+                            if points is not None and len(points) > 0:
+                                print(f"    Mesh-Punkte: {len(points)}")
+                                print(f"    Erster Punkt: ({points[0,0]:.3f}, {points[0,1]:.3f}, {points[0,2]:.3f}) m")
+                                print(f"    Letzter Punkt: ({points[-1,0]:.3f}, {points[-1,1]:.3f}, {points[-1,2]:.3f}) m")
+                                
+                                bounds = mesh.bounds if hasattr(mesh, 'bounds') else None
+                                if bounds is not None:
+                                    print(f"    Mesh-Bounds:")
+                                    print(f"      X: [{bounds[0]:.3f}, {bounds[1]:.3f}] m")
+                                    print(f"      Y: [{bounds[2]:.3f}, {bounds[3]:.3f}] m")
+                                    print(f"      Z: [{bounds[4]:.3f}, {bounds[5]:.3f}] m")
+                except Exception as e:
+                    print(f"    ⚠️  Fehler beim Lesen des Mesh-Actors: {e}")
+            else:
+                print(f"  ❌ Keine Mesh-Actor-Daten gefunden")
+            return
+        
+        print(f"\n  📐 MESH-MODUS (individueller Actor)")
+        print(f"  {'─' * 78}")
+        print(f"  ✅ Individueller Actor gefunden")
+        
+        try:
+            if hasattr(actor, 'mapper') and actor.mapper is not None:
+                mesh = actor.mapper.GetInput()
+                if mesh is not None and hasattr(mesh, 'points'):
+                    points = mesh.points
+                    if points is not None and len(points) > 0:
+                        print(f"    Mesh-Punkte: {len(points)}")
+                        print(f"    Mesh-Zellen: {mesh.n_cells if hasattr(mesh, 'n_cells') else 'unbekannt'}")
+                        print(f"    Erster Punkt: ({points[0,0]:.3f}, {points[0,1]:.3f}, {points[0,2]:.3f}) m")
+                        if len(points) > 1:
+                            print(f"    Letzter Punkt: ({points[-1,0]:.3f}, {points[-1,1]:.3f}, {points[-1,2]:.3f}) m")
+                        
+                        bounds = mesh.bounds if hasattr(mesh, 'bounds') else None
+                        if bounds is not None:
+                            print(f"    Mesh-Bounds (Weltkoordinaten):")
+                            print(f"      X: [{bounds[0]:.3f}, {bounds[1]:.3f}] m")
+                            print(f"      Y: [{bounds[2]:.3f}, {bounds[3]:.3f}] m")
+                            print(f"      Z: [{bounds[4]:.3f}, {bounds[5]:.3f}] m")
+                            print(f"      Breite: {bounds[1] - bounds[0]:.3f} m")
+                            print(f"      Höhe: {bounds[3] - bounds[2]:.3f} m")
+                        
+                        # Prüfe Scalars
+                        if hasattr(mesh, 'point_data'):
+                            scalars = mesh.point_data.get('plot_scalars')
+                            if scalars is not None:
+                                print(f"    Scalars (SPL-Werte):")
+                                print(f"      Shape: {scalars.shape}")
+                                print(f"      Min: {np.nanmin(scalars):.2f}")
+                                print(f"      Max: {np.nanmax(scalars):.2f}")
+                                print(f"      Mean: {np.nanmean(scalars):.2f}")
+        except Exception as e:
+            print(f"    ⚠️  Fehler beim Lesen des Mesh-Actors: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ------------------------------------------------------------------
     # Hilfsfunktionen für Farben/Skalierung

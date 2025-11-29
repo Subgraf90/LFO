@@ -227,6 +227,8 @@ class Settings:
             # True  = PyVista sample() auf feinem Surface-Mesh (glatte Ränder, keine Zacken)
             'spl_plot_use_pyvista_sample': False,
             'impulse_points': [],
+            'spl_surface_render_mode': "texture",
+            #texture oder mesh
             'polar_frequencies': {
                 'red': 31.5,
                 'yellow': 40,
