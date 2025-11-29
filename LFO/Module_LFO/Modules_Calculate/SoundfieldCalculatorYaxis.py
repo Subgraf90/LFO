@@ -1,5 +1,6 @@
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
 
 "SoundfieldCalculatorYaxis berechnet die SPL-Werte in Abhängigkeit der Länge des Schallfeldes"
 
@@ -13,16 +14,313 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         # 🚀 PERFORMANCE: Cache für optimierten Balloon-Data Zugriff
         self._data_container = None  # Wird bei Bedarf gesetzt
 
-    def calculateYAxis(self):
-        resolution = 0.25
-        total_columns = int(self.settings.width / resolution)
-        column_index = int((self.settings.position_x_axis / resolution) + (total_columns / 2))
-        column_index = max(0, min(column_index, total_columns - 1))
+    def _get_active_xy_surfaces(self):
+        """Sammelt alle aktiven Surfaces für XY-Berechnung (xy_enabled=True, enabled=True, hidden=False)"""
+        active_surfaces = []
+        surface_store = getattr(self.settings, 'surface_definitions', {})
         
-        sound_field_p = self.calculate_sound_field_column(column_index)[0].flatten()
+        print(f"[DEBUG Y-Axis] Prüfe {len(surface_store)} Surfaces auf Aktivität...")
+        
+        for surface_id, surface in surface_store.items():
+            # Prüfe ob Surface aktiv ist
+            if isinstance(surface, SurfaceDefinition):
+                xy_enabled = getattr(surface, 'xy_enabled', True)
+                enabled = surface.enabled
+                hidden = surface.hidden
+                name = surface.name
+            else:
+                xy_enabled = surface.get('xy_enabled', True)
+                enabled = surface.get('enabled', False)
+                hidden = surface.get('hidden', False)
+                name = surface.get('name', surface_id)
+            
+            print(f"[DEBUG Y-Axis] Surface '{name}' ({surface_id}): xy_enabled={xy_enabled}, enabled={enabled}, hidden={hidden}")
+            
+            if xy_enabled and enabled and not hidden:
+                active_surfaces.append((surface_id, surface))
+                print(f"[DEBUG Y-Axis] ✓ Surface '{name}' ist AKTIV für XY-Berechnung")
+            else:
+                reason = []
+                if not xy_enabled:
+                    reason.append("xy_disabled")
+                if not enabled:
+                    reason.append("disabled")
+                if hidden:
+                    reason.append("hidden")
+                print(f"[DEBUG Y-Axis] ✗ Surface '{name}' ist NICHT aktiv: {', '.join(reason)}")
+        
+        print(f"[DEBUG Y-Axis] Gesamt: {len(active_surfaces)} aktive Surfaces gefunden")
+        return active_surfaces
+    
+    def _line_intersects_surface_yz(self, x_const, surface):
+        """
+        Prüft, ob eine Linie x=const die Surface schneidet (Projektion auf YZ-Ebene).
+        Für Y-Axis: Linie ist x=position_x_axis (konstant)
+        
+        Args:
+            x_const: Konstante X-Koordinate der Linie
+            surface: SurfaceDefinition oder Dict mit Surface-Daten
+            
+        Returns:
+            bool: True wenn Linie die Surface schneidet
+        """
+        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+        if len(points) < 3:
+            return False
+        
+        surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', 'unknown')
+        
+        # Extrahiere X-Koordinaten
+        x_coords = [p.get('x', 0.0) for p in points]
+        x_min = min(x_coords)
+        x_max = max(x_coords)
+        
+        # Prüfe ob x_const im X-Bereich der Surface liegt
+        intersects = x_min <= x_const <= x_max
+        
+        if intersects:
+            print(f"[DEBUG Y-Axis] ✓ Linie x={x_const:.2f} schneidet Surface '{surface_name}' (X-Bereich: {x_min:.2f} bis {x_max:.2f})")
+        else:
+            print(f"[DEBUG Y-Axis] ✗ Linie x={x_const:.2f} schneidet Surface '{surface_name}' NICHT (X-Bereich: {x_min:.2f} bis {x_max:.2f})")
+        
+        return intersects
+    
+    def _get_surface_intersection_points_yz(self, x_const, surface):
+        """
+        Gibt die Y- und Z-Koordinaten der Surface-Punkte zurück, wenn Linie x=const die Surface schneidet.
+        Für Y-Axis: Verwende y- und z-Koordinaten der Surface-Punkte.
+        
+        WICHTIG: Holt die aktuellen Punkte direkt aus settings.surface_definitions, um sicherzustellen,
+        dass immer die neuesten Daten verwendet werden (auch nach Aktivierung/Deaktivierung).
+        
+        Args:
+            x_const: Konstante X-Koordinate der Linie
+            surface: SurfaceDefinition oder Dict mit Surface-Daten (kann veraltet sein)
+            
+        Returns:
+            tuple: (y_coords, z_coords) als Arrays oder (None, None) wenn keine Schnittpunkte
+        """
+        if not self._line_intersects_surface_yz(x_const, surface):
+            return None, None
+        
+        # Hole aktuelle Surface-Daten direkt aus settings, um sicherzustellen, dass wir
+        # immer die neuesten Punkte verwenden (auch nach Aktivierung/Deaktivierung)
+        surface_id = None
+        if isinstance(surface, SurfaceDefinition):
+            # Versuche surface_id zu finden
+            surface_store = getattr(self.settings, 'surface_definitions', {})
+            for sid, sdef in surface_store.items():
+                if sdef is surface or (hasattr(sdef, 'name') and hasattr(surface, 'name') and sdef.name == surface.name):
+                    surface_id = sid
+                    break
+        elif isinstance(surface, dict):
+            # Versuche surface_id aus dem Dict zu extrahieren oder zu finden
+            surface_store = getattr(self.settings, 'surface_definitions', {})
+            surface_name = surface.get('name', '')
+            for sid, sdef in surface_store.items():
+                if isinstance(sdef, SurfaceDefinition):
+                    if sdef.name == surface_name:
+                        surface_id = sid
+                        break
+                elif isinstance(sdef, dict) and sdef.get('name') == surface_name:
+                    surface_id = sid
+                    break
+        
+        # Hole aktuelle Punkte aus settings und prüfe ob Surface noch aktiv ist
+        current_points = None
+        if surface_id and hasattr(self.settings, 'surface_definitions'):
+            current_surface = self.settings.surface_definitions.get(surface_id)
+            if current_surface:
+                # Prüfe ob Surface noch aktiv ist (xy_enabled, enabled, hidden)
+                if isinstance(current_surface, SurfaceDefinition):
+                    xy_enabled = getattr(current_surface, 'xy_enabled', True)
+                    enabled = current_surface.enabled
+                    hidden = current_surface.hidden
+                    if xy_enabled and enabled and not hidden:
+                        current_points = current_surface.points
+                    else:
+                        print(f"[DEBUG Y-Axis] ⚠ Surface '{current_surface.name}' ({surface_id}) ist nicht mehr aktiv - überspringe")
+                        return None, None
+                elif isinstance(current_surface, dict):
+                    xy_enabled = current_surface.get('xy_enabled', True)
+                    enabled = current_surface.get('enabled', False)
+                    hidden = current_surface.get('hidden', False)
+                    if xy_enabled and enabled and not hidden:
+                        current_points = current_surface.get('points', [])
+                    else:
+                        print(f"[DEBUG Y-Axis] ⚠ Surface '{current_surface.get('name', surface_id)}' ({surface_id}) ist nicht mehr aktiv - überspringe")
+                        return None, None
+        
+        # Fallback: Verwende übergebene Surface-Daten (nur wenn keine aktuelle Surface gefunden wurde)
+        if current_points is None:
+            # Prüfe auch hier nochmal, ob die übergebene Surface aktiv ist
+            if isinstance(surface, SurfaceDefinition):
+                xy_enabled = getattr(surface, 'xy_enabled', True)
+                enabled = surface.enabled
+                hidden = surface.hidden
+                if not (xy_enabled and enabled and not hidden):
+                    print(f"[DEBUG Y-Axis] ⚠ Surface '{surface.name}' ist nicht aktiv - überspringe")
+                    return None, None
+                current_points = surface.points
+            else:
+                xy_enabled = surface.get('xy_enabled', True)
+                enabled = surface.get('enabled', False)
+                hidden = surface.get('hidden', False)
+                if not (xy_enabled and enabled and not hidden):
+                    print(f"[DEBUG Y-Axis] ⚠ Surface '{surface.get('name', 'unknown')}' ist nicht aktiv - überspringe")
+                    return None, None
+                current_points = surface.get('points', [])
+        
+        if len(current_points) < 3:
+            return None, None
+        
+        # Extrahiere Y- und Z-Koordinaten aller Punkte
+        y_coords = np.array([p.get('y', 0.0) for p in current_points])
+        z_coords = np.array([p.get('z', 0.0) if p.get('z') is not None else 0.0 for p in current_points])
+        
+        # Sortiere nach Y-Koordinaten für konsistente Reihenfolge
+        sort_indices = np.argsort(y_coords)
+        y_coords = y_coords[sort_indices]
+        z_coords = z_coords[sort_indices]
+        
+        return y_coords, z_coords
+    
+    def _interpolate_surface_points(self, coords, z_coords, target_resolution=0.1):
+        """
+        Interpoliert Surface-Punkte auf eine höhere Auflösung (10cm Schritte).
+        
+        Args:
+            coords: Array von X- oder Y-Koordinaten
+            z_coords: Array von Z-Koordinaten
+            target_resolution: Ziel-Auflösung in Metern (Standard: 0.1 = 10cm)
+            
+        Returns:
+            tuple: (interpolated_coords, interpolated_z_coords) als Arrays
+        """
+        if len(coords) < 2:
+            return coords, z_coords
+        
+        # Erstelle neue Koordinaten mit target_resolution Schritten
+        min_coord = coords.min()
+        max_coord = coords.max()
+        interpolated_coords = np.arange(min_coord, max_coord + target_resolution, target_resolution)
+        
+        # Interpoliere Z-Koordinaten linear
+        interpolated_z_coords = np.interp(interpolated_coords, coords, z_coords)
+        
+        return interpolated_coords, interpolated_z_coords
+    
+    def calculateYAxis(self):
+        resolution = 0.1  # 10cm Auflösung
+        position_x = self.settings.position_x_axis
+        
+        print(f"\n[DEBUG Y-Axis] ===== Y-Axis Berechnung gestartet =====")
+        print(f"[DEBUG Y-Axis] Position X-Axis: {position_x:.2f}")
+        
+        # Prüfe ob aktive Surfaces vorhanden sind, die die Linie x=position_x schneiden
+        active_surfaces = self._get_active_xy_surfaces()
+        all_y_coords = []
+        all_z_coords = []
+        used_surfaces = []
+        
+        for surface_id, surface in active_surfaces:
+            # Prüfe nochmal, ob Surface noch aktiv ist (könnte sich während der Berechnung geändert haben)
+            surface_store = getattr(self.settings, 'surface_definitions', {})
+            current_surface = surface_store.get(surface_id)
+            if current_surface:
+                if isinstance(current_surface, SurfaceDefinition):
+                    xy_enabled = getattr(current_surface, 'xy_enabled', True)
+                    enabled = current_surface.enabled
+                    hidden = current_surface.hidden
+                else:
+                    xy_enabled = current_surface.get('xy_enabled', True)
+                    enabled = current_surface.get('enabled', False)
+                    hidden = current_surface.get('hidden', False)
+                
+                if not (xy_enabled and enabled and not hidden):
+                    surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', surface_id)
+                    print(f"[DEBUG Y-Axis] ⚠ Surface '{surface_name}' ({surface_id}) wurde deaktiviert - überspringe")
+                    continue
+            
+            surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', surface_id)
+            if self._line_intersects_surface_yz(position_x, surface):
+                y_coords, z_coords = self._get_surface_intersection_points_yz(position_x, surface)
+                if y_coords is not None and z_coords is not None:
+                    # Sammle alle Punkte von allen geschnittenen Surfaces
+                    all_y_coords.append(y_coords)
+                    all_z_coords.append(z_coords)
+                    used_surfaces.append((surface_id, surface_name, len(y_coords)))
+                    print(f"[DEBUG Y-Axis] ✓ Surface '{surface_name}' ({surface_id}) wird verwendet")
+                    print(f"[DEBUG Y-Axis]   Anzahl Punkte: {len(y_coords)}")
+                    print(f"[DEBUG Y-Axis]   Y-Bereich: {y_coords.min():.2f} bis {y_coords.max():.2f}")
+                    print(f"[DEBUG Y-Axis]   Z-Bereich: {z_coords.min():.2f} bis {z_coords.max():.2f}")
+        
+        # Behalte Segmente getrennt für separate Berechnung
+        # WICHTIG: Jede Surface bleibt als separates Segment, damit deaktivierte Surfaces als Lücken sichtbar sind
+        if all_y_coords:
+            # Sortiere Surfaces nach Y-Position (min Y-Koordinate)
+            surface_segments = list(zip(all_y_coords, all_z_coords, used_surfaces))
+            surface_segments.sort(key=lambda seg: seg[0].min())  # Sortiere nach min Y-Koordinate
+            
+            print(f"[DEBUG Y-Axis] ✓ Gesamt: {len(used_surfaces)} Surfaces als separate Segmente")
+            for i, (y_coords, z_coords, (surface_id, surface_name, _)) in enumerate(surface_segments):
+                print(f"[DEBUG Y-Axis]   Segment {i+1}: '{surface_name}' - {len(y_coords)} Punkte, Y: {y_coords.min():.2f} bis {y_coords.max():.2f}")
+        else:
+            surface_segments = []
+        
+        if not surface_segments:
+            print(f"[DEBUG Y-Axis] ✗ Keine aktive Surface gefunden, die Linie x={position_x:.2f} schneidet")
+            print(f"[DEBUG Y-Axis] → Verwende Standard-Grid (Länge: {self.settings.length:.2f})")
+        
+        # Wenn Surface-Punkte gefunden wurden, verwende diese
+        if surface_segments:
+            # Berechne SPL pro Segment separat
+            all_interpolated_y = []
+            all_sound_field_p = []
+            
+            for i, (y_coords, z_coords, (surface_id, surface_name, _)) in enumerate(surface_segments):
+                # Sortiere Punkte innerhalb des Segments nach Y
+                sort_indices = np.argsort(y_coords)
+                y_sorted = y_coords[sort_indices]
+                z_sorted = z_coords[sort_indices]
+                
+                # Interpoliere Segment auf höhere Auflösung (10cm)
+                interpolated_y, interpolated_z = self._interpolate_surface_points(
+                    y_sorted, z_sorted, target_resolution=resolution
+                )
+                
+                # Berechne SPL für Segment
+                sound_field_p_segment = self.calculate_sound_field_at_points_yz(
+                    position_x, interpolated_y, interpolated_z
+                )
+                
+                # Füge Segment hinzu
+                all_interpolated_y.append(interpolated_y)
+                all_sound_field_p.append(sound_field_p_segment)
+                
+                # Füge NaN-Trenner zwischen Segmenten hinzu (außer beim letzten)
+                if i < len(surface_segments) - 1:
+                    all_interpolated_y.append(np.array([np.nan]))
+                    all_sound_field_p.append(np.array([np.nan]))
+            
+            # Kombiniere alle Segmente
+            sound_field_y_yaxis_calc = np.concatenate(all_interpolated_y)
+            sound_field_p = np.concatenate(all_sound_field_p)
+            
+            print(f"[DEBUG Y-Axis] → Berechnung mit {len(surface_segments)} Surface-Segmenten abgeschlossen")
+            print(f"[DEBUG Y-Axis]   Gesamtanzahl Plot-Punkte: {len(sound_field_y_yaxis_calc)} (inkl. NaN-Trenner)")
+            print(f"[DEBUG Y-Axis] ✓ Berechnung mit interpolierten Surface-Punkten abgeschlossen")
+        else:
+            # Standard-Verhalten: Verwende feste Länge
+            total_columns = int(self.settings.width / resolution)
+            column_index = int((position_x / resolution) + (total_columns / 2))
+            column_index = max(0, min(column_index, total_columns - 1))
+            
+            sound_field_p = self.calculate_sound_field_column(column_index)[0].flatten()
+            sound_field_y_yaxis_calc = np.arange((self.settings.length / 2 * -1), ((self.settings.length / 2) + resolution), resolution)
+            print(f"[DEBUG Y-Axis] → Standard-Grid mit Resolution: {resolution*100:.0f}cm")
        
         sound_field_p_calc = self.functions.mag2db(sound_field_p)
-        sound_field_y_yaxis_calc = np.arange((self.settings.length / 2 * -1), ((self.settings.length / 2) + resolution), resolution)
 
         # Prüfen, ob es aktive Quellen gibt oder ob das Ergebnis verwertbar ist
         has_active_sources = any(not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values())
@@ -118,6 +416,142 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         # Verwende die gleiche Interpolationslogik für beide Datentypen
         return self._interpolate_angle_data(magnitude, phase, vertical_angles, azimuth, elevation)
 
+    def calculate_sound_field_at_points_yz(self, x_const, y_coords, z_coords):
+        """
+        Berechnet SPL-Werte für spezifische Punkte (Y- und Z-Koordinaten bei konstanter X-Position).
+        Für Y-Axis: Berechnet SPL entlang der Surface-Punkte.
+        
+        Args:
+            x_const: Konstante X-Koordinate
+            y_coords: Array von Y-Koordinaten
+            z_coords: Array von Z-Koordinaten
+            
+        Returns:
+            np.ndarray: SPL-Werte für die gegebenen Punkte
+        """
+        y_coords = np.asarray(y_coords, dtype=float)
+        z_coords = np.asarray(z_coords, dtype=float)
+        n_points = len(y_coords)
+        
+        # Initialisiere Schallfeld als komplexes Array
+        sound_field_p = np.zeros(n_points, dtype=complex)
+        calculate_frequency = self.settings.calculate_frequency
+        speed_of_sound = self.settings.speed_of_sound
+        wave_number = self.functions.wavenumber(speed_of_sound, calculate_frequency)
+        a_source_pa = self.functions.db2spl(self.functions.db2mag(self.settings.a_source_db))
+        use_air_absorption = getattr(self.settings, "use_air_absorption", False)
+        air_absorption_coeff = 0.0
+        if use_air_absorption:
+            air_absorption_coeff = self.functions.calculate_air_absorption(
+                calculate_frequency,
+                getattr(self.settings, "temperature", 20.0),
+                getattr(self.settings, "humidity", 50.0),
+            )
+        
+        # Iteriere über alle Lautsprecher-Arrays
+        for speaker_array in self.settings.speaker_arrays.values():
+            if speaker_array.mute or speaker_array.hide:
+                continue
+            
+            # Konvertiere Lautsprechernamen in Indizes
+            speaker_indices = []
+            for speaker_name in speaker_array.source_polar_pattern:
+                try:
+                    speaker_names = self._data_container.get_speaker_names()
+                    index = speaker_names.index(speaker_name)
+                    speaker_indices.append(index)
+                except ValueError:
+                    print(f"Warnung: Lautsprecher {speaker_name} nicht gefunden")
+                    speaker_indices.append(0)
+            
+            source_indices = np.array(speaker_indices)
+            source_position_x = getattr(
+                speaker_array,
+                'source_position_calc_x',
+                speaker_array.source_position_x,
+            )
+            source_position_y = getattr(
+                speaker_array,
+                'source_position_calc_y',
+                speaker_array.source_position_y,
+            )
+            
+            source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
+            if source_position_z is None:
+                source_position_z = np.zeros(len(speaker_array.source_polar_pattern), dtype=float)
+            elif not isinstance(source_position_z, (np.ndarray, list)):
+                source_position_z = np.full(len(speaker_array.source_polar_pattern), float(source_position_z), dtype=float)
+            else:
+                source_position_z = np.asarray(source_position_z, dtype=float)
+                if len(source_position_z) < len(speaker_array.source_polar_pattern):
+                    padding = np.zeros(len(speaker_array.source_polar_pattern) - len(source_position_z), dtype=float)
+                    source_position_z = np.concatenate([source_position_z, padding])
+            
+            source_azimuth = np.deg2rad(speaker_array.source_azimuth)
+            source_delay = speaker_array.delay
+            
+            if isinstance(speaker_array.source_time, (int, float)):
+                source_time = [speaker_array.source_time + source_delay]
+            else:
+                source_time = [time + source_delay for time in speaker_array.source_time]
+            source_time = [x / 1000 for x in source_time]
+            source_gain = speaker_array.gain
+            source_level = speaker_array.source_level + source_gain
+            source_level = self.functions.db2mag(np.array(source_level))
+            
+            # Iteriere über alle Lautsprecher im Array
+            for isrc in range(len(source_indices)):
+                speaker_name = speaker_array.source_polar_pattern[isrc]
+                
+                # Berechne Distanzen für alle Punkte
+                x_distance = x_const - source_position_x[isrc]
+                y_distance = y_coords - source_position_y[isrc]
+                z_distance = z_coords - source_position_z[isrc]
+                
+                # 3D-Distanz
+                source_dist = np.sqrt(x_distance**2 + y_distance**2 + z_distance**2)
+                
+                # Filtere Punkte zu nah an der Quelle
+                valid_mask = source_dist >= 0.001
+                
+                # Initialisiere Wellen-Array
+                wave = np.zeros(n_points, dtype=complex)
+                
+                # Berechne Azimut und Elevation
+                source_to_point_angles = np.arctan2(y_distance, x_distance)
+                azimuths = (np.degrees(source_to_point_angles) + np.degrees(source_azimuth[isrc])) % 360
+                azimuths = (360 - azimuths) % 360
+                azimuths = (azimuths + 90) % 360
+                horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
+                elevations = np.degrees(np.arctan2(z_distance, horizontal_dist))
+                
+                # Batch-Interpolation
+                polar_gains, polar_phases = self.get_balloon_data_batch(speaker_name, azimuths, elevations)
+                
+                if polar_gains is not None and polar_phases is not None:
+                    magnitude_linear = 10 ** (polar_gains / 20)
+                    polar_phase_rad = np.radians(polar_phases)
+                    
+                    attenuation = 1.0
+                    if air_absorption_coeff > 0.0:
+                        attenuation = np.exp(-air_absorption_coeff * source_dist[valid_mask])
+                    wave[valid_mask] = (magnitude_linear[valid_mask] * source_level[isrc] * a_source_pa *
+                                       attenuation *
+                                       np.exp(1j * (wave_number * source_dist[valid_mask] +  
+                                                  polar_phase_rad[valid_mask] +     
+                                                  2 * np.pi * calculate_frequency * source_time[isrc])) / 
+                                       source_dist[valid_mask])
+                    
+                    if hasattr(speaker_array, 'source_polarity') and speaker_array.source_polarity[isrc]:
+                        wave = -wave
+                
+                # Akkumuliere Wellen
+                sound_field_p += wave
+        
+        # Berechne Absolutwert
+        sound_field_p = abs(sound_field_p)
+        return sound_field_p
+    
     def calculate_sound_field_column(self, column_index):
         """
         🚀 VEKTORISIERT: Berechnet SPL-Werte entlang der Y-Achse (Länge)
@@ -136,7 +570,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         # ============================================================
         width = self.settings.width
         length = self.settings.length
-        resolution = 0.25
+        resolution = 0.1  # 10cm Auflösung
 
         # Erstelle 1D-Arrays für X- und Y-Koordinaten
         sound_field_x = np.arange((length / 2 * -1), ((length / 2) + resolution), resolution)

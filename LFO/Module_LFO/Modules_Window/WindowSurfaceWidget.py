@@ -967,6 +967,13 @@ class SurfaceDockWidget(QDockWidget):
         if surface_id not in surface_store:
             return
 
+        # Prüfe ob Surface versteckt ist - wenn ja, keine Calc/Plot Aktualisierung
+        surface = surface_store[surface_id]
+        hidden = bool(self._surface_get(surface, "hidden", False))
+        if hidden:
+            # Surface ist versteckt → keine Berechnung/Plot nötig
+            return
+
         # 🎯 Trigger Calc/Plot Update: Punkt-Änderungen beeinflussen Berechnung und Plot
         # (Grid-Erstellung basiert auf Surface-Koordinaten, Overlays zeigen Surface-Geometrie)
         if hasattr(self.main_window, "draw_plots"):

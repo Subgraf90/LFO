@@ -187,63 +187,14 @@ class SoundFieldCalculator(ModuleBase):
         # Bei Superposition verhält sich Schall wie Licht: direkter Schatten,
         # keine Beugung. Punkte im Schatten werden NICHT berechnet.
         # Bei FEM/FDTD wird Schatten NICHT angewendet, da Beugung berücksichtigt wird.
-        shadow_mask_flat = None
-        if self._shadow_calculator is not None and enabled_surfaces:
-            # Prüfe ob Schattenberechnung aktiviert ist
-            use_shadow = getattr(self.settings, "enable_shadow_calculation", True)
-            if use_shadow:
-                try:
-                    # Sammle alle Quellpositionen
-                    source_positions = []
-                    for speaker_array in self.settings.speaker_arrays.values():
-                        if speaker_array.mute or speaker_array.hide:
-                            continue
-                        source_position_x = getattr(
-                            speaker_array,
-                            'source_position_calc_x',
-                            getattr(speaker_array, 'source_position_x', None),
-                        )
-                        source_position_y = getattr(
-                            speaker_array,
-                            'source_position_calc_y',
-                            getattr(speaker_array, 'source_position_y', None),
-                        )
-                        source_position_z = getattr(
-                            speaker_array,
-                            'source_position_calc_z',
-                            getattr(speaker_array, 'source_position_z', None),
-                        )
-                        if source_position_x is not None and source_position_y is not None:
-                            num_sources = len(source_position_x)
-                            for i in range(num_sources):
-                                z_pos = source_position_z[i] if source_position_z is not None and i < len(source_position_z) else 0.0
-                                source_positions.append((
-                                    float(source_position_x[i]),
-                                    float(source_position_y[i]),
-                                    float(z_pos),
-                                ))
-                    
-                    if source_positions:
-                        # Berechne Schatten-Maske
-                        shadow_mask_flat = self._shadow_calculator.compute_shadow_mask(
-                            grid_points,
-                            source_positions,
-                            enabled_surfaces,
-                        )
-                        if DEBUG_SOUNDFIELD:
-                            num_shadow = np.count_nonzero(shadow_mask_flat)
-                            print(
-                                f"[SoundFieldCalculator] Schattenberechnung: "
-                                f"{num_shadow}/{len(grid_points)} Punkte im Schatten "
-                                f"({100.0*num_shadow/len(grid_points):.1f}%), "
-                                f"{len(enabled_surfaces)} Surfaces, {len(source_positions)} Quellen"
-                            )
-                except Exception as exc:
-                    if DEBUG_SOUNDFIELD:
-                        print(f"[SoundFieldCalculator] Fehler bei Schattenberechnung: {exc}")
-                        import traceback
-                        traceback.print_exc()
-                    shadow_mask_flat = None
+        # 
+        # WICHTIG: Schatten wird PRO LAUTSPRECHER geprüft!
+        # Jeder Lautsprecher prüft einzeln, ob ein Hindernis zwischen ihm und dem Punkt liegt.
+        shadow_calculator_ready = (
+            self._shadow_calculator is not None 
+            and enabled_surfaces
+            and getattr(self.settings, "enable_shadow_calculation", True)
+        )
         surface_field_buffers: Dict[str, np.ndarray] = {}
         surface_point_buffers: Dict[str, np.ndarray] = {}
         if surface_samples:
@@ -427,17 +378,68 @@ class SoundFieldCalculator(ModuleBase):
                         "polarity": polarity_flag,
                         "distances": source_dists.reshape(-1),
                     }
-                    # Kombiniere Surface-Maske mit Schatten-Maske
-                    # Bei Superposition: Punkte im Schatten werden NICHT berechnet
+                    # ============================================================
+                    # SCHATTEN-PRÜFUNG PRO LAUTSPRECHER
+                    # ============================================================
+                    # Prüfe für DIESEN spezifischen Lautsprecher, ob ein Hindernis
+                    # zwischen ihm und jedem Punkt liegt
                     combined_mask = surface_mask_flat.copy() if surface_mask_flat is not None else None
-                    if shadow_mask_flat is not None:
-                        # Invertiere Schatten-Maske: True = sichtbar, False = im Schatten
-                        visible_mask = ~shadow_mask_flat
-                        if combined_mask is not None:
-                            # Kombiniere: Punkt muss in Surface UND sichtbar sein
-                            combined_mask = combined_mask & visible_mask
-                        else:
-                            combined_mask = visible_mask
+                    
+                    if shadow_calculator_ready:
+                        try:
+                            # Prüfe Schatten nur für DIESEN Lautsprecher
+                            # WICHTIG: Verwende akustische Positionen (source_position_calc_*)
+                            # aus SpeakerPositionCalculator (berechnet in calculate_stack_center)
+                            source_pos_single = [
+                                (
+                                    float(source_position_x[isrc]),
+                                    float(source_position_y[isrc]),
+                                    float(source_position_z[isrc]),
+                                )
+                            ]
+                            
+                            # Debug: Zeige verwendete akustische Position
+                            if DEBUG_SOUNDFIELD:
+                                print(
+                                    f"[SoundFieldCalculator] Ray-Trace für Lautsprecher {isrc} ({speaker_name}): "
+                                    f"Akustische Position: ({source_pos_single[0][0]:.3f}, "
+                                    f"{source_pos_single[0][1]:.3f}, {source_pos_single[0][2]:.3f}) m"
+                                )
+                            
+                            # Berechne Schatten-Maske nur für diesen Lautsprecher
+                            shadow_mask_this_source = self._shadow_calculator.compute_shadow_mask(
+                                grid_points,
+                                source_pos_single,
+                                enabled_surfaces,
+                            )
+                            
+                            # Debug: Zeige wie viele Punkte im Schatten sind
+                            if DEBUG_SOUNDFIELD:
+                                num_shadow = np.count_nonzero(shadow_mask_this_source)
+                                print(
+                                    f"[SoundFieldCalculator] Lautsprecher {isrc} ({speaker_name}): "
+                                    f"{num_shadow}/{len(grid_points)} Punkte im Schatten "
+                                    f"({100.0*num_shadow/len(grid_points):.1f}%)"
+                                )
+                            
+                            # Invertiere: True = sichtbar von diesem Lautsprecher, False = im Schatten
+                            visible_from_this_source = ~shadow_mask_this_source
+                            
+                            if combined_mask is not None:
+                                # Kombiniere: Punkt muss in Surface UND von diesem Lautsprecher sichtbar sein
+                                combined_mask = combined_mask & visible_from_this_source
+                            else:
+                                combined_mask = visible_from_this_source
+                                
+                        except Exception as exc:
+                            if DEBUG_SOUNDFIELD:
+                                print(
+                                    f"[SoundFieldCalculator] Fehler bei Schattenprüfung für Lautsprecher {isrc}: {exc}"
+                                )
+                                import traceback
+                                traceback.print_exc()
+                            # Bei Fehler: verwende nur Surface-Maske (kein Schatten)
+                            pass
                     
                     mask_options = {
                         "min_distance": 0.001,
@@ -565,12 +567,10 @@ class SoundFieldCalculator(ModuleBase):
             else:
                 self.calculation_spl['surface_mask_strict'] = surface_mask.astype(bool).tolist()
             
-            # 🎯 Speichere Schatten-Maske für Visualisierung (auch bei FEM/FDTD nützlich)
-            if shadow_mask_flat is not None:
-                shadow_mask_2d = shadow_mask_flat.reshape(X_grid.shape)
-                self.calculation_spl['shadow_mask'] = shadow_mask_2d.astype(bool).tolist()
-            else:
-                self.calculation_spl['shadow_mask'] = None
+            # 🎯 Schatten-Maske wird nicht mehr global gespeichert,
+            # da sie pro Lautsprecher berechnet wird
+            # (könnte später für Visualisierung erweitert werden)
+            self.calculation_spl['shadow_mask'] = None
             if surface_meshes:
                 self.calculation_spl['surface_meshes'] = [
                     mesh.to_payload() for mesh in surface_meshes

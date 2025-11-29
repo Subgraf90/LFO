@@ -86,7 +86,7 @@ class UISurfaceManager(ModuleBase):
             
             # TreeWidget für Surfaces und Gruppen
             self.surface_tree_widget = QTreeWidget()
-            self.surface_tree_widget.setHeaderLabels(["Surface Name", "E", "H"])
+            self.surface_tree_widget.setHeaderLabels(["Surface Name", "E", "H", "XY"])
             
             # Drag & Drop Funktionalität (identisch zu SourceManagement)
             original_dropEvent = self.surface_tree_widget.dropEvent
@@ -246,12 +246,14 @@ class UISurfaceManager(ModuleBase):
             
             # Spaltenbreiten konfigurieren
             self.surface_tree_widget.setColumnWidth(0, 180)  # Surface Name - Mindestbreite
-            self.surface_tree_widget.setColumnWidth(1, 35)   # Enable
-            self.surface_tree_widget.setColumnWidth(2, 35)   # Hide
+            self.surface_tree_widget.setColumnWidth(1, 25)   # Enable (schmaler)
+            self.surface_tree_widget.setColumnWidth(2, 25)   # Hide (schmaler)
+            self.surface_tree_widget.setColumnWidth(3, 25)   # XY (schmaler)
             header.setStretchLastSection(False)
             header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
             header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
             header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+            header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
             
             # Scrollbar aktivieren
             self.surface_tree_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -272,7 +274,7 @@ class UISurfaceManager(ModuleBase):
             # Setze die SizePolicy
             self.surface_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             self.surface_tree_widget.setMinimumHeight(235)
-            self.surface_tree_widget.setFixedWidth(260)
+            self.surface_tree_widget.setFixedWidth(280)  # Breiter gemacht, damit alle Spalten sichtbar sind
             
             # Verbinde Signale mit Slots
             # Eigener Handler, der sowohl die UI-Tabs als auch die 3D-Overlays aktualisiert
@@ -738,6 +740,28 @@ class UISurfaceManager(ModuleBase):
                 lambda state, sid=surface_id: self.on_surface_hide_changed(sid, state)
             )
             self.surface_tree_widget.setItemWidget(item, 2, hide_checkbox)
+        
+        # XY Checkbox (Spalte 3)
+        if self.surface_tree_widget.itemWidget(item, 3) is None:
+            xy_checkbox = self.create_checkbox()
+            xy_checkbox.setChecked(True)  # Per Default aktiv
+            surface_id = item.data(0, Qt.UserRole)
+            if isinstance(surface_id, dict):
+                surface_id = surface_id.get('id')
+            
+            # Lade aktuellen XY-Status (falls vorhanden)
+            surface = self._get_surface(surface_id)
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    xy_enabled = getattr(surface, 'xy_enabled', True)
+                else:
+                    xy_enabled = surface.get('xy_enabled', True)
+                xy_checkbox.setChecked(xy_enabled)
+            
+            xy_checkbox.stateChanged.connect(
+                lambda state, sid=surface_id: self.on_surface_xy_changed(sid, state)
+            )
+            self.surface_tree_widget.setItemWidget(item, 3, xy_checkbox)
     
     def ensure_group_checkboxes(self, item):
         """Stellt sicher, dass Checkboxen für ein Gruppen-Item existieren"""
@@ -770,6 +794,23 @@ class UISurfaceManager(ModuleBase):
                 lambda state, g_item=item: self.on_group_hide_changed(g_item, state)
             )
             self.surface_tree_widget.setItemWidget(item, 2, hide_checkbox)
+        
+        # XY Checkbox (Spalte 3)
+        if self.surface_tree_widget.itemWidget(item, 3) is None:
+            xy_checkbox = self.create_checkbox()
+            xy_checkbox.setChecked(True)  # Per Default aktiv
+            group_id = item.data(0, Qt.UserRole)
+            
+            # Lade aktuellen XY-Status (falls vorhanden)
+            group = self._group_controller.get_group(group_id)
+            if group:
+                xy_enabled = getattr(group, 'xy_enabled', True)
+                xy_checkbox.setChecked(xy_enabled)
+            
+            xy_checkbox.stateChanged.connect(
+                lambda state, g_item=item: self.on_group_xy_changed(g_item, state)
+            )
+            self.surface_tree_widget.setItemWidget(item, 3, xy_checkbox)
     
     def _update_group_child_checkboxes(self, group_item, column, checked):
         """Aktualisiert rekursiv die Checkboxen aller Child-Surfaces/-Gruppen einer Gruppe."""
@@ -868,6 +909,8 @@ class UISurfaceManager(ModuleBase):
             ],
             group_id=target_group_id
         )
+        # Setze XY-Status auf aktiv (per Default)
+        new_surface.xy_enabled = True
         
         # Verwende Settings-Methode für konsistente Behandlung
         if hasattr(self.settings, 'add_surface_definition'):
@@ -1042,6 +1085,20 @@ class UISurfaceManager(ModuleBase):
                     if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
                         self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
+    def on_surface_xy_changed(self, surface_id, state):
+        """Wird aufgerufen, wenn sich der XY-Status eines Surfaces ändert"""
+        surface = self._get_surface(surface_id)
+        if surface:
+            checked = (state == Qt.Checked)
+            if isinstance(surface, SurfaceDefinition):
+                surface.xy_enabled = checked
+            else:
+                surface['xy_enabled'] = checked
+            
+            # Aktualisiere Berechnungen (falls nötig)
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+    
     def on_group_enable_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert"""
         group_id = group_item.data(0, Qt.UserRole)
@@ -1082,6 +1139,27 @@ class UISurfaceManager(ModuleBase):
             if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
                     self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
+    
+    def on_group_xy_changed(self, group_item, state):
+        """Wird aufgerufen, wenn sich der XY-Status einer Gruppe ändert"""
+        group_id = group_item.data(0, Qt.UserRole)
+        checked = (state == Qt.Checked)
+        
+        # Speichere XY-Status in der Gruppe
+        group = self._group_controller.get_group(group_id)
+        if group:
+            group.xy_enabled = checked
+        
+        # Speichere Status in lokalem Cache
+        if group_id in self.surface_groups:
+            self.surface_groups[group_id]['xy_enabled'] = checked
+        
+        # Aktualisiere alle Child-Checkboxen
+        self._update_group_child_checkboxes(group_item, 3, checked)
+        
+        # Aktualisiere Berechnungen (falls nötig)
+        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            self.main_window.update_speaker_array_calculations()
     
     def on_surface_item_text_changed(self, item, column):
         """Wird aufgerufen, wenn sich der Text eines Surface-Items ändert"""
@@ -1407,9 +1485,16 @@ class UISurfaceManager(ModuleBase):
                 formatted = f"{value:.2f}"
                 editor.setText(formatted)
                 
-                # Aktualisiere Berechnungen
-                if hasattr(self.main_window, 'update_speaker_array_calculations'):
-                    self.main_window.update_speaker_array_calculations()
+                # Prüfe ob Surface versteckt ist - wenn ja, keine Calc/Plot Aktualisierung
+                if isinstance(surface, SurfaceDefinition):
+                    hidden = getattr(surface, 'hidden', False)
+                else:
+                    hidden = surface.get('hidden', False)
+                
+                if not hidden:
+                    # Aktualisiere Berechnungen nur wenn Surface nicht versteckt ist
+                    if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                        self.main_window.update_speaker_array_calculations()
     
     def _handle_add_point(self, surface_id):
         """Fügt einen neuen Punkt zum Surface hinzu"""
@@ -1424,9 +1509,16 @@ class UISurfaceManager(ModuleBase):
         # Aktualisiere Anzeige
         self.create_surface_parameter_tab(surface_id)
         
-        # Aktualisiere Berechnungen
-        if hasattr(self.main_window, 'update_speaker_array_calculations'):
-            self.main_window.update_speaker_array_calculations()
+        # Prüfe ob Surface versteckt ist - wenn ja, keine Calc/Plot Aktualisierung
+        if isinstance(surface, SurfaceDefinition):
+            hidden = getattr(surface, 'hidden', False)
+        else:
+            hidden = surface.get('hidden', False)
+        
+        if not hidden:
+            # Aktualisiere Berechnungen nur wenn Surface nicht versteckt ist
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
     
     def _handle_delete_point(self, surface_id):
         """Löscht den ausgewählten Punkt vom Surface"""
@@ -1449,9 +1541,16 @@ class UISurfaceManager(ModuleBase):
             # Aktualisiere Anzeige
             self.create_surface_parameter_tab(surface_id)
             
-            # Aktualisiere Berechnungen
-            if hasattr(self.main_window, 'update_speaker_array_calculations'):
-                self.main_window.update_speaker_array_calculations()
+            # Prüfe ob Surface versteckt ist - wenn ja, keine Calc/Plot Aktualisierung
+            if isinstance(surface, SurfaceDefinition):
+                hidden = getattr(surface, 'hidden', False)
+            else:
+                hidden = surface.get('hidden', False)
+            
+            if not hidden:
+                # Aktualisiere Berechnungen nur wenn Surface nicht versteckt ist
+                if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                    self.main_window.update_speaker_array_calculations()
     
     def _renumber_points(self):
         """Nummeriert die Punkte im TreeWidget neu"""
@@ -1771,6 +1870,10 @@ class UISurfaceManager(ModuleBase):
         # Erstelle Gruppe (ohne Root-Gruppe als Parent)
         group = self._group_controller.create_surface_group(name.strip(), parent_id=parent_group_id)
         
+        # Setze XY-Status auf aktiv (per Default)
+        if group:
+            group.xy_enabled = True
+        
         # Lade TreeWidget neu
         self.load_surfaces()
         
@@ -1833,10 +1936,14 @@ class UISurfaceManager(ModuleBase):
                         color=surface.color,
                         group_id=target_group_id
                     )
+                    # Kopiere XY-Status oder setze auf True (per Default)
+                    new_surface.xy_enabled = getattr(surface, 'xy_enabled', True)
                 else:
                     new_surface = copy.deepcopy(surface)
                     new_surface['name'] = f"copy of {original_name}"
                     new_surface['group_id'] = target_group_id
+                    # Kopiere XY-Status oder setze auf True (per Default)
+                    new_surface['xy_enabled'] = surface.get('xy_enabled', True)
                 
                 # Verwende Settings-Methode für konsistente Behandlung
                 if hasattr(self.settings, 'add_surface_definition'):

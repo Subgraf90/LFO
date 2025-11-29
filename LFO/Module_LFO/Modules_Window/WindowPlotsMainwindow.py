@@ -860,9 +860,35 @@ class DrawPlotsMainwindow(ModuleBase):
             y_new_min = y_center - (y_center - y_min) * scale_factor
             y_new_max = y_center + (y_max - y_center) * scale_factor
 
+            print(f"[DEBUG WindowPlotsMainwindow] zoom() aufgerufen: ax={ax}, x={x_new_min:.3f} bis {x_new_max:.3f}, y={y_new_min:.3f} bis {y_new_max:.3f}")
+
+            # Prüfe ob es X- oder Y-Achsen-Plot ist
+            is_xaxis = ax == self.matplotlib_canvas_xaxis.ax
+            is_yaxis = ax == self.matplotlib_canvas_yaxis.ax
+            
+            if is_xaxis:
+                print(f"[DEBUG WindowPlotsMainwindow] X-Achsen-Plot erkannt")
+            elif is_yaxis:
+                print(f"[DEBUG WindowPlotsMainwindow] Y-Achsen-Plot erkannt")
+
             # Setze neue Grenzen
             ax.set_xlim(x_new_min, x_new_max)  # Horizontale Grenzen
             ax.set_ylim(y_new_min, y_new_max)  # Vertikale Grenzen
+
+            # Manuell Callbacks aufrufen, da Matplotlib sie manchmal nicht automatisch auslöst
+            if is_xaxis and hasattr(self.draw_spl_plot_xaxis, '_on_xlim_changed'):
+                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_xlim_changed manuell auf")
+                self.draw_spl_plot_xaxis._on_xlim_changed(ax)
+            if is_xaxis and hasattr(self.draw_spl_plot_xaxis, '_on_ylim_changed'):
+                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_ylim_changed manuell auf")
+                self.draw_spl_plot_xaxis._on_ylim_changed(ax)
+            
+            if is_yaxis and hasattr(self.draw_spl_plot_yaxis, '_on_xlim_changed'):
+                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_xlim_changed manuell auf")
+                self.draw_spl_plot_yaxis._on_xlim_changed(ax)
+            if is_yaxis and hasattr(self.draw_spl_plot_yaxis, '_on_ylim_changed'):
+                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_ylim_changed manuell auf")
+                self.draw_spl_plot_yaxis._on_ylim_changed(ax)
 
             ax.figure.canvas.draw_idle()
 
@@ -976,8 +1002,31 @@ class DrawPlotsMainwindow(ModuleBase):
             dy = event.ydata - ax._pan_start[1]
             x_min, x_max = ax.get_xlim()
             y_min, y_max = ax.get_ylim()
-            ax.set_xlim(x_min - dx, x_max - dx)
-            ax.set_ylim(y_min - dy, y_max - dy)
+            x_new_min = x_min - dx
+            x_new_max = x_max - dx
+            y_new_min = y_min - dy
+            y_new_max = y_max - dy
+            
+            print(f"[DEBUG WindowPlotsMainwindow] pan() aufgerufen: ax={ax}, x={x_new_min:.3f} bis {x_new_max:.3f}, y={y_new_min:.3f} bis {y_new_max:.3f}")
+            
+            ax.set_xlim(x_new_min, x_new_max)
+            ax.set_ylim(y_new_min, y_new_max)
+            
+            # Prüfe ob es X- oder Y-Achsen-Plot ist
+            is_xaxis = ax == self.matplotlib_canvas_xaxis.ax
+            is_yaxis = ax == self.matplotlib_canvas_yaxis.ax
+            
+            # Manuell Callbacks aufrufen
+            if is_xaxis and hasattr(self.draw_spl_plot_xaxis, '_on_xlim_changed'):
+                self.draw_spl_plot_xaxis._on_xlim_changed(ax)
+            if is_xaxis and hasattr(self.draw_spl_plot_xaxis, '_on_ylim_changed'):
+                self.draw_spl_plot_xaxis._on_ylim_changed(ax)
+            
+            if is_yaxis and hasattr(self.draw_spl_plot_yaxis, '_on_xlim_changed'):
+                self.draw_spl_plot_yaxis._on_xlim_changed(ax)
+            if is_yaxis and hasattr(self.draw_spl_plot_yaxis, '_on_ylim_changed'):
+                self.draw_spl_plot_yaxis._on_ylim_changed(ax)
+            
             ax.figure.canvas.draw_idle()
 
     def on_pan_release(self, event):
