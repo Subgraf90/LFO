@@ -19,24 +19,29 @@ class Ui_MainWindow(object):
         # Widget für die Colorbar
         self.colorbar_widget = QtWidgets.QWidget()
         self.colorbar_widget.setFixedWidth(90)
+        self.colorbar_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
         self.main_layout.addWidget(self.colorbar_widget)
 
         # Vertikales Layout für Colorbar und Button
         colorbar_layout = QtWidgets.QVBoxLayout(self.colorbar_widget)
         colorbar_layout.setContentsMargins(1, 1, 1, 10)
         colorbar_layout.setSpacing(4)
+        # Kein Stretch am Ende - Colorbar soll den verfügbaren Platz bekommen
 
         
         # Erster Rahmen: Widget für die Colorbar
         self.colorbar_frame = QtWidgets.QFrame()
         self.colorbar_frame.setFixedWidth(80)  # Schmaler als Button
+        self.colorbar_frame.setMinimumHeight(100)  # Mindesthöhe für Colorbar
         # Nur eine einzelne Linie - keine doppelte Umrandung
         self.colorbar_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.colorbar_frame.setLineWidth(0)
         self.colorbar_frame.setMidLineWidth(0)
         self.colorbar_frame.setStyleSheet("QFrame#colorbar_frame { border: 1px solid gray; background-color: transparent; }")
         self.colorbar_frame.setObjectName("colorbar_frame")
-        print("[DEBUG] Colorbar-Frame erstellt: width=80, styleSheet gesetzt")
+        # Frame soll expandieren können
+        self.colorbar_frame.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+        print("[DEBUG] Colorbar-Frame erstellt: width=80, Expanding SizePolicy, styleSheet gesetzt")
         
         # Layout für Colorbar-Frame
         colorbar_frame_layout = QtWidgets.QVBoxLayout(self.colorbar_frame)
@@ -45,8 +50,12 @@ class Ui_MainWindow(object):
         
         self.colorbar_plot = QtWidgets.QWidget()
         self.colorbar_plot.setStyleSheet("QWidget { border: none !important; background-color: transparent; }")
-        colorbar_frame_layout.addWidget(self.colorbar_plot)
-        colorbar_layout.addWidget(self.colorbar_frame, 0, QtCore.Qt.AlignTop)
+        # Colorbar soll im Widget expandieren
+        self.colorbar_plot.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        colorbar_frame_layout.addWidget(self.colorbar_plot, 1)  # Stretch-Faktor 1 für Expansion
+        
+        # Frame mit Stretch-Faktor 1 hinzufügen, damit es expandiert
+        colorbar_layout.addWidget(self.colorbar_frame, 1)  # Stretch-Faktor 1 für Expansion
         
         # Zweiter Rahmen: Mauspositions-Anzeige mit Umrandung
         self.mouse_position_frame = QtWidgets.QFrame()
@@ -72,6 +81,8 @@ class Ui_MainWindow(object):
         self.mouse_position_label.setStyleSheet("font-size: 10pt; padding: 0px; background-color: transparent;")
         frame_layout.addWidget(self.mouse_position_label)
         
+        # Textausgabe und Button sollen nicht expandieren (feste Größe)
+        self.mouse_position_frame.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         colorbar_layout.addWidget(self.mouse_position_frame, 0, QtCore.Qt.AlignTop)
         
         # Push-Button direkt darunter
@@ -79,8 +90,11 @@ class Ui_MainWindow(object):
         self.StartSkript.setFixedWidth(90)  # Ursprüngliche Breite beibehalten
         self.StartSkript.setFixedHeight(25)
         self.StartSkript.setShortcut("c")
+        self.StartSkript.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         colorbar_layout.addWidget(self.StartSkript, 0, QtCore.Qt.AlignTop)
-        colorbar_layout.addStretch(1)
+        
+        # Kein Stretch am Ende - Colorbar soll den restlichen Platz bekommen
+        # Der Stretch-Faktor 1 beim colorbar_frame sorgt dafür, dass es expandiert
 
         # Layout für die Plots
         self.plots_widget = QtWidgets.QWidget()

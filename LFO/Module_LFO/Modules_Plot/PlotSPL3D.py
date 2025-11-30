@@ -92,13 +92,94 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.widget = self.plotter.interactor
         self.widget.setMouseTracking(True)
         self.widget.installEventFilter(self)
+        
+        # 🎯 DEAKTIVIERE VTK's Standard-Rotation komplett (inkl. Doppelklick)
+        # VTK's TrackballCamera führt bei Linksklick-Drag Rotation aus
+        # Wir fangen alle Events selbst ab, daher deaktivieren wir VTK's Standard-Handler komplett
+        try:
+            if hasattr(self.plotter, 'iren') and self.plotter.iren is not None:
+                interactor_style = self.plotter.iren.GetInteractorStyle()
+                if interactor_style is not None:
+                    # Deaktiviere ALLE Linksklick-Events im InteractorStyle
+                    # VTK's InteractorStyleTrackballCamera hat:
+                    # - OnLeftButtonPress() - startet Rotation
+                    # - OnLeftButtonRelease() - beendet Rotation
+                    # - OnLeftButtonDoubleClick() - Reset Camera
+                    # - OnMouseMove() - führt Rotation aus
+                    
+                    # Leere Handler-Funktionen
+                    def empty_handler(*args, **kwargs):
+                        pass
+                    
+                    # Überschreibe alle Linksklick-Handler
+                    handlers_to_disable = [
+                        'OnLeftButtonPress',
+                        'OnLeftButtonRelease', 
+                        'OnLeftButtonDoubleClick',
+                    ]
+                    
+                    for handler_name in handlers_to_disable:
+                        if hasattr(interactor_style, handler_name):
+                            try:
+                                # Versuche, die Methode zu überschreiben
+                                # Verwende types.MethodType für bessere Kompatibilität
+                                setattr(interactor_style, handler_name, types.MethodType(lambda self, *args, **kwargs: None, interactor_style))
+                                print(f"[DEBUG] VTK's {handler_name} deaktiviert")
+                            except Exception as e:
+                                try:
+                                    # Fallback: Direkte Zuweisung
+                                    setattr(interactor_style, handler_name, empty_handler)
+                                    print(f"[DEBUG] VTK's {handler_name} deaktiviert (Fallback)")
+                                except Exception as e2:
+                                    print(f"[DEBUG] Konnte {handler_name} nicht deaktivieren: {e}, {e2}")
+                    
+                    # ZUSÄTZLICH: Deaktiviere auch alle anderen Doppelklick-Handler
+                    all_double_click_handlers = [
+                        'OnRightButtonDoubleClick',
+                        'OnMiddleButtonDoubleClick',
+                    ]
+                    for handler_name in all_double_click_handlers:
+                        if hasattr(interactor_style, handler_name):
+                            try:
+                                setattr(interactor_style, handler_name, types.MethodType(lambda self, *args, **kwargs: None, interactor_style))
+                                print(f"[DEBUG] VTK's {handler_name} deaktiviert")
+                            except Exception as e:
+                                try:
+                                    setattr(interactor_style, handler_name, empty_handler)
+                                    print(f"[DEBUG] VTK's {handler_name} deaktiviert (Fallback)")
+                                except Exception as e2:
+                                    print(f"[DEBUG] Konnte {handler_name} nicht deaktivieren: {e}, {e2}")
+                    
+                    # ZUSÄTZLICH: Deaktiviere auch OnMouseMove für Linksklick-Rotation
+                    # Wir fangen MouseMove-Events im eventFilter ab, daher können wir OnMouseMove komplett deaktivieren
+                    if hasattr(interactor_style, 'OnMouseMove'):
+                        try:
+                            # Leere Funktion für OnMouseMove (wird im eventFilter behandelt)
+                            def disabled_mousemove(style_self):
+                                # Komplett deaktiviert - MouseMove wird im eventFilter behandelt
+                                pass
+                            setattr(interactor_style, 'OnMouseMove', types.MethodType(disabled_mousemove, interactor_style))
+                            print("[DEBUG] VTK's OnMouseMove für Linksklick-Rotation deaktiviert")
+                        except Exception as e:
+                            print(f"[DEBUG] Konnte OnMouseMove nicht deaktivieren: {e}")
+                    
+                    print("[DEBUG] VTK's Standard-Linksklick-Rotation und ALLE Doppelklick-Handler deaktiviert")
+        except Exception as e:
+            print(f"[DEBUG] Konnte VTK's Standard-Rotation nicht deaktivieren: {e}")
         self._pan_active = False
         self._pan_last_pos: Optional[QtCore.QPoint] = None
         self._rotate_active = False
         self._rotate_last_pos: Optional[QtCore.QPoint] = None
         self._click_start_pos: Optional[QtCore.QPoint] = None  # Für Click-Erkennung (vs. Drag)
-        self._last_click_time: Optional[float] = None  # Zeitpunkt des letzten Klicks (für Doppelklick-Erkennung)
-        self._last_click_pos: Optional[QtCore.QPoint] = None  # Position des letzten Klicks
+        self._last_click_time: Optional[float] = None  # Zeitpunkt des letzten Releases (für einfache Klicks)
+        self._last_click_pos: Optional[QtCore.QPoint] = None  # Position des letzten Releases
+        self._last_press_time: Optional[float] = None  # Zeitpunkt des letzten Press (nicht mehr für Doppelklick verwendet)
+        self._last_press_pos: Optional[QtCore.QPoint] = None  # Position des letzten Press (nicht mehr für Doppelklick verwendet)
+        # 🎯 DOPPELKLICK DEAKTIVIERT - _double_click_handled wird nicht mehr verwendet (nur noch auf Colorbar)
+        self._double_click_handled = False
+        # Variablen für Colorbar-Doppelklick-Erkennung
+        self._last_colorbar_click_time: Optional[float] = None
+        self._last_colorbar_click_pos: Optional[tuple[int, int]] = None
         self._camera_state: Optional[dict[str, object]] = None
         self._skip_next_render_restore = False
         self._phase_mode_active = False
@@ -106,6 +187,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._has_plotted_data = False  # Flag: ob bereits ein Plot mit Daten durchgeführt wurde
         # Flag: ob der initiale Zoom auf das Default-Surface bereits gesetzt wurde
         self._did_initial_overlay_zoom = False
+        # Drag-Variablen für Achsenlinien
+        self._axis_selected: Optional[str] = None  # 'x' oder 'y' für ausgewählte Achse, None wenn keine ausgewählt
+        self._axis_drag_active = False  # True wenn eine Achsenlinie gedraggt wird
+        self._axis_drag_type: Optional[str] = None  # 'x' oder 'y' für X- oder Y-Achse
+        self._axis_drag_start_pos: Optional[QtCore.QPoint] = None  # Start-Position des Drags (2D)
+        self._axis_drag_start_value: Optional[float] = None  # Start-Wert der Achsenposition
 
         if not hasattr(self.plotter, '_cmap_to_lut'):
             self.plotter._cmap_to_lut = types.MethodType(self._fallback_cmap_to_lut, self.plotter)  # type: ignore[attr-defined]
@@ -155,11 +242,106 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     def eventFilter(self, obj, event):  # noqa: PLR0911
         if obj is self.widget:
             etype = event.type()
+            # 🎯 DOPPELKLICK KOMPLETT SPERREN - Fange Doppelklick-Events ab, bevor PyVista sie verarbeitet
+            if etype == QtCore.QEvent.MouseButtonDblClick:
+                print(f"[DEBUG] Doppelklick-Event im 3D-Plot ABGEFANGEN und IGNORIERT (nur auf Colorbar aktiv)")
+                event.accept()
+                return True  # Event abgefangen, PyVista verarbeitet es nicht
+            
             if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
-                self._rotate_active = True
-                self._rotate_last_pos = QtCore.QPoint(event.pos())
-                self._click_start_pos = QtCore.QPoint(event.pos())  # Merke Start-Position für Click-Erkennung
-                self.widget.setCursor(QtCore.Qt.OpenHandCursor)
+                press_pos = QtCore.QPoint(event.pos())
+                print(f"[DEBUG] MouseButtonPress: _rotate_active={self._rotate_active}, _last_press_time={self._last_press_time}, _last_press_pos={self._last_press_pos}")
+                
+                # 🎯 DOPPELKLICK DEAKTIVIERT - Alle Doppelklick-Funktionen sind auskommentiert
+                # # 🎯 WICHTIG: Doppelklick-Erkennung BEIM PRESS, nicht beim Release!
+                # # Prüfe ob es ein Doppelklick ist (basierend auf letztem Press, nicht Release)
+                # is_double_click = False
+                # if self._last_press_time is not None and self._last_press_pos is not None:
+                #     current_time = time.time()
+                #     time_diff = current_time - self._last_press_time
+                #     pos_x_diff = abs(press_pos.x() - self._last_press_pos.x())
+                #     pos_y_diff = abs(press_pos.y() - self._last_press_pos.y())
+                #     pos_diff = pos_x_diff < 15 and pos_y_diff < 15  # Erhöht auf 15 Pixel Toleranz
+                #     print(f"[DEBUG] Doppelklick-Prüfung: time_diff={time_diff:.3f}s (max 0.5s), pos_diff_x={pos_x_diff:.1f}px, pos_diff_y={pos_y_diff:.1f}px (max 15px), pos_diff={pos_diff}")
+                #     # Doppelklick wenn innerhalb von 500ms und ähnlicher Position (15 Pixel Toleranz)
+                #     if time_diff < 0.5 and pos_diff:
+                #         is_double_click = True
+                #         print(f"[DEBUG] ✅ Doppelklick BEIM PRESS erkannt! time_diff={time_diff:.3f}, pos_diff={pos_diff}")
+                #         # 🎯 KRITISCH: Rotation SOFORT beenden, auch wenn sie bereits aktiv ist!
+                #         # Dies verhindert, dass Rotation "fix mit Mausbewegung verbunden" bleibt
+                #         if self._rotate_active:
+                #             print(f"[DEBUG] ⚠️ Rotation war aktiv - SOFORT gestoppt!")
+                #         self._rotate_active = False
+                #         self._rotate_last_pos = None
+                #         self._double_click_handled = True
+                #         self.widget.unsetCursor()
+                #         # Automatische Colorbar-Range-Anpassung
+                #         self._handle_double_click_auto_range()
+                #         # Reset für nächsten Klick
+                #         self._last_press_time = None
+                #         self._last_press_pos = None
+                #         self._click_start_pos = None
+                #         # 🎯 WICHTIG: Event akzeptieren und NICHT weitergeben, damit PyVista keine Rotation ausführt
+                #         event.accept()
+                #         return True  # Event abgefangen, nicht an PyVista weitergeben
+                #     else:
+                #         reason = []
+                #         if time_diff >= 0.5:
+                #             reason.append(f"Zeit zu lang ({time_diff:.3f}s >= 0.5s)")
+                #         if not pos_diff:
+                #             reason.append(f"Position zu weit (X: {pos_x_diff:.1f}px, Y: {pos_y_diff:.1f}px > 15px)")
+                #         print(f"[DEBUG] ❌ Kein Doppelklick: {', '.join(reason) if reason else 'Unbekannter Grund'}")
+                # else:
+                #     print(f"[DEBUG] Doppelklick-Prüfung übersprungen: _last_press_time={self._last_press_time}, _last_press_pos={self._last_press_pos}")
+                
+                # 🎯 DOPPELKLICK KOMPLETT DEAKTIVIERT - Nur noch auf Colorbar aktiv
+                # Keine Doppelklick-Erkennung im 3D-Plot mehr
+                is_double_click = False
+                self._double_click_handled = False
+                
+                # WICHTIG: _click_start_pos MUSS beim Press gesetzt werden, nicht beim Release
+                self._click_start_pos = press_pos  # Merke Start-Position für Click-Erkennung
+                # Speichere Press-Zeitpunkt und Position für Doppelklick-Erkennung
+                self._last_press_time = time.time()
+                self._last_press_pos = press_pos
+                print(f"[DEBUG] Press gespeichert: _last_press_time={self._last_press_time}, _last_press_pos={self._last_press_pos}")
+                
+                # 🎯 WICHTIG: Event akzeptieren, damit PyVista's Standard-Handler NICHT ausgeführt wird
+                # Dies verhindert, dass PyVista's Standard-Rotation aktiviert wird
+                event.accept()
+                # NICHT return True hier - wir müssen die Achsenlinien-Prüfung durchführen
+                # Prüfe ob auf eine Achsenlinie geklickt wurde (bevor Rotation startet)
+                axis_clicked = self._handle_axis_line_click(press_pos)
+                if axis_clicked:
+                    # Achsenlinie wurde geklickt
+                    if self._axis_selected == self._axis_drag_type:
+                        # Gleiche Achse wurde erneut geklickt - starte Drag
+                        self._axis_drag_active = True
+                        self._axis_drag_start_pos = press_pos
+                        self._axis_drag_start_value = self.settings.position_x_axis if self._axis_drag_type == 'x' else self.settings.position_y_axis
+                        self.widget.setCursor(QtCore.Qt.SizeHorCursor if self._axis_drag_type == 'x' else QtCore.Qt.SizeVerCursor)
+                        print(f"[DEBUG] Achsenlinie Drag gestartet: {self._axis_drag_type}")
+                    else:
+                        # Neue Achse wurde geklickt - wähle sie aus (Highlight)
+                        self._axis_selected = self._axis_drag_type
+                        self._update_axis_highlight()
+                        self.widget.setCursor(QtCore.Qt.PointingHandCursor)
+                        print(f"[DEBUG] Achsenlinie ausgewählt: {self._axis_selected}")
+                    event.accept()
+                    return True
+                else:
+                    # Keine Achsenlinie geklickt - prüfe ob daneben geklickt wurde
+                    if self._axis_selected is not None:
+                        # Auswahl aufheben
+                        self._axis_selected = None
+                        self._update_axis_highlight()
+                        self.widget.unsetCursor()
+                        print(f"[DEBUG] Achsenlinien-Auswahl aufgehoben")
+                # 🎯 DOPPELKLICK DEAKTIVIERT - Rotation wird normal aktiviert
+                # Rotation wird erst im MouseMove-Handler aktiviert, wenn sich die Maus tatsächlich bewegt.
+                # Nur die Start-Position speichern, aber Rotation noch nicht aktivieren.
+                self._rotate_last_pos = press_pos
+                # Cursor erst setzen, wenn Rotation tatsächlich startet (im MouseMove)
                 event.accept()
                 return True
             if etype == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
@@ -171,39 +353,69 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     and abs(click_pos.y() - self._click_start_pos.y()) < 3
                 )
                 
+                print(f"[DEBUG] MouseButtonRelease: _rotate_active={self._rotate_active}, is_click={is_click}, _click_start_pos={self._click_start_pos}")
+                
+                # Rotation IMMER beenden bei ButtonRelease
                 self._rotate_active = False
                 self._rotate_last_pos = None
                 self.widget.unsetCursor()
                 self._save_camera_state()
+                # Reset Doppelklick-Flag beim Release (damit nach Doppelklick wieder normal gearbeitet werden kann)
+                # 🎯 DOPPELKLICK DEAKTIVIERT - Doppelklick-Check entfernt
+                # if self._double_click_handled:
+                #     print(f"[DEBUG] MouseButtonRelease: Doppelklick-Flag zurückgesetzt")
+                #     self._double_click_handled = False
                 
-                # Prüfe ob es ein Doppelklick ist
-                is_double_click = False
-                if is_click and self._last_click_time is not None and self._last_click_pos is not None:
-                    current_time = time.time()
-                    time_diff = current_time - self._last_click_time
-                    pos_diff = (
-                        abs(click_pos.x() - self._last_click_pos.x()) < 5
-                        and abs(click_pos.y() - self._last_click_pos.y()) < 5
-                    )
-                    # Doppelklick wenn innerhalb von 300ms und ähnlicher Position
-                    if time_diff < 0.3 and pos_diff:
-                        is_double_click = True
-                
-                # Wenn es ein Klick war (kein Drag) und kein Doppelklick, prüfe ob ein Lautsprecher oder eine Surface geklickt wurde
-                if is_click and not is_double_click:
-                    # Prüfe zuerst auf Lautsprecher-Klick, dann auf Surface-Klick
-                    speaker_clicked = self._handle_speaker_click(click_pos)
-                    if not speaker_clicked:
-                        self._handle_surface_click(click_pos)
-                    # Speichere Zeitpunkt und Position für Doppelklick-Erkennung
+                # 🎯 Doppelklick ist deaktiviert
+                # Wenn es ein Klick war (kein Drag), prüfe ob ein Lautsprecher oder eine Surface geklickt wurde
+                if is_click:
+                    print(f"[DEBUG] Einfacher Klick erkannt")
+                    # Prüfe zuerst auf Achsenlinien-Klick, dann Lautsprecher, dann Surface
+                    print(f"[DEBUG] MouseButtonRelease: Prüfe auf Achsenlinien-Klick bei ({click_pos.x()}, {click_pos.y()})")
+                    axis_clicked = self._handle_axis_line_click(click_pos)
+                    print(f"[DEBUG] MouseButtonRelease: axis_clicked={axis_clicked}, _axis_drag_type={self._axis_drag_type}")
+                    if axis_clicked:
+                        # Achsenlinie wurde geklickt - setze Auswahl
+                        if self._axis_selected == self._axis_drag_type:
+                            # Gleiche Achse wurde erneut geklickt - Auswahl bleibt
+                            print(f"[DEBUG] Gleiche Achse bereits ausgewählt: {self._axis_selected}")
+                        else:
+                            # Neue Achse wurde geklickt - wähle sie aus (Highlight)
+                            self._axis_selected = self._axis_drag_type
+                            self._update_axis_highlight()
+                            self.widget.setCursor(QtCore.Qt.PointingHandCursor)
+                            print(f"[DEBUG] Achsenlinie ausgewählt beim Release: {self._axis_selected}")
+                    else:
+                        # Keine Achsenlinie geklickt - prüfe ob daneben geklickt wurde
+                        if self._axis_selected is not None:
+                            # Auswahl aufheben (daneben geklickt)
+                            self._axis_selected = None
+                            self._update_axis_highlight()
+                            self.widget.unsetCursor()
+                            print(f"[DEBUG] Achsenlinien-Auswahl aufgehoben beim Release (daneben geklickt)")
+                        # Prüfe auf Lautsprecher oder Surface
+                        speaker_clicked = self._handle_speaker_click(click_pos)
+                        if not speaker_clicked:
+                            self._handle_surface_click(click_pos)
+                    # Speichere Zeitpunkt und Position für einfache Klicks (nicht für Doppelklick)
                     self._last_click_time = time.time()
                     self._last_click_pos = QtCore.QPoint(click_pos)
-                elif is_double_click:
-                    # Bei Doppelklick: Ignoriere den zweiten Klick (verhindert doppelte Surface-Auswahl)
-                    self._last_click_time = None
-                    self._last_click_pos = None
+                    # _click_start_pos erst hier zurücksetzen (nach einfachem Klick)
+                    self._click_start_pos = None
+                else:
+                    # Kein Klick (Drag) - _click_start_pos zurücksetzen
+                    self._click_start_pos = None
+                # Beende Achsenlinien-Drag beim Release (aber behalte Auswahl)
+                if self._axis_drag_active:
+                    self._axis_drag_active = False
+                    self._axis_drag_start_pos = None
+                    self._axis_drag_start_value = None
+                    # Cursor zurücksetzen, aber Auswahl behalten
+                    if self._axis_selected is not None:
+                        self.widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    else:
+                        self.widget.unsetCursor()
                 
-                self._click_start_pos = None
                 event.accept()
                 return True
             if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.RightButton:
@@ -219,13 +431,38 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self._save_camera_state()
                 event.accept()
                 return True
-            if etype == QtCore.QEvent.MouseMove and self._rotate_active and self._rotate_last_pos is not None:
-                current_pos = QtCore.QPoint(event.pos())
-                delta = current_pos - self._rotate_last_pos
-                self._rotate_last_pos = current_pos
-                self._rotate_camera(delta.x(), delta.y())
-                event.accept()
-                return True
+            if etype == QtCore.QEvent.MouseMove and event.buttons() & QtCore.Qt.LeftButton:
+                # 🎯 DOPPELKLICK KOMPLETT DEAKTIVIERT - Nur noch auf Colorbar aktiv
+                # Keine Doppelklick-Prüfung mehr im 3D-Plot
+                
+                # Wenn _rotate_last_pos gesetzt ist, aber _rotate_active noch nicht, dann Rotation jetzt starten
+                if self._rotate_last_pos is not None and not self._rotate_active:
+                    current_pos = QtCore.QPoint(event.pos())
+                    # Prüfe ob sich die Maus tatsächlich bewegt hat (mindestens 3 Pixel)
+                    move_distance = ((current_pos.x() - self._rotate_last_pos.x()) ** 2 + 
+                                    (current_pos.y() - self._rotate_last_pos.y()) ** 2) ** 0.5
+                    if move_distance >= 3:
+                        # Maus hat sich bewegt - Rotation jetzt aktivieren
+                        # NUR wenn Maus gedrückt bleibt (buttons() & QtCore.Qt.LeftButton)
+                        self._rotate_active = True
+                        self.widget.setCursor(QtCore.Qt.OpenHandCursor)
+                        print(f"[DEBUG] Rotation aktiviert nach Mausbewegung: move_distance={move_distance:.1f}")
+                
+                # Wenn Rotation aktiv ist, verarbeite die Bewegung
+                # DOPPELKLICK DEAKTIVIERT - Doppelklick-Check entfernt
+                if self._rotate_active and self._rotate_last_pos is not None and self._axis_selected is None:
+                    print(f"[DEBUG] MouseMove während Rotation: _rotate_active={self._rotate_active}, _axis_selected={self._axis_selected}")
+                    current_pos = QtCore.QPoint(event.pos())
+                    delta = current_pos - self._rotate_last_pos
+                    self._rotate_last_pos = current_pos
+                    self._rotate_camera(delta.x(), delta.y())
+                    event.accept()
+                    return True
+                # Wenn Achse ausgewählt ist, verhindere Rotation
+                if self._axis_selected is not None and self._rotate_active:
+                    print(f"[DEBUG] Rotation verhindert: Achse ausgewählt ({self._axis_selected})")
+                    self._rotate_active = False
+                    self._rotate_last_pos = None
             if etype == QtCore.QEvent.MouseMove and self._pan_active and self._pan_last_pos is not None:
                 current_pos = QtCore.QPoint(event.pos())
                 delta = current_pos - self._pan_last_pos
@@ -233,14 +470,25 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self._pan_camera(delta.x(), delta.y())
                 event.accept()
                 return True
-            if etype == QtCore.QEvent.MouseMove and not self._pan_active and not self._rotate_active:
+            if etype == QtCore.QEvent.MouseMove and self._axis_drag_active and self._axis_drag_start_pos is not None:
+                # Drag einer Achsenlinie
+                current_pos = QtCore.QPoint(event.pos())
+                self._handle_axis_line_drag(current_pos)
+                event.accept()
+                return True
+            if etype == QtCore.QEvent.MouseMove and not self._pan_active and not self._rotate_active and not self._axis_drag_active:
                 # Mouse-Move ohne Pan/Rotate - zeige Mausposition an
                 self._handle_mouse_move_3d(event.pos())
                 # Nicht akzeptieren, damit andere Handler auch reagieren können
             if etype == QtCore.QEvent.Leave:
-                if self._pan_active or self._rotate_active:
+                print(f"[DEBUG] Leave-Event: _rotate_active={self._rotate_active}")
+                if self._pan_active or self._rotate_active or self._axis_drag_active:
                     self._pan_active = False
                     self._rotate_active = False
+                    self._axis_drag_active = False
+                    self._axis_drag_type = None
+                    self._axis_drag_start_pos = None
+                    self._axis_drag_start_value = None
                     self._pan_last_pos = None
                     self._rotate_last_pos = None
                     self.widget.unsetCursor()
@@ -257,6 +505,50 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     def _handle_surface_click(self, click_pos: QtCore.QPoint) -> None:
         """Behandelt einen Klick auf eine Surface im 3D-Plot und wählt das entsprechende Item im TreeWidget aus."""
         try:
+            # Prüfe ZUERST ob eine Achsenlinie geklickt wurde (verhindere Surface-Aktivierung)
+            axis_actor_names = self.overlay_helper._category_actors.get('axis', [])
+            if axis_actor_names:
+                # Verwende VTK CellPicker um zu prüfen ob Achsenlinie gepickt wurde
+                try:
+                    from vtkmodules.vtkRenderingCore import vtkCellPicker
+                    renderer = self.plotter.renderer
+                    if renderer is None:
+                        return
+                    
+                    picker = vtkCellPicker()
+                    picker.SetTolerance(0.05)  # Erhöht von 0.01 auf 0.05 für besseres Picking
+                    
+                    size = self.widget.size()
+                    if size.width() > 0 and size.height() > 0:
+                        x_norm = click_pos.x() / size.width()
+                        y_norm = 1.0 - (click_pos.y() / size.height())
+                        
+                        print(f"[DEBUG] _handle_surface_click: Prüfe auf Achsenlinien bei ({x_norm:.3f}, {y_norm:.3f})")
+                        picker.Pick(x_norm, y_norm, 0.0, renderer)
+                        picked_actor = picker.GetActor()
+                        
+                        if picked_actor is not None:
+                            # Prüfe ob gepickter Actor eine Achsenlinie ist
+                            actor_name = None
+                            if hasattr(picked_actor, 'name'):
+                                actor_name = picked_actor.name
+                            else:
+                                for name, actor in renderer.actors.items():
+                                    if actor == picked_actor:
+                                        actor_name = name
+                                        break
+                            
+                            print(f"[DEBUG] _handle_surface_click: Gepickter Actor: {actor_name}, ist Achsenlinie? {actor_name in axis_actor_names if actor_name else False}")
+                            
+                            # Wenn Achsenlinie gepickt wurde, ignoriere Surface-Click
+                            if actor_name and actor_name in axis_actor_names:
+                                print(f"[DEBUG] _handle_surface_click: Achsenlinie {actor_name} wurde gepickt, ignoriere Surface-Click")
+                                return
+                except Exception as e:  # noqa: BLE001
+                    print(f"[DEBUG] _handle_surface_click: Fehler beim Prüfen auf Achsenlinien: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
             # QtInteractor erbt von Plotter, aber pick() könnte nicht verfügbar sein
             # Verwende stattdessen den Renderer direkt für Picking
             renderer = self.plotter.renderer
@@ -295,6 +587,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                         actor_name = name
                                         break
                         
+                        # Prüfe ob gepickter Actor eine Achsenlinie ist (nochmal zur Sicherheit)
+                        if actor_name and actor_name in axis_actor_names:
+                            print(f"[DEBUG] _handle_surface_click: Achsenlinie {actor_name} wurde gepickt, ignoriere Surface-Click")
+                            return
                         
                         # Prüfe ob es eine disabled Surface-Batch-Fläche ist
                         # (Batch-Actors haben feste Namen, Picking erfolgt über point-in-polygon-Prüfung)
@@ -330,9 +626,226 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             # Kein Actor gefunden - prüfe ob auf SPL-Surface geklickt wurde (für enabled Surfaces)
             self._handle_spl_surface_click(click_pos)
-            
         except Exception as e:  # noqa: BLE001
             # Bei Fehler einfach ignorieren
+            pass
+
+    def _handle_axis_line_click(self, click_pos: QtCore.QPoint) -> bool:
+        """Behandelt einen Klick auf eine Achsenlinie im 3D-Plot.
+        
+        Returns:
+            bool: True wenn eine Achsenlinie geklickt wurde, False sonst.
+        """
+        try:
+            renderer = self.plotter.renderer
+            if renderer is None:
+                return False
+            
+            # Hole alle Achsenlinien-Actors aus dem Overlay-Renderer
+            axis_actor_names = self.overlay_helper._category_actors.get('axis', [])
+            if not axis_actor_names:
+                return False
+            
+            # Verwende VTK CellPicker für präzises Picking
+            try:
+                from vtkmodules.vtkRenderingCore import vtkCellPicker
+                picker = vtkCellPicker()
+                # Erhöhte Toleranz für besseres Picking von dünnen Linien (in Display-Koordinaten)
+                # Toleranz in Viewport-Koordinaten (0-1), 0.1 = 10% der Bildschirmbreite
+                picker.SetTolerance(0.1)  # Erhöht auf 0.1 für besseres Picking von dünnen Linien
+                
+                size = self.widget.size()
+                if size.width() <= 0 or size.height() <= 0:
+                    return False
+                
+                # VTK Display-Koordinaten (Pixel-Koordinaten)
+                display_x = float(click_pos.x())
+                display_y = float(size.height() - click_pos.y())  # VTK Y ist invertiert
+                
+                # Normale Viewport-Koordinaten für Pick
+                x_norm = click_pos.x() / size.width()
+                y_norm = 1.0 - (click_pos.y() / size.height())
+                
+                print(f"[DEBUG] _handle_axis_line_click: Pick bei ({x_norm:.3f}, {y_norm:.3f}), Toleranz=0.05")
+                print(f"[DEBUG] _handle_axis_line_click: Verfügbare Achsenlinien-Actors: {len(axis_actor_names)}")
+                for name in axis_actor_names[:3]:  # Zeige erste 3
+                    print(f"  - {name}")
+                
+                picker.Pick(x_norm, y_norm, 0.0, renderer)
+                picked_actor = picker.GetActor()
+                
+                if picked_actor is None:
+                    print(f"[DEBUG] _handle_axis_line_click: Kein Actor gepickt")
+                    # Versuche alle Achsenlinien-Actors direkt zu prüfen (Ray-Casting)
+                    print(f"[DEBUG] _handle_axis_line_click: Versuche Ray-Casting für {len(axis_actor_names)} Achsenlinien-Actors")
+                    # Hole alle Actors aus dem Renderer
+                    for actor_name in axis_actor_names:
+                        actor = renderer.actors.get(actor_name)
+                        if actor is None:
+                            continue
+                        # Prüfe ob Actor pickable ist
+                        is_pickable = actor.GetPickable() if hasattr(actor, 'GetPickable') else True
+                        print(f"[DEBUG] _handle_axis_line_click: Actor {actor_name} pickable={is_pickable}")
+                    return False
+                
+                # Prüfe ob der gepickte Actor eine Achsenlinie ist
+                actor_name = None
+                if hasattr(picked_actor, 'name'):
+                    actor_name = picked_actor.name
+                else:
+                    # Suche in renderer.actors
+                    for name, actor in renderer.actors.items():
+                        if actor == picked_actor:
+                            actor_name = name
+                            break
+                
+                print(f"[DEBUG] _handle_axis_line_click: Gepickter Actor: {actor_name}")
+                print(f"[DEBUG] _handle_axis_line_click: Ist Achsenlinie? {actor_name in axis_actor_names if actor_name else False}")
+                
+                if actor_name and actor_name in axis_actor_names:
+                    # Achsenlinie wurde geklickt - bestimme ob X- oder Y-Achse
+                    # Hole die gepickte 3D-Position
+                    picked_point = picker.GetPickPosition()
+                    if picked_point and len(picked_point) >= 3:
+                        x_picked, y_picked = picked_point[0], picked_point[1]
+                        # Prüfe welche Achse näher ist (X-Achse: y=y_axis, Y-Achse: x=x_axis)
+                        x_axis = self.settings.position_x_axis
+                        y_axis = self.settings.position_y_axis
+                        
+                        # Berechne Distanzen zu beiden Achsen
+                        dist_to_x_axis = abs(y_picked - y_axis)
+                        dist_to_y_axis = abs(x_picked - x_axis)
+                        
+                        # Bestimme welche Achse geklickt wurde (die nähere)
+                        if dist_to_x_axis < dist_to_y_axis:
+                            self._axis_drag_type = 'x'
+                            print(f"[DEBUG] X-Achsenlinie geklickt bei y={y_picked:.2f}, x_axis={x_axis:.2f}")
+                        else:
+                            self._axis_drag_type = 'y'
+                            print(f"[DEBUG] Y-Achsenlinie geklickt bei x={x_picked:.2f}, y_axis={y_axis:.2f}")
+                        
+                        self._axis_drag_active = True
+                        return True
+                
+                return False
+            except ImportError:
+                return False
+            except Exception as e:
+                print(f"[DEBUG] Fehler beim Achsenlinien-Picking: {e}")
+                return False
+        except Exception as e:
+            print(f"[DEBUG] Fehler in _handle_axis_line_click: {e}")
+            return False
+
+    def _handle_axis_line_drag(self, current_pos: QtCore.QPoint) -> None:
+        """Behandelt das Drag einer Achsenlinie und aktualisiert die Position."""
+        if not self._axis_drag_active or self._axis_drag_type is None:
+            return
+        
+        try:
+            renderer = self.plotter.renderer
+            if renderer is None:
+                return
+            
+            size = self.widget.size()
+            if size.width() <= 0 or size.height() <= 0:
+                return
+            
+            # Konvertiere 2D-Mausposition zu 3D-Weltkoordinaten
+            # Verwende DisplayToWorld um 3D-Koordinaten zu bekommen
+            # Für X-Achse: wir wollen die Y-Koordinate ändern
+            # Für Y-Achse: wir wollen die X-Koordinate ändern
+            
+            # Hole Display-Koordinaten
+            display_x = float(current_pos.x())
+            display_y = float(size.height() - current_pos.y())
+            
+            # Konvertiere Display zu World-Koordinaten
+            # Verwende renderer.SetDisplayPoint und renderer.DisplayToWorld
+            renderer.SetDisplayPoint(display_x, display_y, 0.0)
+            renderer.DisplayToWorld()
+            world_point = renderer.GetWorldPoint()
+            if len(world_point) >= 4 and world_point[3] != 0:
+                world_x = world_point[0] / world_point[3]
+                world_y = world_point[1] / world_point[3]
+                world_z = world_point[2] / world_point[3]
+                
+                # Für X-Achse: verwende world_y als neue Y-Position
+                # Für Y-Achse: verwende world_x als neue X-Position
+                if self._axis_drag_type == 'x':
+                    # X-Achse wird gedraggt - ändere Y-Position
+                    new_value = world_y
+                    # Begrenze auf erlaubten Bereich
+                    min_allowed = -self.settings.length / 2
+                    max_allowed = self.settings.length / 2
+                    new_value = max(min_allowed, min(max_allowed, new_value))
+                    # Runde auf ganze Zahl
+                    new_value = int(round(new_value))
+                    
+                    if self.settings.position_y_axis != new_value:
+                        self.settings.position_y_axis = new_value
+                        # Aktualisiere UI
+                        self._update_axis_position_ui()
+                        # Aktualisiere Overlays (Achsenlinien neu zeichnen)
+                        if hasattr(self, 'update_overlays'):
+                            self.update_overlays()
+                        # Aktualisiere Highlight nach Drag
+                        self._update_axis_highlight()
+                        # Aktualisiere Berechnungen
+                        if self.main_window and hasattr(self.main_window, 'update_speaker_array_calculations'):
+                            self.main_window.update_speaker_array_calculations()
+                else:  # self._axis_drag_type == 'y'
+                    # Y-Achse wird gedraggt - ändere X-Position
+                    new_value = world_x
+                    # Begrenze auf erlaubten Bereich
+                    min_allowed = -self.settings.width / 2
+                    max_allowed = self.settings.width / 2
+                    new_value = max(min_allowed, min(max_allowed, new_value))
+                    # Runde auf ganze Zahl
+                    new_value = int(round(new_value))
+                    
+                    if self.settings.position_x_axis != new_value:
+                        self.settings.position_x_axis = new_value
+                        # Aktualisiere UI
+                        self._update_axis_position_ui()
+                        # Aktualisiere Overlays (Achsenlinien neu zeichnen)
+                        if hasattr(self, 'update_overlays'):
+                            self.update_overlays()
+                        # Aktualisiere Highlight nach Drag
+                        self._update_axis_highlight()
+                        # Aktualisiere Berechnungen
+                        if self.main_window and hasattr(self.main_window, 'update_speaker_array_calculations'):
+                            self.main_window.update_speaker_array_calculations()
+        except Exception as e:
+            print(f"[DEBUG] Fehler in _handle_axis_line_drag: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _update_axis_position_ui(self) -> None:
+        """Aktualisiert die UI-Felder für die Achsenpositionen."""
+        try:
+            if self.main_window and hasattr(self.main_window, 'ui'):
+                ui = self.main_window.ui
+                # Prüfe ob es ein Settings-Widget gibt
+                if hasattr(ui, 'position_plot_length'):
+                    ui.position_plot_length.setText(str(self.settings.position_x_axis))
+                if hasattr(ui, 'position_plot_width'):
+                    ui.position_plot_width.setText(str(self.settings.position_y_axis))
+        except Exception as e:
+            print(f"[DEBUG] Fehler beim Aktualisieren der UI: {e}")
+
+    def _update_axis_highlight(self) -> None:
+        """Aktualisiert die Highlight-Farbe der Achsenlinien (rot wenn ausgewählt).
+        Zeichnet die Achsenlinien neu mit der richtigen Farbe.
+        """
+        try:
+            # Zeichne Achsenlinien neu mit Highlight-Status
+            # Die Signatur enthält jetzt selected_axis, daher wird 'axis' automatisch in categories_to_refresh sein
+            if hasattr(self, 'update_overlays') and hasattr(self, 'settings') and hasattr(self, 'container'):
+                print(f"[DEBUG] _update_axis_highlight: Aktualisiere Achsenlinien mit selected_axis={self._axis_selected}")
+                self.update_overlays(self.settings, self.container)
+        except Exception as e:
+            print(f"[DEBUG] Fehler in _update_axis_highlight: {e}")
             import traceback
             traceback.print_exc()
     
@@ -350,90 +863,310 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             # Verwende VTK CellPicker für präzises Picking
             try:
-                from vtkmodules.vtkRenderingCore import vtkCellPicker, vtkWorldPointPicker
-                # Versuche zuerst CellPicker mit höherer Toleranz
-                picker = vtkCellPicker()
-                picker.SetTolerance(0.05)  # Erhöhte Toleranz für besseres Picking
+                from vtkmodules.vtkRenderingCore import vtkCellPicker, vtkWorldPointPicker, vtkPropPicker
+                from vtkmodules.vtkRenderingCore import vtkRenderer
                 
                 size = self.widget.size()
-                if size.width() > 0 and size.height() > 0:
-                    # VTK CellPicker verwendet Display-Koordinaten (Pixel-Koordinaten)
-                    # Qt-Koordinaten sind bereits in Pixel
-                    display_x = float(click_pos.x())
-                    display_y = float(size.height() - click_pos.y())  # VTK Y ist invertiert
+                if size.width() <= 0 or size.height() <= 0:
+                    return False
+                
+                # VTK Display-Koordinaten (Pixel-Koordinaten)
+                display_x = float(click_pos.x())
+                display_y = float(size.height() - click_pos.y())  # VTK Y ist invertiert
+                
+                print(f"[DEBUG] _handle_speaker_click: display_x={display_x}, display_y={display_y}, size={size.width()}x{size.height()}")
+                
+                # Versuche zuerst CellPicker mit höherer Toleranz
+                picker = vtkCellPicker()
+                picker.SetTolerance(0.1)  # Erhöhte Toleranz für besseres Picking aus allen Winkeln
+                
+                # Priorisiere Speaker-Actors: Berechne 3D-Position direkt aus Click-Punkt (Ray-Casting)
+                # und finde den nächstgelegenen Speaker-Actor
+                speaker_actor_at_click = None
+                if hasattr(self, 'overlay_helper') and hasattr(self.overlay_helper, '_speaker_actor_cache'):
+                    speaker_cache = self.overlay_helper._speaker_actor_cache
                     
-                    print(f"[DEBUG] _handle_speaker_click: display_x={display_x}, display_y={display_y}, size={size.width()}x{size.height()}")
+                    # Debug: Zeige alle Array-IDs im Cache
+                    cache_array_ids = set()
+                    for key in speaker_cache.keys():
+                        array_id, speaker_idx, geom_idx = key
+                        cache_array_ids.add(str(array_id))
+                    print(f"[DEBUG] _handle_speaker_click: Cache contains {len(speaker_cache)} speaker actors from {len(cache_array_ids)} arrays: {sorted(cache_array_ids)}")
                     
-                    picker.Pick(display_x, display_y, 0.0, renderer)
-                    picked_actor = picker.GetActor()
+                    # Berechne 3D-Position direkt aus Click-Punkt (Ray-Casting)
+                    # Konvertiere Display-Koordinaten zu World-Koordinaten
+                    renderer.SetDisplayPoint(display_x, display_y, 0.0)
+                    renderer.DisplayToWorld()
+                    world_point_near = renderer.GetWorldPoint()
                     
-                    print(f"[DEBUG] _handle_speaker_click: picked_actor = {picked_actor}")
+                    renderer.SetDisplayPoint(display_x, display_y, 1.0)
+                    renderer.DisplayToWorld()
+                    world_point_far = renderer.GetWorldPoint()
                     
-                    # Falls CellPicker nichts findet, versuche alle Actors im Renderer zu durchsuchen
-                    # und den nächstgelegenen zu finden
-                    if picked_actor is None:
-                        print(f"[DEBUG] _handle_speaker_click: CellPicker found nothing, trying to find closest actor")
-                        picked_point = picker.GetPickPosition()
-                        print(f"[DEBUG] _handle_speaker_click: picked_point = {picked_point}")
+                    if world_point_near and world_point_far and len(world_point_near) >= 4 and len(world_point_far) >= 4:
+                        # Berechne Ray-Start und Ray-End
+                        ray_start = np.array([
+                            world_point_near[0] / world_point_near[3],
+                            world_point_near[1] / world_point_near[3],
+                            world_point_near[2] / world_point_near[3]
+                        ])
+                        ray_end = np.array([
+                            world_point_far[0] / world_point_far[3],
+                            world_point_far[1] / world_point_far[3],
+                            world_point_far[2] / world_point_far[3]
+                        ])
+                        ray_dir = ray_end - ray_start
+                        ray_length = np.linalg.norm(ray_dir)
+                        if ray_length > 0:
+                            ray_dir = ray_dir / ray_length
                         
-                        # Durchsuche alle Overlay-Actors (die mit "overlay_" beginnen)
+                        print(f"[DEBUG] _handle_speaker_click: Checking {len(speaker_cache)} speaker actors with ray-casting")
+                        print(f"[DEBUG] _handle_speaker_click: Ray start={ray_start}, dir={ray_dir}")
+                        
                         min_dist = float('inf')
-                        closest_actor = None
-                        for name, actor in renderer.actors.items():
-                            if isinstance(name, str) and name.startswith("overlay_"):
-                                # Prüfe ob Actor Bounds hat
-                                if hasattr(actor, 'GetBounds'):
-                                    bounds = actor.GetBounds()
+                        closest_speaker_info = None
+                        
+                        # Durchsuche alle Speaker-Actors und finde den, der dem Ray am nächsten ist
+                        for key, info in speaker_cache.items():
+                            cached_actor_name = info.get('actor')
+                            if cached_actor_name:
+                                cached_actor = renderer.actors.get(cached_actor_name)
+                                if cached_actor and hasattr(cached_actor, 'GetBounds'):
+                                    bounds = cached_actor.GetBounds()
                                     if bounds and len(bounds) >= 6:
-                                        # Berechne Distanz zum Mittelpunkt
+                                        # Berechne Zentrum der Bounding Box
                                         center_x = (bounds[0] + bounds[1]) / 2.0
                                         center_y = (bounds[2] + bounds[3]) / 2.0
                                         center_z = (bounds[4] + bounds[5]) / 2.0
+                                        center = np.array([center_x, center_y, center_z])
                                         
-                                        if picked_point and len(picked_point) >= 3:
-                                            dist = ((picked_point[0] - center_x)**2 + 
-                                                   (picked_point[1] - center_y)**2 + 
-                                                   (picked_point[2] - center_z)**2)**0.5
-                                            if dist < min_dist:
-                                                min_dist = dist
-                                                closest_actor = actor
-                                                print(f"[DEBUG] _handle_speaker_click: Found closer actor: {name}, dist={dist}")
+                                        # Berechne Distanz vom Ray zum Zentrum
+                                        # Vektor vom Ray-Start zum Zentrum
+                                        to_center = center - ray_start
+                                        
+                                        # Projektion auf Ray-Richtung
+                                        proj_length = np.dot(to_center, ray_dir)
+                                        
+                                        # Nächstgelegener Punkt auf dem Ray
+                                        closest_point_on_ray = ray_start + proj_length * ray_dir
+                                        
+                                        # Distanz vom Zentrum zum nächstgelegenen Punkt auf dem Ray
+                                        dist_to_ray = np.linalg.norm(center - closest_point_on_ray)
+                                        
+                                        # Zusätzlich: Prüfe ob der Ray durch die Bounding Box geht
+                                        # (vereinfachte Prüfung: Ray schneidet Bounding Box)
+                                        # Berechne Schnittpunkte des Rays mit den Bounding Box Ebenen
+                                        t_min = float('-inf')
+                                        t_max = float('inf')
+                                        
+                                        for i in range(3):
+                                            if abs(ray_dir[i]) > 1e-6:
+                                                t1 = (bounds[i*2] - ray_start[i]) / ray_dir[i]
+                                                t2 = (bounds[i*2+1] - ray_start[i]) / ray_dir[i]
+                                                t_min = max(t_min, min(t1, t2))
+                                                t_max = min(t_max, max(t1, t2))
+                                        
+                                        # Wenn Ray die Bounding Box schneidet (t_min <= t_max) oder sehr nah ist
+                                        intersects = t_min <= t_max and t_max >= 0
+                                        is_close = dist_to_ray < 2.0  # Max 2 Meter Distanz
+                                        
+                                        if intersects or is_close:
+                                            # Kombinierte Distanz: Distanz zum Ray + Distanz entlang des Rays
+                                            combined_dist = dist_to_ray + abs(proj_length) * 0.1
+                                            
+                                            if combined_dist < min_dist:
+                                                min_dist = combined_dist
+                                                speaker_actor_at_click = cached_actor
+                                                closest_speaker_info = (key, cached_actor_name)
+                                                print(f"[DEBUG] _handle_speaker_click: Found speaker actor: {cached_actor_name}, dist_to_ray={dist_to_ray:.3f}, proj_length={proj_length:.3f}, combined_dist={combined_dist:.3f}")
                         
-                        if closest_actor and min_dist < 5.0:  # Max 5 Meter Distanz
-                            picked_actor = closest_actor
-                            print(f"[DEBUG] _handle_speaker_click: Using closest actor, dist={min_dist}")
-                    
-                    if picked_actor is not None:
-                        # Hole Actor-Name
-                        actor_name = None
-                        for name, actor in renderer.actors.items():
-                            if actor == picked_actor:
-                                actor_name = name
-                                break
-                        
-                        print(f"[DEBUG] _handle_speaker_click: actor_name = {actor_name}")
-                        
-                        # Prüfe ob es ein Speaker-Actor ist (beginnt mit "overlay_" und ist in category 'speakers')
-                        if actor_name and isinstance(actor_name, str) and actor_name.startswith("overlay_"):
-                            print(f"[DEBUG] _handle_speaker_click: Found overlay actor: {actor_name}")
-                            # Hole Overlay-Helper und prüfe ob Actor in speakers category ist
-                            if hasattr(self, 'overlay_helper'):
-                                print(f"[DEBUG] _handle_speaker_click: overlay_helper exists")
-                                speaker_info = self.overlay_helper._get_speaker_info_from_actor(picked_actor, actor_name)
-                                print(f"[DEBUG] _handle_speaker_click: speaker_info = {speaker_info}")
-                                if speaker_info:
-                                    array_id, speaker_index = speaker_info
-                                    print(f"[DEBUG] _handle_speaker_click: Calling _select_speaker_in_treewidget with array_id={array_id}, speaker_index={speaker_index}")
-                                    self._select_speaker_in_treewidget(array_id, speaker_index)
-                                    return True
-                                else:
-                                    print(f"[DEBUG] _handle_speaker_click: speaker_info is None")
-                            else:
-                                print(f"[DEBUG] _handle_speaker_click: overlay_helper does not exist")
+                        if speaker_actor_at_click and min_dist < 5.0:  # Max 5 Meter kombinierte Distanz
+                            print(f"[DEBUG] _handle_speaker_click: Using prioritized speaker actor: {closest_speaker_info[1]}, dist={min_dist:.3f}")
                         else:
-                            print(f"[DEBUG] _handle_speaker_click: actor_name does not start with 'overlay_' or is not a string")
+                            speaker_actor_at_click = None
+                
+                # Verwende Speaker-Actor falls gefunden, sonst den vom CellPicker
+                if speaker_actor_at_click:
+                    picked_actor = speaker_actor_at_click
+                    print(f"[DEBUG] _handle_speaker_click: Using prioritized speaker actor")
+                else:
+                    # Normale CellPicker-Logik
+                    picker.Pick(display_x, display_y, 0.0, renderer)
+                    picked_actor = picker.GetActor()
+                    print(f"[DEBUG] _handle_speaker_click: CellPicker picked_actor = {picked_actor}")
+                
+                # Falls CellPicker nichts findet, versuche PropPicker (funktioniert besser aus verschiedenen Winkeln)
+                if picked_actor is None:
+                    print(f"[DEBUG] _handle_speaker_click: CellPicker found nothing, trying PropPicker")
+                    prop_picker = vtkPropPicker()
+                    prop_picker.Pick(display_x, display_y, 0.0, renderer)
+                    picked_actor = prop_picker.GetActor()
+                    print(f"[DEBUG] _handle_speaker_click: PropPicker picked_actor = {picked_actor}")
+                
+                # Falls immer noch nichts gefunden, verwende Ray-Casting-Ansatz
+                if picked_actor is None:
+                    print(f"[DEBUG] _handle_speaker_click: Both pickers found nothing, trying ray-casting approach")
+                    picked_point = picker.GetPickPosition()
+                    print(f"[DEBUG] _handle_speaker_click: picked_point = {picked_point}")
+                    
+                    # Hole Kamera-Position und Richtung für Ray-Casting
+                    camera = renderer.GetActiveCamera()
+                    if camera:
+                        cam_pos = camera.GetPosition()
+                        # Berechne Ray-Richtung vom Klick-Punkt
+                        renderer.SetWorldPoint(picked_point[0], picked_point[1], picked_point[2])
+                        renderer.WorldToDisplay()
+                        display_coords = renderer.GetDisplayPoint()
+                        
+                        # Erstelle Ray vom Klick-Punkt in die Szene
+                        renderer.SetDisplayPoint(display_x, display_y, 0.0)
+                        renderer.DisplayToWorld()
+                        world_point = renderer.GetWorldPoint()
+                        if world_point and len(world_point) >= 4:
+                            ray_start = [world_point[0]/world_point[3], world_point[1]/world_point[3], world_point[2]/world_point[3]]
+                            
+                            # Durchsuche alle Speaker-Actors und finde den, der den Ray schneidet
+                            min_dist = float('inf')
+                            closest_actor = None
+                            
+                            # Hole alle Speaker-Actors aus dem Overlay-Helper
+                            if hasattr(self, 'overlay_helper') and hasattr(self.overlay_helper, '_speaker_actor_cache'):
+                                speaker_cache = self.overlay_helper._speaker_actor_cache
+                                print(f"[DEBUG] _handle_speaker_click: Checking {len(speaker_cache)} speaker actors in cache")
+                                
+                                for key, info in speaker_cache.items():
+                                    actor_name = info.get('actor')
+                                    if actor_name:
+                                        actor = renderer.actors.get(actor_name)
+                                        if actor and hasattr(actor, 'GetBounds'):
+                                            bounds = actor.GetBounds()
+                                            if bounds and len(bounds) >= 6:
+                                                # Prüfe ob Ray die Bounding Box schneidet
+                                                # Vereinfachte Prüfung: Distanz zum Mittelpunkt der Bounding Box
+                                                center_x = (bounds[0] + bounds[1]) / 2.0
+                                                center_y = (bounds[2] + bounds[3]) / 2.0
+                                                center_z = (bounds[4] + bounds[5]) / 2.0
+                                                
+                                                # Berechne Distanz vom Ray-Start zum Zentrum
+                                                dist = ((ray_start[0] - center_x)**2 + 
+                                                       (ray_start[1] - center_y)**2 + 
+                                                       (ray_start[2] - center_z)**2)**0.5
+                                                
+                                                # Prüfe ob der Klick-Punkt innerhalb der Bounding Box ist (mit Toleranz)
+                                                if (bounds[0] - 0.5 <= picked_point[0] <= bounds[1] + 0.5 and
+                                                    bounds[2] - 0.5 <= picked_point[1] <= bounds[3] + 0.5 and
+                                                    bounds[4] - 0.5 <= picked_point[2] <= bounds[5] + 0.5):
+                                                    if dist < min_dist:
+                                                        min_dist = dist
+                                                        closest_actor = actor
+                                                        print(f"[DEBUG] _handle_speaker_click: Found intersecting actor: {actor_name}, dist={dist}")
+                            
+                            # Fallback: Durchsuche alle Overlay-Actors direkt im Renderer
+                            if closest_actor is None:
+                                for name, actor in renderer.actors.items():
+                                    if isinstance(name, str) and name.startswith("overlay_"):
+                                        if hasattr(actor, 'GetBounds'):
+                                            bounds = actor.GetBounds()
+                                            if bounds and len(bounds) >= 6:
+                                                # Prüfe ob Klick-Punkt innerhalb der Bounding Box ist
+                                                if (bounds[0] - 0.5 <= picked_point[0] <= bounds[1] + 0.5 and
+                                                    bounds[2] - 0.5 <= picked_point[1] <= bounds[3] + 0.5 and
+                                                    bounds[4] - 0.5 <= picked_point[2] <= bounds[5] + 0.5):
+                                                    center_x = (bounds[0] + bounds[1]) / 2.0
+                                                    center_y = (bounds[2] + bounds[3]) / 2.0
+                                                    center_z = (bounds[4] + bounds[5]) / 2.0
+                                                    
+                                                    dist = ((picked_point[0] - center_x)**2 + 
+                                                           (picked_point[1] - center_y)**2 + 
+                                                           (picked_point[2] - center_z)**2)**0.5
+                                                    if dist < min_dist:
+                                                        min_dist = dist
+                                                        closest_actor = actor
+                                                        print(f"[DEBUG] _handle_speaker_click: Found closer actor: {name}, dist={dist}")
+                            
+                            if closest_actor and min_dist < 10.0:  # Max 10 Meter Distanz
+                                picked_actor = closest_actor
+                                print(f"[DEBUG] _handle_speaker_click: Using closest actor from ray-casting, dist={min_dist}")
+                    
+                # Verarbeite gefundenen Actor
+                if picked_actor is not None:
+                    print(f"[DEBUG] _handle_speaker_click: Processing picked_actor (not None)")
+                    # Hole Actor-Name
+                    actor_name = None
+                    for name, actor in renderer.actors.items():
+                        if actor == picked_actor:
+                            actor_name = name
+                            break
+                    
+                    print(f"[DEBUG] _handle_speaker_click: actor_name = {actor_name}")
+                    
+                    # Prüfe ob es ein Speaker-Actor ist (beginnt mit "overlay_" und ist in category 'speakers')
+                    if actor_name and isinstance(actor_name, str) and actor_name.startswith("overlay_"):
+                        print(f"[DEBUG] _handle_speaker_click: Found overlay actor: {actor_name}")
+                        # Hole Overlay-Helper und prüfe ob Actor in speakers category ist
+                        if hasattr(self, 'overlay_helper'):
+                            print(f"[DEBUG] _handle_speaker_click: overlay_helper exists")
+                            speaker_info = self.overlay_helper._get_speaker_info_from_actor(picked_actor, actor_name)
+                            print(f"[DEBUG] _handle_speaker_click: speaker_info = {speaker_info}")
+                            if speaker_info:
+                                array_id, speaker_index = speaker_info
+                                print(f"[DEBUG] _handle_speaker_click: Calling _select_speaker_in_treewidget with array_id={array_id}, speaker_index={speaker_index}")
+                                self._select_speaker_in_treewidget(array_id, speaker_index)
+                                return True
+                            else:
+                                print(f"[DEBUG] _handle_speaker_click: speaker_info is None")
+                        else:
+                            print(f"[DEBUG] _handle_speaker_click: overlay_helper does not exist")
                     else:
-                        print(f"[DEBUG] _handle_speaker_click: picked_actor is None")
+                        # Actor ist kein Speaker-Actor - versuche Ray-Casting als Fallback
+                        print(f"[DEBUG] _handle_speaker_click: actor_name does not start with 'overlay_' or is not a string, trying ray-casting fallback")
+                        picked_point = picker.GetPickPosition()
+                        if picked_point and len(picked_point) >= 3:
+                            # Durchsuche alle Speaker-Actors im Cache
+                            if hasattr(self, 'overlay_helper') and hasattr(self.overlay_helper, '_speaker_actor_cache'):
+                                speaker_cache = self.overlay_helper._speaker_actor_cache
+                                print(f"[DEBUG] _handle_speaker_click: Checking {len(speaker_cache)} speaker actors in cache for fallback")
+                                
+                                min_dist = float('inf')
+                                closest_speaker_actor = None
+                                closest_speaker_info = None
+                                
+                                for key, info in speaker_cache.items():
+                                    cached_actor_name = info.get('actor')
+                                    if cached_actor_name:
+                                        cached_actor = renderer.actors.get(cached_actor_name)
+                                        if cached_actor and hasattr(cached_actor, 'GetBounds'):
+                                            bounds = cached_actor.GetBounds()
+                                            if bounds and len(bounds) >= 6:
+                                                # Prüfe ob Klick-Punkt innerhalb der Bounding Box ist (mit größerer Toleranz)
+                                                if (bounds[0] - 1.0 <= picked_point[0] <= bounds[1] + 1.0 and
+                                                    bounds[2] - 1.0 <= picked_point[1] <= bounds[3] + 1.0 and
+                                                    bounds[4] - 1.0 <= picked_point[2] <= bounds[5] + 1.0):
+                                                    center_x = (bounds[0] + bounds[1]) / 2.0
+                                                    center_y = (bounds[2] + bounds[3]) / 2.0
+                                                    center_z = (bounds[4] + bounds[5]) / 2.0
+                                                    
+                                                    dist = ((picked_point[0] - center_x)**2 + 
+                                                           (picked_point[1] - center_y)**2 + 
+                                                           (picked_point[2] - center_z)**2)**0.5
+                                                    if dist < min_dist:
+                                                        min_dist = dist
+                                                        closest_speaker_actor = cached_actor
+                                                        closest_speaker_info = (key, cached_actor_name)
+                                                        print(f"[DEBUG] _handle_speaker_click: Found closer speaker actor: {cached_actor_name}, dist={dist}")
+                                
+                                if closest_speaker_actor and min_dist < 5.0:  # Max 5 Meter Distanz
+                                    array_id, speaker_idx, geom_idx = closest_speaker_info[0]
+                                    actor_name = closest_speaker_info[1]
+                                    print(f"[DEBUG] _handle_speaker_click: Using closest speaker actor from fallback: {actor_name}, array_id={array_id}, dist={min_dist}")
+                                    speaker_info = self.overlay_helper._get_speaker_info_from_actor(closest_speaker_actor, actor_name)
+                                    if speaker_info:
+                                        array_id, speaker_index = speaker_info
+                                        print(f"[DEBUG] _handle_speaker_click: Calling _select_speaker_in_treewidget with array_id={array_id}, speaker_index={speaker_index}")
+                                        self._select_speaker_in_treewidget(array_id, speaker_index)
+                                        return True
+                else:
+                    print(f"[DEBUG] _handle_speaker_click: picked_actor is None")
             except ImportError as e:
                 print(f"[DEBUG] _handle_speaker_click: ImportError: {e}")
             except Exception as e:  # noqa: BLE001
@@ -521,47 +1254,80 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 print(f"[DEBUG] _select_speaker_in_treewidget: tree_widget is None")
                 return
             
-            # Suche nach Array-Item
-            def find_array_item(parent_item=None):
+            # Suche nach Array-Item (rekursiv durch alle Items, inkl. Gruppen)
+            # Konvertiere array_id zu String für konsistenten Vergleich
+            array_id_str = str(array_id)
+            
+            def find_array_item(parent_item=None, depth=0):
+                """Rekursive Suche nach Array-Item, auch in Gruppen"""
+                indent = "  " * depth
                 if parent_item is None:
+                    # Suche in allen Top-Level Items
+                    print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Searching in {tree_widget.topLevelItemCount()} top-level items")
                     for i in range(tree_widget.topLevelItemCount()):
                         item = tree_widget.topLevelItem(i)
-                        found = find_array_item(item)
+                        if item:
+                            found = find_array_item(item, depth + 1)
                         if found:
                             return found
                 else:
+                    # Prüfe ob dieses Item ein Array-Item ist (nicht eine Gruppe)
+                    item_type = parent_item.data(0, Qt.UserRole + 1)
                     item_array_id = parent_item.data(0, Qt.UserRole)
-                    print(f"[DEBUG] _select_speaker_in_treewidget: Comparing item_array_id={item_array_id} with array_id={array_id}")
-                    if item_array_id == array_id:
+                    item_text = parent_item.text(0)
+                    
+                    # Konvertiere item_array_id zu String für Vergleich
+                    item_array_id_str = str(item_array_id) if item_array_id is not None else None
+                    
+                    print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Checking item '{item_text}' (type={item_type}, array_id={item_array_id}, str={item_array_id_str})")
+                    
+                    # Prüfe ob es ein Array-Item ist (nicht eine Gruppe)
+                    # Gruppen haben item_type == "group", Arrays haben item_type == None oder einen anderen Wert
+                    if item_type != "group" and item_array_id_str == array_id_str:
+                        print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Match found! Returning item '{item_text}'")
                         return parent_item
-                    for i in range(parent_item.childCount()):
-                        child = parent_item.child(i)
-                        found = find_array_item(child)
-                        if found:
-                            return found
+                    
+                    # Suche rekursiv in Children (auch wenn es eine Gruppe ist)
+                    child_count = parent_item.childCount()
+                    if child_count > 0:
+                        print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Searching in {child_count} children")
+                        for i in range(child_count):
+                            child = parent_item.child(i)
+                            if child:
+                                found = find_array_item(child, depth + 1)
+                                if found:
+                                    return found
+                
                 return None
             
             item = find_array_item()
-            print(f"[DEBUG] _select_speaker_in_treewidget: Found item = {item}")
+            print(f"[DEBUG] _select_speaker_in_treewidget: Found item = {item} (text: {item.text(0) if item else 'None'})")
             if item is not None:
                 # Blockiere Signale während der programmatischen Auswahl
                 tree_widget.blockSignals(True)
                 try:
+                    # Expandiere Parent-Items (falls Item in einer Gruppe ist)
+                    parent = item.parent()
+                    while parent is not None:
+                        parent.setExpanded(True)
+                        print(f"[DEBUG] _select_speaker_in_treewidget: Expanded parent '{parent.text(0)}'")
+                        parent = parent.parent()
+                    
                     tree_widget.setCurrentItem(item)
                     tree_widget.scrollToItem(item)
-                    print(f"[DEBUG] _select_speaker_in_treewidget: Set current item")
+                    print(f"[DEBUG] _select_speaker_in_treewidget: Set current item '{item.text(0)}'")
                 finally:
                     tree_widget.blockSignals(False)
                 
                 # Setze Highlight-IDs für rote Umrandung
                 # Setze sowohl einzelne ID (Rückwärtskompatibilität) als auch Liste
+                # WICHTIG: Beim Klick auf einen Lautsprecher soll das gesamte Array hervorgehoben werden,
+                # nicht nur der einzelne Speaker. Daher setzen wir highlight_indices auf leer.
                 setattr(self.settings, "active_speaker_array_highlight_id", array_id)
                 setattr(self.settings, "active_speaker_array_highlight_ids", [str(array_id)])
-                if speaker_index is not None:
-                    setattr(self.settings, "active_speaker_highlight_indices", [(array_id, int(speaker_index))])
-                else:
-                    setattr(self.settings, "active_speaker_highlight_indices", [])
-                print(f"[DEBUG] _select_speaker_in_treewidget: Set highlight IDs")
+                # Setze highlight_indices auf leer, damit alle Speaker des Arrays hervorgehoben werden
+                setattr(self.settings, "active_speaker_highlight_indices", [])
+                print(f"[DEBUG] _select_speaker_in_treewidget: Set highlight IDs (array_id={array_id}, all speakers of array will be highlighted)")
                 
                 # Aktualisiere Overlays für rote Umrandung
                 if hasattr(main_window, "draw_plots") and hasattr(main_window.draw_plots, "draw_spl_plotter"):
@@ -575,6 +1341,39 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             import traceback
             print(f"[DEBUG] _select_speaker_in_treewidget: Exception: {e}")
             traceback.print_exc()
+    
+    def _get_z_from_mesh(self, x_pos: float, y_pos: float) -> Optional[float]:
+        """Holt Z-Koordinate direkt aus Mesh-Punkten basierend auf X/Y-Position (schnell, ohne Picking)"""
+        try:
+            if self.surface_mesh is None:
+                return None
+            
+            mesh_points = self.surface_mesh.points
+            if len(mesh_points) == 0:
+                return None
+            
+            # Finde nächste Punkte im Mesh für X/Y-Position (ignoriere Z)
+            xy_distances = np.linalg.norm(mesh_points[:, :2] - np.array([x_pos, y_pos]), axis=1)
+            
+            # Nimm die 4 nächsten Punkte für Interpolation
+            closest_indices = np.argsort(xy_distances)[:4]
+            closest_distances = xy_distances[closest_indices]
+            
+            # Wenn der nächste Punkt sehr nah ist, verwende direkt dessen Z-Wert
+            if closest_distances[0] < 0.01:  # Sehr nah (< 1cm)
+                return float(mesh_points[closest_indices[0], 2])
+            
+            # Interpoliere Z-Wert basierend auf gewichteter Distanz
+            # Verwende inverse Distanz-gewichtete Interpolation
+            weights = 1.0 / (closest_distances + 1e-6)  # Vermeide Division durch Null
+            weights = weights / np.sum(weights)  # Normalisiere Gewichte
+            
+            z_values = mesh_points[closest_indices, 2]
+            z_interpolated = np.sum(weights * z_values)
+            
+            return float(z_interpolated)
+        except Exception:
+            return None
     
     def _handle_mouse_move_3d(self, mouse_pos: QtCore.QPoint) -> None:
         """Behandelt Mouse-Move im 3D-Plot und zeigt Mausposition an"""
@@ -591,7 +1390,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             x_norm = mouse_pos.x() / size.width()
             y_norm = 1.0 - (mouse_pos.y() / size.height())  # VTK Y ist invertiert
             
-            # Konvertiere Display-Koordinaten zu World-Koordinaten
+            # Schnell: Berechne X/Y aus Schnittpunkt mit Z=0 Ebene
             renderer.SetDisplayPoint(x_norm * renderer.GetSize()[0], y_norm * renderer.GetSize()[1], 0.0)
             renderer.DisplayToWorld()
             world_point_near = renderer.GetWorldPoint()
@@ -603,7 +1402,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if world_point_near is None or world_point_far is None or len(world_point_near) < 4:
                 return
             
-            # Berechne Schnittpunkt mit Z=0 Ebene
+            # Berechne Schnittpunkt mit Z=0 Ebene (schnell für X/Y)
             if abs(world_point_near[3]) > 1e-6 and abs(world_point_far[3]) > 1e-6:
                 ray_start = np.array([
                     world_point_near[0] / world_point_near[3],
@@ -622,31 +1421,26 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     intersection = ray_start + t * ray_dir
                     x_pos = float(intersection[0])
                     y_pos = float(intersection[1])
-                    z_pos = float(intersection[2])  # Z-Koordinate
-                    
-                    # Hole SPL-Wert und Z-Daten aus calculation_spl
-                    if self.container:
-                        spl_value = self._get_spl_from_3d_data(x_pos, y_pos)
-                        z_data, _ = self._get_z_and_spl_data_from_container(x_pos, y_pos)
-                        
-                        # Verwende Z-Daten aus Container falls verfügbar, sonst z_pos vom Schnittpunkt
-                        z_display = z_data if z_data is not None else z_pos
-                        
-                        # Baue Text zusammen
-                        text = f"3D-Plot:\nX: {x_pos:.2f} m\nY: {y_pos:.2f} m\nZ: {z_display:.2f} m"
-                        
-                        # Füge SPL hinzu falls verfügbar
-                        if spl_value is not None:
-                            text += f"\nSPL: {spl_value:.1f} dB"
-                        
-                        # Aktualisiere Label über main_window
-                        if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
-                            self.main_window.ui.mouse_position_label.setText(text)
-                    else:
-                        # Kein Container vorhanden - zeige nur Position
-                        text = f"3D-Plot:\nX: {x_pos:.2f} m\nY: {y_pos:.2f} m\nZ: {z_pos:.2f} m"
-                        if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
-                            self.main_window.ui.mouse_position_label.setText(text)
+                else:
+                    return
+            else:
+                return
+            
+            # Hole SPL-Wert aus calculation_spl
+            spl_value = None
+            if self.container:
+                spl_value = self._get_spl_from_3d_data(x_pos, y_pos)
+            
+            # Baue Text zusammen (ohne Z-Wert)
+            text = f"3D-Plot:\nX: {x_pos:.2f} m\nY: {y_pos:.2f} m"
+            
+            # Füge SPL hinzu falls verfügbar
+            if spl_value is not None:
+                text += f"\nSPL: {spl_value:.1f} dB"
+            
+            # Aktualisiere Label über main_window
+            if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
+                self.main_window.ui.mouse_position_label.setText(text)
         except Exception as e:
             # Fehler ignorieren (nicht kritisch)
             pass
@@ -1068,6 +1862,195 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         
         return inside
     
+    def _handle_double_click_auto_range(self) -> None:
+        """Behandelt Doppelklick auf Colorbar: Findet den höchsten SPL und passt die Colorbar-Range an."""
+        print(f"[DEBUG] _handle_double_click_auto_range: Aufgerufen")
+        try:
+            # Prüfe ob Settings verfügbar sind
+            if not self.settings:
+                print(f"[DEBUG] _handle_double_click_auto_range: Keine Settings")
+                return
+            
+            # Prüfe ob main_window verfügbar ist (für Plot-Update und Container-Zugriff)
+            if not self.main_window:
+                return
+            
+            # Hole Container (entweder direkt oder über main_window)
+            container = self.container
+            if container is None and hasattr(self.main_window, 'container'):
+                container = self.main_window.container
+            
+            if container is None:
+                return
+            
+            # Hole die aktuellen Schallfeld-Daten
+            calc_spl = getattr(container, 'calculation_spl', {})
+            if not isinstance(calc_spl, dict):
+                return
+            
+            # Prüfe Plot-Modus
+            plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+            time_mode = plot_mode == 'SPL over time'
+            phase_mode = plot_mode == 'Phase alignment'
+            
+            # Für Phase-Mode und Time-Mode keine automatische Anpassung
+            if phase_mode or time_mode:
+                return
+            
+            # Hole Schallfeld-Daten
+            sound_field_p = calc_spl.get('sound_field_p')
+            if sound_field_p is None:
+                return
+            
+            # Konvertiere zu numpy array
+            pressure_array = np.array(sound_field_p, dtype=float)
+            
+            # Prüfe ob Daten vorhanden sind
+            if pressure_array.size == 0:
+                return
+            
+            # Entferne NaN und Inf Werte
+            finite_mask = np.isfinite(pressure_array)
+            if not np.any(finite_mask):
+                return
+            
+            # Berechne SPL in dB
+            pressure_abs = np.abs(pressure_array)
+            pressure_abs = np.clip(pressure_abs, 1e-12, None)
+            spl_db = self.functions.mag2db(pressure_abs)
+            
+            # Finde minimalen und maximalen SPL (nur finite Werte)
+            spl_min = float(np.nanmin(spl_db[finite_mask]))
+            spl_max = float(np.nanmax(spl_db[finite_mask]))
+            
+            # Runde auf nächste ganze Zahl (für bessere Lesbarkeit)
+            spl_max_rounded = np.ceil(spl_max)
+            spl_min_rounded = np.floor(spl_min)
+            
+            # Hole aktuelle Colorbar-Range
+            colorbar_range = getattr(self.settings, 'colorbar_range', {})
+            if not isinstance(colorbar_range, dict):
+                colorbar_range = {}
+            
+            # Hole Color-Step
+            step = colorbar_range.get('step', 3.0)
+            if step <= 0:
+                step = 3.0
+            
+            # 🎯 NEUE LOGIK: Min wird basierend auf Max und color_step berechnet
+            # Die Anzahl der Farbstufen (basierend auf step) bestimmt den minimalen SPL
+            # Beispiel: max=120 dB, step=3 dB → Anzahl Schritte bestimmt min
+            # Wenn wir z.B. 10 Schritte haben: min = max - (10 * step) = 120 - 30 = 90 dB
+            
+            # Berechne Max als Vielfaches von step (aufgerundet)
+            new_max = np.ceil(spl_max_rounded / step) * step
+            
+            # Berechne wie viele Schritte vom tatsächlichen Min bis Max wären
+            steps_from_actual_min = (spl_max_rounded - spl_min_rounded) / step
+            
+            # Bestimme optimale Anzahl von Schritten (10-20 Schritte für gute Darstellung)
+            if steps_from_actual_min > 20:
+                # Zu viele Schritte - begrenze auf 20 Schritte
+                optimal_steps = 20
+            elif steps_from_actual_min < 10:
+                # Zu wenige Schritte - verwende mindestens 10 Schritte
+                optimal_steps = 10
+            else:
+                # Sinnvolle Anzahl - verwende die tatsächliche Anzahl (gerundet)
+                optimal_steps = int(np.round(steps_from_actual_min))
+            
+            # Berechne Min basierend auf Max und optimaler Anzahl von Schritten
+            # Min = Max - (Anzahl_Schritte * step)
+            new_min = new_max - (optimal_steps * step)
+            
+            # Stelle sicher, dass Min nicht kleiner als der tatsächliche Min ist (mit Toleranz)
+            # Aber runde auf Vielfaches von step ab
+            actual_min_rounded = np.floor(spl_min_rounded / step) * step
+            
+            # Wenn berechnetes Min kleiner als tatsächlicher Min ist, verwende tatsächlichen Min
+            if new_min < actual_min_rounded:
+                new_min = actual_min_rounded
+                # Rechne Max neu, damit die Anzahl der Schritte stimmt
+                # Aber nur wenn das nicht zu viele Schritte ergibt
+                recalculated_steps = (new_max - new_min) / step
+                if recalculated_steps > 25:
+                    # Zu viele Schritte - begrenze Min
+                    new_min = new_max - (20 * step)
+            
+            # Stelle sicher, dass Min nicht größer oder gleich Max ist
+            if new_min >= new_max:
+                new_min = new_max - step
+            
+            # Stelle sicher, dass Min nicht negativ wird
+            if new_min < 0:
+                new_min = 0.0
+            
+            # Hole alte Werte für Vergleich
+            old_min = colorbar_range.get('min', 90.0)
+            old_max = colorbar_range.get('max', 120.0)
+            
+            # Berechne Anzahl der Schritte für Debug-Ausgabe
+            num_steps = (new_max - new_min) / step
+            print(f"[DEBUG] _handle_double_click_auto_range: SPL min={spl_min:.2f} dB, max={spl_max:.2f} dB")
+            print(f"[DEBUG] _handle_double_click_auto_range: Neue Range: min={new_min:.2f} dB, max={new_max:.2f} dB, step={step:.2f} dB, Schritte={num_steps:.1f}")
+            
+            # Nur aktualisieren wenn sich die Werte signifikant geändert haben (mindestens 1 dB)
+            if abs(new_max - old_max) < 1.0 and abs(new_min - old_min) < 1.0:
+                print(f"[DEBUG] _handle_double_click_auto_range: Werte haben sich nicht signifikant geändert, keine Aktualisierung")
+                return
+            
+            # Aktualisiere Colorbar-Range
+            colorbar_range['min'] = float(new_min)
+            colorbar_range['max'] = new_max
+            
+            # Stelle sicher, dass step und tick_step sinnvoll sind
+            tick_step = colorbar_range.get('tick_step', 6.0)
+            
+            # Setze colorbar_range im Settings
+            setattr(self.settings, 'colorbar_range', colorbar_range)
+            
+            # Aktualisiere Plot über main_window
+            if hasattr(self.main_window, 'plot_spl'):
+                self.main_window.plot_spl(update_axes=False, reset_camera=False)
+            
+        except Exception as e:  # noqa: BLE001
+            # Fehler ignorieren (nicht kritisch)
+            import traceback
+            traceback.print_exc()
+    
+    def _on_colorbar_double_click(self, event):
+        """Handler für Doppelklick auf Colorbar.
+        
+        Matplotlib erkennt Doppelklicks über die Zeit zwischen zwei button_press_event Events.
+        Wir müssen die Zeit und Position zwischen zwei Klicks messen.
+        """
+        # Prüfe ob es ein Linksklick auf Colorbar-Axes war
+        if event.button != 1 or event.inaxes != self.colorbar_ax:
+            return
+        
+        # Prüfe ob es ein Doppelklick ist (basierend auf letztem Klick)
+        current_time = time.time()
+        if hasattr(self, '_last_colorbar_click_time') and hasattr(self, '_last_colorbar_click_pos'):
+            time_diff = current_time - self._last_colorbar_click_time
+            pos_diff = (
+                abs(event.x - self._last_colorbar_click_pos[0]) < 10 and
+                abs(event.y - self._last_colorbar_click_pos[1]) < 10
+            )
+            
+            # Doppelklick wenn innerhalb von 500ms und ähnlicher Position (10 Pixel Toleranz)
+            if time_diff < 0.5 and pos_diff:
+                print(f"[DEBUG] Doppelklick auf Colorbar erkannt bei ({event.xdata}, {event.ydata})")
+                # Rufe automatische Range-Anpassung auf
+                self._handle_double_click_auto_range()
+                # Reset für nächsten Klick
+                self._last_colorbar_click_time = None
+                self._last_colorbar_click_pos = None
+                return
+        
+        # Speichere Zeit und Position für nächsten Klick
+        self._last_colorbar_click_time = current_time
+        self._last_colorbar_click_pos = (event.x, event.y)
+    
     def _select_surface_in_treewidget(self, surface_id: str) -> None:
         """Wählt eine Surface im TreeWidget aus und öffnet die zugehörige Gruppe."""
         try:
@@ -1386,6 +2369,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
         
+        # 🎯 Gradient-Modus: Normales Upscaling (Performance-Optimierung)
+        # Bilineare Interpolation sorgt bereits für glatte Übergänge, daher kein zusätzliches Upscaling nötig
+        colorization_mode_used = colorization_mode
+        is_step_mode = colorization_mode_used == 'Color step' and cbar_step > 0
+        # Verwende normales Upscaling für beide Modi (Performance)
+        upscale_factor = self.UPSCALE_FACTOR
+        
         try:
             geometry = prepare_plot_geometry(
                 x,
@@ -1393,7 +2383,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 plot_values,
                 settings=self.settings,
                 container=self.container,
-                default_upscale=self.UPSCALE_FACTOR,
+                default_upscale=upscale_factor,
             )
         except RuntimeError as exc:
             pass
@@ -1415,8 +2405,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             'source_y': geometry.source_y.copy() if hasattr(geometry.source_y, 'copy') else geometry.source_y,
         }
         
-        colorization_mode_used = colorization_mode
-        if colorization_mode_used == 'Color step':
+        # 🎯 is_step_mode wurde bereits oben definiert, verwende es hier
+        if is_step_mode:
             scalars = self._quantize_to_steps(plot_values, cbar_step)
         else:
             scalars = plot_values
@@ -1519,10 +2509,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     scalars="plot_scalars",
                     cmap=cmap_object,
                     clim=(cbar_min, cbar_max),
-                    smooth_shading=False,
+                    # 🎯 Gradient: smooth rendering, Color step: harte Stufen
+                    smooth_shading=not is_step_mode,
                     show_scalar_bar=False,
                     reset_camera=False,
-                    interpolate_before_map=False,
+                    interpolate_before_map=not is_step_mode,
                 )
             else:
                 if not hasattr(self, "floor_mesh"):
@@ -1534,7 +2525,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     mapper.array_name = "plot_scalars"
                     mapper.scalar_range = (cbar_min, cbar_max)
                     mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
-                    mapper.interpolate_before_map = False
+                    # 🎯 Gradient: smooth rendering, Color step: harte Stufen
+                    mapper.interpolate_before_map = not is_step_mode
         else:
             # Wenn Surfaces aktiv sind, Floor ausblenden (falls vorher gezeichnet)
             floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
@@ -1646,7 +2638,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             if 'axis' in categories_to_refresh:
                 t_axis_start = time.perf_counter()
-                self.overlay_helper.draw_axis_lines(settings)
+                self.overlay_helper.draw_axis_lines(settings, selected_axis=self._axis_selected)
                 t_axis_end = time.perf_counter()
             if 'surfaces' in categories_to_refresh:
                 t_surfaces_start = time.perf_counter()
@@ -2600,6 +3592,22 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self.cbar.ax.set_ylim(cbar_max, cbar_min)
             else:
                 self.cbar.ax.set_ylim(cbar_min, cbar_max)
+            
+            # 🎯 Doppelklick-Handler zur Colorbar hinzufügen
+            if requires_new_colorbar or not hasattr(self, '_colorbar_double_click_connected'):
+                # Entferne alte Handler falls vorhanden
+                if hasattr(self, '_colorbar_double_click_cid'):
+                    try:
+                        self.colorbar_ax.figure.canvas.mpl_disconnect(self._colorbar_double_click_cid)
+                    except Exception:
+                        pass
+                # Füge Doppelklick-Handler hinzu
+                self._colorbar_double_click_cid = self.colorbar_ax.figure.canvas.mpl_connect(
+                    'button_press_event',
+                    self._on_colorbar_double_click
+                )
+                self._colorbar_double_click_connected = True
+                print("[DEBUG] Doppelklick-Handler zur Colorbar hinzugefügt")
 
         self._colorbar_mode = mode_signature
 
@@ -2647,6 +3655,84 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     # Bilineare Interpolation und Textur-Rendering für horizontale Surfaces
     # ------------------------------------------------------------------
     @staticmethod
+    def _bilinear_interpolate_grid(
+        source_x: np.ndarray,
+        source_y: np.ndarray,
+        values: np.ndarray,
+        xq: np.ndarray,
+        yq: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Bilineare Interpolation auf einem regulären Grid.
+        Interpoliert zwischen den 4 umgebenden Grid-Punkten für glatte Farbübergänge.
+        Ideal für Gradient-Modus.
+
+        source_x: 1D-Array der X-Koordinaten (nx)
+        source_y: 1D-Array der Y-Koordinaten (ny)
+        values  : 2D-Array (ny, nx) mit SPL-Werten
+        xq, yq  : 1D-Arrays mit Abfragepunkten
+        """
+        source_x = np.asarray(source_x, dtype=float).reshape(-1)
+        source_y = np.asarray(source_y, dtype=float).reshape(-1)
+        vals = np.asarray(values, dtype=float)
+        xq = np.asarray(xq, dtype=float).reshape(-1)
+        yq = np.asarray(yq, dtype=float).reshape(-1)
+
+        ny, nx = vals.shape
+        if ny != len(source_y) or nx != len(source_x):
+            raise ValueError(
+                f"_bilinear_interpolate_grid: Shape mismatch values={vals.shape}, "
+                f"expected=({len(source_y)}, {len(source_x)})"
+            )
+
+        # Randbehandlung: Punkte außerhalb des Grids werden auf den Rand geclippt
+        x_min, x_max = source_x[0], source_x[-1]
+        y_min, y_max = source_y[0], source_y[-1]
+        xq_clip = np.clip(xq, x_min, x_max)
+        yq_clip = np.clip(yq, y_min, y_max)
+
+        # Finde Indizes für bilineare Interpolation
+        # Für jeden Abfragepunkt finden wir die 4 umgebenden Grid-Punkte
+        idx_x = np.searchsorted(source_x, xq_clip, side="right") - 1
+        idx_y = np.searchsorted(source_y, yq_clip, side="right") - 1
+        
+        # Clamp auf gültigen Bereich
+        idx_x = np.clip(idx_x, 0, nx - 2)  # -2 weil wir idx_x+1 brauchen
+        idx_y = np.clip(idx_y, 0, ny - 2)  # -2 weil wir idx_y+1 brauchen
+        
+        # Hole die 4 umgebenden Punkte
+        x0 = source_x[idx_x]
+        x1 = source_x[idx_x + 1]
+        y0 = source_y[idx_y]
+        y1 = source_y[idx_y + 1]
+        
+        # Werte an den 4 Ecken
+        f00 = vals[idx_y, idx_x]
+        f10 = vals[idx_y, idx_x + 1]
+        f01 = vals[idx_y + 1, idx_x]
+        f11 = vals[idx_y + 1, idx_x + 1]
+        
+        # Berechne Interpolationsgewichte
+        dx = x1 - x0
+        dy = y1 - y0
+        # Vermeide Division durch Null
+        dx = np.where(dx > 1e-10, dx, 1.0)
+        dy = np.where(dy > 1e-10, dy, 1.0)
+        
+        wx = (xq_clip - x0) / dx
+        wy = (yq_clip - y0) / dy
+        
+        # Bilineare Interpolation: f(x,y) = (1-wx)(1-wy)*f00 + wx(1-wy)*f10 + (1-wx)wy*f01 + wx*wy*f11
+        result = (
+            (1 - wx) * (1 - wy) * f00 +
+            wx * (1 - wy) * f10 +
+            (1 - wx) * wy * f01 +
+            wx * wy * f11
+        )
+        
+        return result
+
+    @staticmethod
     def _nearest_interpolate_grid(
         source_x: np.ndarray,
         source_y: np.ndarray,
@@ -2658,6 +3744,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         Nearest-Neighbor Interpolation auf einem regulären Grid.
         Jeder Abfragepunkt erhält exakt den Wert des nächstgelegenen Grid-Punkts.
         Behält die Randbehandlung (Clipping) bei.
+        Ideal für Color step-Modus (harte Stufen).
 
         source_x: 1D-Array der X-Koordinaten (nx)
         source_y: 1D-Array der Y-Koordinaten (ny)
@@ -2743,9 +3830,21 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         if values.shape != (len(source_y), len(source_x)):
             return
 
+        # Bestimme ob Step-Modus aktiv ist (vor der Verwendung definieren)
+        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
+
         # Auflösung der Textur in Metern (XY)
         # Standard: 0.02m (2cm pro Pixel) für schärfere Darstellung (vorher: 0.05m)
-        tex_res = float(getattr(self.settings, "spl_surface_texture_resolution", 0.02) or 0.02)
+        # 🎯 Gradient-Modus: Leicht erhöhte Auflösung für smooth rendering (Performance-Optimiert)
+        base_tex_res = float(getattr(self.settings, "spl_surface_texture_resolution", 0.02) or 0.02)
+        if is_step_mode:
+            # Color step: Normale Auflösung (harte Stufen benötigen keine hohe Auflösung)
+            tex_res = base_tex_res
+        else:
+            # Gradient: 2x feinere Auflösung (Performance-Kompromiss)
+            # Bilineare Interpolation sorgt bereits für glatte Übergänge
+            # (0.01m = 1cm pro Pixel statt 20mm = 2x mehr Pixel)
+            tex_res = base_tex_res * 0.5
 
         # Colormap vorbereiten
         if isinstance(cmap_object, str):
@@ -2753,7 +3852,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             base_cmap = cmap_object
         norm = Normalize(vmin=cbar_min, vmax=cbar_max)
-        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
 
         # Aktive Surfaces ermitteln
         surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
@@ -2910,14 +4008,24 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
                     plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
                     
-                    # Nearest-Neighbor Interpolation auf (u,v)-Grid (exakt Grid-Punkte, keine Verfälschung)
-                    spl_flat_uv = self._nearest_interpolate_grid(
-                        plot_u_geom,
-                        plot_v_geom,
-                        plot_values_geom,
-                        U.ravel(),
-                        V.ravel(),
-                    )
+                    # 🎯 Gradient: Bilineare Interpolation für glatte Farbübergänge
+                    # Color step: Nearest-Neighbor für harte Stufen
+                    if is_step_mode:
+                        spl_flat_uv = self._nearest_interpolate_grid(
+                            plot_u_geom,
+                            plot_v_geom,
+                            plot_values_geom,
+                            U.ravel(),
+                            V.ravel(),
+                        )
+                    else:
+                        spl_flat_uv = self._bilinear_interpolate_grid(
+                            plot_u_geom,
+                            plot_v_geom,
+                            plot_values_geom,
+                            U.ravel(),
+                            V.ravel(),
+                        )
                     spl_img_uv = spl_flat_uv.reshape(U.shape)
                     
                     # Werte clippen
@@ -3035,7 +4143,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     
                     # Erstelle Textur
                     tex = pv.Texture(img_rgba_uv)
-                    tex.interpolate = False
+                    # 🎯 Gradient: smooth rendering, Color step: harte Stufen
+                    tex.interpolate = not is_step_mode
                     
                     actor_name = f"{self.SURFACE_NAME}_tex_{surface_id}"
                     old_texture_data = self._surface_texture_actors.get(surface_id)
@@ -3054,6 +4163,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         show_scalar_bar=False,
                         reset_camera=False,
                     )
+                    # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
+                    if hasattr(actor, 'SetPickable'):
+                        actor.SetPickable(False)
+                        print(f"[DEBUG] Surface-Actor {actor_name} als nicht-pickable markiert")
                     
                     # Speichere Metadaten
                     metadata = {
@@ -3107,14 +4220,24 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 if not np.any(inside):
                     continue
 
-                # SPL Nearest-Neighbor vom coarse Grid interpolieren (exakt Grid-Punkte, keine Verfälschung)
-                spl_flat = self._nearest_interpolate_grid(
-                    source_x,
-                    source_y,
-                    values,
-                    X.ravel(),
-                    Y.ravel(),
-                )
+                # 🎯 Gradient: Bilineare Interpolation für glatte Farbübergänge
+                # Color step: Nearest-Neighbor für harte Stufen
+                if is_step_mode:
+                    spl_flat = self._nearest_interpolate_grid(
+                        source_x,
+                        source_y,
+                        values,
+                        X.ravel(),
+                        Y.ravel(),
+                    )
+                else:
+                    spl_flat = self._bilinear_interpolate_grid(
+                        source_x,
+                        source_y,
+                        values,
+                        X.ravel(),
+                        Y.ravel(),
+                    )
                 spl_img = spl_flat.reshape(X.shape)
 
                 # Werte clippen
@@ -3313,8 +4436,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     continue
 
                 tex = pv.Texture(img_rgba)
-                # Interpolation deaktiviert für schärfere Darstellung
-                tex.interpolate = False
+                # 🎯 Gradient: smooth rendering, Color step: harte Stufen
+                tex.interpolate = not is_step_mode
 
                 actor_name = f"{self.SURFACE_NAME}_tex_{surface_id}"
                 # Alten Actor ggf. entfernen
@@ -3335,6 +4458,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     show_scalar_bar=False,
                     reset_camera=False,
                 )
+                # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
+                if hasattr(actor, 'SetPickable'):
+                    actor.SetPickable(False)
+                    print(f"[DEBUG] Surface-Actor {actor_name} als nicht-pickable markiert")
                 
                 # 🎯 Speichere Metadaten zusammen mit dem Actor
                 # Diese können für Click-Handling, Koordinaten-Transformation, etc. verwendet werden
@@ -3566,11 +4693,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     result.append(str(item))
             return tuple(result)
 
+        # 🎯 WICHTIG: selected_axis zur Signatur hinzufügen, damit Highlight-Änderungen erkannt werden
         axis_signature = (
             float(getattr(settings, 'position_x_axis', 0.0)),
             float(getattr(settings, 'position_y_axis', 0.0)),
             float(getattr(settings, 'length', 0.0)),
             float(getattr(settings, 'width', 0.0)),
+            getattr(self, '_axis_selected', None),  # Highlight-Status in Signatur aufnehmen
         )
 
         speaker_arrays = getattr(settings, 'speaker_arrays', {})

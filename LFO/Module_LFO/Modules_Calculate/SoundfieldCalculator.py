@@ -181,6 +181,42 @@ class SoundFieldCalculator(ModuleBase):
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         surface_mask_flat = surface_mask.reshape(-1)
         
+        # 🎯 DEBUG: Prüfe ob Hindernisfläche in surface_mask enthalten ist
+        if DEBUG_SOUNDFIELD and enabled_surfaces:
+            # Finde Hindernis-Surfaces (vertikale oder mit signifikanter Z-Ausdehnung)
+            obstacle_surfaces = []
+            for surface_id, surface_dict in enabled_surfaces:
+                points = surface_dict.get("points", [])
+                if len(points) >= 3:
+                    zs = [p.get("z", 0.0) for p in points]
+                    z_span = max(zs) - min(zs) if zs else 0.0
+                    if z_span > 0.5:  # Signifikante Z-Ausdehnung
+                        obstacle_surfaces.append(surface_id)
+            
+            if obstacle_surfaces:
+                # Prüfe ob Punkte auf Hindernis-Surfaces in surface_mask enthalten sind
+                for obstacle_id in obstacle_surfaces:
+                    obstacle_dict = next((s[1] for s in enabled_surfaces if s[0] == obstacle_id), None)
+                    if obstacle_dict:
+                        points = obstacle_dict.get("points", [])
+                        if len(points) >= 3:
+                            # Prüfe ob Mittelpunkt des Hindernisses in surface_mask enthalten ist
+                            xs = [p.get("x", 0.0) for p in points]
+                            ys = [p.get("y", 0.0) for p in points]
+                            center_x = (min(xs) + max(xs)) / 2.0
+                            center_y = (min(ys) + max(ys)) / 2.0
+                            
+                            # Finde nächsten Grid-Punkt
+                            distances = np.sqrt((X_grid - center_x)**2 + (Y_grid - center_y)**2)
+                            min_idx = np.unravel_index(np.argmin(distances), X_grid.shape)
+                            mask_value = surface_mask[min_idx]
+                            
+                            print(
+                                f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
+                                f"Center=({center_x:.3f}, {center_y:.3f}), "
+                                f"surface_mask={mask_value} (True=in Maske, False=nicht in Maske)"
+                            )
+        
         # ============================================================
         # SCHATTEN-BERECHNUNG (nur bei Superposition)
         # ============================================================
@@ -383,6 +419,8 @@ class SoundFieldCalculator(ModuleBase):
                     # ============================================================
                     # Prüfe für DIESEN spezifischen Lautsprecher, ob ein Hindernis
                     # zwischen ihm und jedem Punkt liegt
+                    # 🎯 WICHTIG: Initialisiere combined_mask mit surface_mask
+                    # (Punkte außerhalb von Surfaces werden sowieso nicht berechnet)
                     combined_mask = surface_mask_flat.copy() if surface_mask_flat is not None else None
                     
                     if shadow_calculator_ready:
@@ -457,15 +495,184 @@ class SoundFieldCalculator(ModuleBase):
                                     f"[SoundFieldCalculator] Berechnungszeit: {shadow_time:.3f}s "
                                     f"({len(grid_points)/shadow_time:.0f} Punkte/s)"
                                 )
+                                
+                                # 🎯 DEBUG: Prüfe speziell für Hindernis 'test_2'
+                                obstacle_id = 'test_2'
+                                obstacle_dict = next((s[1] for s in enabled_surfaces if s[0] == obstacle_id), None)
+                                if obstacle_dict:
+                                    points = obstacle_dict.get("points", [])
+                                    if len(points) >= 3:
+                                        xs = [p.get("x", 0.0) for p in points]
+                                        ys = [p.get("y", 0.0) for p in points]
+                                        zs = [p.get("z", 0.0) for p in points]
+                                        x_min, x_max = min(xs), max(xs)
+                                        y_min, y_max = min(ys), max(ys)
+                                        z_min, z_max = min(zs), max(zs)
+                                        
+                                        # Finde Punkte auf dem Hindernis
+                                        tolerance = 0.1
+                                        on_obstacle = (
+                                            (grid_points[:, 0] >= x_min - tolerance) &
+                                            (grid_points[:, 0] <= x_max + tolerance) &
+                                            (grid_points[:, 1] >= y_min - tolerance) &
+                                            (grid_points[:, 1] <= y_max + tolerance) &
+                                            (grid_points[:, 2] >= z_min - tolerance) &
+                                            (grid_points[:, 2] <= z_max + tolerance)
+                                        )
+                                        
+                                        num_on_obstacle = np.count_nonzero(on_obstacle)
+                                        num_on_obstacle_in_shadow = np.count_nonzero(on_obstacle & shadow_mask_this_source)
+                                        num_on_obstacle_visible = num_on_obstacle - num_on_obstacle_in_shadow
+                                        
+                                        print(
+                                            f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
+                                            f"{num_on_obstacle} Punkte auf Hindernis, "
+                                            f"{num_on_obstacle_in_shadow} im Schatten, "
+                                            f"{num_on_obstacle_visible} sichtbar"
+                                        )
+                                        
+                                        # 🎯 DEBUG: Prüfe auch Punkte HINTER dem Hindernis (im Schatten)
+                                        # Finde Punkte, die im Schatten sind, aber NICHT auf dem Hindernis
+                                        points_in_shadow_not_on_obstacle = shadow_mask_this_source & ~on_obstacle
+                                        num_in_shadow_not_on_obstacle = np.count_nonzero(points_in_shadow_not_on_obstacle)
+                                        print(
+                                            f"[SoundFieldCalculator] Punkte HINTER '{obstacle_id}' (im Schatten, nicht auf Hindernis): "
+                                            f"{num_in_shadow_not_on_obstacle} Punkte"
+                                        )
+                                        
+                                        # Prüfe auch surface_mask
+                                        num_on_obstacle_in_surface_mask = np.count_nonzero(on_obstacle & surface_mask_flat)
+                                        print(
+                                            f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
+                                            f"{num_on_obstacle_in_surface_mask}/{num_on_obstacle} Punkte in surface_mask"
+                                        )
+                                        
+                            # 🎯 WICHTIG: Entferne Punkte auf Hindernissen aus der Schatten-Maske
+                            # Punkte auf Hindernissen sollen IMMER sichtbar sein (nicht im Schatten)
+                            # Finde alle Hindernisse und deren Punkte
+                            obstacle_points_mask = np.zeros(len(grid_points), dtype=bool)
+                            for surface_id, surface_dict in enabled_surfaces:
+                                points = surface_dict.get("points", [])
+                                if len(points) < 3:
+                                    continue
+                                
+                                # Prüfe ob Surface ein Hindernis ist (vertikal oder signifikante Z-Ausdehnung)
+                                zs = [p.get("z", 0.0) for p in points]
+                                z_span = max(zs) - min(zs) if zs else 0.0
+                                
+                                if z_span < 0.5:  # Weniger als 50cm Z-Ausdehnung → kein Hindernis
+                                    continue
+                                
+                                # Finde Punkte auf diesem Hindernis
+                                xs = [p.get("x", 0.0) for p in points]
+                                ys = [p.get("y", 0.0) for p in points]
+                                x_min, x_max = min(xs), max(xs)
+                                y_min, y_max = min(ys), max(ys)
+                                z_min, z_max = min(zs), max(zs)
+                                
+                                tolerance = 0.2  # 20cm Toleranz
+                                on_this_obstacle = (
+                                    (grid_points[:, 0] >= x_min - tolerance) &
+                                    (grid_points[:, 0] <= x_max + tolerance) &
+                                    (grid_points[:, 1] >= y_min - tolerance) &
+                                    (grid_points[:, 1] <= y_max + tolerance) &
+                                    (grid_points[:, 2] >= z_min - tolerance) &
+                                    (grid_points[:, 2] <= z_max + tolerance)
+                                )
+                                
+                                obstacle_points_mask |= on_this_obstacle
                             
+                            # 🎯 DEBUG: Berechne VOR der Korrektur, wie viele Punkte entfernt werden
+                            if DEBUG_SOUNDFIELD:
+                                num_obstacle_points = np.count_nonzero(obstacle_points_mask)
+                                num_obstacle_points_in_shadow_before = np.count_nonzero(obstacle_points_mask & shadow_mask_this_source)
+                            
+                            # Entferne Punkte auf Hindernissen aus der Schatten-Maske
+                            shadow_mask_this_source = shadow_mask_this_source & ~obstacle_points_mask
+                            
+                            if DEBUG_SOUNDFIELD:
+                                print(
+                                    f"[SoundFieldCalculator] {num_obstacle_points} Punkte auf Hindernissen gefunden, "
+                                    f"{num_obstacle_points_in_shadow_before} aus Schatten-Maske entfernt "
+                                    f"(von {num_obstacle_points} waren {num_obstacle_points_in_shadow_before} im Schatten)"
+                                )
+                                        
                             # Invertiere: True = sichtbar von diesem Lautsprecher, False = im Schatten
                             visible_from_this_source = ~shadow_mask_this_source
+                            
+                            # 🎯 WICHTIG: 
+                            # - Punkte auf Hindernissen, die von diesem Lautsprecher sichtbar sind → berechnen
+                            # - Punkte auf Hindernissen, die im Schatten sind → nicht berechnen
+                            # - Punkte hinter Hindernissen → nicht berechnen (im Schatten)
+                            # Die Schatten-Maske sollte bereits korrekt sein: Punkte auf Hindernissen
+                            # werden nicht als Schatten markiert (siehe ShadowCalculator Logik)
+                            
+                            # 🎯 DEBUG: Prüfe combined_mask VOR Kombination
+                            if DEBUG_SOUNDFIELD:
+                                num_in_shadow = np.count_nonzero(shadow_mask_this_source)
+                                num_in_surface = np.count_nonzero(surface_mask_flat) if surface_mask_flat is not None else len(grid_points)
+                                num_in_combined_before = np.count_nonzero(combined_mask) if combined_mask is not None else len(grid_points)
+                                # Prüfe wie viele Punkte im Schatten sind, die NICHT in surface_mask sind
+                                if surface_mask_flat is not None:
+                                    num_in_shadow_not_in_surface = np.count_nonzero(shadow_mask_this_source & ~surface_mask_flat)
+                                else:
+                                    num_in_shadow_not_in_surface = 0
+                                print(
+                                    f"[SoundFieldCalculator] VOR Kombination: "
+                                    f"{num_in_shadow} Punkte im Schatten "
+                                    f"(davon {num_in_shadow_not_in_surface} NICHT in surface_mask), "
+                                    f"{num_in_surface} in surface_mask, "
+                                    f"{num_in_combined_before} in combined_mask"
+                                )
                             
                             if combined_mask is not None:
                                 # Kombiniere: Punkt muss in Surface UND von diesem Lautsprecher sichtbar sein
                                 combined_mask = combined_mask & visible_from_this_source
                             else:
                                 combined_mask = visible_from_this_source
+                            
+                            # 🎯 DEBUG: Prüfe combined_mask NACH Kombination
+                            if DEBUG_SOUNDFIELD:
+                                num_in_combined_after = np.count_nonzero(combined_mask) if combined_mask is not None else 0
+                                num_removed_from_combined = num_in_combined_before - num_in_combined_after
+                                print(
+                                    f"[SoundFieldCalculator] NACH Kombination: "
+                                    f"{num_in_combined_after} in combined_mask, "
+                                    f"{num_removed_from_combined} Punkte entfernt (sollten im Schatten sein)"
+                                )
+                            
+                            # 🎯 DEBUG: Prüfe combined_mask NACH Kombination
+                            if DEBUG_SOUNDFIELD and enabled_surfaces:
+                                for obstacle_id in obstacle_surfaces:
+                                    obstacle_dict = next((s[1] for s in enabled_surfaces if s[0] == obstacle_id), None)
+                                    if obstacle_dict:
+                                        points = obstacle_dict.get("points", [])
+                                        if len(points) >= 3:
+                                            xs = [p.get("x", 0.0) for p in points]
+                                            ys = [p.get("y", 0.0) for p in points]
+                                            zs = [p.get("z", 0.0) for p in points]
+                                            x_min, x_max = min(xs), max(xs)
+                                            y_min, y_max = min(ys), max(ys)
+                                            z_min, z_max = min(zs), max(zs)
+                                            
+                                            tolerance = 0.1
+                                            on_obstacle = (
+                                                (grid_points[:, 0] >= x_min - tolerance) &
+                                                (grid_points[:, 0] <= x_max + tolerance) &
+                                                (grid_points[:, 1] >= y_min - tolerance) &
+                                                (grid_points[:, 1] <= y_max + tolerance) &
+                                                (grid_points[:, 2] >= z_min - tolerance) &
+                                                (grid_points[:, 2] <= z_max + tolerance)
+                                            )
+                                            
+                                            num_on_obstacle = np.count_nonzero(on_obstacle)
+                                            if combined_mask is not None:
+                                                num_on_obstacle_in_combined = np.count_nonzero(on_obstacle & combined_mask)
+                                                print(
+                                                    f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
+                                                    f"{num_on_obstacle_in_combined}/{num_on_obstacle} Punkte in combined_mask "
+                                                    f"(NACH Kombination mit Lautsprecher {isrc})"
+                                                )
                                 
                         except Exception as exc:
                             if DEBUG_SOUNDFIELD:
@@ -657,7 +864,24 @@ class SoundFieldCalculator(ModuleBase):
         
         additional_mask = mask_options.get("additional_mask")
         if additional_mask is not None:
-            valid_mask &= np.asarray(additional_mask, dtype=bool).reshape(-1)
+            additional_mask_array = np.asarray(additional_mask, dtype=bool).reshape(-1)
+            if DEBUG_SOUNDFIELD and len(additional_mask_array) > 0:
+                num_additional_mask_true = np.count_nonzero(additional_mask_array)
+                num_valid_before = np.count_nonzero(valid_mask)
+                print(
+                    f"[_compute_wave_for_points] additional_mask: "
+                    f"{num_additional_mask_true}/{len(additional_mask_array)} Punkte aktiv, "
+                    f"valid_mask vorher: {num_valid_before}/{len(valid_mask)}"
+                )
+            valid_mask &= additional_mask_array
+            if DEBUG_SOUNDFIELD and len(additional_mask_array) > 0:
+                num_valid_after = np.count_nonzero(valid_mask)
+                num_removed_by_mask = num_valid_before - num_valid_after
+                print(
+                    f"[_compute_wave_for_points] valid_mask nachher: "
+                    f"{num_valid_after}/{len(valid_mask)}, "
+                    f"{num_removed_by_mask} Punkte durch additional_mask entfernt"
+                )
         
         wave = np.zeros(points.shape[0], dtype=complex)
         if not np.any(valid_mask):

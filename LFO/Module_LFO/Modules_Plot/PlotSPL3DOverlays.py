@@ -34,6 +34,8 @@ class SPL3DOverlayRenderer:
         # damit Umrandungen leicht ÜBER dem SPL-Plot liegen und nicht verdeckt werden.
         # Wert bewusst klein halten, damit perspektivisch nichts "schwebt".
         self._planar_z_offset = 0.0
+        # Z-Offset speziell für Achsenlinien (höher als Surfaces, damit sie beim Picking bevorzugt werden)
+        self._axis_z_offset = 0.01  # Erhöht von 0.001 auf 0.01 für besseres Picking (1cm über Surface)
         self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
         self._speaker_geometry_cache: dict[str, List[Tuple[Any, Optional[int]]]] = {}  # Cache für transformierte Geometrien
         self._geometry_cache_max_size = 100  # Maximale Anzahl gecachter Geometrien
@@ -95,27 +97,186 @@ class SPL3DOverlayRenderer:
     # ------------------------------------------------------------------
     # Öffentliche API zum Zeichnen der Overlays
     # ------------------------------------------------------------------
-    def draw_axis_lines(self, settings) -> None:
+    def draw_axis_lines(self, settings, selected_axis: Optional[str] = None) -> None:
+        """Zeichnet X- und Y-Achsenlinien als Strich-Punkt-Linien auf aktiven Surfaces.
+        
+        Args:
+            settings: Settings-Objekt
+            selected_axis: 'x' oder 'y' für ausgewählte Achse (wird rot gezeichnet), None wenn keine ausgewählt
+        """
+        t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
         state = (
             float(getattr(settings, 'position_x_axis', 0.0)),
             float(getattr(settings, 'position_y_axis', 0.0)),
             float(getattr(settings, 'length', 0.0)),
             float(getattr(settings, 'width', 0.0)),
+            selected_axis,  # Highlight-Status in State aufnehmen
         )
         existing_names = self._category_actors.get('axis', [])
         if self._last_axis_state == state and existing_names:
             return
 
+        t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self.clear_category('axis')
-        x_axis, y_axis, length, width = state
+        t_clear_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        x_axis, y_axis, length, width, selected_axis_from_state = state
 
-        z_offset = self._planar_z_offset
-        line_x = self.pv.Line((x_axis, -length / 2, z_offset), (x_axis, length / 2, z_offset))
-        line_y = self.pv.Line((-width / 2, y_axis, z_offset), (width / 2, y_axis, z_offset))
-
-        dashed_pattern = 0xAAAA
-        self._add_overlay_mesh(line_x, color='black', line_width=1.2, line_pattern=dashed_pattern, line_repeat=2, category='axis')
-        self._add_overlay_mesh(line_y, color='black', line_width=1.2, line_pattern=dashed_pattern, line_repeat=2, category='axis')
+        # Hole aktive Surfaces für XY-Berechnung (xy_enabled=True, enabled=True, hidden=False)
+        t_surfaces_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        active_surfaces = self._get_active_xy_surfaces(settings)
+        t_surfaces_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        print(f"[DEBUG draw_axis_lines] Gefundene aktive Surfaces: {len(active_surfaces)}")
+        for sid, s in active_surfaces:
+            print(f"  - Surface ID: {sid}")
+        
+        # Strich-Punkt-Pattern (0xF4F4 = Strich-Punkt-Strich-Punkt, besser sichtbar als 0xF0F0)
+        dash_dot_pattern = 0xF4F4
+        print(f"[DEBUG draw_axis_lines] Pattern: 0x{dash_dot_pattern:X}, Line Width: 5.0")
+        
+        # Zeichne X-Achsenlinie (y=y_axis, konstant) auf allen aktiven Surfaces
+        t_x_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        x_lines_drawn = 0
+        x_segments_total = 0
+        for surface_id, surface in active_surfaces:
+            intersection_points = self._get_surface_intersection_points_xz(y_axis, surface, settings)
+            if intersection_points is not None:
+                x_coords, z_coords = intersection_points
+                print(f"[DEBUG draw_axis_lines] X-Achse auf Surface {surface_id}: {len(x_coords)} Punkte")
+                if len(x_coords) >= 2:
+                    # Erstelle 3D-Linie auf dem Surface
+                    points_3d = np.column_stack([x_coords, np.full_like(x_coords, y_axis), z_coords])
+                    # Sortiere nach X-Koordinaten für konsistente Reihenfolge
+                    sort_idx = np.argsort(points_3d[:, 0])
+                    points_3d = points_3d[sort_idx]
+                    
+                    # Füge kleinen Z-Offset hinzu, damit Achsenlinien beim Picking bevorzugt werden
+                    points_3d[:, 2] += self._axis_z_offset
+                    
+                    print(f"[DEBUG draw_axis_lines] X-Linie Punkte (erste 3): {points_3d[:min(3, len(points_3d))]}")
+                    
+                    # Erstelle Strich-Punkt-Linie durch Segmentierung (optimiert: größere Segmente, weniger Actors)
+                    t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
+                    t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                    
+                    # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
+                    t_combine_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                    if dash_dot_segments:
+                        combined_mesh = self._combine_line_segments(dash_dot_segments)
+                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        
+                        t_draw_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        if combined_mesh is not None:
+                            # X-Achse: rot wenn ausgewählt, sonst schwarz
+                            line_color = 'red' if selected_axis == 'x' else 'black'
+                            line_width = 6.0 if selected_axis == 'x' else 5.0
+                            actor_name = self._add_overlay_mesh(
+                                combined_mesh,
+                                color=line_color,
+                                line_width=line_width,
+                                line_pattern=None,
+                                line_repeat=1,
+                                category='axis',
+                                render_lines_as_tubes=True,  # Als Tubes rendern für besseres Picking
+                            )
+                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                            x_segments_total += len(dash_dot_segments)
+                            t_seg = (t_segment_end - t_segment_start) * 1000 if t_segment_end and t_segment_start else 0
+                            t_comb = (t_combine_end - t_combine_start) * 1000 if t_combine_end and t_combine_start else 0
+                            t_dr = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
+                            print(f"[DEBUG draw_axis_lines] X-Linie Actor erstellt (1 Mesh mit {len(dash_dot_segments)} Segmenten), Width: 5.0")
+                            print(f"[DEBUG draw_axis_lines]   Zeit: Segmentierung={t_seg:.2f}ms, Kombinieren={t_comb:.2f}ms, Zeichnen={t_dr:.2f}ms")
+                        else:
+                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                            print(f"[DEBUG draw_axis_lines] X-Linie: Fehler beim Kombinieren der Segmente")
+                    else:
+                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        print(f"[DEBUG draw_axis_lines] X-Linie: Keine Segmente erstellt")
+                    x_lines_drawn += 1
+        t_x_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
+        # Zeichne Y-Achsenlinie (x=x_axis, konstant) auf allen aktiven Surfaces
+        t_y_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        y_lines_drawn = 0
+        y_segments_total = 0
+        for surface_id, surface in active_surfaces:
+            intersection_points = self._get_surface_intersection_points_yz(x_axis, surface, settings)
+            if intersection_points is not None:
+                y_coords, z_coords = intersection_points
+                print(f"[DEBUG draw_axis_lines] Y-Achse auf Surface {surface_id}: {len(y_coords)} Punkte")
+                if len(y_coords) >= 2:
+                    # Erstelle 3D-Linie auf dem Surface
+                    points_3d = np.column_stack([np.full_like(y_coords, x_axis), y_coords, z_coords])
+                    # Sortiere nach Y-Koordinaten für konsistente Reihenfolge
+                    sort_idx = np.argsort(points_3d[:, 1])
+                    points_3d = points_3d[sort_idx]
+                    
+                    # Füge kleinen Z-Offset hinzu, damit Achsenlinien beim Picking bevorzugt werden
+                    points_3d[:, 2] += self._axis_z_offset
+                    
+                    print(f"[DEBUG draw_axis_lines] Y-Linie Punkte (erste 3): {points_3d[:min(3, len(points_3d))]}")
+                    
+                    # Erstelle Strich-Punkt-Linie durch Segmentierung (optimiert: größere Segmente, weniger Actors)
+                    t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
+                    t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                    
+                    # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
+                    t_combine_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                    if dash_dot_segments:
+                        combined_mesh = self._combine_line_segments(dash_dot_segments)
+                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        
+                        t_draw_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        if combined_mesh is not None:
+                            # Y-Achse: rot wenn ausgewählt, sonst schwarz
+                            line_color = 'red' if selected_axis == 'y' else 'black'
+                            line_width = 6.0 if selected_axis == 'y' else 5.0
+                            actor_name = self._add_overlay_mesh(
+                                combined_mesh,
+                                color=line_color,
+                                line_width=line_width,
+                                line_pattern=None,
+                                line_repeat=1,
+                                category='axis',
+                                render_lines_as_tubes=True,  # Als Tubes rendern für besseres Picking
+                            )
+                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                            y_segments_total += len(dash_dot_segments)
+                            t_seg = (t_segment_end - t_segment_start) * 1000 if t_segment_end and t_segment_start else 0
+                            t_comb = (t_combine_end - t_combine_start) * 1000 if t_combine_end and t_combine_start else 0
+                            t_dr = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
+                            print(f"[DEBUG draw_axis_lines] Y-Linie Actor erstellt (1 Mesh mit {len(dash_dot_segments)} Segmenten), Width: 5.0")
+                            print(f"[DEBUG draw_axis_lines]   Zeit: Segmentierung={t_seg:.2f}ms, Kombinieren={t_comb:.2f}ms, Zeichnen={t_dr:.2f}ms")
+                        else:
+                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                            print(f"[DEBUG draw_axis_lines] Y-Linie: Fehler beim Kombinieren der Segmente")
+                    else:
+                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+                        print(f"[DEBUG draw_axis_lines] Y-Linie: Keine Segmente erstellt")
+                    y_lines_drawn += 1
+        t_y_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
+        t_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        
+        if DEBUG_OVERLAY_PERF and t_start is not None:
+            t_total = (t_end - t_start) * 1000 if t_end else 0
+            t_clear = (t_clear_end - t_clear_start) * 1000 if t_clear_end and t_clear_start else 0
+            t_surfaces = (t_surfaces_end - t_surfaces_start) * 1000 if t_surfaces_end and t_surfaces_start else 0
+            t_x = (t_x_end - t_x_start) * 1000 if t_x_end and t_x_start else 0
+            t_y = (t_y_end - t_y_start) * 1000 if t_y_end and t_y_start else 0
+            
+            print(f"[DEBUG draw_axis_lines] ===== ZEITMESSUNG =====")
+            print(f"[DEBUG draw_axis_lines] Gesamtzeit: {t_total:.2f}ms")
+            print(f"[DEBUG draw_axis_lines]   - Clear: {t_clear:.2f}ms")
+            print(f"[DEBUG draw_axis_lines]   - Surfaces finden: {t_surfaces:.2f}ms")
+            print(f"[DEBUG draw_axis_lines]   - X-Achsenlinien: {t_x:.2f}ms ({x_lines_drawn} Linien, {x_segments_total} Segmente)")
+            print(f"[DEBUG draw_axis_lines]   - Y-Achsenlinien: {t_y:.2f}ms ({y_lines_drawn} Linien, {y_segments_total} Segmente)")
+            print(f"[DEBUG draw_axis_lines] Zusammenfassung: {x_lines_drawn} X-Linien, {y_lines_drawn} Y-Linien gezeichnet")
+        
         self._last_axis_state = state
 
     def draw_surfaces(self, settings) -> None:
@@ -649,6 +810,10 @@ class SPL3DOverlayRenderer:
                         signature = existing.get('signature')
                         current_signature = self._speaker_signature_from_mesh(sphere, None)
                         if signature == current_signature:
+                            # Aktualisiere actor_obj falls nötig
+                            if 'actor_obj' not in existing:
+                                actor_name = existing.get('actor')
+                                existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
                             new_cache[key] = existing
                             if existing['actor'] not in new_actor_names:
                                 new_actor_names.append(existing['actor'])
@@ -657,6 +822,10 @@ class SPL3DOverlayRenderer:
                         existing_mesh.deep_copy(sphere)
                         self._update_speaker_actor(existing['actor'], existing_mesh, None, body_color, exit_color)
                         existing['signature'] = current_signature
+                        # Aktualisiere actor_obj falls nötig
+                        if 'actor_obj' not in existing:
+                            actor_name = existing.get('actor')
+                            existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
                         new_cache[key] = existing
                         if existing['actor'] not in new_actor_names:
                             new_actor_names.append(existing['actor'])
@@ -672,9 +841,12 @@ class SPL3DOverlayRenderer:
                             line_width=3.0 if is_highlighted else 1.5,
                             category='speakers',
                         )
+                        # Hole das Actor-Objekt aus dem Renderer
+                        actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
                         new_cache[key] = {
                             'mesh': mesh_to_add,
                             'actor': actor_name,
+                            'actor_obj': actor_obj,  # Speichere Actor-Objekt für direkten Vergleich
                             'signature': self._speaker_signature_from_mesh(mesh_to_add, None),
                         }
                         if actor_name not in new_actor_names:
@@ -687,19 +859,29 @@ class SPL3DOverlayRenderer:
                             signature = existing.get('signature')
                             current_signature = self._speaker_signature_from_mesh(body_mesh, exit_face_index)
                             if signature == current_signature:
+                                # Aktualisiere actor_obj falls nötig
+                                if 'actor_obj' not in existing:
+                                    actor_name = existing.get('actor')
+                                    existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
                                 new_cache[key] = existing
                                 if existing['actor'] not in new_actor_names:
                                     new_actor_names.append(existing['actor'])
                                 continue
+                            # Signature hat sich geändert - aktualisiere existing
                             existing_mesh = existing['mesh']
                             existing_mesh.deep_copy(body_mesh)
                             self._update_speaker_actor(existing['actor'], existing_mesh, exit_face_index, body_color, exit_color)
                             existing['signature'] = current_signature
+                            # Aktualisiere actor_obj falls nötig
+                            if 'actor_obj' not in existing:
+                                actor_name = existing.get('actor')
+                                existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
                             new_cache[key] = existing
                             if existing['actor'] not in new_actor_names:
                                 new_actor_names.append(existing['actor'])
                             continue
 
+                        # Kein existing - erstelle neues Mesh
                         mesh_to_add = body_mesh.copy(deep=True)
                         # Prüfe ob Mesh bereits Scalars hat (merged mesh mit exit_face_index = -1)
                         has_scalars = 'speaker_face' in mesh_to_add.cell_data
@@ -742,7 +924,9 @@ class SPL3DOverlayRenderer:
                                 line_width=line_width,
                                 category='speakers',
                             )
-                        new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name}
+                        # Hole das Actor-Objekt aus dem Renderer
+                        actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
+                        new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name, 'actor_obj': actor_obj}
                         if actor_name not in new_actor_names:
                             new_actor_names.append(actor_name)
                         new_cache[key]['signature'] = self._speaker_signature_from_mesh(mesh_to_add, exit_face_index)
@@ -772,44 +956,81 @@ class SPL3DOverlayRenderer:
         try:
             print(f"[DEBUG] _get_speaker_info_from_actor: actor_name = {actor_name}")
             print(f"[DEBUG] _get_speaker_info_from_actor: cache size = {len(self._speaker_actor_cache)}")
-            print(f"[DEBUG] _get_speaker_info_from_actor: actor = {actor}")
             
             renderer = self.plotter.renderer
             if not renderer or not actor:
                 print(f"[DEBUG] _get_speaker_info_from_actor: No renderer or actor")
                 return None
             
-            # Versuche zuerst über Actor-Objekt direkt (zuverlässiger als Name-Vergleich)
-            print(f"[DEBUG] _get_speaker_info_from_actor: Trying actor object comparison first")
+            # WICHTIG: PyVista generiert Actor-Namen neu, daher müssen wir direkt über das Actor-Objekt suchen
+            # Strategie: Verwende actor_obj aus dem Cache für direkten Vergleich
+            print(f"[DEBUG] _get_speaker_info_from_actor: Searching cache by comparing actor objects")
+            
+            # Durchsuche alle Cache-Einträge
+            # WICHTIG: Ein Lautsprecher kann mehrere Flächen (Geometrien) haben, die alle zum selben Speaker gehören
+            # Sammle alle passenden Einträge und wähle den ersten (array_id und speaker_idx sind für alle gleich)
+            matching_entries = []
+            
             for key, info in self._speaker_actor_cache.items():
+                # Versuche zuerst actor_obj (direktes Objekt)
+                cached_actor_obj = info.get('actor_obj')
+                if cached_actor_obj is actor:
+                    array_id, speaker_idx, geom_idx = key
+                    cached_actor_name = info.get('actor', 'unknown')
+                    print(f"[DEBUG] _get_speaker_info_from_actor: Found match via actor_obj! array_id={array_id}, speaker_idx={speaker_idx}, geom_idx={geom_idx}, cached_actor_name={cached_actor_name}")
+                    matching_entries.append((array_id, speaker_idx, geom_idx, 'actor_obj'))
+                
+                # Fallback: Versuche über Actor-Namen
                 cached_actor_name = info.get('actor')
                 if cached_actor_name:
+                    # Versuche den Actor aus dem Renderer zu holen (über den gespeicherten Namen)
                     cached_actor = renderer.actors.get(cached_actor_name)
+                    
+                    # Direkter Objekt-Vergleich
                     if cached_actor is actor:
                         array_id, speaker_idx, geom_idx = key
-                        print(f"[DEBUG] _get_speaker_info_from_actor: Found match by object! array_id={array_id}, speaker_idx={speaker_idx}, cached_actor_name={cached_actor_name}")
-                        return (str(array_id), int(speaker_idx))
+                        print(f"[DEBUG] _get_speaker_info_from_actor: Found match via actor name! array_id={array_id}, speaker_idx={speaker_idx}, geom_idx={geom_idx}, cached_actor_name={cached_actor_name}")
+                        # Prüfe ob dieser Eintrag bereits in matching_entries ist (über actor_obj gefunden)
+                        if not any(entry[0] == array_id and entry[1] == speaker_idx and entry[2] == geom_idx for entry in matching_entries):
+                            matching_entries.append((array_id, speaker_idx, geom_idx, 'actor_name'))
             
-            # Falls nicht gefunden, versuche über Actor-Name
-            print(f"[DEBUG] _get_speaker_info_from_actor: No match by object, trying name comparison")
-            for key, info in self._speaker_actor_cache.items():
-                cached_actor_name = info.get('actor')
-                print(f"[DEBUG] _get_speaker_info_from_actor: comparing '{actor_name}' with '{cached_actor_name}'")
-                if cached_actor_name == actor_name:
-                    array_id, speaker_idx, geom_idx = key
-                    print(f"[DEBUG] _get_speaker_info_from_actor: Found match by name! array_id={array_id}, speaker_idx={speaker_idx}")
-                    return (str(array_id), int(speaker_idx))
+            # Wenn Einträge gefunden wurden, gib den ersten zurück (array_id und speaker_idx sind für alle gleich)
+            if matching_entries:
+                array_id, speaker_idx, geom_idx, match_type = matching_entries[0]
+                print(f"[DEBUG] _get_speaker_info_from_actor: Returning first match: array_id={array_id}, speaker_idx={speaker_idx}, geom_idx={geom_idx}, match_type={match_type}, total_matches={len(matching_entries)}")
+                return (str(array_id), int(speaker_idx))
             
-            # Als letzter Versuch: Iteriere durch alle Actors im Renderer
-            print(f"[DEBUG] _get_speaker_info_from_actor: No match, iterating through all renderer actors")
+            # Falls nicht gefunden: Der Actor-Name im Cache könnte veraltet sein
+            # Durchsuche alle Renderer-Actors und finde den, der mit dem picked_actor übereinstimmt
+            print(f"[DEBUG] _get_speaker_info_from_actor: No match via cached names, searching all renderer actors")
             for renderer_actor_name, renderer_actor in renderer.actors.items():
                 if renderer_actor is actor:
                     print(f"[DEBUG] _get_speaker_info_from_actor: Found actor in renderer with name: {renderer_actor_name}")
-                    # Suche im Cache nach diesem Actor-Namen
-                    for key, info in self._speaker_actor_cache.items():
-                        cached_actor_name = info.get('actor')
+                    
+                    # Jetzt müssen wir herausfinden, welcher Cache-Eintrag zu diesem Actor gehört
+                    # Da sich die Namen geändert haben, müssen wir alle Renderer-Actors durchsuchen
+                    # und mit den Cache-Einträgen vergleichen
+                    for cache_key, cache_info in self._speaker_actor_cache.items():
+                        cached_actor_name = cache_info.get('actor')
+                        if not cached_actor_name:
+                            continue
+                        
+                        # Hole den Actor aus dem Renderer über den gespeicherten Namen
+                        cached_actor_from_renderer = renderer.actors.get(cached_actor_name)
+                        
+                        # Wenn der Actor aus dem Renderer mit dem picked_actor übereinstimmt
+                        if cached_actor_from_renderer is actor:
+                            array_id, speaker_idx, geom_idx = cache_key
+                            print(f"[DEBUG] _get_speaker_info_from_actor: Found match via renderer lookup! array_id={array_id}, speaker_idx={speaker_idx}, cached_actor_name={cached_actor_name}, renderer_name={renderer_actor_name}")
+                            return (str(array_id), int(speaker_idx))
+                    
+                    # Wenn wir hier ankommen, haben wir den Actor im Renderer gefunden, aber nicht im Cache
+                    # Versuche über den aktuellen Renderer-Namen zu suchen (falls er zufällig im Cache ist)
+                    print(f"[DEBUG] _get_speaker_info_from_actor: Trying direct name match with renderer name: {renderer_actor_name}")
+                    for cache_key, cache_info in self._speaker_actor_cache.items():
+                        cached_actor_name = cache_info.get('actor')
                         if cached_actor_name == renderer_actor_name:
-                            array_id, speaker_idx, geom_idx = key
+                            array_id, speaker_idx, geom_idx = cache_key
                             print(f"[DEBUG] _get_speaker_info_from_actor: Found match via renderer name! array_id={array_id}, speaker_idx={speaker_idx}")
                             return (str(array_id), int(speaker_idx))
                     break
@@ -817,6 +1038,7 @@ class SPL3DOverlayRenderer:
             print(f"[DEBUG] _get_speaker_info_from_actor: No match found")
             print(f"[DEBUG] _get_speaker_info_from_actor: Cache keys: {list(self._speaker_actor_cache.keys())}")
             print(f"[DEBUG] _get_speaker_info_from_actor: Cache actor names: {[info.get('actor') for info in self._speaker_actor_cache.values()]}")
+            print(f"[DEBUG] _get_speaker_info_from_actor: Renderer actor names (overlay_*): {[name for name in renderer.actors.keys() if isinstance(name, str) and name.startswith('overlay_')]}")
             return None
         except Exception as e:  # noqa: BLE001
             print(f"[DEBUG] _get_speaker_info_from_actor: Exception: {e}")
@@ -876,35 +1098,46 @@ class SPL3DOverlayRenderer:
                     if is_highlighted:
                         print(f"[DEBUG] _update_speaker_highlights: Array {array_id_str} is highlighted (in {highlight_array_ids_str})")
                 
+                # Versuche zuerst actor_obj (direktes Objekt), dann actor_name
+                actor = info.get('actor_obj')
                 actor_name = info.get('actor')
-                if actor_name:
+                
+                if actor is None and actor_name:
+                    # Fallback: Hole Actor über Namen
+                    actor = self.plotter.renderer.actors.get(actor_name)
+                
+                if actor:
                     try:
-                        actor = self.plotter.renderer.actors.get(actor_name)
-                        if actor:
-                            prop = actor.GetProperty()
-                            if prop:
-                                if is_highlighted:
-                                    prop.SetEdgeColor(1, 0, 0)  # Rot
-                                    prop.SetLineWidth(3.0)
-                                    print(f"[DEBUG] _update_speaker_highlights: Set RED edge for actor {actor_name}, array_id={array_id_str}, speaker_idx={speaker_idx}")
-                                else:
-                                    prop.SetEdgeColor(0, 0, 0)  # Schwarz
-                                    prop.SetLineWidth(1.5)
-                                # WICHTIG: Edge-Visibility muss aktiviert sein
-                                prop.SetEdgeVisibility(True)
-                                # Stelle sicher, dass Edges angezeigt werden
-                                prop.SetRepresentationToSurface()  # Surface-Darstellung für Edges
-                                # Render-Update triggern
-                                actor.Modified()
-                                # Prüfe ob Edge-Color tatsächlich gesetzt wurde
-                                edge_color = prop.GetEdgeColor()
-                                print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} edge_color={edge_color}, edge_visibility={prop.GetEdgeVisibility()}")
-                        else:
-                            print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} not found in renderer")
+                        prop = actor.GetProperty()
+                        if prop:
+                            if is_highlighted:
+                                prop.SetEdgeColor(1, 0, 0)  # Rot
+                                prop.SetLineWidth(3.0)
+                                print(f"[DEBUG] _update_speaker_highlights: Set RED edge for actor {actor_name}, array_id={array_id_str}, speaker_idx={speaker_idx}, geom_idx={geom_idx}")
+                            else:
+                                prop.SetEdgeColor(0, 0, 0)  # Schwarz
+                                prop.SetLineWidth(1.5)
+                            # WICHTIG: Edge-Visibility muss aktiviert sein
+                            prop.SetEdgeVisibility(True)
+                            # Stelle sicher, dass Edges angezeigt werden
+                            prop.SetRepresentationToSurface()  # Surface-Darstellung für Edges
+                            # Render-Update triggern
+                            actor.Modified()
+                            # Prüfe ob Edge-Color tatsächlich gesetzt wurde
+                            edge_color = prop.GetEdgeColor()
+                            print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} edge_color={edge_color}, edge_visibility={prop.GetEdgeVisibility()}, line_width={prop.GetLineWidth()}")
                     except Exception as e:  # noqa: BLE001
                         print(f"[DEBUG] _update_speaker_highlights: Exception for actor {actor_name}: {e}")
                         import traceback
                         traceback.print_exc()
+                else:
+                    print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} not found (actor_obj={info.get('actor_obj') is not None}, actor_name={actor_name})")
+            
+            # Render-Update triggern, damit Änderungen sichtbar werden
+            try:
+                self.plotter.render()
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
 
@@ -1550,6 +1783,8 @@ class SPL3DOverlayRenderer:
         
         if render_lines_as_tubes is not None:
             kwargs['render_lines_as_tubes'] = bool(render_lines_as_tubes)
+            if render_lines_as_tubes and category == 'axis':
+                print(f"[DEBUG] _add_overlay_mesh: Rendere Achsenlinie {name} als Tubes (line_width={line_width})")
         
         # 🎯 Stelle sicher, dass keine Eckpunkte angezeigt werden (nur Linien)
         if not show_vertices and hasattr(mesh, 'lines') and mesh.lines is not None:
@@ -1558,6 +1793,39 @@ class SPL3DOverlayRenderer:
             kwargs['point_size'] = 0
 
         actor = self.plotter.add_mesh(mesh, **kwargs)
+        
+        # Erhöhe Picking-Priorität für Achsenlinien (damit sie vor Surfaces gepickt werden)
+        if category == 'axis':
+            try:
+                # Stelle sicher, dass der Actor pickable ist
+                if hasattr(actor, 'SetPickable'):
+                    actor.SetPickable(True)
+                    actual_pickable = actor.GetPickable() if hasattr(actor, 'GetPickable') else None
+                    print(f"[DEBUG] _add_overlay_mesh: Achsenlinie {name} als pickable markiert, GetPickable()={actual_pickable}")
+                
+                # Stelle sicher, dass der Actor auch über GetProperty pickable ist
+                if hasattr(actor, 'GetProperty'):
+                    prop = actor.GetProperty()
+                    if prop:
+                        # Stelle sicher, dass der Actor sichtbar und pickable ist
+                        prop.SetOpacity(1.0)
+                        # Stelle sicher, dass die Linie sichtbar ist
+                        prop.SetLineWidth(line_width)
+                        # Render-Order: Stelle sicher, dass Linien nach Surfaces gerendert werden
+                        # durch SetRenderOrder oder durch Z-Offset (bereits implementiert)
+                        print(f"[DEBUG] _add_overlay_mesh: Achsenlinie {name} Property gesetzt, LineWidth={line_width}, Pickable={actor.GetPickable() if hasattr(actor, 'GetPickable') else 'N/A'}")
+                
+                # Stelle sicher, dass der Actor in der Render-Liste ist
+                actor.Modified()
+                
+                # Prüfe ob Actor wirklich im Renderer ist
+                if hasattr(self.plotter, 'renderer') and self.plotter.renderer:
+                    actor_in_renderer = name in self.plotter.renderer.actors
+                    print(f"[DEBUG] _add_overlay_mesh: Achsenlinie {name} im Renderer: {actor_in_renderer}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[DEBUG] _add_overlay_mesh: Fehler beim Setzen der Pickable-Eigenschaft für {name}: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Stelle sicher, dass Edges angezeigt werden, wenn edge_color gesetzt wurde
         if edge_color is not None and hasattr(actor, 'prop') and actor.prop is not None:
@@ -1587,17 +1855,33 @@ class SPL3DOverlayRenderer:
         # line_pattern nur bei echten Polylines anwenden, nicht bei Tube-Meshes
         if line_pattern is not None and not is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
             try:
-                actor.prop.line_stipple_pattern = line_pattern
-                actor.prop.line_stipple_repeat_factor = max(1, int(line_repeat))
-            except Exception:  # noqa: BLE001
-                pass
+                print(f"[DEBUG _add_overlay_mesh] Setze Pattern für {name}: 0x{line_pattern:X}, repeat={line_repeat}, is_tube_mesh={is_tube_mesh}, line_width={line_width}")
+                # Stelle sicher, dass Line-Stippling aktiviert ist (Tubes deaktivieren)
+                actor.prop.SetRenderLinesAsTubes(False)  # WICHTIG: Deaktiviere Tubes für Stippling
+                # Stelle sicher, dass Line-Width gesetzt ist
+                actor.prop.SetLineWidth(line_width)
+                # Setze Pattern mit VTK-Methoden (nicht direkte Attribute!)
+                actor.prop.SetLineStipplePattern(int(line_pattern))
+                actor.prop.SetLineStippleRepeatFactor(max(1, int(line_repeat)))
+                # Prüfe ob Pattern gesetzt wurde
+                actual_pattern = actor.prop.GetLineStipplePattern()
+                actual_repeat = actor.prop.GetLineStippleRepeatFactor()
+                actual_width = actor.prop.GetLineWidth()
+                print(f"[DEBUG _add_overlay_mesh] Pattern tatsächlich gesetzt: 0x{actual_pattern:X}, repeat={actual_repeat}, width={actual_width}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[DEBUG _add_overlay_mesh] Fehler beim Setzen des Patterns: {e}")
+                import traceback
+                traceback.print_exc()
         elif is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
             # Für Tube-Meshes: Explizit durchgezogene Linie setzen (kein Stipple-Pattern)
             try:
-                actor.prop.line_stipple_pattern = 0xFFFF  # Durchgezogen
-                actor.prop.line_stipple_repeat_factor = 1
+                print(f"[DEBUG _add_overlay_mesh] Tube-Mesh erkannt für {name}, setze durchgezogene Linie")
+                actor.prop.SetLineStipplePattern(0xFFFF)  # Durchgezogen
+                actor.prop.SetLineStippleRepeatFactor(1)
             except Exception:  # noqa: BLE001
                 pass
+        elif line_pattern is not None:
+            print(f"[DEBUG _add_overlay_mesh] WARNUNG: Pattern 0x{line_pattern:X} konnte nicht gesetzt werden für {name} (is_tube_mesh={is_tube_mesh}, has_prop={hasattr(actor, 'prop')})")
         self.overlay_actor_names.append(name)
         self._category_actors.setdefault(category, []).append(name)
         return name
@@ -1854,6 +2138,460 @@ class SPL3DOverlayRenderer:
             return len(values)
         except TypeError:
             return 0
+
+    def _get_active_xy_surfaces(self, settings) -> List[Tuple[str, Any]]:
+        """Sammelt alle aktiven Surfaces für XY-Berechnung (xy_enabled=True, enabled=True, hidden=False)."""
+        active_surfaces = []
+        surface_store = getattr(settings, 'surface_definitions', {})
+        
+        if not isinstance(surface_store, dict):
+            return active_surfaces
+        
+        for surface_id, surface in surface_store.items():
+            # Prüfe ob Surface aktiv ist
+            if isinstance(surface, SurfaceDefinition):
+                xy_enabled = getattr(surface, 'xy_enabled', True)
+                enabled = surface.enabled
+                hidden = surface.hidden
+            else:
+                xy_enabled = surface.get('xy_enabled', True)
+                enabled = surface.get('enabled', False)
+                hidden = surface.get('hidden', False)
+            
+            if xy_enabled and enabled and not hidden:
+                active_surfaces.append((str(surface_id), surface))
+        
+        return active_surfaces
+
+    def _get_surface_intersection_points_xz(self, y_const: float, surface: Any, settings) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Berechnet Schnittpunkte der Linie y=y_const mit dem Surface-Polygon (Projektion auf XZ-Ebene).
+        
+        Args:
+            y_const: Konstante Y-Koordinate der Linie
+            surface: SurfaceDefinition oder Dict mit Surface-Daten
+            settings: Settings-Objekt für Zugriff auf aktuelle Surface-Daten
+            
+        Returns:
+            tuple: (x_coords, z_coords) als Arrays oder None wenn keine Schnittpunkte
+        """
+        # Hole aktuelle Surface-Punkte
+        if isinstance(surface, SurfaceDefinition):
+            points = surface.points
+        else:
+            points = surface.get('points', [])
+        
+        if len(points) < 3:
+            return None
+        
+        # Extrahiere alle Koordinaten
+        points_3d = []
+        for p in points:
+            x = float(p.get('x', 0.0))
+            y = float(p.get('y', 0.0))
+            z = float(p.get('z', 0.0)) if p.get('z') is not None else 0.0
+            points_3d.append((x, y, z))
+        
+        # Prüfe jede Kante des Polygons auf Schnitt mit Linie y=y_const
+        intersection_points = []
+        n = len(points_3d)
+        for i in range(n):
+            p1 = points_3d[i]
+            p2 = points_3d[(i + 1) % n]  # Nächster Punkt (geschlossenes Polygon)
+            
+            x1, y1, z1 = p1
+            x2, y2, z2 = p2
+            
+            # Prüfe ob Kante die Linie y=y_const schneidet
+            if (y1 <= y_const <= y2) or (y2 <= y_const <= y1):
+                if abs(y2 - y1) > 1e-10:  # Vermeide Division durch Null
+                    # Berechne Schnittpunkt-Parameter t
+                    t = (y_const - y1) / (y2 - y1)
+                    
+                    # Berechne X- und Z-Koordinaten des Schnittpunkts
+                    x_intersect = x1 + t * (x2 - x1)
+                    z_intersect = z1 + t * (z2 - z1)
+                    
+                    intersection_points.append((x_intersect, z_intersect))
+        
+        if len(intersection_points) < 2:
+            return None
+        
+        # Entferne Duplikate (Punkte die sehr nah beieinander sind)
+        unique_points = []
+        eps = 1e-6
+        for x, z in intersection_points:
+            is_duplicate = False
+            for ux, uz in unique_points:
+                if abs(x - ux) < eps and abs(z - uz) < eps:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_points.append((x, z))
+        
+        if len(unique_points) < 2:
+            return None
+        
+        # Extrahiere X- und Z-Koordinaten
+        x_coords = np.array([p[0] for p in unique_points])
+        z_coords = np.array([p[1] for p in unique_points])
+        
+        # Sortiere nach X-Koordinaten für konsistente Reihenfolge
+        sort_indices = np.argsort(x_coords)
+        x_coords = x_coords[sort_indices]
+        z_coords = z_coords[sort_indices]
+        
+        return (x_coords, z_coords)
+
+    def _get_surface_intersection_points_yz(self, x_const: float, surface: Any, settings) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Berechnet Schnittpunkte der Linie x=x_const mit dem Surface-Polygon (Projektion auf YZ-Ebene).
+        
+        Args:
+            x_const: Konstante X-Koordinate der Linie
+            surface: SurfaceDefinition oder Dict mit Surface-Daten
+            settings: Settings-Objekt für Zugriff auf aktuelle Surface-Daten
+            
+        Returns:
+            tuple: (y_coords, z_coords) als Arrays oder None wenn keine Schnittpunkte
+        """
+        # Hole aktuelle Surface-Punkte
+        if isinstance(surface, SurfaceDefinition):
+            points = surface.points
+        else:
+            points = surface.get('points', [])
+        
+        if len(points) < 3:
+            return None
+        
+        # Extrahiere alle Koordinaten
+        points_3d = []
+        for p in points:
+            x = float(p.get('x', 0.0))
+            y = float(p.get('y', 0.0))
+            z = float(p.get('z', 0.0)) if p.get('z') is not None else 0.0
+            points_3d.append((x, y, z))
+        
+        # Prüfe jede Kante des Polygons auf Schnitt mit Linie x=x_const
+        intersection_points = []
+        n = len(points_3d)
+        for i in range(n):
+            p1 = points_3d[i]
+            p2 = points_3d[(i + 1) % n]  # Nächster Punkt (geschlossenes Polygon)
+            
+            x1, y1, z1 = p1
+            x2, y2, z2 = p2
+            
+            # Prüfe ob Kante die Linie x=x_const schneidet
+            if (x1 <= x_const <= x2) or (x2 <= x_const <= x1):
+                if abs(x2 - x1) > 1e-10:  # Vermeide Division durch Null
+                    # Berechne Schnittpunkt-Parameter t
+                    t = (x_const - x1) / (x2 - x1)
+                    
+                    # Berechne Y- und Z-Koordinaten des Schnittpunkts
+                    y_intersect = y1 + t * (y2 - y1)
+                    z_intersect = z1 + t * (z2 - z1)
+                    
+                    intersection_points.append((y_intersect, z_intersect))
+        
+        if len(intersection_points) < 2:
+            return None
+        
+        # Entferne Duplikate (Punkte die sehr nah beieinander sind)
+        unique_points = []
+        eps = 1e-6
+        for y, z in intersection_points:
+            is_duplicate = False
+            for uy, uz in unique_points:
+                if abs(y - uy) < eps and abs(z - uz) < eps:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_points.append((y, z))
+        
+        if len(unique_points) < 2:
+            return None
+        
+        # Extrahiere Y- und Z-Koordinaten
+        y_coords = np.array([p[0] for p in unique_points])
+        z_coords = np.array([p[1] for p in unique_points])
+        
+        # Sortiere nach Y-Koordinaten für konsistente Reihenfolge
+        sort_indices = np.argsort(y_coords)
+        y_coords = y_coords[sort_indices]
+        z_coords = z_coords[sort_indices]
+        
+        return (y_coords, z_coords)
+
+    def _create_dash_dot_line_segments_optimized(self, points_3d: np.ndarray, dash_length: float = 1.0, dot_length: float = 0.2, gap_length: float = 0.3) -> List[np.ndarray]:
+        """
+        Optimierte Version: Teilt eine 3D-Linie in Strich-Punkt-Segmente auf.
+        Verwendet größere Segmente und vereinfachte Interpolation für bessere Performance.
+        
+        Pattern: Strich - Lücke - Punkt - Lücke - Strich - ...
+        
+        Args:
+            points_3d: Array von 3D-Punkten (N x 3)
+            dash_length: Länge eines Strichs in Metern (größer für weniger Segmente)
+            dot_length: Länge eines Punkts in Metern
+            gap_length: Länge einer Lücke in Metern
+            
+        Returns:
+            Liste von Punkt-Arrays, die die sichtbaren Segmente (Striche und Punkte) darstellen
+        """
+        if len(points_3d) < 2:
+            return []
+        
+        # Vereinfachte Berechnung: Verwende nur Start- und Endpunkt für kurze Linien
+        if len(points_3d) == 2:
+            total_length = np.linalg.norm(points_3d[1] - points_3d[0])
+            if total_length <= dash_length:
+                # Zu kurz für Pattern - zeichne als durchgezogene Linie
+                return [points_3d]
+        
+        # Berechne kumulative Distanzen entlang der Linie
+        diffs = np.diff(points_3d, axis=0)
+        segment_lengths = np.linalg.norm(diffs, axis=1)
+        cumulative_distances = np.concatenate([[0], np.cumsum(segment_lengths)])
+        total_length = cumulative_distances[-1]
+        
+        if total_length <= 0:
+            return []
+        
+        # Pattern: Strich (dash_length) - Lücke (gap_length) - Punkt (dot_length) - Lücke (gap_length) - ...
+        segments = []
+        current_pos = 0.0
+        
+        # Vereinfachte Interpolation: Verwende direkte lineare Interpolation zwischen benachbarten Punkten
+        while current_pos < total_length:
+            # Strich-Segment
+            dash_start = current_pos
+            dash_end = min(current_pos + dash_length, total_length)
+            if dash_end > dash_start:
+                dash_points = self._interpolate_line_segment_simple(points_3d, cumulative_distances, dash_start, dash_end)
+                if len(dash_points) >= 2:
+                    segments.append(dash_points)
+            current_pos = dash_end + gap_length
+            
+            if current_pos >= total_length:
+                break
+            
+            # Punkt-Segment
+            dot_start = current_pos
+            dot_end = min(current_pos + dot_length, total_length)
+            if dot_end > dot_start:
+                dot_points = self._interpolate_line_segment_simple(points_3d, cumulative_distances, dot_start, dot_end)
+                if len(dot_points) >= 2:
+                    segments.append(dot_points)
+            current_pos = dot_end + gap_length
+        
+        return segments
+
+    def _combine_line_segments(self, segments: List[np.ndarray]) -> Optional[Any]:
+        """
+        Kombiniert mehrere Liniensegmente in ein einziges PolyData-Mesh für effizientes Rendering.
+        
+        Args:
+            segments: Liste von Punkt-Arrays (jedes Array ist N x 3)
+            
+        Returns:
+            PolyData-Mesh mit allen Segmenten oder None bei Fehler
+        """
+        if not segments:
+            return None
+        
+        try:
+            # Sammle alle Punkte und erstelle Lines-Array
+            all_points = []
+            all_lines = []
+            point_offset = 0
+            
+            for segment in segments:
+                if len(segment) < 2:
+                    continue
+                
+                # Füge Punkte hinzu
+                all_points.append(segment)
+                
+                # Erstelle Line-Array für dieses Segment: [n, 0, 1, 2, ..., n-1]
+                n_pts = len(segment)
+                line_array = [n_pts] + [point_offset + i for i in range(n_pts)]
+                all_lines.extend(line_array)
+                
+                point_offset += n_pts
+            
+            if not all_points:
+                return None
+            
+            # Kombiniere alle Punkte
+            combined_points = np.vstack(all_points)
+            
+            # Erstelle PolyData
+            polyline = self.pv.PolyData(combined_points)
+            polyline.lines = np.array(all_lines, dtype=np.int64)
+            
+            return polyline
+        except Exception as e:  # noqa: BLE001
+            print(f"[DEBUG _combine_line_segments] Fehler: {e}")
+            return None
+
+    def _interpolate_line_segment_simple(self, points_3d: np.ndarray, cumulative_distances: np.ndarray, start_dist: float, end_dist: float) -> np.ndarray:
+        """
+        Vereinfachte Interpolation: Verwendet nur Start- und Endpunkt für kurze Segmente.
+        
+        Args:
+            points_3d: Array von 3D-Punkten (N x 3)
+            cumulative_distances: Kumulative Distanzen entlang der Linie (N)
+            start_dist: Start-Distanz
+            end_dist: End-Distanz
+            
+        Returns:
+            Array von interpolierten Punkten für den Segment
+        """
+        if len(points_3d) < 2:
+            return points_3d
+        
+        # Finde Start- und End-Indices
+        start_idx = np.searchsorted(cumulative_distances, start_dist, side='right') - 1
+        end_idx = np.searchsorted(cumulative_distances, end_dist, side='right')
+        
+        start_idx = max(0, min(start_idx, len(points_3d) - 1))
+        end_idx = max(0, min(end_idx, len(points_3d) - 1))
+        
+        # Für kurze Segmente: Verwende nur Start- und Endpunkt
+        if end_idx - start_idx <= 1:
+            # Interpoliere Start- und Endpunkt
+            start_point = points_3d[start_idx]
+            end_point = points_3d[min(end_idx, len(points_3d) - 1)]
+            
+            if start_dist > cumulative_distances[start_idx] and start_idx < len(points_3d) - 1:
+                t = (start_dist - cumulative_distances[start_idx]) / (cumulative_distances[start_idx + 1] - cumulative_distances[start_idx])
+                start_point = points_3d[start_idx] + t * (points_3d[start_idx + 1] - points_3d[start_idx])
+            
+            if end_dist < cumulative_distances[end_idx] and end_idx > 0:
+                t = (end_dist - cumulative_distances[end_idx - 1]) / (cumulative_distances[end_idx] - cumulative_distances[end_idx - 1])
+                end_point = points_3d[end_idx - 1] + t * (points_3d[end_idx] - points_3d[end_idx - 1])
+            
+            return np.array([start_point, end_point])
+        
+        # Für längere Segmente: Verwende alle Punkte dazwischen
+        segment_points = [points_3d[start_idx]]
+        for i in range(start_idx + 1, end_idx):
+            segment_points.append(points_3d[i])
+        segment_points.append(points_3d[end_idx])
+        
+        return np.array(segment_points)
+
+    def _create_dash_dot_line_segments(self, points_3d: np.ndarray, dash_length: float = 0.5, dot_length: float = 0.1, gap_length: float = 0.2) -> List[np.ndarray]:
+        """
+        Teilt eine 3D-Linie in Strich-Punkt-Segmente auf.
+        
+        Pattern: Strich - Lücke - Punkt - Lücke - Strich - ...
+        
+        Args:
+            points_3d: Array von 3D-Punkten (N x 3)
+            dash_length: Länge eines Strichs in Metern
+            dot_length: Länge eines Punkts in Metern
+            gap_length: Länge einer Lücke in Metern
+            
+        Returns:
+            Liste von Punkt-Arrays, die die sichtbaren Segmente (Striche und Punkte) darstellen
+        """
+        if len(points_3d) < 2:
+            return []
+        
+        # Berechne kumulative Distanzen entlang der Linie
+        diffs = np.diff(points_3d, axis=0)
+        segment_lengths = np.linalg.norm(diffs, axis=1)
+        cumulative_distances = np.concatenate([[0], np.cumsum(segment_lengths)])
+        total_length = cumulative_distances[-1]
+        
+        if total_length <= 0:
+            return []
+        
+        # Pattern: Strich (dash_length) - Lücke (gap_length) - Punkt (dot_length) - Lücke (gap_length) - ...
+        pattern_length = dash_length + gap_length + dot_length + gap_length
+        segments = []
+        current_pos = 0.0
+        
+        # Interpoliere Punkte entlang der Linie für präzise Segmentierung
+        while current_pos < total_length:
+            # Strich-Segment
+            dash_start = current_pos
+            dash_end = min(current_pos + dash_length, total_length)
+            if dash_end > dash_start:
+                dash_points = self._interpolate_line_segment(points_3d, cumulative_distances, dash_start, dash_end)
+                if len(dash_points) >= 2:
+                    segments.append(dash_points)
+            current_pos = dash_end + gap_length
+            
+            if current_pos >= total_length:
+                break
+            
+            # Punkt-Segment
+            dot_start = current_pos
+            dot_end = min(current_pos + dot_length, total_length)
+            if dot_end > dot_start:
+                dot_points = self._interpolate_line_segment(points_3d, cumulative_distances, dot_start, dot_end)
+                if len(dot_points) >= 2:
+                    segments.append(dot_points)
+            current_pos = dot_end + gap_length
+        
+        return segments
+
+    def _interpolate_line_segment(self, points_3d: np.ndarray, cumulative_distances: np.ndarray, start_dist: float, end_dist: float) -> np.ndarray:
+        """
+        Interpoliert einen Linienabschnitt zwischen start_dist und end_dist.
+        
+        Args:
+            points_3d: Array von 3D-Punkten (N x 3)
+            cumulative_distances: Kumulative Distanzen entlang der Linie (N)
+            start_dist: Start-Distanz
+            end_dist: End-Distanz
+            
+        Returns:
+            Array von interpolierten Punkten für den Segment
+        """
+        if len(points_3d) < 2:
+            return points_3d
+        
+        segment_points = []
+        
+        # Finde Start- und End-Indices
+        start_idx = np.searchsorted(cumulative_distances, start_dist, side='right') - 1
+        end_idx = np.searchsorted(cumulative_distances, end_dist, side='right')
+        
+        start_idx = max(0, min(start_idx, len(points_3d) - 1))
+        end_idx = max(0, min(end_idx, len(points_3d) - 1))
+        
+        # Füge Start-Punkt hinzu (interpoliert falls nötig)
+        if start_dist > cumulative_distances[start_idx] and start_idx < len(points_3d) - 1:
+            # Interpoliere zwischen start_idx und start_idx+1
+            t = (start_dist - cumulative_distances[start_idx]) / (cumulative_distances[start_idx + 1] - cumulative_distances[start_idx])
+            start_point = points_3d[start_idx] + t * (points_3d[start_idx + 1] - points_3d[start_idx])
+            segment_points.append(start_point)
+        else:
+            segment_points.append(points_3d[start_idx])
+        
+        # Füge alle Punkte zwischen start_idx+1 und end_idx hinzu
+        for i in range(start_idx + 1, end_idx):
+            segment_points.append(points_3d[i])
+        
+        # Füge End-Punkt hinzu (interpoliert falls nötig)
+        if end_dist < cumulative_distances[end_idx] and end_idx > 0:
+            # Interpoliere zwischen end_idx-1 und end_idx
+            t = (end_dist - cumulative_distances[end_idx - 1]) / (cumulative_distances[end_idx] - cumulative_distances[end_idx - 1])
+            end_point = points_3d[end_idx - 1] + t * (points_3d[end_idx] - points_3d[end_idx - 1])
+            segment_points.append(end_point)
+        elif end_idx < len(points_3d):
+            segment_points.append(points_3d[end_idx])
+        
+        if len(segment_points) < 2:
+            # Fallback: Gib mindestens 2 Punkte zurück
+            if len(segment_points) == 1:
+                segment_points.append(segment_points[0])
+        
+        return np.array(segment_points)
 
 
 class SPLTimeControlBar(QtWidgets.QFrame):

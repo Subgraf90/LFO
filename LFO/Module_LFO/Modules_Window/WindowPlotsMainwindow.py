@@ -67,7 +67,9 @@ class DrawPlotsMainwindow(ModuleBase):
         layout = QtWidgets.QVBoxLayout(self.main_window.ui.colorbar_plot)
         layout.setContentsMargins(0, 0, 0, 0)  # Keine Ränder
         layout.setSpacing(0)                    # Kein Abstand
-        layout.addWidget(self.colorbar_canvas)
+        # Colorbar-Canvas soll expandieren
+        self.colorbar_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        layout.addWidget(self.colorbar_canvas, 1)  # Stretch-Faktor 1 für Expansion
 
         self.draw_spl_plotter = None
         self.active_spl_widget = None

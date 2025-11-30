@@ -714,7 +714,7 @@ class Sources(ModuleBase, QObject):
         # Erstelle ScrollArea für scrollbares Layout
         scroll_area = QScrollArea()
         scroll_area.setWidget(grid_container)
-        scroll_area.setWidgetResizable(False)  # Nicht automatisch anpassen
+        scroll_area.setWidgetResizable(True)  # Automatisch anpassen, damit alle Widgets sichtbar sind
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Keine horizontale Scrollbar
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setFrameShape(QFrame.NoFrame)
