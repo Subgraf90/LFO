@@ -501,6 +501,19 @@ class SPL3DOverlayRenderer:
 
         body_color = '#b0b0b0'
         exit_color = '#4d4d4d'
+        
+        # Hole Highlight-IDs für rote Umrandung (unterstütze Liste von IDs)
+        highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
+        highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
+        highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
+        
+        # Konvertiere zu Liste von Strings für konsistenten Vergleich
+        if highlight_array_ids:
+            highlight_array_ids_str = [str(aid) for aid in highlight_array_ids]
+        elif highlight_array_id:
+            highlight_array_ids_str = [str(highlight_array_id)]
+        else:
+            highlight_array_ids_str = []
 
         old_cache = self._speaker_actor_cache
         new_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
@@ -557,11 +570,23 @@ class SPL3DOverlayRenderer:
             valid_mask = np.isfinite(xs[:min_len]) & np.isfinite(ys[:min_len]) & np.isfinite(zs[:min_len])
             valid_indices = np.nonzero(valid_mask)[0]
             array_identifier = str(getattr(speaker_array, 'name', array_name))
+            # Speichere die Array-ID für späteren Zugriff (ID ist der Key im speaker_arrays Dict)
+            # Konvertiere zu String für konsistenten Vergleich
+            array_id = str(array_name)  # array_name ist bereits die ID (Key im Dict), konvertiere zu String
 
             for idx in valid_indices:
                 x = xs[idx]
                 y = ys[idx]
                 z = zs[idx]
+                
+                # Prüfe ob dieser Speaker hervorgehoben werden soll
+                is_highlighted = False
+                if highlight_indices:
+                    highlight_indices_str = [(str(aid), int(idx_val)) for aid, idx_val in highlight_indices]
+                    is_highlighted = (array_id, int(idx)) in highlight_indices_str
+                elif highlight_array_ids_str:
+                    # Prüfe ob Array-ID in der Liste ist
+                    is_highlighted = array_id in highlight_array_ids_str
 
                 geometries = self._build_speaker_geometries(
                     speaker_array,
@@ -618,7 +643,7 @@ class SPL3DOverlayRenderer:
                 
                 if not geometries:
                     sphere = self.pv.Sphere(radius=0.6, center=(float(x), float(y), float(z)), theta_resolution=32, phi_resolution=32)
-                    key = (array_identifier, int(idx), 'fallback')
+                    key = (array_id, int(idx), 'fallback')
                     existing = old_cache.get(key)
                     if existing:
                         signature = existing.get('signature')
@@ -637,11 +662,14 @@ class SPL3DOverlayRenderer:
                             new_actor_names.append(existing['actor'])
                     else:
                         mesh_to_add = sphere.copy(deep=True)
+                        # Setze Edge-Color basierend auf Highlight-Status
+                        edge_color = 'red' if is_highlighted else 'black'
                         actor_name = self._add_overlay_mesh(
                             mesh_to_add,
                             color=body_color,
                             opacity=1.0,
-                            edge_color='black',
+                            edge_color=edge_color,
+                            line_width=3.0 if is_highlighted else 1.5,
                             category='speakers',
                         )
                         new_cache[key] = {
@@ -653,7 +681,7 @@ class SPL3DOverlayRenderer:
                             new_actor_names.append(actor_name)
                 else:
                     for geom_idx, (body_mesh, exit_face_index) in enumerate(geometries):
-                        key = (array_identifier, int(idx), geom_idx)
+                        key = (array_id, int(idx), geom_idx)
                         existing = old_cache.get(key)
                         if existing:
                             signature = existing.get('signature')
@@ -676,6 +704,10 @@ class SPL3DOverlayRenderer:
                         # Prüfe ob Mesh bereits Scalars hat (merged mesh mit exit_face_index = -1)
                         has_scalars = 'speaker_face' in mesh_to_add.cell_data
                         
+                        # Setze Edge-Color basierend auf Highlight-Status
+                        edge_color = 'red' if is_highlighted else 'black'
+                        line_width = 3.0 if is_highlighted else 1.5
+                        
                         if exit_face_index == -1 or has_scalars:
                             # Mesh hat bereits Scalars (merged mesh) - nutze diese
                             actor_name = self._add_overlay_mesh(
@@ -683,8 +715,8 @@ class SPL3DOverlayRenderer:
                                 scalars='speaker_face',
                                 cmap=[body_color, exit_color],
                                 opacity=1.0,
-                                edge_color='black',
-                                line_width=1.5,
+                                edge_color=edge_color,
+                                line_width=line_width,
                                 category='speakers',
                             )
                         elif exit_face_index is not None and mesh_to_add.n_cells > 0:
@@ -697,8 +729,8 @@ class SPL3DOverlayRenderer:
                                 scalars='speaker_face',
                                 cmap=[body_color, exit_color],
                                 opacity=1.0,
-                                edge_color='black',
-                                line_width=1.5,
+                                edge_color=edge_color,
+                                line_width=line_width,
                                 category='speakers',
                             )
                         else:
@@ -706,8 +738,8 @@ class SPL3DOverlayRenderer:
                                 mesh_to_add,
                                 color=body_color,
                                 opacity=1.0,
-                                edge_color='black',
-                                line_width=1.5,
+                                edge_color=edge_color,
+                                line_width=line_width,
                                 category='speakers',
                             )
                         new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name}
@@ -721,6 +753,160 @@ class SPL3DOverlayRenderer:
 
         self._speaker_actor_cache = new_cache
         self._category_actors['speakers'] = new_actor_names
+        
+        # Aktualisiere Edge-Color für hervorgehobene Lautsprecher
+        self._update_speaker_highlights(settings)
+        
+        # Render-Update triggern, damit Änderungen sichtbar werden
+        try:
+            self.plotter.render()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _get_speaker_info_from_actor(self, actor: Any, actor_name: str) -> Optional[Tuple[str, int]]:
+        """Extrahiert Array-ID und Speaker-Index aus einem Speaker-Actor.
+        
+        Returns:
+            Tuple[str, int] oder None: (array_id, speaker_index) wenn gefunden, sonst None
+        """
+        try:
+            print(f"[DEBUG] _get_speaker_info_from_actor: actor_name = {actor_name}")
+            print(f"[DEBUG] _get_speaker_info_from_actor: cache size = {len(self._speaker_actor_cache)}")
+            print(f"[DEBUG] _get_speaker_info_from_actor: actor = {actor}")
+            
+            renderer = self.plotter.renderer
+            if not renderer or not actor:
+                print(f"[DEBUG] _get_speaker_info_from_actor: No renderer or actor")
+                return None
+            
+            # Versuche zuerst über Actor-Objekt direkt (zuverlässiger als Name-Vergleich)
+            print(f"[DEBUG] _get_speaker_info_from_actor: Trying actor object comparison first")
+            for key, info in self._speaker_actor_cache.items():
+                cached_actor_name = info.get('actor')
+                if cached_actor_name:
+                    cached_actor = renderer.actors.get(cached_actor_name)
+                    if cached_actor is actor:
+                        array_id, speaker_idx, geom_idx = key
+                        print(f"[DEBUG] _get_speaker_info_from_actor: Found match by object! array_id={array_id}, speaker_idx={speaker_idx}, cached_actor_name={cached_actor_name}")
+                        return (str(array_id), int(speaker_idx))
+            
+            # Falls nicht gefunden, versuche über Actor-Name
+            print(f"[DEBUG] _get_speaker_info_from_actor: No match by object, trying name comparison")
+            for key, info in self._speaker_actor_cache.items():
+                cached_actor_name = info.get('actor')
+                print(f"[DEBUG] _get_speaker_info_from_actor: comparing '{actor_name}' with '{cached_actor_name}'")
+                if cached_actor_name == actor_name:
+                    array_id, speaker_idx, geom_idx = key
+                    print(f"[DEBUG] _get_speaker_info_from_actor: Found match by name! array_id={array_id}, speaker_idx={speaker_idx}")
+                    return (str(array_id), int(speaker_idx))
+            
+            # Als letzter Versuch: Iteriere durch alle Actors im Renderer
+            print(f"[DEBUG] _get_speaker_info_from_actor: No match, iterating through all renderer actors")
+            for renderer_actor_name, renderer_actor in renderer.actors.items():
+                if renderer_actor is actor:
+                    print(f"[DEBUG] _get_speaker_info_from_actor: Found actor in renderer with name: {renderer_actor_name}")
+                    # Suche im Cache nach diesem Actor-Namen
+                    for key, info in self._speaker_actor_cache.items():
+                        cached_actor_name = info.get('actor')
+                        if cached_actor_name == renderer_actor_name:
+                            array_id, speaker_idx, geom_idx = key
+                            print(f"[DEBUG] _get_speaker_info_from_actor: Found match via renderer name! array_id={array_id}, speaker_idx={speaker_idx}")
+                            return (str(array_id), int(speaker_idx))
+                    break
+            
+            print(f"[DEBUG] _get_speaker_info_from_actor: No match found")
+            print(f"[DEBUG] _get_speaker_info_from_actor: Cache keys: {list(self._speaker_actor_cache.keys())}")
+            print(f"[DEBUG] _get_speaker_info_from_actor: Cache actor names: {[info.get('actor') for info in self._speaker_actor_cache.values()]}")
+            return None
+        except Exception as e:  # noqa: BLE001
+            print(f"[DEBUG] _get_speaker_info_from_actor: Exception: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def _update_speaker_highlights(self, settings) -> None:
+        """Aktualisiert die Edge-Color für hervorgehobene Lautsprecher."""
+        try:
+            # Unterstütze sowohl einzelne ID (Rückwärtskompatibilität) als auch Liste von IDs
+            highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
+            highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
+            highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
+            
+            # Konvertiere zu Liste von Strings für konsistenten Vergleich
+            if highlight_array_ids:
+                highlight_array_ids_str = [str(aid) for aid in highlight_array_ids]
+            elif highlight_array_id:
+                highlight_array_ids_str = [str(highlight_array_id)]
+            else:
+                highlight_array_ids_str = []
+            
+            print(f"[DEBUG] _update_speaker_highlights: highlight_array_ids={highlight_array_ids_str}, highlight_indices={highlight_indices}")
+            
+            if not highlight_array_ids_str and not highlight_indices:
+                # Keine Highlights - setze alle auf schwarz
+                for key, info in self._speaker_actor_cache.items():
+                    actor_name = info.get('actor')
+                    if actor_name:
+                        try:
+                            actor = self.plotter.renderer.actors.get(actor_name)
+                            if actor:
+                                prop = actor.GetProperty()
+                                if prop:
+                                    prop.SetEdgeColor(0, 0, 0)  # Schwarz
+                                    prop.SetEdgeVisibility(True)
+                        except Exception:  # noqa: BLE001
+                            pass
+                return
+            
+            # Aktualisiere Edge-Color für hervorgehobene Lautsprecher
+            for key, info in self._speaker_actor_cache.items():
+                array_id, speaker_idx, geom_idx = key
+                array_id_str = str(array_id)
+                
+                # Prüfe ob dieser Speaker hervorgehoben werden soll
+                is_highlighted = False
+                if highlight_indices:
+                    # Spezifische Speaker-Indices
+                    # Konvertiere beide zu String für Vergleich
+                    highlight_indices_str = [(str(aid), int(idx)) for aid, idx in highlight_indices]
+                    is_highlighted = (array_id_str, int(speaker_idx)) in highlight_indices_str
+                elif highlight_array_ids_str:
+                    # Alle Speaker der Arrays - prüfe ob Array-ID in der Liste ist
+                    is_highlighted = array_id_str in highlight_array_ids_str
+                    if is_highlighted:
+                        print(f"[DEBUG] _update_speaker_highlights: Array {array_id_str} is highlighted (in {highlight_array_ids_str})")
+                
+                actor_name = info.get('actor')
+                if actor_name:
+                    try:
+                        actor = self.plotter.renderer.actors.get(actor_name)
+                        if actor:
+                            prop = actor.GetProperty()
+                            if prop:
+                                if is_highlighted:
+                                    prop.SetEdgeColor(1, 0, 0)  # Rot
+                                    prop.SetLineWidth(3.0)
+                                    print(f"[DEBUG] _update_speaker_highlights: Set RED edge for actor {actor_name}, array_id={array_id_str}, speaker_idx={speaker_idx}")
+                                else:
+                                    prop.SetEdgeColor(0, 0, 0)  # Schwarz
+                                    prop.SetLineWidth(1.5)
+                                # WICHTIG: Edge-Visibility muss aktiviert sein
+                                prop.SetEdgeVisibility(True)
+                                # Stelle sicher, dass Edges angezeigt werden
+                                prop.SetRepresentationToSurface()  # Surface-Darstellung für Edges
+                                # Render-Update triggern
+                                actor.Modified()
+                                # Prüfe ob Edge-Color tatsächlich gesetzt wurde
+                                edge_color = prop.GetEdgeColor()
+                                print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} edge_color={edge_color}, edge_visibility={prop.GetEdgeVisibility()}")
+                        else:
+                            print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} not found in renderer")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[DEBUG] _update_speaker_highlights: Exception for actor {actor_name}: {e}")
+                        import traceback
+                        traceback.print_exc()
+        except Exception:  # noqa: BLE001
+            pass
 
     def draw_impulse_points(self, settings) -> None:
         current_state = self._compute_impulse_state(settings)
@@ -1372,6 +1558,20 @@ class SPL3DOverlayRenderer:
             kwargs['point_size'] = 0
 
         actor = self.plotter.add_mesh(mesh, **kwargs)
+        
+        # Stelle sicher, dass Edges angezeigt werden, wenn edge_color gesetzt wurde
+        if edge_color is not None and hasattr(actor, 'prop') and actor.prop is not None:
+            try:
+                actor.prop.SetEdgeVisibility(True)
+                actor.prop.SetRepresentationToSurface()
+                # Stelle sicher, dass die Edge-Color gesetzt ist
+                if edge_color == 'red':
+                    actor.prop.SetEdgeColor(1, 0, 0)
+                elif edge_color == 'black':
+                    actor.prop.SetEdgeColor(0, 0, 0)
+                actor.Modified()
+            except Exception:  # noqa: BLE001
+                pass
         
         # Prüfe ob Mesh ein Tube-Mesh ist: render_lines_as_tubes=None bedeutet bereits konvertiertes Tube-Mesh
         is_tube_mesh = render_lines_as_tubes is None

@@ -14,6 +14,7 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         self.main_window = main_window  # Referenz zum Main Window
         self._x_locator_step = None
         self._zoom_callback_connected = False
+        self._updating_ticks = False  # Flagge um Endlosschleifen zu vermeiden
         
         # Initialisiere leere Plot-Darstellung
         self.initialize_empty_plots()
@@ -95,26 +96,29 @@ class DrawSPLPlot_Yaxis(ModuleBase):
                 
                 self.ax.plot(x_data, y_data, label=key, color=color, linewidth=linewidth)
 
+        # Sammle Segment-Grenzen für "aktuelle_simulation" (werden nach Achsen-Setup gezeichnet)
+        segment_boundaries_to_draw = []
+        if "aktuelle_simulation" in calculation_Yaxis:
+            sim_value = calculation_Yaxis["aktuelle_simulation"]
+            if 'segment_boundaries_yaxis' in sim_value:
+                segment_boundaries_to_draw = sim_value.get('segment_boundaries_yaxis', [])
+
         # Invertiere die x-Achse
         self.ax.invert_xaxis()
 
         # Intelligente Y-Achse Ticks (Position) - adaptive Schrittweite
         y_min_data = min(y_data)
         y_max_data = max(y_data)
-        print(f"[DEBUG PlotSPLYaxis] plot_yaxis: Daten-Bereich Y: {y_min_data:.3f} bis {y_max_data:.3f}")
         
         # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
         current_ylim = self.ax.get_ylim()
-        print(f"[DEBUG PlotSPLYaxis] plot_yaxis: Aktuelle Y-Limits: {current_ylim[0]:.3f} bis {current_ylim[1]:.3f}")
         
         if abs(current_ylim[0] - y_min_data) > 0.01 or abs(current_ylim[1] - y_max_data) > 0.01:
             # Bereits gezoomt - verwende sichtbare Grenzen
             y_min_visible, y_max_visible = current_ylim
-            print(f"[DEBUG PlotSPLYaxis] Bereits gezoomt! Verwende sichtbare Grenzen: {y_min_visible:.3f} bis {y_max_visible:.3f}")
             y_ticks, step = self._calculate_metric_ticks(y_min_visible, y_max_visible)
         else:
             # Nicht gezoomt - verwende Daten-Grenzen
-            print(f"[DEBUG PlotSPLYaxis] Nicht gezoomt, verwende Daten-Grenzen")
             y_ticks, step = self._calculate_metric_ticks(y_min_data, y_max_data)
             self.ax.set_ylim(y_min_data, y_max_data)  # Exakt gem. length, ohne Zusatzwert
         
@@ -138,6 +142,14 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         self.ax.set_xlabel("SPL [dB]", fontsize=6)  # Konsistent mit Polar
         
         self.ax.grid(color='k', linestyle='-', linewidth=0.4)
+        
+        # Zeichne horizontale gestrichelte Linien an Segment-Grenzen (NACH Achsen-Setup)
+        if segment_boundaries_to_draw:
+            x_lim = self.ax.get_xlim()
+            for y_pos in segment_boundaries_to_draw:
+                # Horizontale gestrichelte Linie ohne Label (wird nicht in Snapshots gespeichert)
+                # Verwende zorder=1 damit Linien über dem Grid, aber unter den Daten sind
+                self.ax.axhline(y=y_pos, color='darkgray', linestyle='--', linewidth=0.8, alpha=0.8, zorder=1)
         
         # Layout-Anpassungen für konsistente Größe (identisch mit initialize_empty_plots)
         self._apply_layout()
@@ -178,18 +190,15 @@ class DrawSPLPlot_Yaxis(ModuleBase):
             tuple: (ticks_list, step) - Liste der Tick-Positionen und verwendete Schrittweite
         """
         range_val = max_val - min_val
-        print(f"[DEBUG PlotSPLYaxis] _calculate_metric_ticks: min={min_val:.3f}, max={max_val:.3f}, range={range_val:.3f}")
         
         if range_val <= 0:
             # Fallback für ungültige Bereiche
-            print(f"[DEBUG PlotSPLYaxis] Ungültiger Bereich, verwende Fallback")
             return [min_val, max_val], 1.0
         
         # Ziel: 4-8 Ticks für optimale Lesbarkeit
         # Berechne optimale Schrittweite basierend auf dem Bereich
         ideal_num_ticks = 6  # Ziel: ~6 Ticks
         rough_step = range_val / ideal_num_ticks
-        print(f"[DEBUG PlotSPLYaxis] Rough step berechnet: {rough_step:.3f}")
         
         # Wähle passende Schrittweite aus einer Liste von "schönen" Werten
         # Sortiert von klein nach groß
@@ -213,10 +222,7 @@ class DrawSPLPlot_Yaxis(ModuleBase):
                 if fine_step >= rough_step:
                     step = fine_step
                     break
-            if step != old_step:
-                print(f"[DEBUG PlotSPLYaxis] Feine Schrittweite gewählt: {step:.3f} (vorher: {old_step:.3f})")
         
-        print(f"[DEBUG PlotSPLYaxis] Gewählte Schrittweite: {step:.3f} m")
         
         # Generiere Ticks
         # Runde min_val nach unten auf das nächste Vielfache von step
@@ -253,8 +259,6 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         # Entferne Duplikate und sortiere
         ticks = sorted(list(set(ticks)))
         
-        print(f"[DEBUG PlotSPLYaxis] Generierte {len(ticks)} Ticks: {ticks[:5]}..." if len(ticks) > 5 else f"[DEBUG PlotSPLYaxis] Generierte {len(ticks)} Ticks: {ticks}")
-        
         return ticks, step
 
     def _connect_zoom_callbacks(self):
@@ -279,50 +283,54 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         if ax != self.ax:
             return
         
+        # Verhindere Endlosschleife
+        if self._updating_ticks:
+            return
+        
         try:
+            self._updating_ticks = True
             y_min, y_max = ax.get_ylim()
-            y_range = y_max - y_min
-            print(f"[DEBUG PlotSPLYaxis] ===== CALLBACK _on_ylim_changed aufgerufen =====")
-            print(f"[DEBUG PlotSPLYaxis] Y-Limits geändert: {y_min:.3f} bis {y_max:.3f} (Range: {y_range:.3f} m)")
             
             # Berechne neue Ticks basierend auf sichtbarem Bereich
             # Die Schrittweite wird automatisch feiner bei kleinerem Bereich (Zoom-in)
             # und gröber bei größerem Bereich (Zoom-out)
             y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
-            print(f"[DEBUG PlotSPLYaxis] Neue Y-Ticks berechnet: {len(y_ticks)} Ticks, Schrittweite: {step:.3f} m")
             
-            # Temporär Callback deaktivieren, um Endlosschleife zu vermeiden
-            ax.callbacks.block('ylim_changed')
             ax.set_yticks(y_ticks)
-            print(f"[DEBUG PlotSPLYaxis] Y-Ticks gesetzt: {len(ax.get_yticks())} Ticks")
-            ax.callbacks.unblock('ylim_changed')
             
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
                 ax.figure.canvas.draw_idle()
-                print(f"[DEBUG PlotSPLYaxis] Canvas Redraw getriggert")
         except Exception as e:
-            print(f"[DEBUG PlotSPLYaxis] FEHLER in _on_ylim_changed: {e}")
+            pass
             import traceback
             traceback.print_exc()
+        finally:
+            self._updating_ticks = False
 
     def _on_xlim_changed(self, ax):
         """Wird aufgerufen, wenn sich die X-Achsen-Grenzen ändern (Zoom/Pan)"""
         if ax != self.ax:
             return
         
+        # Verhindere Endlosschleife
+        if self._updating_ticks:
+            return
+        
         try:
+            self._updating_ticks = True
             x_min, x_max = ax.get_xlim()
             # Berechne neue SPL-Ticks basierend auf sichtbarem Bereich
-            # Temporär Callback deaktivieren, um Endlosschleife zu vermeiden
-            ax.callbacks.block('xlim_changed')
             self._update_spl_ticks(x_min, x_max)
-            ax.callbacks.unblock('xlim_changed')
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
                 ax.figure.canvas.draw_idle()
         except Exception as e:
-            print(f"[PlotSPLYaxis] Fehler in _on_xlim_changed: {e}")
+            pass
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._updating_ticks = False
 
     def _update_spl_ticks(self, x_min, x_max):
         """Aktualisiert SPL-Ticks basierend auf sichtbarem Bereich"""

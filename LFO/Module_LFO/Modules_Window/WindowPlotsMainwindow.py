@@ -103,6 +103,9 @@ class DrawPlotsMainwindow(ModuleBase):
         # Erstelle Polar Pattern Plot Handler
         self.draw_polar_pattern = DrawPolarPattern(self.matplotlib_canvas_polar_pattern.ax, self.settings)
         
+        # Verbinde Mouse-Move-Events für Mauspositions-Anzeige
+        self._setup_mouse_position_tracking()
+        
         # HINWEIS: X/Y-Achsen und Polar-Plots sind bereits durch ihre __init__ Methoden
         # vollständig initialisiert und gezeichnet (initialize_empty_plots() + _apply_layout())
         
@@ -156,6 +159,9 @@ class DrawPlotsMainwindow(ModuleBase):
                 "PyVista und PyVistaQt sind nicht verfügbar. Bitte installieren, um den 3D-SPL-Plot zu verwenden."
             )
         self.draw_spl_plotter = DrawSPLPlot3D(self.main_window.ui.SPLPlot, self.settings, self.colorbar_ax)
+        # Setze main_window-Referenz für Mouse-Position-Tracking
+        if self.draw_spl_plotter:
+            self.draw_spl_plotter.main_window = self.main_window
         self.draw_spl_plotter.set_time_slider_callback(self._on_time_slider_changed)
         # Prüfe ob "SPL over time" aktiv ist
         plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
@@ -1157,4 +1163,346 @@ class DrawPlotsMainwindow(ModuleBase):
         """Debug-Ausgabe für horizontal_splitter_bottom (XAxis und PolarPattern)"""
         sizes = self.horizontal_splitter_bottom.sizes()
         print(f"🔧 DEBUG horizontal_splitter_bottom: setSizes({sizes})  # XAxis und PolarPattern")
+
+    def _setup_mouse_position_tracking(self):
+        """Richtet Mouse-Move-Events für alle Plots ein, um Mausposition anzuzeigen"""
+        # X-Achsen-Plot
+        self.matplotlib_canvas_xaxis.mpl_connect('motion_notify_event', self._on_mouse_move_xaxis)
+        self.matplotlib_canvas_xaxis.mpl_connect('axes_leave_event', self._on_axes_leave)
+        
+        # Y-Achsen-Plot
+        self.matplotlib_canvas_yaxis.mpl_connect('motion_notify_event', self._on_mouse_move_yaxis)
+        self.matplotlib_canvas_yaxis.mpl_connect('axes_leave_event', self._on_axes_leave)
+        
+        # Polar-Plot
+        self.matplotlib_canvas_polar_pattern.mpl_connect('motion_notify_event', self._on_mouse_move_polar)
+        self.matplotlib_canvas_polar_pattern.mpl_connect('axes_leave_event', self._on_axes_leave)
+        
+        # 3D-Plot (bereits vorhanden, erweitern)
+        if self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'widget'):
+            # Mouse-Tracking ist bereits aktiviert, wir müssen nur den Event-Filter erweitern
+            pass
+
+    def _on_axes_leave(self, event):
+        """Wird aufgerufen, wenn die Maus den Plot verlässt"""
+        self._clear_mouse_position()
+
+    def _on_mouse_move_xaxis(self, event):
+        """Handler für Mouse-Move im X-Achsen-Plot"""
+        if not event.inaxes or event.inaxes != self.matplotlib_canvas_xaxis.ax:
+            self._clear_mouse_position()
+            return
+        
+        try:
+            # X-Achse = Position (Meter), Y-Achse = SPL (dB)
+            x_pos = event.xdata  # Position in Metern
+            y_spl = event.ydata  # SPL in dB
+            
+            if x_pos is None or y_spl is None:
+                self._clear_mouse_position()
+                return
+            
+            # Hole genauen SPL-Wert aus den Daten durch Interpolation
+            spl_value = self._get_spl_from_xaxis_plot(x_pos)
+            
+            if spl_value is not None:
+                text = f"X-Axis:\nPos: {x_pos:.2f} m\nSPL: {spl_value:.1f} dB"
+            else:
+                text = f"X-Axis:\nPos: {x_pos:.2f} m\nSPL: {y_spl:.1f} dB"
+            
+            self._update_mouse_position(text)
+        except Exception as e:
+            pass
+
+    def _on_mouse_move_yaxis(self, event):
+        """Handler für Mouse-Move im Y-Achsen-Plot"""
+        if not event.inaxes or event.inaxes != self.matplotlib_canvas_yaxis.ax:
+            self._clear_mouse_position()
+            return
+        
+        try:
+            # Y-Achse = Position (Meter), X-Achse = SPL (dB) - invertiert
+            y_pos = event.ydata  # Position in Metern
+            x_spl = event.xdata  # SPL in dB (invertiert)
+            
+            if y_pos is None or x_spl is None:
+                self._clear_mouse_position()
+                return
+            
+            # Hole genauen SPL-Wert aus den Daten durch Interpolation
+            spl_value = self._get_spl_from_yaxis_plot(y_pos)
+            
+            if spl_value is not None:
+                text = f"Y-Axis:\nPos: {y_pos:.2f} m\nSPL: {spl_value:.1f} dB"
+            else:
+                text = f"Y-Axis:\nPos: {y_pos:.2f} m\nSPL: {x_spl:.1f} dB"
+            
+            self._update_mouse_position(text)
+        except Exception as e:
+            pass
+
+    def _on_mouse_move_polar(self, event):
+        """Handler für Mouse-Move im Polar-Plot"""
+        if not event.inaxes or event.inaxes != self.matplotlib_canvas_polar_pattern.ax:
+            self._clear_mouse_position()
+            return
+        
+        try:
+            # Polar-Koordinaten: theta (Winkel), r (Radius = SPL)
+            theta = event.xdata  # Winkel in Radiant (im Plot-Koordinatensystem)
+            r = event.ydata      # Radius = SPL in dB
+            
+            if theta is None or r is None:
+                self._clear_mouse_position()
+                return
+            
+            # Konvertiere Plot-Winkel zu angezeigtem Winkel
+            # Plot hat: 0° oben, 90° links, 180° unten, 270° rechts
+            # theta=0 (oben) → 0°, theta=π/2 (links) → 90°, theta=π (unten) → 180°, theta=3π/2 (rechts) → 270°
+            # Da set_theta_zero_location('N') und set_theta_direction(1) verwendet wird:
+            # theta im Plot entspricht direkt dem angezeigten Winkel
+            angle_deg = np.rad2deg(theta) % 360
+            
+            # Im Polar-Plot ist der Radius r direkt der SPL-Wert in dB
+            # Der Plot zeigt: r = 0 dB am äußeren Rand, r = -24 dB in der Mitte
+            # Der Event-Radius r ist bereits der korrekte SPL-Wert, der im Plot angezeigt wird
+            spl_value = float(r) if r is not None else None
+            
+            # Baue Text zusammen
+            if spl_value is not None:
+                text = f"Polar:\nAngle: {angle_deg:.1f}°\nSPL: {spl_value:.1f} dB"
+            else:
+                text = f"Polar:\nAngle: {angle_deg:.1f}°\nSPL: -- dB"
+            
+            self._update_mouse_position(text)
+        except Exception as e:
+            print(f"[DEBUG] Fehler in _on_mouse_move_polar: {e}")
+
+    def _get_spl_from_xaxis_plot(self, x_pos):
+        """Holt SPL-Wert aus X-Achsen-Plot durch Interpolation"""
+        try:
+            calculation_axes = getattr(self.container, 'calculation_axes', {})
+            if not calculation_axes:
+                return None
+            
+            # Suche nach aktiven Daten
+            for key, value in calculation_axes.items():
+                if value.get('show_in_plot', False):
+                    if 'x_data_xaxis' in value and 'y_data_xaxis' in value:
+                        x_data = np.array(value['x_data_xaxis'])  # SPL-Werte
+                        y_data = np.array(value['y_data_xaxis'])  # Positionen
+                        
+                        # Entferne NaN-Werte
+                        valid_mask = ~(np.isnan(x_data) | np.isnan(y_data))
+                        if not np.any(valid_mask):
+                            continue
+                        
+                        x_data_clean = x_data[valid_mask]
+                        y_data_clean = y_data[valid_mask]
+                        
+                        # Interpoliere SPL-Wert für gegebene Position
+                        if len(y_data_clean) > 1:
+                            # Sortiere nach Position
+                            sort_idx = np.argsort(y_data_clean)
+                            y_sorted = y_data_clean[sort_idx]
+                            x_sorted = x_data_clean[sort_idx]
+                            
+                            # Interpoliere
+                            if y_sorted[0] <= x_pos <= y_sorted[-1]:
+                                spl_value = np.interp(x_pos, y_sorted, x_sorted)
+                                return float(spl_value)
+            
+            return None
+        except Exception as e:
+            return None
+
+    def _get_spl_from_yaxis_plot(self, y_pos):
+        """Holt SPL-Wert aus Y-Achsen-Plot durch Interpolation"""
+        try:
+            calculation_axes = getattr(self.container, 'calculation_axes', {})
+            if not calculation_axes:
+                return None
+            
+            # Suche nach aktiven Daten
+            for key, value in calculation_axes.items():
+                if value.get('show_in_plot', False):
+                    if 'x_data_yaxis' in value and 'y_data_yaxis' in value:
+                        x_data = np.array(value['x_data_yaxis'])  # SPL-Werte
+                        y_data = np.array(value['y_data_yaxis'])  # Positionen
+                        
+                        # Entferne NaN-Werte
+                        valid_mask = ~(np.isnan(x_data) | np.isnan(y_data))
+                        if not np.any(valid_mask):
+                            continue
+                        
+                        x_data_clean = x_data[valid_mask]
+                        y_data_clean = y_data[valid_mask]
+                        
+                        # Interpoliere SPL-Wert für gegebene Position
+                        if len(y_data_clean) > 1:
+                            # Sortiere nach Position
+                            sort_idx = np.argsort(y_data_clean)
+                            y_sorted = y_data_clean[sort_idx]
+                            x_sorted = x_data_clean[sort_idx]
+                            
+                            # Interpoliere
+                            if y_sorted[0] <= y_pos <= y_sorted[-1]:
+                                spl_value = np.interp(y_pos, y_sorted, x_sorted)
+                                return float(spl_value)
+            
+            return None
+        except Exception as e:
+            return None
+
+    def _get_spl_from_polar_plot(self, angle_deg):
+        """Holt SPL-Wert aus Polar-Plot durch Interpolation"""
+        try:
+            if not hasattr(self.container, 'calculation_polar'):
+                return None
+            
+            polar_data = self.container.calculation_polar
+            if not polar_data:
+                return None
+            
+            # Polar-Daten haben die Struktur: {'angles': array, 'sound_field_p': {freq: array}}
+            if 'angles' not in polar_data or 'sound_field_p' not in polar_data:
+                return None
+            
+            angles = np.array(polar_data['angles'])
+            sound_field_p = polar_data['sound_field_p']
+            
+            if len(angles) == 0 or not sound_field_p:
+                return None
+            
+            # Verwende die erste verfügbare Frequenz (oder die aktivste)
+            # In der Praxis könnte man die aktuell angezeigte Frequenz verwenden
+            if not sound_field_p:
+                return None
+            
+            # Nimm die erste Frequenz (oder die aktivste)
+            first_freq = next(iter(sound_field_p.keys()))
+            values = np.array(sound_field_p[first_freq])
+            
+            # Die Werte in calculation_polar sind bereits normalisiert (0 dB Maximum, -24 bis 0 dB)
+            # und bereits in dB, daher keine weitere Konvertierung nötig
+            values_db = values
+            
+            # Entferne NaN-Werte
+            valid_mask = ~(np.isnan(angles) | np.isnan(values_db))
+            if not np.any(valid_mask):
+                return None
+            
+            angles_clean = angles[valid_mask]
+            values_clean = values_db[valid_mask]
+            
+            # Interpoliere SPL-Wert für gegebenen Winkel
+            if len(angles_clean) > 1:
+                # Normalisiere Winkel auf 0-360
+                angle_norm = angle_deg % 360
+                
+                # Normalisiere auch die Datenwinkel auf 0-360
+                angles_normalized = angles_clean % 360
+                
+                # Sortiere nach Winkel
+                sort_idx = np.argsort(angles_normalized)
+                angles_sorted = angles_normalized[sort_idx]
+                values_sorted = values_clean[sort_idx]
+                
+                # Interpoliere
+                if angles_sorted[0] <= angle_norm <= angles_sorted[-1]:
+                    # Normaler Fall: Winkel liegt im Bereich
+                    spl_value = np.interp(angle_norm, angles_sorted, values_sorted)
+                    return float(spl_value)
+                else:
+                    # Wrap-around: Winkel liegt außerhalb des Bereichs
+                    # Für zirkuläre Interpolation: Füge erste Werte am Ende hinzu und letzte am Anfang
+                    # Erweitere Arrays für Wrap-around
+                    angles_extended = np.concatenate([
+                        angles_sorted - 360,  # Werte von -360 bis 0
+                        angles_sorted,        # Werte von 0 bis 360
+                        angles_sorted + 360   # Werte von 360 bis 720
+                    ])
+                    values_extended = np.concatenate([
+                        values_sorted,
+                        values_sorted,
+                        values_sorted
+                    ])
+                    
+                    # Sortiere erweiterte Arrays
+                    sort_idx_ext = np.argsort(angles_extended)
+                    angles_ext_sorted = angles_extended[sort_idx_ext]
+                    values_ext_sorted = values_extended[sort_idx_ext]
+                    
+                    # Interpoliere im erweiterten Bereich
+                    if len(angles_ext_sorted) > 0:
+                        spl_value = np.interp(angle_norm, angles_ext_sorted, values_ext_sorted)
+                        return float(spl_value)
+            
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Fehler in _get_spl_from_polar_plot: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _get_spl_from_3d_plot(self, x_pos, y_pos):
+        """Holt SPL-Wert aus 3D-Plot durch Interpolation"""
+        try:
+            calculation_spl = getattr(self.container, 'calculation_spl', {})
+            if not calculation_spl:
+                return None
+            
+            sound_field_x = calculation_spl.get('sound_field_x')
+            sound_field_y = calculation_spl.get('sound_field_y')
+            sound_field_p = calculation_spl.get('sound_field_p')
+            
+            if not all([sound_field_x, sound_field_y, sound_field_p]):
+                return None
+            
+            x_array = np.array(sound_field_x)
+            y_array = np.array(sound_field_y)
+            p_array = np.array(sound_field_p)
+            
+            # Prüfe ob Position im gültigen Bereich liegt
+            if (x_array[0] <= x_pos <= x_array[-1] and 
+                y_array[0] <= y_pos <= y_array[-1]):
+                
+                # Interpoliere 2D
+                from scipy.interpolate import griddata
+                
+                # Erstelle Grid
+                X, Y = np.meshgrid(x_array, y_array)
+                points = np.column_stack([X.ravel(), Y.ravel()])
+                values = p_array.ravel()
+                
+                # Entferne NaN-Werte
+                valid_mask = ~np.isnan(values)
+                if not np.any(valid_mask):
+                    return None
+                
+                points_clean = points[valid_mask]
+                values_clean = values[valid_mask]
+                
+                # Interpoliere
+                spl_value = griddata(points_clean, values_clean, (x_pos, y_pos), method='linear')
+                
+                if not np.isnan(spl_value):
+                    # Konvertiere zu dB
+                    spl_db = self.functions.mag2db(np.abs(spl_value))
+                    return float(spl_db)
+            
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Fehler in _get_spl_from_3d_plot: {e}")
+            return None
+
+    def _update_mouse_position(self, text):
+        """Aktualisiert die Mauspositions-Anzeige"""
+        if hasattr(self.main_window.ui, 'mouse_position_label'):
+            self.main_window.ui.mouse_position_label.setText(text)
+
+    def _clear_mouse_position(self):
+        """Löscht die Mauspositions-Anzeige"""
+        if hasattr(self.main_window.ui, 'mouse_position_label'):
+            self.main_window.ui.mouse_position_label.setText("")
 

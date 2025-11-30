@@ -387,6 +387,9 @@ class SoundFieldCalculator(ModuleBase):
                     
                     if shadow_calculator_ready:
                         try:
+                            import time
+                            shadow_start_time = time.time()
+                            
                             # Prüfe Schatten nur für DIESEN Lautsprecher
                             # WICHTIG: Verwende akustische Positionen (source_position_calc_*)
                             # aus SpeakerPositionCalculator (berechnet in calculate_stack_center)
@@ -401,25 +404,58 @@ class SoundFieldCalculator(ModuleBase):
                             # Debug: Zeige verwendete akustische Position
                             if DEBUG_SOUNDFIELD:
                                 print(
-                                    f"[SoundFieldCalculator] Ray-Trace für Lautsprecher {isrc} ({speaker_name}): "
-                                    f"Akustische Position: ({source_pos_single[0][0]:.3f}, "
+                                    f"[SoundFieldCalculator] ===== Schatten-Berechnung für Lautsprecher {isrc} ({speaker_name}) ====="
+                                )
+                                print(
+                                    f"[SoundFieldCalculator] Akustische Position: ({source_pos_single[0][0]:.3f}, "
                                     f"{source_pos_single[0][1]:.3f}, {source_pos_single[0][2]:.3f}) m"
+                                )
+                                print(
+                                    f"[SoundFieldCalculator] Grid-Punkte: {len(grid_points)}, "
+                                    f"Enabled Surfaces: {len(enabled_surfaces)}"
                                 )
                             
                             # Berechne Schatten-Maske nur für diesen Lautsprecher
-                            shadow_mask_this_source = self._shadow_calculator.compute_shadow_mask(
+                            # 🎯 OPTIMIERUNG: Resolution-basierte Toleranz (nur bei kleineren Grids)
+                            # Punkte im Schatten, die innerhalb der Resolution zu sichtbaren Punkten liegen,
+                            # werden trotzdem berechnet (für bessere Darstellung)
+                            # ⚠️ PERFORMANCE: Nur bei Grids < 10000 Punkten aktivieren
+                            resolution = self.settings.resolution
+                            num_grid_points = len(grid_points)
+                            use_resolution_tolerance = num_grid_points < 10000
+                            
+                            if DEBUG_SOUNDFIELD:
+                                print(
+                                    f"[SoundFieldCalculator] Resolution-Toleranz: "
+                                    f"{'AKTIV' if use_resolution_tolerance else 'DEAKTIV'} "
+                                    f"(Grid-Punkte: {num_grid_points}, Threshold: 10000)"
+                                )
+                            
+                            # 🎯 Verwende compute_shadow_mask_for_calculation: Nur Punkte tief im Schatten werden deaktiviert
+                            # Randpunkte (mit benachbarten sichtbaren Punkten) werden trotzdem berechnet
+                            shadow_mask_this_source = self._shadow_calculator.compute_shadow_mask_for_calculation(
                                 grid_points,
                                 source_pos_single,
                                 enabled_surfaces,
+                                X_grid,
+                                Y_grid,
+                                tolerance=0.01,
                             )
+                            
+                            shadow_time = time.time() - shadow_start_time
                             
                             # Debug: Zeige wie viele Punkte im Schatten sind
                             if DEBUG_SOUNDFIELD:
                                 num_shadow = np.count_nonzero(shadow_mask_this_source)
+                                num_visible = len(grid_points) - num_shadow
                                 print(
-                                    f"[SoundFieldCalculator] Lautsprecher {isrc} ({speaker_name}): "
-                                    f"{num_shadow}/{len(grid_points)} Punkte im Schatten "
-                                    f"({100.0*num_shadow/len(grid_points):.1f}%)"
+                                    f"[SoundFieldCalculator] Ergebnis: {num_shadow}/{len(grid_points)} Punkte im Schatten "
+                                    f"({100.0*num_shadow/len(grid_points):.1f}%), "
+                                    f"{num_visible} sichtbar ({100.0*num_visible/len(grid_points):.1f}%)"
+                                )
+                                print(
+                                    f"[SoundFieldCalculator] Berechnungszeit: {shadow_time:.3f}s "
+                                    f"({len(grid_points)/shadow_time:.0f} Punkte/s)"
                                 )
                             
                             # Invertiere: True = sichtbar von diesem Lautsprecher, False = im Schatten

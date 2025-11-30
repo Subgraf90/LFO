@@ -86,6 +86,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.colorbar_ax = colorbar_ax
         self.settings = settings
         self.container = None  # Wird bei update_overlays gesetzt
+        self.main_window = None  # Wird bei Bedarf gesetzt
 
         self.plotter = QtInteractor(parent_widget)
         self.widget = self.plotter.interactor
@@ -188,9 +189,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     if time_diff < 0.3 and pos_diff:
                         is_double_click = True
                 
-                # Wenn es ein Klick war (kein Drag) und kein Doppelklick, prüfe ob eine Surface geklickt wurde
+                # Wenn es ein Klick war (kein Drag) und kein Doppelklick, prüfe ob ein Lautsprecher oder eine Surface geklickt wurde
                 if is_click and not is_double_click:
-                    self._handle_surface_click(click_pos)
+                    # Prüfe zuerst auf Lautsprecher-Klick, dann auf Surface-Klick
+                    speaker_clicked = self._handle_speaker_click(click_pos)
+                    if not speaker_clicked:
+                        self._handle_surface_click(click_pos)
                     # Speichere Zeitpunkt und Position für Doppelklick-Erkennung
                     self._last_click_time = time.time()
                     self._last_click_pos = QtCore.QPoint(click_pos)
@@ -229,6 +233,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self._pan_camera(delta.x(), delta.y())
                 event.accept()
                 return True
+            if etype == QtCore.QEvent.MouseMove and not self._pan_active and not self._rotate_active:
+                # Mouse-Move ohne Pan/Rotate - zeige Mausposition an
+                self._handle_mouse_move_3d(event.pos())
+                # Nicht akzeptieren, damit andere Handler auch reagieren können
             if etype == QtCore.QEvent.Leave:
                 if self._pan_active or self._rotate_active:
                     self._pan_active = False
@@ -239,6 +247,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     self._save_camera_state()
                     event.accept()
                     return True
+                # Leere Mauspositions-Anzeige beim Verlassen
+                if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
+                    self.main_window.ui.mouse_position_label.setText("")
             if etype == QtCore.QEvent.Wheel:
                 QtCore.QTimer.singleShot(0, self._save_camera_state)
         return QtCore.QObject.eventFilter(self, obj, event)
@@ -325,6 +336,438 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             import traceback
             traceback.print_exc()
     
+    def _handle_speaker_click(self, click_pos: QtCore.QPoint) -> bool:
+        """Behandelt einen Klick auf einen Lautsprecher im 3D-Plot und wählt das entsprechende Array im TreeWidget aus.
+        
+        Returns:
+            bool: True wenn ein Lautsprecher geklickt wurde, False sonst.
+        """
+        try:
+            renderer = self.plotter.renderer
+            if renderer is None:
+                print("[DEBUG] _handle_speaker_click: renderer is None")
+                return False
+            
+            # Verwende VTK CellPicker für präzises Picking
+            try:
+                from vtkmodules.vtkRenderingCore import vtkCellPicker, vtkWorldPointPicker
+                # Versuche zuerst CellPicker mit höherer Toleranz
+                picker = vtkCellPicker()
+                picker.SetTolerance(0.05)  # Erhöhte Toleranz für besseres Picking
+                
+                size = self.widget.size()
+                if size.width() > 0 and size.height() > 0:
+                    # VTK CellPicker verwendet Display-Koordinaten (Pixel-Koordinaten)
+                    # Qt-Koordinaten sind bereits in Pixel
+                    display_x = float(click_pos.x())
+                    display_y = float(size.height() - click_pos.y())  # VTK Y ist invertiert
+                    
+                    print(f"[DEBUG] _handle_speaker_click: display_x={display_x}, display_y={display_y}, size={size.width()}x{size.height()}")
+                    
+                    picker.Pick(display_x, display_y, 0.0, renderer)
+                    picked_actor = picker.GetActor()
+                    
+                    print(f"[DEBUG] _handle_speaker_click: picked_actor = {picked_actor}")
+                    
+                    # Falls CellPicker nichts findet, versuche alle Actors im Renderer zu durchsuchen
+                    # und den nächstgelegenen zu finden
+                    if picked_actor is None:
+                        print(f"[DEBUG] _handle_speaker_click: CellPicker found nothing, trying to find closest actor")
+                        picked_point = picker.GetPickPosition()
+                        print(f"[DEBUG] _handle_speaker_click: picked_point = {picked_point}")
+                        
+                        # Durchsuche alle Overlay-Actors (die mit "overlay_" beginnen)
+                        min_dist = float('inf')
+                        closest_actor = None
+                        for name, actor in renderer.actors.items():
+                            if isinstance(name, str) and name.startswith("overlay_"):
+                                # Prüfe ob Actor Bounds hat
+                                if hasattr(actor, 'GetBounds'):
+                                    bounds = actor.GetBounds()
+                                    if bounds and len(bounds) >= 6:
+                                        # Berechne Distanz zum Mittelpunkt
+                                        center_x = (bounds[0] + bounds[1]) / 2.0
+                                        center_y = (bounds[2] + bounds[3]) / 2.0
+                                        center_z = (bounds[4] + bounds[5]) / 2.0
+                                        
+                                        if picked_point and len(picked_point) >= 3:
+                                            dist = ((picked_point[0] - center_x)**2 + 
+                                                   (picked_point[1] - center_y)**2 + 
+                                                   (picked_point[2] - center_z)**2)**0.5
+                                            if dist < min_dist:
+                                                min_dist = dist
+                                                closest_actor = actor
+                                                print(f"[DEBUG] _handle_speaker_click: Found closer actor: {name}, dist={dist}")
+                        
+                        if closest_actor and min_dist < 5.0:  # Max 5 Meter Distanz
+                            picked_actor = closest_actor
+                            print(f"[DEBUG] _handle_speaker_click: Using closest actor, dist={min_dist}")
+                    
+                    if picked_actor is not None:
+                        # Hole Actor-Name
+                        actor_name = None
+                        for name, actor in renderer.actors.items():
+                            if actor == picked_actor:
+                                actor_name = name
+                                break
+                        
+                        print(f"[DEBUG] _handle_speaker_click: actor_name = {actor_name}")
+                        
+                        # Prüfe ob es ein Speaker-Actor ist (beginnt mit "overlay_" und ist in category 'speakers')
+                        if actor_name and isinstance(actor_name, str) and actor_name.startswith("overlay_"):
+                            print(f"[DEBUG] _handle_speaker_click: Found overlay actor: {actor_name}")
+                            # Hole Overlay-Helper und prüfe ob Actor in speakers category ist
+                            if hasattr(self, 'overlay_helper'):
+                                print(f"[DEBUG] _handle_speaker_click: overlay_helper exists")
+                                speaker_info = self.overlay_helper._get_speaker_info_from_actor(picked_actor, actor_name)
+                                print(f"[DEBUG] _handle_speaker_click: speaker_info = {speaker_info}")
+                                if speaker_info:
+                                    array_id, speaker_index = speaker_info
+                                    print(f"[DEBUG] _handle_speaker_click: Calling _select_speaker_in_treewidget with array_id={array_id}, speaker_index={speaker_index}")
+                                    self._select_speaker_in_treewidget(array_id, speaker_index)
+                                    return True
+                                else:
+                                    print(f"[DEBUG] _handle_speaker_click: speaker_info is None")
+                            else:
+                                print(f"[DEBUG] _handle_speaker_click: overlay_helper does not exist")
+                        else:
+                            print(f"[DEBUG] _handle_speaker_click: actor_name does not start with 'overlay_' or is not a string")
+                    else:
+                        print(f"[DEBUG] _handle_speaker_click: picked_actor is None")
+            except ImportError as e:
+                print(f"[DEBUG] _handle_speaker_click: ImportError: {e}")
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                print(f"[DEBUG] _handle_speaker_click: Exception: {e}")
+                traceback.print_exc()
+            
+            return False
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            print(f"[DEBUG] _handle_speaker_click: Outer Exception: {e}")
+            traceback.print_exc()
+            return False
+    
+    def _select_speaker_in_treewidget(self, array_id: str, speaker_index: int = None) -> None:
+        """Wählt ein Speaker-Array im Sources-TreeWidget aus und wechselt zum Sources Widget."""
+        try:
+            print(f"[DEBUG] _select_speaker_in_treewidget: array_id={array_id}, speaker_index={speaker_index}")
+            
+            # Finde das Main-Window
+            parent = self.parent_widget
+            main_window = None
+            
+            depth = 0
+            while parent is not None and depth < 15:
+                if hasattr(parent, 'sources_instance'):
+                    main_window = parent
+                    print(f"[DEBUG] _select_speaker_in_treewidget: Found main_window via sources_instance")
+                    break
+                
+                next_parent = None
+                if hasattr(parent, 'parent'):
+                    next_parent = parent.parent()
+                elif hasattr(parent, 'parentWidget'):
+                    next_parent = parent.parentWidget()
+                elif hasattr(parent, 'parent_widget'):
+                    next_parent = parent.parent_widget
+                elif hasattr(parent, 'window'):
+                    next_parent = parent.window()
+                
+                if next_parent == parent:
+                    break
+                parent = next_parent
+                depth += 1
+            
+            if main_window is None:
+                # Versuche alternativen Weg
+                parent = self.parent_widget
+                while parent is not None:
+                    if isinstance(parent, QtWidgets.QMainWindow):
+                        if hasattr(parent, 'sources_instance'):
+                            main_window = parent
+                            print(f"[DEBUG] _select_speaker_in_treewidget: Found main_window via QMainWindow")
+                            break
+                    if hasattr(parent, 'parent'):
+                        parent = parent.parent()
+                    elif hasattr(parent, 'parentWidget'):
+                        parent = parent.parentWidget()
+                    else:
+                        break
+                
+                if main_window is None:
+                    print(f"[DEBUG] _select_speaker_in_treewidget: main_window is None")
+                    return
+            
+            # Wechsle zum Sources Widget (falls im Surface Widget)
+            if hasattr(main_window, 'sources_instance') and hasattr(main_window, 'surface_manager'):
+                sources_dock = getattr(main_window.sources_instance, 'sources_dockWidget', None)
+                if sources_dock:
+                    sources_dock.raise_()  # Zeige Sources Widget
+                    print(f"[DEBUG] _select_speaker_in_treewidget: Raised sources_dock")
+            
+            # Hole Sources-Instanz
+            sources_instance = main_window.sources_instance
+            if not sources_instance:
+                print(f"[DEBUG] _select_speaker_in_treewidget: sources_instance is None")
+                return
+            if not hasattr(sources_instance, 'sources_tree_widget'):
+                print(f"[DEBUG] _select_speaker_in_treewidget: sources_instance has no sources_tree_widget")
+                return
+            
+            # Finde Array-Item im TreeWidget
+            tree_widget = sources_instance.sources_tree_widget
+            if tree_widget is None:
+                print(f"[DEBUG] _select_speaker_in_treewidget: tree_widget is None")
+                return
+            
+            # Suche nach Array-Item
+            def find_array_item(parent_item=None):
+                if parent_item is None:
+                    for i in range(tree_widget.topLevelItemCount()):
+                        item = tree_widget.topLevelItem(i)
+                        found = find_array_item(item)
+                        if found:
+                            return found
+                else:
+                    item_array_id = parent_item.data(0, Qt.UserRole)
+                    print(f"[DEBUG] _select_speaker_in_treewidget: Comparing item_array_id={item_array_id} with array_id={array_id}")
+                    if item_array_id == array_id:
+                        return parent_item
+                    for i in range(parent_item.childCount()):
+                        child = parent_item.child(i)
+                        found = find_array_item(child)
+                        if found:
+                            return found
+                return None
+            
+            item = find_array_item()
+            print(f"[DEBUG] _select_speaker_in_treewidget: Found item = {item}")
+            if item is not None:
+                # Blockiere Signale während der programmatischen Auswahl
+                tree_widget.blockSignals(True)
+                try:
+                    tree_widget.setCurrentItem(item)
+                    tree_widget.scrollToItem(item)
+                    print(f"[DEBUG] _select_speaker_in_treewidget: Set current item")
+                finally:
+                    tree_widget.blockSignals(False)
+                
+                # Setze Highlight-IDs für rote Umrandung
+                # Setze sowohl einzelne ID (Rückwärtskompatibilität) als auch Liste
+                setattr(self.settings, "active_speaker_array_highlight_id", array_id)
+                setattr(self.settings, "active_speaker_array_highlight_ids", [str(array_id)])
+                if speaker_index is not None:
+                    setattr(self.settings, "active_speaker_highlight_indices", [(array_id, int(speaker_index))])
+                else:
+                    setattr(self.settings, "active_speaker_highlight_indices", [])
+                print(f"[DEBUG] _select_speaker_in_treewidget: Set highlight IDs")
+                
+                # Aktualisiere Overlays für rote Umrandung
+                if hasattr(main_window, "draw_plots") and hasattr(main_window.draw_plots, "draw_spl_plotter"):
+                    draw_spl = main_window.draw_plots.draw_spl_plotter
+                    if hasattr(draw_spl, "update_overlays"):
+                        print(f"[DEBUG] _select_speaker_in_treewidget: Calling update_overlays")
+                        draw_spl.update_overlays(self.settings, self.container)
+            else:
+                print(f"[DEBUG] _select_speaker_in_treewidget: Item not found in tree")
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            print(f"[DEBUG] _select_speaker_in_treewidget: Exception: {e}")
+            traceback.print_exc()
+    
+    def _handle_mouse_move_3d(self, mouse_pos: QtCore.QPoint) -> None:
+        """Behandelt Mouse-Move im 3D-Plot und zeigt Mausposition an"""
+        try:
+            renderer = self.plotter.renderer
+            if renderer is None:
+                return
+            
+            # Hole 3D-Koordinaten der Mausposition
+            size = self.widget.size()
+            if size.width() <= 0 or size.height() <= 0:
+                return
+            
+            x_norm = mouse_pos.x() / size.width()
+            y_norm = 1.0 - (mouse_pos.y() / size.height())  # VTK Y ist invertiert
+            
+            # Konvertiere Display-Koordinaten zu World-Koordinaten
+            renderer.SetDisplayPoint(x_norm * renderer.GetSize()[0], y_norm * renderer.GetSize()[1], 0.0)
+            renderer.DisplayToWorld()
+            world_point_near = renderer.GetWorldPoint()
+            
+            renderer.SetDisplayPoint(x_norm * renderer.GetSize()[0], y_norm * renderer.GetSize()[1], 1.0)
+            renderer.DisplayToWorld()
+            world_point_far = renderer.GetWorldPoint()
+            
+            if world_point_near is None or world_point_far is None or len(world_point_near) < 4:
+                return
+            
+            # Berechne Schnittpunkt mit Z=0 Ebene
+            if abs(world_point_near[3]) > 1e-6 and abs(world_point_far[3]) > 1e-6:
+                ray_start = np.array([
+                    world_point_near[0] / world_point_near[3],
+                    world_point_near[1] / world_point_near[3],
+                    world_point_near[2] / world_point_near[3]
+                ])
+                ray_end = np.array([
+                    world_point_far[0] / world_point_far[3],
+                    world_point_far[1] / world_point_far[3],
+                    world_point_far[2] / world_point_far[3]
+                ])
+                
+                ray_dir = ray_end - ray_start
+                if abs(ray_dir[2]) > 1e-6:
+                    t = -ray_start[2] / ray_dir[2]
+                    intersection = ray_start + t * ray_dir
+                    x_pos = float(intersection[0])
+                    y_pos = float(intersection[1])
+                    z_pos = float(intersection[2])  # Z-Koordinate
+                    
+                    # Hole SPL-Wert und Z-Daten aus calculation_spl
+                    if self.container:
+                        spl_value = self._get_spl_from_3d_data(x_pos, y_pos)
+                        z_data, _ = self._get_z_and_spl_data_from_container(x_pos, y_pos)
+                        
+                        # Verwende Z-Daten aus Container falls verfügbar, sonst z_pos vom Schnittpunkt
+                        z_display = z_data if z_data is not None else z_pos
+                        
+                        # Baue Text zusammen
+                        text = f"3D-Plot:\nX: {x_pos:.2f} m\nY: {y_pos:.2f} m\nZ: {z_display:.2f} m"
+                        
+                        # Füge SPL hinzu falls verfügbar
+                        if spl_value is not None:
+                            text += f"\nSPL: {spl_value:.1f} dB"
+                        
+                        # Aktualisiere Label über main_window
+                        if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
+                            self.main_window.ui.mouse_position_label.setText(text)
+                    else:
+                        # Kein Container vorhanden - zeige nur Position
+                        text = f"3D-Plot:\nX: {x_pos:.2f} m\nY: {y_pos:.2f} m\nZ: {z_pos:.2f} m"
+                        if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
+                            self.main_window.ui.mouse_position_label.setText(text)
+        except Exception as e:
+            # Fehler ignorieren (nicht kritisch)
+            pass
+
+    def _get_spl_from_3d_data(self, x_pos, y_pos):
+        """Holt SPL-Wert aus 3D-Daten durch Interpolation"""
+        try:
+            if not self.container:
+                return None
+            
+            calculation_spl = getattr(self.container, 'calculation_spl', {})
+            if not calculation_spl:
+                return None
+            
+            # Hole Daten aus calculation_spl
+            sound_field_x = calculation_spl.get('sound_field_x')
+            sound_field_y = calculation_spl.get('sound_field_y')
+            sound_field_p = calculation_spl.get('sound_field_p')
+            
+            if not all([sound_field_x, sound_field_y, sound_field_p]):
+                return None
+            
+            x_array = np.array(sound_field_x)
+            y_array = np.array(sound_field_y)
+            p_array = np.array(sound_field_p)
+            
+            # Prüfe ob Position im gültigen Bereich liegt
+            if (x_array[0] <= x_pos <= x_array[-1] and 
+                y_array[0] <= y_pos <= y_array[-1]):
+                
+                # Interpoliere 2D
+                from scipy.interpolate import griddata
+                
+                # Erstelle Grid
+                X, Y = np.meshgrid(x_array, y_array)
+                points = np.column_stack([X.ravel(), Y.ravel()])
+                values = p_array.ravel()
+                
+                # Entferne NaN-Werte
+                valid_mask = ~np.isnan(values)
+                if not np.any(valid_mask):
+                    return None
+                
+                points_clean = points[valid_mask]
+                values_clean = values[valid_mask]
+                
+                # Interpoliere
+                spl_value = griddata(points_clean, values_clean, (x_pos, y_pos), method='linear')
+                
+                if not np.isnan(spl_value):
+                    # Konvertiere zu dB
+                    spl_db = self.functions.mag2db(np.abs(spl_value))
+                    return float(spl_db)
+            
+            return None
+        except Exception as e:
+            return None
+
+    def _get_z_and_spl_data_from_container(self, x_pos, y_pos):
+        """Holt Z-Daten und SPL-Daten aus dem Container für die angegebene Position"""
+        try:
+            if not self.container:
+                return None, None
+            
+            calculation_spl = getattr(self.container, 'calculation_spl', {})
+            if not calculation_spl:
+                return None, None
+            
+            # Hole Daten aus calculation_spl
+            sound_field_x = calculation_spl.get('sound_field_x')
+            sound_field_y = calculation_spl.get('sound_field_y')
+            sound_field_z = calculation_spl.get('sound_field_z')
+            sound_field_p = calculation_spl.get('sound_field_p')
+            
+            if not all([sound_field_x, sound_field_y, sound_field_p]):
+                return None, None
+            
+            x_array = np.array(sound_field_x)
+            y_array = np.array(sound_field_y)
+            p_array = np.array(sound_field_p)
+            
+            # Prüfe ob Position im gültigen Bereich liegt
+            if not (x_array[0] <= x_pos <= x_array[-1] and 
+                    y_array[0] <= y_pos <= y_array[-1]):
+                return None, None
+            
+            # Finde die nächsten Indizes
+            x_idx = np.argmin(np.abs(x_array - x_pos))
+            y_idx = np.argmin(np.abs(y_array - y_pos))
+            
+            # Hole Z-Daten falls vorhanden
+            z_data = None
+            if sound_field_z is not None:
+                z_array = np.array(sound_field_z)
+                if z_array.ndim == 2 and z_array.shape[0] > y_idx and z_array.shape[1] > x_idx:
+                    z_data = float(z_array[y_idx, x_idx])
+                elif z_array.size == p_array.size:
+                    # Z-Daten als 1D-Array, reshape wenn möglich
+                    try:
+                        z_reshaped = z_array.reshape(p_array.shape)
+                        z_data = float(z_reshaped[y_idx, x_idx] if p_array.ndim == 2 else z_reshaped[y_idx * len(x_array) + x_idx])
+                    except:
+                        pass
+            
+            # Hole SPL-Daten
+            spl_data = None
+            if p_array.ndim == 2 and p_array.shape[0] > y_idx and p_array.shape[1] > x_idx:
+                p_value = p_array[y_idx, x_idx]
+                if not np.isnan(p_value):
+                    spl_data = float(self.functions.mag2db(np.abs(p_value)))
+            elif p_array.ndim == 1:
+                idx = y_idx * len(x_array) + x_idx
+                if idx < len(p_array):
+                    p_value = p_array[idx]
+                    if not np.isnan(p_value):
+                        spl_data = float(self.functions.mag2db(np.abs(p_value)))
+            
+            return z_data, spl_data
+        except Exception as e:
+            return None, None
+
     def _handle_spl_surface_click(self, click_pos: QtCore.QPoint) -> None:
         """Behandelt einen Klick auf die SPL-Surface (für enabled Surfaces)."""
         try:
@@ -679,6 +1122,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 
                 if main_window is None:
                     return
+            
+            # Wechsle zum Surface Widget (falls im Sources Widget)
+            if hasattr(main_window, 'sources_instance') and hasattr(main_window, 'surface_manager'):
+                surface_dock = getattr(main_window.surface_manager, 'surface_dockWidget', None)
+                if surface_dock:
+                    surface_dock.raise_()  # Zeige Surface Widget
             
             # Hole das SurfaceDockWidget über surface_manager
             surface_manager = main_window.surface_manager
@@ -1209,6 +1658,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 t_cabinet_lookup = time.perf_counter()
                 self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
                 t_speakers_end = time.perf_counter()
+            else:
+                # Auch wenn sich die Speaker-Definitionen nicht geändert haben,
+                # müssen wir die Highlights aktualisieren, falls sich die Highlight-IDs geändert haben
+                if hasattr(self.overlay_helper, '_update_speaker_highlights'):
+                    self.overlay_helper._update_speaker_highlights(settings)
+                    # Render-Update triggern, damit Änderungen sichtbar werden
+                    try:
+                        self.plotter.render()
+                    except Exception:  # noqa: BLE001
+                        pass
             if 'impulse' in categories_to_refresh:
                 t_impulse_start = time.perf_counter()
                 self.overlay_helper.draw_impulse_points(settings)
@@ -3188,6 +3647,28 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     )
                 )
         speakers_signature_tuple = tuple(speakers_signature)
+        
+        # Füge Highlight-IDs zur Signatur hinzu, damit Meshes neu erstellt werden, wenn Highlights sich ändern
+        highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
+        highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
+        highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
+        
+        # Konvertiere zu Liste von Strings
+        if highlight_array_ids:
+            highlight_array_ids_list = [str(aid) for aid in highlight_array_ids]
+        elif highlight_array_id:
+            highlight_array_ids_list = [str(highlight_array_id)]
+        else:
+            highlight_array_ids_list = []
+        
+        if isinstance(highlight_indices, (list, tuple, set)):
+            highlight_indices_tuple = tuple(sorted((str(aid), int(idx)) for aid, idx in highlight_indices))
+        else:
+            highlight_indices_tuple = tuple()
+        
+        # Sortiere Array-IDs für konsistente Signatur
+        highlight_array_ids_tuple = tuple(sorted(highlight_array_ids_list))
+        speakers_signature_with_highlights = (speakers_signature_tuple, highlight_array_ids_tuple, highlight_indices_tuple)
 
         impulse_points = getattr(settings, 'impulse_points', []) or []
         impulse_signature: List[tuple] = []
@@ -3273,7 +3754,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         
         result = {
             'axis': axis_signature,
-            'speakers': speakers_signature_tuple,
+            'speakers': speakers_signature_with_highlights,  # Enthält Highlight-IDs für rote Umrandung
             'impulse': impulse_signature_tuple,
             'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id und has_speaker_arrays
         }

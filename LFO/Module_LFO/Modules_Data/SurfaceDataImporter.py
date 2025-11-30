@@ -30,11 +30,12 @@ class SurfaceDataImporter:
 
     FILE_FILTER = "DXF-Dateien (*.dxf);;Surface-Text (*.txt)"
 
-    def __init__(self, parent_widget, settings, container, group_manager=None):
+    def __init__(self, parent_widget, settings, container, group_manager=None, main_window=None):
         self.parent_widget = parent_widget
         self.settings = settings
         self._container = container  # Reserviert für künftige Integrationen
         self.group_manager = group_manager
+        self.main_window = main_window  # Für Fortschrittsanzeige
         self._group_cache: Dict[str, str] = {}
         self._block_tag_map: Dict[str, str] = {}  # Mapping von Block-Namen zu Tags
         self._block_instance_counters: Counter[str] = Counter()
@@ -57,8 +58,158 @@ class SurfaceDataImporter:
             return None
 
         path = Path(file_path)
-
         suffix = path.suffix.lower()
+
+        # Verwende Fortschrittsanzeige, falls main_window verfügbar ist
+        if self.main_window and hasattr(self.main_window, 'run_tasks_with_progress'):
+            try:
+                return self._execute_with_progress(path, suffix)
+            except Exception as exc:
+                QMessageBox.warning(
+                    self.parent_widget,
+                    "Surface-Import fehlgeschlagen",
+                    f"Fehler beim Importieren:\n{exc}",
+                )
+                return False
+        else:
+            # Fallback ohne Fortschrittsanzeige (für Kompatibilität)
+            return self._execute_without_progress(path, suffix)
+
+    def _execute_with_progress(self, path: Path, suffix: str) -> bool | None:
+        """Führt den Import mit Fortschrittsanzeige durch"""
+        from Module_LFO.Modules_Init.Progress import ProgressCancelled
+        
+        surfaces = {}
+        imported_count = 0
+        
+        try:
+            # ZUERST: Alle Dialoge abarbeiten, BEVOR die Fortschrittsanzeige startet
+            should_clear = False
+            
+            if suffix == ".dxf":
+                # Prüfe zuerst, ob ezdxf verfügbar ist (ohne Dialog)
+                try:
+                    import importlib
+                    importlib.import_module("ezdxf")
+                except ImportError:
+                    QMessageBox.warning(
+                        self.parent_widget,
+                        "DXF-Import nicht möglich",
+                        "Für den Import von DXF-Dateien wird das Paket 'ezdxf' benötigt.\n"
+                        "Bitte installieren Sie es z. B. mit 'pip install ezdxf'.",
+                    )
+                    return False
+                
+                # Lade DXF-Datei VOR dem Dialog (um zu wissen, ob Surfaces vorhanden sind)
+                try:
+                    surfaces = self._load_dxf_surfaces(path)
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self.parent_widget,
+                        "DXF-Import fehlgeschlagen",
+                        f"Die DXF-Datei konnte nicht verarbeitet werden:\n{exc}",
+                    )
+                    return False
+                
+                # Jetzt Dialog anzeigen (wenn Surfaces vorhanden)
+                if surfaces and self._ask_clear_existing_surfaces():
+                    should_clear = True
+                    
+            elif suffix == ".txt":
+                # Dialog VOR dem Laden anzeigen
+                if self._ask_clear_existing_surfaces():
+                    should_clear = True
+                    
+            # Lösche existierende Surfaces, falls gewünscht (VOR Fortschrittsanzeige)
+            if should_clear:
+                self._clear_existing_surfaces()
+            
+            # JETZT: Fortschrittsanzeige starten für die eigentlichen Import-Operationen
+            tasks = []
+            
+            if suffix == ".dxf":
+                # Surfaces wurden bereits geladen (ohne Fortschrittsanzeige, um Dialog zu zeigen)
+                # Jetzt nur noch speichern mit Fortschrittsanzeige
+                pass  # Speichern wird als Task hinzugefügt
+                
+            elif suffix == ".txt":
+                # Task: TXT-Datei laden
+                def load_txt_task():
+                    nonlocal surfaces
+                    try:
+                        surfaces = self._load_txt_surfaces(path)
+                    except ValueError as exc:
+                        QMessageBox.warning(
+                            self.parent_widget,
+                            "Surface-Import fehlgeschlagen",
+                            f"Die TXT-Datei konnte nicht verarbeitet werden:\n{exc}",
+                        )
+                        raise
+                
+                tasks.append(("TXT-Datei laden", load_txt_task))
+                
+            else:
+                # Task: JSON/andere Datei laden
+                def load_payload_task():
+                    nonlocal surfaces
+                    try:
+                        payload = self._load_payload(path)
+                    except (OSError, ValueError) as exc:
+                        QMessageBox.warning(
+                            self.parent_widget,
+                            "Surface-Import fehlgeschlagen",
+                            f"Die Datei konnte nicht geladen werden:\n{exc}",
+                        )
+                        raise
+                    surfaces = self._parse_surfaces(payload)
+                
+                tasks.append(("Datei laden", load_payload_task))
+            
+            # Task: Surfaces speichern
+            def store_task():
+                nonlocal imported_count
+                if not surfaces:
+                    QMessageBox.information(
+                        self.parent_widget,
+                        "No valid surfaces",
+                        "The selected file does not contain any valid surface definitions.",
+                    )
+                    raise ValueError("No valid surfaces found")
+                # Prüfe auf Abbruch vor dem Speichern
+                if hasattr(self.main_window, '_current_progress_session') and self.main_window._current_progress_session:
+                    if self.main_window._current_progress_session.is_cancelled():
+                        raise ProgressCancelled("Import cancelled by user")
+                imported_count = self._store_surfaces(surfaces)
+            
+            tasks.append(("Surfaces speichern", store_task))
+            
+            # Führe Tasks mit Fortschrittsanzeige aus
+            # (tasks enthält immer mindestens "Surfaces speichern")
+            self.main_window.run_tasks_with_progress("Surface-Daten importieren", tasks)
+            
+            # Erfolgsmeldung
+            logger = logging.getLogger(__name__)
+            msg = f"Surface-Import ({suffix}): {imported_count} Surfaces erfolgreich importiert"
+            print(msg)
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(msg)
+            
+            QMessageBox.information(
+                self.parent_widget,
+                "Surface Import Successful",
+                f"{imported_count} surface(s) imported successfully.",
+            )
+            return True
+            
+        except ProgressCancelled:
+            # Benutzer hat abgebrochen
+            return None
+        except Exception as exc:
+            # Fehler wurde bereits in den Tasks behandelt
+            raise
+
+    def _execute_without_progress(self, path: Path, suffix: str) -> bool | None:
+        """Führt den Import ohne Fortschrittsanzeige durch (Fallback)"""
         import time
         t_start = time.perf_counter()
 
@@ -331,8 +482,15 @@ class SurfaceDataImporter:
         return label
 
     def _store_surfaces(self, surfaces: Dict[str, SurfaceDefinition]) -> int:
+        from Module_LFO.Modules_Init.Progress import ProgressCancelled
+        
         imported = 0
         for surface_id, surface in surfaces.items():
+            # Prüfe auf Abbruch während der Schleife
+            if self.main_window and hasattr(self.main_window, '_current_progress_session') and self.main_window._current_progress_session:
+                if self.main_window._current_progress_session.is_cancelled():
+                    raise ProgressCancelled("Import cancelled by user")
+            
             # Stelle sicher, dass imported Surfaces immer enabled=False haben
             surface.enabled = False
             

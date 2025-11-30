@@ -391,6 +391,32 @@ class UISurfaceManager(ModuleBase):
             group_id = surface.group_id if isinstance(surface, SurfaceDefinition) else surface.get('group_id')
             logger.debug("  Surface %s (%s) -> group %s", surface_id, name, group_id)
         
+        # Verwende Fortschrittsanzeige, falls main_window verfügbar ist und viele Surfaces vorhanden sind
+        use_progress = (
+            hasattr(self, 'main_window') and 
+            self.main_window and 
+            hasattr(self.main_window, 'run_tasks_with_progress') and
+            len(surface_store) > 10  # Nur bei vielen Surfaces Fortschrittsanzeige verwenden
+        )
+        
+        if use_progress:
+            try:
+                self._load_surfaces_with_progress(default_surface_id, surface_store, root_group_id)
+            except Exception as exc:
+                logger.error(f"Fehler beim Laden der Surfaces mit Fortschrittsanzeige: {exc}")
+                # Fallback: Laden ohne Fortschrittsanzeige
+                self._load_surfaces_without_progress(default_surface_id, surface_store, root_group_id)
+        else:
+            self._load_surfaces_without_progress(default_surface_id, surface_store, root_group_id)
+        
+        self.surface_tree_widget.expandAll()
+        self.validate_all_checkboxes()
+        self.surface_tree_widget.blockSignals(False)
+        # Nach dem Laden keine Auswahl markieren → Highlight-Liste leeren
+        setattr(self.settings, "active_surface_highlight_ids", [])
+    
+    def _load_surfaces_without_progress(self, default_surface_id, surface_store, root_group_id):
+        """Lädt Surfaces ohne Fortschrittsanzeige (Fallback)"""
         # Lade Default-Fläche als Top-Level-Item ganz oben (wenn sie existiert)
         if default_surface_id in surface_store:
             default_surface = surface_store[default_surface_id]
@@ -446,12 +472,84 @@ class UISurfaceManager(ModuleBase):
                 insert_index = 1 if default_surface_id in surface_store else 0
                 self.surface_tree_widget.insertTopLevelItem(insert_index, surface_item)
                 self.ensure_surface_checkboxes(surface_item)
+    
+    def _load_surfaces_with_progress(self, default_surface_id, surface_store, root_group_id):
+        """Lädt Surfaces mit Fortschrittsanzeige"""
+        from Module_LFO.Modules_Init.Progress import ProgressCancelled
         
-        self.surface_tree_widget.expandAll()
-        self.validate_all_checkboxes()
-        self.surface_tree_widget.blockSignals(False)
-        # Nach dem Laden keine Auswahl markieren → Highlight-Liste leeren
-        setattr(self.settings, "active_surface_highlight_ids", [])
+        tasks = []
+        
+        # Task 1: Default-Fläche laden
+        def load_default_task():
+            if default_surface_id in surface_store:
+                default_surface = surface_store[default_surface_id]
+                # Entferne Default-Fläche aus Gruppe, falls sie in einer ist
+                if isinstance(default_surface, SurfaceDefinition):
+                    if default_surface.group_id:
+                        self._group_controller.detach_surface(default_surface_id)
+                        default_surface.group_id = None
+                else:
+                    if default_surface.get('group_id'):
+                        self._group_controller.detach_surface(default_surface_id)
+                        default_surface['group_id'] = None
+                
+                # Füge Default-Fläche als Top-Level-Item ganz oben hinzu
+                default_item = self._create_surface_item(default_surface_id, default_surface)
+                self.surface_tree_widget.insertTopLevelItem(0, default_item)
+                self.ensure_surface_checkboxes(default_item)
+        
+        tasks.append(("Default-Fläche laden", load_default_task))
+        
+        # Task 2: Gruppen laden
+        def load_groups_task():
+            group_store = self._group_controller.list_groups()
+            # Lade alle Gruppen außer der Root-Gruppe
+            for group_id, group in group_store.items():
+                if group_id != root_group_id:
+                    # Nur Top-Level-Gruppen (ohne Parent oder Parent ist Root)
+                    if not group.parent_id or group.parent_id == root_group_id:
+                        self._populate_group_tree(None, group)
+        
+        tasks.append(("Gruppen laden", load_groups_task))
+        
+        # Task 3: Surfaces ohne Gruppe laden
+        def load_surfaces_task():
+            for surface_id, surface in surface_store.items():
+                # Überspringe Default-Fläche, die bereits oben hinzugefügt wurde
+                if surface_id == default_surface_id:
+                    continue
+                
+                # Prüfe, ob Surface eine Gruppe hat
+                if isinstance(surface, SurfaceDefinition):
+                    group_id = surface.group_id
+                else:
+                    group_id = surface.get('group_id')
+                
+                # Wenn keine Gruppe oder Root-Gruppe, zeige als Top-Level-Item
+                if not group_id or group_id == root_group_id:
+                    # Entferne aus Root-Gruppe, falls vorhanden
+                    if group_id == root_group_id:
+                        self._group_controller.detach_surface(surface_id)
+                        if isinstance(surface, SurfaceDefinition):
+                            surface.group_id = None
+                        else:
+                            surface['group_id'] = None
+                    
+                    # Füge als Top-Level-Item hinzu
+                    surface_item = self._create_surface_item(surface_id, surface)
+                    # Füge nach Default-Fläche, aber vor Gruppen hinzu
+                    insert_index = 1 if default_surface_id in surface_store else 0
+                    self.surface_tree_widget.insertTopLevelItem(insert_index, surface_item)
+                    self.ensure_surface_checkboxes(surface_item)
+        
+        tasks.append(("Surfaces laden", load_surfaces_task))
+        
+        # Führe Tasks mit Fortschrittsanzeige aus
+        try:
+            self.main_window.run_tasks_with_progress("TreeWidget aktualisieren", tasks)
+        except ProgressCancelled:
+            # Benutzer hat abgebrochen - TreeWidget bleibt im aktuellen Zustand
+            pass
     
     def _populate_group_tree(self, parent_item, group):
         """Rekursiv befüllt das TreeWidget mit Gruppen und deren Surfaces"""
@@ -1003,6 +1101,22 @@ class UISurfaceManager(ModuleBase):
                     setattr(self.settings, "active_surface_id", None)
                 
                 setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
+                
+                # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
+                # für rote Umrandung der ausgewählten Fläche
+                main_window = getattr(self, "main_window", None)
+                if (
+                    main_window is not None
+                    and hasattr(main_window, "draw_plots")
+                    and hasattr(main_window.draw_plots, "draw_spl_plotter")
+                ):
+                    draw_spl = main_window.draw_plots.draw_spl_plotter
+                    if hasattr(draw_spl, "update_overlays"):
+                        try:
+                            draw_spl.update_overlays(self.settings, self.container)
+                        except Exception:
+                            # Fehler hier sollen die restliche UI nicht blockieren
+                            pass
             except Exception:
                 # Fehler hier sollen die Auswahl nicht blockieren
                 pass
@@ -1015,7 +1129,8 @@ class UISurfaceManager(ModuleBase):
             self.surface_dockWidget if hasattr(self, 'surface_dockWidget') else self.main_window,
             self.settings,
             self.container,
-            group_manager=self._group_controller
+            group_manager=self._group_controller,
+            main_window=self.main_window  # Übergebe main_window für Fortschrittsanzeige
         )
         
         result = importer.execute()

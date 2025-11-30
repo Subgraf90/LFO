@@ -27,13 +27,56 @@ class Ui_MainWindow(object):
         colorbar_layout.setSpacing(4)
 
         
-        # Widget für die Colorbar
-        self.colorbar_plot = QtWidgets.QWidget()
-        colorbar_layout.addWidget(self.colorbar_plot, 0, QtCore.Qt.AlignTop)
+        # Erster Rahmen: Widget für die Colorbar
+        self.colorbar_frame = QtWidgets.QFrame()
+        self.colorbar_frame.setFixedWidth(80)  # Schmaler als Button
+        # Nur eine einzelne Linie - keine doppelte Umrandung
+        self.colorbar_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.colorbar_frame.setLineWidth(0)
+        self.colorbar_frame.setMidLineWidth(0)
+        self.colorbar_frame.setStyleSheet("QFrame#colorbar_frame { border: 1px solid gray; background-color: transparent; }")
+        self.colorbar_frame.setObjectName("colorbar_frame")
+        print("[DEBUG] Colorbar-Frame erstellt: width=80, styleSheet gesetzt")
         
-        # Push-Button
+        # Layout für Colorbar-Frame
+        colorbar_frame_layout = QtWidgets.QVBoxLayout(self.colorbar_frame)
+        colorbar_frame_layout.setContentsMargins(0, 0, 0, 0)
+        colorbar_frame_layout.setSpacing(0)
+        
+        self.colorbar_plot = QtWidgets.QWidget()
+        self.colorbar_plot.setStyleSheet("QWidget { border: none !important; background-color: transparent; }")
+        colorbar_frame_layout.addWidget(self.colorbar_plot)
+        colorbar_layout.addWidget(self.colorbar_frame, 0, QtCore.Qt.AlignTop)
+        
+        # Zweiter Rahmen: Mauspositions-Anzeige mit Umrandung
+        self.mouse_position_frame = QtWidgets.QFrame()
+        self.mouse_position_frame.setFixedWidth(80)  # Schmaler als Button
+        self.mouse_position_frame.setFixedHeight(60)  # Eine Zeile weniger hoch
+        # Nur eine einzelne Linie - keine doppelte Umrandung
+        self.mouse_position_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.mouse_position_frame.setLineWidth(0)
+        self.mouse_position_frame.setMidLineWidth(0)
+        self.mouse_position_frame.setStyleSheet("QFrame#mouse_position_frame { border: 1px solid gray; background-color: transparent; }")
+        self.mouse_position_frame.setObjectName("mouse_position_frame")
+        print("[DEBUG] Mouse-Position-Frame erstellt: width=80, height=60, styleSheet gesetzt")
+        
+        # Layout für Frame
+        frame_layout = QtWidgets.QVBoxLayout(self.mouse_position_frame)
+        frame_layout.setContentsMargins(2, 2, 2, 2)
+        frame_layout.setSpacing(0)
+        
+        # Mauspositions-Anzeige im Frame
+        self.mouse_position_label = QtWidgets.QLabel("")
+        self.mouse_position_label.setWordWrap(True)
+        self.mouse_position_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.mouse_position_label.setStyleSheet("font-size: 10pt; padding: 0px; background-color: transparent;")
+        frame_layout.addWidget(self.mouse_position_label)
+        
+        colorbar_layout.addWidget(self.mouse_position_frame, 0, QtCore.Qt.AlignTop)
+        
+        # Push-Button direkt darunter
         self.StartSkript = QtWidgets.QPushButton("Calculate")
-        self.StartSkript.setFixedWidth(90)
+        self.StartSkript.setFixedWidth(90)  # Ursprüngliche Breite beibehalten
         self.StartSkript.setFixedHeight(25)
         self.StartSkript.setShortcut("c")
         colorbar_layout.addWidget(self.StartSkript, 0, QtCore.Qt.AlignTop)

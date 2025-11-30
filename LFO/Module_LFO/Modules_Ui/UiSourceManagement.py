@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QComboBox, QDockWidget, QWidget, QVBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QCheckBox, QPushButton, QHBoxLayout, QTabWidget, QSizePolicy, QGridLayout, QLabel, QFrame, QSpacerItem, QLineEdit, QMenu, QAbstractItemView, QGroupBox
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QObject
 from PyQt5.QtGui import QIntValidator, QDoubleValidator, QDragEnterEvent, QDropEvent
 
 from PyQt5 import QtWidgets, QtGui, QtCore
@@ -38,9 +38,10 @@ import functools
 # from Module_LFO.Modules_Ui.Speakerspecs import Speakerspecs
 
 
-class Sources(ModuleBase):
+class Sources(ModuleBase, QObject):
     def __init__(self, main_window, settings, container):
-        super().__init__(settings)
+        ModuleBase.__init__(self, settings)
+        QObject.__init__(self)
         self.main_window = main_window
         self.settings = settings
         self.calculation = {}
@@ -412,7 +413,12 @@ class Sources(ModuleBase):
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_windowing_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_gain_delay_input_fields)
             self.sources_tree_widget.itemSelectionChanged.connect(self.update_beamsteering_windowing_plots)
+            self.sources_tree_widget.itemSelectionChanged.connect(self._handle_sources_tree_selection_changed)
             self.sources_tree_widget.itemChanged.connect(self.on_speakerspecs_item_text_changed)
+            
+            # Installiere Event-Filter für MousePressEvent, um Klicks auf leeres Feld zu erkennen
+            self.sources_tree_widget.viewport().installEventFilter(self)
+            self._sources_tree_mouse_press_pos = None
     
             # Füge das TreeWidget zum Layout hinzu mit Stretch-Faktor
             left_side_layout.addWidget(self.sources_tree_widget, 1)  # Stretch-Faktor 1
@@ -2268,6 +2274,156 @@ class Sources(ModuleBase):
         # Passe Spaltenbreite an den Inhalt an
         self.adjust_column_width_to_content()
     
+    def _handle_sources_tree_selection_changed(self):
+        """Reagiert auf Auswahländerungen im Sources-Tree:
+        - Setzt active_speaker_array_highlight_ids (Liste) für den 3D-Plot
+        - Unterstützt mehrere ausgewählte Items und Gruppen
+        - Triggert update_overlays() für rote Umrandung.
+        """
+        print(f"[DEBUG] _handle_sources_tree_selection_changed: Called")
+        
+        if not hasattr(self, 'sources_tree_widget'):
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: No sources_tree_widget")
+            return
+        
+        # Hole alle ausgewählten Items (nicht nur currentItem)
+        selected_items = self.sources_tree_widget.selectedItems()
+        print(f"[DEBUG] _handle_sources_tree_selection_changed: selected_items count = {len(selected_items)}")
+        
+        if not selected_items:
+            # Keine Auswahl → keine Highlights
+            setattr(self.settings, "active_speaker_array_highlight_id", None)
+            setattr(self.settings, "active_speaker_array_highlight_ids", [])
+            setattr(self.settings, "active_speaker_highlight_indices", [])
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: No selection, clearing highlights")
+            # Aktualisiere Overlays
+            if hasattr(self, 'main_window') and self.main_window:
+                if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "draw_spl_plotter"):
+                    draw_spl = self.main_window.draw_plots.draw_spl_plotter
+                    if hasattr(draw_spl, "update_overlays"):
+                        try:
+                            draw_spl.update_overlays(self.settings, self.container)
+                        except Exception:  # noqa: BLE001
+                            pass
+            return
+        
+        # Sammle alle Array-IDs aus ausgewählten Items
+        highlight_array_ids = []
+        
+        for selected_item in selected_items:
+            item_type = selected_item.data(0, Qt.UserRole + 1)
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: item_type = {item_type}")
+            
+            if item_type == "group":
+                # Für Gruppen: Sammle alle Arrays der Gruppe
+                group_name = selected_item.text(0)
+                print(f"[DEBUG] _handle_sources_tree_selection_changed: Group selected: {group_name}")
+                
+                # Finde die Gruppe in settings.speaker_array_groups
+                group_id = None
+                if hasattr(self.settings, 'speaker_array_groups'):
+                    for gid, gdata in self.settings.speaker_array_groups.items():
+                        if gdata.get('name') == group_name:
+                            group_id = gid
+                            break
+                
+                if group_id:
+                    # Hole alle Child-Array-IDs aus der Gruppe
+                    group_data = self.settings.speaker_array_groups.get(group_id, {})
+                    child_array_ids = group_data.get('child_array_ids', [])
+                    print(f"[DEBUG] _handle_sources_tree_selection_changed: Group has {len(child_array_ids)} child arrays")
+                    
+                    # Füge alle Child-Array-IDs hinzu
+                    for array_id in child_array_ids:
+                        if array_id not in highlight_array_ids:
+                            highlight_array_ids.append(str(array_id))
+                    
+                    # Auch aus dem TreeWidget: Durchlaufe alle Child-Items
+                    for i in range(selected_item.childCount()):
+                        child_item = selected_item.child(i)
+                        child_array_id = child_item.data(0, Qt.UserRole)
+                        if child_array_id is not None:
+                            array_id_str = str(child_array_id)
+                            if array_id_str not in highlight_array_ids:
+                                highlight_array_ids.append(array_id_str)
+                else:
+                    # Fallback: Sammle direkt aus TreeWidget-Childs
+                    for i in range(selected_item.childCount()):
+                        child_item = selected_item.child(i)
+                        child_array_id = child_item.data(0, Qt.UserRole)
+                        if child_array_id is not None:
+                            array_id_str = str(child_array_id)
+                            if array_id_str not in highlight_array_ids:
+                                highlight_array_ids.append(array_id_str)
+            else:
+                # Einzelnes Array
+                speaker_array_id = selected_item.data(0, Qt.UserRole)
+                print(f"[DEBUG] _handle_sources_tree_selection_changed: Array selected: {speaker_array_id}")
+                if speaker_array_id is not None:
+                    array_id_str = str(speaker_array_id)
+                    if array_id_str not in highlight_array_ids:
+                        highlight_array_ids.append(array_id_str)
+        
+        print(f"[DEBUG] _handle_sources_tree_selection_changed: Collected highlight_array_ids = {highlight_array_ids}")
+        
+        # Setze Highlight-IDs
+        if highlight_array_ids:
+            # Für Rückwärtskompatibilität: Setze auch active_speaker_array_highlight_id auf das erste Element
+            setattr(self.settings, "active_speaker_array_highlight_id", highlight_array_ids[0])
+            setattr(self.settings, "active_speaker_array_highlight_ids", highlight_array_ids)
+            setattr(self.settings, "active_speaker_highlight_indices", [])
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: Set highlight_ids = {highlight_array_ids}")
+        else:
+            setattr(self.settings, "active_speaker_array_highlight_id", None)
+            setattr(self.settings, "active_speaker_array_highlight_ids", [])
+            setattr(self.settings, "active_speaker_highlight_indices", [])
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: No arrays found, clearing highlights")
+        
+        # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
+        if hasattr(self, 'main_window') and self.main_window:
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: main_window exists")
+            if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "draw_spl_plotter"):
+                draw_spl = self.main_window.draw_plots.draw_spl_plotter
+                print(f"[DEBUG] _handle_sources_tree_selection_changed: draw_spl exists")
+                if hasattr(draw_spl, "update_overlays"):
+                    try:
+                        print(f"[DEBUG] _handle_sources_tree_selection_changed: Calling update_overlays")
+                        draw_spl.update_overlays(self.settings, self.container)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[DEBUG] _handle_sources_tree_selection_changed: Exception in update_overlays: {e}")
+                        import traceback
+                        traceback.print_exc()
+            else:
+                print(f"[DEBUG] _handle_sources_tree_selection_changed: draw_plots or draw_spl_plotter does not exist")
+        else:
+            print(f"[DEBUG] _handle_sources_tree_selection_changed: main_window does not exist")
+    
+    def eventFilter(self, obj, event):
+        """Event-Filter für TreeWidget, um Klicks auf leeres Feld zu erkennen."""
+        # Prüfe, ob das Widget noch existiert, bevor darauf zugegriffen wird
+        if not hasattr(self, 'sources_tree_widget') or self.sources_tree_widget is None:
+            return super().eventFilter(obj, event)
+        
+        try:
+            if obj == self.sources_tree_widget.viewport():
+                from PyQt5.QtCore import QEvent
+                if event.type() == QEvent.MouseButtonPress:
+                    # Prüfe ob auf ein Item geklickt wurde
+                    item = self.sources_tree_widget.itemAt(event.pos())
+                    if item is None:
+                        # Klick auf leeres Feld - entferne Auswahl
+                        print(f"[DEBUG] eventFilter: Click on empty area, clearing selection")
+                        self.sources_tree_widget.clearSelection()
+                        # Setze currentItem auf None
+                        self.sources_tree_widget.setCurrentItem(None)
+                        # Trigger selection changed handler
+                        self._handle_sources_tree_selection_changed()
+                        return True  # Event behandelt
+        except RuntimeError:
+            # Widget wurde gelöscht - ignoriere das Event
+            return super().eventFilter(obj, event)
+        
+        return super().eventFilter(obj, event)
 
     # @measure_time
     def show_sources_tab(self):

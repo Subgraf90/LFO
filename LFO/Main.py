@@ -673,7 +673,8 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 _run_calculator()
         except ProgressCancelled:
-            self._show_empty_plots_after_cancel()
+            # _show_empty_plots_after_cancel() wird bereits in run_tasks_with_progress aufgerufen
+            # Hier nur zurückgeben, um weitere Verarbeitung zu stoppen
             return
         
         self.container.set_calculation_SPL(calculator_instance.calculation_spl)

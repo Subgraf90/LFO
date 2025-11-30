@@ -490,6 +490,10 @@ class DataContainer:
             aktuelle_simulation["show_in_plot"] = neue_daten["show_in_plot"]
         if "color" in neue_daten:
             aktuelle_simulation["color"] = neue_daten["color"]
+        if "segment_boundaries_xaxis" in neue_daten:
+            aktuelle_simulation["segment_boundaries_xaxis"] = neue_daten["segment_boundaries_xaxis"]
+        if "segment_boundaries_yaxis" in neue_daten:
+            aktuelle_simulation["segment_boundaries_yaxis"] = neue_daten["segment_boundaries_yaxis"]
     
         # Aktualisierte Daten in self.calculation_axes speichern
         self.calculation_axes["aktuelle_simulation"] = aktuelle_simulation

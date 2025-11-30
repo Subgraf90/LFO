@@ -19,7 +19,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         active_surfaces = []
         surface_store = getattr(self.settings, 'surface_definitions', {})
         
-        print(f"[DEBUG Y-Axis] Prüfe {len(surface_store)} Surfaces auf Aktivität...")
         
         for surface_id, surface in surface_store.items():
             # Prüfe ob Surface aktiv ist
@@ -34,11 +33,9 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                 hidden = surface.get('hidden', False)
                 name = surface.get('name', surface_id)
             
-            print(f"[DEBUG Y-Axis] Surface '{name}' ({surface_id}): xy_enabled={xy_enabled}, enabled={enabled}, hidden={hidden}")
             
             if xy_enabled and enabled and not hidden:
                 active_surfaces.append((surface_id, surface))
-                print(f"[DEBUG Y-Axis] ✓ Surface '{name}' ist AKTIV für XY-Berechnung")
             else:
                 reason = []
                 if not xy_enabled:
@@ -47,9 +44,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     reason.append("disabled")
                 if hidden:
                     reason.append("hidden")
-                print(f"[DEBUG Y-Axis] ✗ Surface '{name}' ist NICHT aktiv: {', '.join(reason)}")
         
-        print(f"[DEBUG Y-Axis] Gesamt: {len(active_surfaces)} aktive Surfaces gefunden")
         return active_surfaces
     
     def _line_intersects_surface_yz(self, x_const, surface):
@@ -78,11 +73,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         # Prüfe ob x_const im X-Bereich der Surface liegt
         intersects = x_min <= x_const <= x_max
         
-        if intersects:
-            print(f"[DEBUG Y-Axis] ✓ Linie x={x_const:.2f} schneidet Surface '{surface_name}' (X-Bereich: {x_min:.2f} bis {x_max:.2f})")
-        else:
-            print(f"[DEBUG Y-Axis] ✗ Linie x={x_const:.2f} schneidet Surface '{surface_name}' NICHT (X-Bereich: {x_min:.2f} bis {x_max:.2f})")
-        
         return intersects
     
     def _get_surface_intersection_points_yz(self, x_const, surface):
@@ -100,8 +90,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         Returns:
             tuple: (y_coords, z_coords) als Arrays oder (None, None) wenn keine Schnittpunkte
         """
-        if not self._line_intersects_surface_yz(x_const, surface):
-            return None, None
+        # Prüfung wird bereits vor dem Aufruf durchgeführt, daher hier keine erneute Prüfung
         
         # Hole aktuelle Surface-Daten direkt aus settings, um sicherzustellen, dass wir
         # immer die neuesten Punkte verwenden (auch nach Aktivierung/Deaktivierung)
@@ -139,7 +128,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     if xy_enabled and enabled and not hidden:
                         current_points = current_surface.points
                     else:
-                        print(f"[DEBUG Y-Axis] ⚠ Surface '{current_surface.name}' ({surface_id}) ist nicht mehr aktiv - überspringe")
                         return None, None
                 elif isinstance(current_surface, dict):
                     xy_enabled = current_surface.get('xy_enabled', True)
@@ -148,7 +136,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     if xy_enabled and enabled and not hidden:
                         current_points = current_surface.get('points', [])
                     else:
-                        print(f"[DEBUG Y-Axis] ⚠ Surface '{current_surface.get('name', surface_id)}' ({surface_id}) ist nicht mehr aktiv - überspringe")
                         return None, None
         
         # Fallback: Verwende übergebene Surface-Daten (nur wenn keine aktuelle Surface gefunden wurde)
@@ -159,7 +146,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                 enabled = surface.enabled
                 hidden = surface.hidden
                 if not (xy_enabled and enabled and not hidden):
-                    print(f"[DEBUG Y-Axis] ⚠ Surface '{surface.name}' ist nicht aktiv - überspringe")
                     return None, None
                 current_points = surface.points
             else:
@@ -167,27 +153,84 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                 enabled = surface.get('enabled', False)
                 hidden = surface.get('hidden', False)
                 if not (xy_enabled and enabled and not hidden):
-                    print(f"[DEBUG Y-Axis] ⚠ Surface '{surface.get('name', 'unknown')}' ist nicht aktiv - überspringe")
                     return None, None
                 current_points = surface.get('points', [])
         
         if len(current_points) < 3:
             return None, None
         
-        # Extrahiere Y- und Z-Koordinaten aller Punkte
-        y_coords = np.array([p.get('y', 0.0) for p in current_points])
-        z_coords = np.array([p.get('z', 0.0) if p.get('z') is not None else 0.0 for p in current_points])
+        # Berechne tatsächliche Schnittpunkte der Linie x=x_const mit dem Surface-Polygon
+        # Projektion auf YZ-Ebene: Linie x=x_const schneidet Polygon-Kanten
+        intersection_points = []
+        
+        # Extrahiere alle Koordinaten
+        points_3d = []
+        for p in current_points:
+            x = p.get('x', 0.0)
+            y = p.get('y', 0.0)
+            z = p.get('z', 0.0) if p.get('z') is not None else 0.0
+            points_3d.append((x, y, z))
+        
+        # Prüfe jede Kante des Polygons auf Schnitt mit Linie x=x_const
+        n = len(points_3d)
+        for i in range(n):
+            p1 = points_3d[i]
+            p2 = points_3d[(i + 1) % n]  # Nächster Punkt (geschlossenes Polygon)
+            
+            x1, y1, z1 = p1
+            x2, y2, z2 = p2
+            
+            # Prüfe ob Kante die Linie x=x_const schneidet
+            # Kante verläuft von (x1, y1, z1) nach (x2, y2, z2)
+            # Linie ist x=x_const (konstant)
+            
+            # Prüfe ob x_const zwischen x1 und x2 liegt
+            if (x1 <= x_const <= x2) or (x2 <= x_const <= x1):
+                if abs(x2 - x1) > 1e-10:  # Vermeide Division durch Null
+                    # Berechne Schnittpunkt-Parameter t
+                    t = (x_const - x1) / (x2 - x1)
+                    
+                    # Berechne Y- und Z-Koordinaten des Schnittpunkts
+                    y_intersect = y1 + t * (y2 - y1)
+                    z_intersect = z1 + t * (z2 - z1)
+                    
+                    intersection_points.append((y_intersect, z_intersect))
+        
+        if len(intersection_points) < 2:
+            # Nicht genug Schnittpunkte gefunden
+            return None, None
+        
+        # Entferne Duplikate (Punkte die sehr nah beieinander sind)
+        unique_points = []
+        eps = 1e-6
+        for y, z in intersection_points:
+            is_duplicate = False
+            for uy, uz in unique_points:
+                if abs(y - uy) < eps and abs(z - uz) < eps:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_points.append((y, z))
+        
+        if len(unique_points) < 2:
+            return None, None
+        
+        # Extrahiere Y- und Z-Koordinaten
+        y_coords = np.array([p[0] for p in unique_points])
+        z_coords = np.array([p[1] for p in unique_points])
         
         # Sortiere nach Y-Koordinaten für konsistente Reihenfolge
         sort_indices = np.argsort(y_coords)
         y_coords = y_coords[sort_indices]
         z_coords = z_coords[sort_indices]
         
+        
         return y_coords, z_coords
     
     def _interpolate_surface_points(self, coords, z_coords, target_resolution=0.1):
         """
         Interpoliert Surface-Punkte auf eine höhere Auflösung (10cm Schritte).
+        WICHTIG: Start- und Endpunkt werden exakt erreicht, damit die gesamte Länge abgedeckt wird.
         
         Args:
             coords: Array von X- oder Y-Koordinaten
@@ -200,22 +243,28 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         if len(coords) < 2:
             return coords, z_coords
         
-        # Erstelle neue Koordinaten mit target_resolution Schritten
+        # Bestimme exakte Start- und Endpunkte
         min_coord = coords.min()
         max_coord = coords.max()
-        interpolated_coords = np.arange(min_coord, max_coord + target_resolution, target_resolution)
+        length = max_coord - min_coord
+        
+        # Berechne Anzahl der Schritte, damit Endpunkt exakt erreicht wird
+        # Anzahl = Länge / Resolution, aufgerundet, +1 für Startpunkt
+        num_steps = int(np.ceil(length / target_resolution))
+        
+        # Erstelle Koordinaten mit exaktem Start- und Endpunkt
+        # Verwende linspace, um sicherzustellen, dass min_coord und max_coord exakt erreicht werden
+        interpolated_coords = np.linspace(min_coord, max_coord, num_steps + 1)
         
         # Interpoliere Z-Koordinaten linear
         interpolated_z_coords = np.interp(interpolated_coords, coords, z_coords)
         
         return interpolated_coords, interpolated_z_coords
-    
+
     def calculateYAxis(self):
         resolution = 0.1  # 10cm Auflösung
         position_x = self.settings.position_x_axis
         
-        print(f"\n[DEBUG Y-Axis] ===== Y-Axis Berechnung gestartet =====")
-        print(f"[DEBUG Y-Axis] Position X-Axis: {position_x:.2f}")
         
         # Prüfe ob aktive Surfaces vorhanden sind, die die Linie x=position_x schneiden
         active_surfaces = self._get_active_xy_surfaces()
@@ -239,7 +288,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                 
                 if not (xy_enabled and enabled and not hidden):
                     surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', surface_id)
-                    print(f"[DEBUG Y-Axis] ⚠ Surface '{surface_name}' ({surface_id}) wurde deaktiviert - überspringe")
                     continue
             
             surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', surface_id)
@@ -250,10 +298,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     all_y_coords.append(y_coords)
                     all_z_coords.append(z_coords)
                     used_surfaces.append((surface_id, surface_name, len(y_coords)))
-                    print(f"[DEBUG Y-Axis] ✓ Surface '{surface_name}' ({surface_id}) wird verwendet")
-                    print(f"[DEBUG Y-Axis]   Anzahl Punkte: {len(y_coords)}")
-                    print(f"[DEBUG Y-Axis]   Y-Bereich: {y_coords.min():.2f} bis {y_coords.max():.2f}")
-                    print(f"[DEBUG Y-Axis]   Z-Bereich: {z_coords.min():.2f} bis {z_coords.max():.2f}")
         
         # Behalte Segmente getrennt für separate Berechnung
         # WICHTIG: Jede Surface bleibt als separates Segment, damit deaktivierte Surfaces als Lücken sichtbar sind
@@ -262,15 +306,10 @@ class SoundFieldCalculatorYaxis(ModuleBase):
             surface_segments = list(zip(all_y_coords, all_z_coords, used_surfaces))
             surface_segments.sort(key=lambda seg: seg[0].min())  # Sortiere nach min Y-Koordinate
             
-            print(f"[DEBUG Y-Axis] ✓ Gesamt: {len(used_surfaces)} Surfaces als separate Segmente")
             for i, (y_coords, z_coords, (surface_id, surface_name, _)) in enumerate(surface_segments):
-                print(f"[DEBUG Y-Axis]   Segment {i+1}: '{surface_name}' - {len(y_coords)} Punkte, Y: {y_coords.min():.2f} bis {y_coords.max():.2f}")
+                pass
         else:
             surface_segments = []
-        
-        if not surface_segments:
-            print(f"[DEBUG Y-Axis] ✗ Keine aktive Surface gefunden, die Linie x={position_x:.2f} schneidet")
-            print(f"[DEBUG Y-Axis] → Verwende Standard-Grid (Länge: {self.settings.length:.2f})")
         
         # Wenn Surface-Punkte gefunden wurden, verwende diese
         if surface_segments:
@@ -307,9 +346,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
             sound_field_y_yaxis_calc = np.concatenate(all_interpolated_y)
             sound_field_p = np.concatenate(all_sound_field_p)
             
-            print(f"[DEBUG Y-Axis] → Berechnung mit {len(surface_segments)} Surface-Segmenten abgeschlossen")
-            print(f"[DEBUG Y-Axis]   Gesamtanzahl Plot-Punkte: {len(sound_field_y_yaxis_calc)} (inkl. NaN-Trenner)")
-            print(f"[DEBUG Y-Axis] ✓ Berechnung mit interpolierten Surface-Punkten abgeschlossen")
         else:
             # Standard-Verhalten: Verwende feste Länge
             total_columns = int(self.settings.width / resolution)
@@ -318,7 +354,6 @@ class SoundFieldCalculatorYaxis(ModuleBase):
             
             sound_field_p = self.calculate_sound_field_column(column_index)[0].flatten()
             sound_field_y_yaxis_calc = np.arange((self.settings.length / 2 * -1), ((self.settings.length / 2) + resolution), resolution)
-            print(f"[DEBUG Y-Axis] → Standard-Grid mit Resolution: {resolution*100:.0f}cm")
        
         sound_field_p_calc = self.functions.mag2db(sound_field_p)
 
@@ -328,12 +363,53 @@ class SoundFieldCalculatorYaxis(ModuleBase):
 
         show_curve = has_active_sources and is_meaningful_curve
 
+        # Finde Segment-Grenzen (Anfang und Ende jedes Segments) für gestrichelte Linien
+        segment_boundaries = []
+        # Prüfe ob surface_segments existiert und nicht leer ist
+        if 'surface_segments' in locals() and len(surface_segments) > 0 and len(sound_field_y_yaxis_calc) > 0:
+            # Finde NaN-Positionen in den Y-Koordinaten
+            nan_mask = np.isnan(sound_field_y_yaxis_calc)
+            nan_indices = np.where(nan_mask)[0]
+            
+            # Sammle alle Segment-Start- und End-Positionen
+            segment_starts = []
+            segment_ends = []
+            
+            # Erste Segment: Start-Position
+            if len(sound_field_y_yaxis_calc) > 0 and not np.isnan(sound_field_y_yaxis_calc[0]):
+                segment_starts.append(float(sound_field_y_yaxis_calc[0]))
+            
+            # Für jede NaN-Position: Ende des vorherigen Segments und Start des nächsten Segments
+            for nan_idx in nan_indices:
+                if nan_idx > 0:
+                    # Ende des Segments vor dem NaN
+                    prev_y = sound_field_y_yaxis_calc[nan_idx - 1]
+                    if not np.isnan(prev_y):
+                        segment_ends.append(float(prev_y))
+                
+                if nan_idx < len(sound_field_y_yaxis_calc) - 1:
+                    # Start des Segments nach dem NaN
+                    next_y = sound_field_y_yaxis_calc[nan_idx + 1]
+                    if not np.isnan(next_y):
+                        segment_starts.append(float(next_y))
+            
+            # Letztes Segment: End-Position
+            if len(sound_field_y_yaxis_calc) > 0:
+                last_idx = len(sound_field_y_yaxis_calc) - 1
+                last_y = sound_field_y_yaxis_calc[last_idx]
+                if not np.isnan(last_y):
+                    segment_ends.append(float(last_y))
+            
+            # Kombiniere alle Grenzen (Start und Ende jedes Segments)
+            segment_boundaries = sorted(set(segment_starts + segment_ends))
+
         # Daten aus calculation werden zurückgegeben
         self.calculation_spl["aktuelle_simulation"] = {
             "y_data_yaxis": sound_field_y_yaxis_calc,
             "x_data_yaxis": sound_field_p_calc,
             "show_in_plot": bool(show_curve),
-            "color": "#6A5ACD"
+            "color": "#6A5ACD",
+            "segment_boundaries_yaxis": segment_boundaries  # Y-Positionen für horizontale Linien
         }
 
     def get_balloon_data_batch(self, speaker_name, azimuths, elevations, use_averaged=True):
@@ -551,7 +627,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         # Berechne Absolutwert
         sound_field_p = abs(sound_field_p)
         return sound_field_p
-    
+
     def calculate_sound_field_column(self, column_index):
         """
         🚀 VEKTORISIERT: Berechnet SPL-Werte entlang der Y-Achse (Länge)
