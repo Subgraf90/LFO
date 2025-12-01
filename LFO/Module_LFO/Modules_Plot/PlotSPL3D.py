@@ -1665,11 +1665,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if renderer is None:
                 return
 
-            # Versuche direkt auf das Surface-Mesh zuzugreifen und die Zelle an der geklickten Position zu finden
+            # Ray-Casting für Surface-Erkennung (funktioniert auch ohne SPL-Daten/surface_mesh)
             # Das erlaubt echtes 3D‑Picking auch für schräge/vertikale Flächen.
-            if self.surface_mesh is None:
-                return
-
+            # Hinweis: Das Ray-Casting benötigt self.surface_mesh nicht - es verwendet nur surface_definitions
             try:
                 # Hilfsfunktion: Ray-Schnitt mit planarem Modell der Surface.
                 def _intersect_ray_with_surface_plane(
@@ -2618,6 +2616,23 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             except Exception:
                 pass
             self._surface_actors.pop(sid, None)
+        
+        # 🎯 Entferne graue Fläche für enabled Surfaces aus dem leeren Plot (falls vorhanden)
+        # Dies muss VOR dem Zeichnen der neuen SPL-Daten passieren
+        if hasattr(self, 'overlay_helper'):
+            try:
+                empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
+                if empty_plot_actor is not None:
+                    self.plotter.remove_actor('surface_enabled_empty_plot_batch')
+                    if hasattr(self.overlay_helper, 'overlay_actor_names'):
+                        if 'surface_enabled_empty_plot_batch' in self.overlay_helper.overlay_actor_names:
+                            self.overlay_helper.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+                    if hasattr(self.overlay_helper, '_category_actors'):
+                        if 'surfaces' in self.overlay_helper._category_actors:
+                            if 'surface_enabled_empty_plot_batch' in self.overlay_helper._category_actors['surfaces']:
+                                self.overlay_helper._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+            except Exception:  # noqa: BLE001
+                pass
 
         # Zeichne alle aktiven Surfaces als Texturflächen
         self._render_surfaces_textured(
@@ -2813,7 +2828,49 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 t_axis_end = time.perf_counter()
             if 'surfaces' in categories_to_refresh:
                 t_surfaces_start = time.perf_counter()
-                self.overlay_helper.draw_surfaces(settings, container, create_empty_plot_surfaces=False)
+                # Prüfe ob SPL-Daten vorhanden sind, um zu entscheiden ob enabled Surfaces gezeichnet werden sollen
+                create_empty_plot_surfaces = False
+                try:
+                    # Prüfe ob SPL-Daten vorhanden sind (gleiche Logik wie in draw_surfaces)
+                    # WICHTIG: Die entscheidende Prüfung ist sound_field_p, nicht nur ob Texture-Actors existieren
+                    has_spl_data = False
+                    
+                    # 🎯 ZUERST: Prüfe container.calculation_spl (entscheidende Prüfung)
+                    # Dies ist die zuverlässigste Methode, um zu prüfen ob echte SPL-Daten vorhanden sind
+                    if container is not None and hasattr(container, 'calculation_spl'):
+                        calc_spl = container.calculation_spl
+                        if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
+                            has_spl_data = True
+                            print(f"[DEBUG update_overlays] SPL-Daten in container.calculation_spl gefunden (sound_field_p vorhanden)")
+                        else:
+                            print(f"[DEBUG update_overlays] container.calculation_spl vorhanden, aber sound_field_p=None")
+                    
+                    # Nur wenn sound_field_p nicht vorhanden ist, prüfe auf Actors
+                    # (Texture-Actors können auch im leeren Plot existieren als leere Texturen)
+                    if not has_spl_data:
+                        if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                            spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
+                            spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
+                            # Prüfe nur auf spl_surface und spl_floor, nicht auf Texture-Actors
+                            # (Texture-Actors können leer sein)
+                            if spl_surface_actor is not None or spl_floor_actor is not None:
+                                has_spl_data = True
+                                print(f"[DEBUG update_overlays] SPL-Daten in Renderer-Actors gefunden (spl_surface oder spl_floor)")
+                    
+                    # Wenn keine SPL-Daten vorhanden sind, zeichne enabled Surfaces für leeren Plot
+                    if not has_spl_data:
+                        create_empty_plot_surfaces = True
+                        print(f"[DEBUG update_overlays] Keine SPL-Daten gefunden, setze create_empty_plot_surfaces=True")
+                    else:
+                        print(f"[DEBUG update_overlays] SPL-Daten vorhanden, create_empty_plot_surfaces=False")
+                except Exception as e:
+                    print(f"[DEBUG update_overlays] Fehler bei SPL-Daten-Prüfung: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Bei Fehler: konservativ, zeichne keine enabled Surfaces
+                    create_empty_plot_surfaces = False
+                
+                self.overlay_helper.draw_surfaces(settings, container, create_empty_plot_surfaces=create_empty_plot_surfaces)
                 t_surfaces_end = time.perf_counter()
             if 'speakers' in categories_to_refresh:
                 t_speakers_start = time.perf_counter()
