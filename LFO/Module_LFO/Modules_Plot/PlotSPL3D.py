@@ -2620,7 +2620,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._surface_actors.pop(sid, None)
 
         # Zeichne alle aktiven Surfaces als Texturflächen
-        print(f"[DEBUG update_spl_plot] Rufe _render_surfaces_textured auf für SPL-Texturen auf enabled Surfaces")
         self._render_surfaces_textured(
             geometry,
             original_plot_values,
@@ -2630,14 +2629,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             colorization_mode_used,
             cbar_step,
         )
-        print(f"[DEBUG update_spl_plot] _render_surfaces_textured abgeschlossen")
         
         # 🎯 WICHTIG: Setze Signatur zurück, damit draw_surfaces nach update_overlays aufgerufen wird
         # (um die graue Fläche zu entfernen, wenn SPL-Daten vorhanden sind)
         if hasattr(self, '_last_overlay_signatures') and 'surfaces' in self._last_overlay_signatures:
-            # Entferne 'surfaces' aus der letzten Signatur, damit sie als geändert erkannt wird
-            prev_surf = self._last_overlay_signatures.get('surfaces')
-            print(f"[DEBUG update_spl_plot] Setze Surfaces-Signatur zurück (vorher: {prev_surf}), damit draw_surfaces aufgerufen wird")
             # Setze auf None, damit die Signatur als geändert erkannt wird
             self._last_overlay_signatures['surfaces'] = None
 
@@ -2793,20 +2788,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         previous = self._last_overlay_signatures or {}
         if not previous:
             categories_to_refresh = set(signatures.keys())
-            print(f"[DEBUG update_overlays] Erste Signatur-Berechnung, alle Kategorien werden aktualisiert: {categories_to_refresh}")
         else:
             categories_to_refresh = {
                 key for key, value in signatures.items() if value != previous.get(key)
             }
-            # Debug: Prüfe ob surfaces-Signatur sich geändert hat
-            if 'surfaces' in categories_to_refresh:
-                prev_surf = previous.get('surfaces', None)
-                curr_surf = signatures.get('surfaces', None)
-                print(f"[DEBUG update_overlays] Surfaces-Signatur geändert! Vorher: {prev_surf}, Jetzt: {curr_surf}")
-            elif 'surfaces' not in categories_to_refresh:
-                prev_surf = previous.get('surfaces', None)
-                curr_surf = signatures.get('surfaces', None)
-                print(f"[DEBUG update_overlays] Surfaces-Signatur UNVERÄNDERT. Vorher: {prev_surf}, Jetzt: {curr_surf}")
         t_compare = time.perf_counter()
         
         if not categories_to_refresh:
@@ -2828,7 +2813,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 t_axis_end = time.perf_counter()
             if 'surfaces' in categories_to_refresh:
                 t_surfaces_start = time.perf_counter()
-                self.overlay_helper.draw_surfaces(settings)
+                self.overlay_helper.draw_surfaces(settings, container, create_empty_plot_surfaces=False)
                 t_surfaces_end = time.perf_counter()
             if 'speakers' in categories_to_refresh:
                 t_speakers_start = time.perf_counter()
@@ -4063,7 +4048,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 if enabled and not hidden and len(points) >= 3:
                     enabled_surfaces.append((str(surface_id), points, surface_obj))
         
-        print(f"[DEBUG _render_surfaces_textured] Gefunden: {len(enabled_surfaces)} enabled Surfaces für SPL-Textur-Rendering")
 
         # Nicht mehr benötigte Textur-Actors entfernen
         active_ids = {sid for sid, _, _ in enabled_surfaces}
@@ -4357,11 +4341,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         show_scalar_bar=False,
                         reset_camera=False,
                     )
-                    print(f"[DEBUG _render_surfaces_textured] SPL-Textur für Surface {surface_id} erstellt: {actor_name}")
                     # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
                     if hasattr(actor, 'SetPickable'):
                         actor.SetPickable(False)
-                        print(f"[DEBUG] Surface-Actor {actor_name} als nicht-pickable markiert")
+                    
+                    # 🎯 WICHTIG: Setze _surface_texture_actors auch auf self.plotter,
+                    # damit SPL3DOverlayRenderer darauf zugreifen kann
+                    if not hasattr(self.plotter, '_surface_texture_actors'):
+                        self.plotter._surface_texture_actors = {}
+                    self.plotter._surface_texture_actors[surface_id] = {
+                        'actor': actor,
+                        'surface_id': surface_id,
+                    }
                     
                     # Speichere Metadaten
                     metadata = {
@@ -4376,6 +4367,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         'is_vertical': True,
                     }
                     self._surface_texture_actors[surface_id] = metadata
+                    
+                    # 🎯 WICHTIG: Setze _surface_texture_actors auch auf self.plotter,
+                    # damit SPL3DOverlayRenderer darauf zugreifen kann
+                    if not hasattr(self.plotter, '_surface_texture_actors'):
+                        self.plotter._surface_texture_actors = {}
+                    self.plotter._surface_texture_actors[surface_id] = {
+                        'actor': actor,
+                        'surface_id': surface_id,
+                    }
                     
                     continue  # Überspringe normalen planaren Pfad
                 
@@ -4684,6 +4684,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 }
                 
                 self._surface_texture_actors[surface_id] = metadata
+                
+                # 🎯 WICHTIG: Setze _surface_texture_actors auch auf self.plotter,
+                # damit SPL3DOverlayRenderer darauf zugreifen kann
+                if not hasattr(self.plotter, '_surface_texture_actors'):
+                    self.plotter._surface_texture_actors = {}
+                self.plotter._surface_texture_actors[surface_id] = {
+                    'actor': actor,
+                    'surface_id': surface_id,
+                }
             except Exception:
                 continue
 
@@ -5091,9 +5100,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 has_texture_actors_direct = hasattr(self, '_surface_texture_actors') and len(self._surface_texture_actors) > 0
                 if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors or has_texture_actors_direct:
                     has_spl_data_for_signature = True
-                    print(f"[DEBUG _compute_overlay_signatures] SPL-Daten gefunden: spl_surface={spl_surface_actor is not None}, spl_floor={spl_floor_actor is not None}, texture_actors={len(texture_actor_names)}, direct={has_texture_actors_direct}")
-        except Exception as e:
-            print(f"[DEBUG _compute_overlay_signatures] Fehler bei SPL-Daten-Prüfung: {e}")
+        except Exception:
             pass
         
         surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id, highlight_ids_tuple, has_spl_data_for_signature)

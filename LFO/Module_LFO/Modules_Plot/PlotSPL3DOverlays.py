@@ -404,8 +404,14 @@ class SPL3DOverlayRenderer:
         # Multipliziere mit 1.5 (50% größer)
         return max_dimension * 1.5
 
-    def draw_surfaces(self, settings) -> None:
-        """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot."""
+    def draw_surfaces(self, settings, container=None, create_empty_plot_surfaces=False) -> None:
+        """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot.
+        
+        Args:
+            settings: Settings-Objekt
+            container: Container-Objekt (optional)
+            create_empty_plot_surfaces: Wenn True, werden graue Flächen für enabled Surfaces erstellt (nur für leeren Plot)
+        """
         t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
         # Erstelle Signatur für Änderungsdetektion
@@ -595,19 +601,45 @@ class SPL3DOverlayRenderer:
         # Prüfe ob SPL-Daten vorhanden sind (durch Prüfung ob SPL-Actors existieren)
         has_spl_data = False
         try:
-            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
-                # Prüfe ob SPL-Surface oder SPL-Floor Actors vorhanden sind
+            # 🎯 WICHTIG: Prüfe zuerst _surface_texture_actors direkt (falls Actors noch nicht im Renderer registriert sind)
+            # Dies ist wichtig beim Laden, wenn draw_surfaces vor update_spl_plot aufgerufen wird
+            if hasattr(self.plotter, '_surface_texture_actors'):
+                direct_texture_count = len(getattr(self.plotter, '_surface_texture_actors', {}))
+                if direct_texture_count > 0:
+                    has_spl_data = True
+                    print(f"[DEBUG draw_surfaces] SPL-Daten in plotter._surface_texture_actors gefunden: {direct_texture_count} Actors")
+            
+            # Prüfe auch Renderer-Actors (falls bereits registriert)
+            if not has_spl_data and hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
                 spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
                 spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
-                # Prüfe auch auf Textur-Actors für enabled Surfaces
                 texture_actor_names = [name for name in self.plotter.renderer.actors.keys() if name.startswith('spl_surface_tex_')]
                 has_texture_actors = len(texture_actor_names) > 0
                 if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors:
                     has_spl_data = True
-                print(f"[DEBUG draw_surfaces] SPL-Daten-Prüfung: has_spl_data={has_spl_data}, spl_surface={spl_surface_actor is not None}, spl_floor={spl_floor_actor is not None}, texture_actors={len(texture_actor_names)} ({texture_actor_names[:3] if texture_actor_names else []})")
+                    print(f"[DEBUG draw_surfaces] SPL-Daten in Renderer-Actors gefunden: texture_actors={len(texture_actor_names)}")
+            
+            # 🎯 ZUSÄTZLICH: Prüfe ob container calculation_spl Daten hat (wichtig beim Laden)
+            # Dies hilft beim Laden, wenn draw_surfaces vor update_spl_plot aufgerufen wird
+            # WICHTIG: Prüfe IMMER, auch wenn has_spl_data bereits True ist, um sicherzustellen,
+            # dass die Prüfung korrekt funktioniert
+            if container is not None and hasattr(container, 'calculation_spl'):
+                calc_spl = container.calculation_spl
+                if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
+                    # Daten sind vorhanden, auch wenn Actors noch nicht erstellt wurden
+                    # Zeichne keine graue Fläche, da SPL-Daten geplottet werden sollen
+                    if not has_spl_data:
+                        has_spl_data = True
+                        print(f"[DEBUG draw_surfaces] SPL-Daten in container.calculation_spl gefunden, keine graue Fläche")
+                else:
+                    print(f"[DEBUG draw_surfaces] container.calculation_spl vorhanden, aber sound_field_p=None oder nicht dict")
+            else:
+                print(f"[DEBUG draw_surfaces] container={container is not None}, has_calculation_spl={container is not None and hasattr(container, 'calculation_spl') if container else False}")
         except Exception as e:
             print(f"[DEBUG draw_surfaces] Fehler bei SPL-Daten-Prüfung: {e}")
             pass
+        
+        print(f"[DEBUG draw_surfaces] FINAL has_spl_data={has_spl_data}, container={container is not None}")
         
         # Zeichne aktive Surfaces als Batch (für Performance)
         if active_points_list:
@@ -641,9 +673,9 @@ class SPL3DOverlayRenderer:
                     render_lines_as_tubes=False,
                 )
                 
-                # 🎯 Zeichne Fläche nur wenn KEINE SPL-Daten vorhanden sind (leerer Plot)
-                if not has_spl_data:
-                    print(f"[DEBUG draw_surfaces] Zeichne graue Fläche für angewählte enabled Surfaces (KEINE SPL-Daten), Anzahl: {len(active_lines_list)}")
+                # 🎯 Zeichne Fläche für enabled Surfaces NUR wenn create_empty_plot_surfaces=True
+                # (wird nur in show_empty_spl gesetzt)
+                if create_empty_plot_surfaces:
                     # Erstelle Polygon-Mesh für Fläche
                     all_polygon_faces = []
                     point_offset = 0
@@ -677,21 +709,17 @@ class SPL3DOverlayRenderer:
                     if actor_name not in self.overlay_actor_names:
                         self.overlay_actor_names.append(actor_name)
                     self._category_actors.setdefault('surfaces', []).append(actor_name)
-                    print(f"[DEBUG draw_surfaces] Graue Fläche für angewählte enabled Surfaces gezeichnet: {actor_name}")
                 else:
-                    print(f"[DEBUG draw_surfaces] KEINE graue Fläche für angewählte enabled Surfaces (SPL-Daten vorhanden)")
-                    # Wenn SPL-Daten vorhanden sind, entferne die Fläche für leeren Plot (falls vorhanden)
+                    # Entferne die Fläche für leeren Plot (falls vorhanden), da sie nicht hier erstellt wird
                     try:
                         empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
                         if empty_plot_actor is not None:
-                            print(f"[DEBUG draw_surfaces] Entferne vorhandene graue Fläche für enabled Surfaces (SPL-Daten vorhanden)")
                             self.plotter.remove_actor('surface_enabled_empty_plot_batch')
                             if 'surface_enabled_empty_plot_batch' in self.overlay_actor_names:
                                 self.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
                             if 'surfaces' in self._category_actors and 'surface_enabled_empty_plot_batch' in self._category_actors['surfaces']:
                                 self._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
-                    except Exception as e:
-                        print(f"[DEBUG draw_surfaces] Fehler beim Entfernen der grauen Fläche: {e}")
+                    except Exception:
                         pass
             except Exception:
                 pass
@@ -706,7 +734,6 @@ class SPL3DOverlayRenderer:
         for name in old_inactive_actors:
             try:
                 self.plotter.remove_actor(name)
-                print(f"[DEBUG draw_surfaces] Entferne alten inaktiven Actor: {name}")
             except Exception:
                 pass
             if name in self.overlay_actor_names:
@@ -778,29 +805,22 @@ class SPL3DOverlayRenderer:
                             continue
                     
                     # 🎯 Disabled Surfaces: Immer Fläche + Linie
-                    # Enabled Surfaces ohne Daten: Fläche + Linie (wie angewählte, nur Rahmen ist schwarz statt rot)
+                    # Enabled Surfaces: NUR Linie (keine Fläche in draw_surfaces, nur in show_empty_spl)
                     if not is_enabled:
                         # Disabled Surface: Füge zu beiden Listen hinzu (Fläche + Linie)
-                        print(f"[DEBUG draw_surfaces] Disabled Surface {surface_id}: Füge zu Fläche + Linie hinzu")
                         valid_inactive_polygons.append((points, surface_id))
                         valid_inactive_lines.append((points, surface_id))
                     else:
-                        # Enabled Surface, nicht angewählt: Fläche + Linie (nur wenn keine SPL-Daten vorhanden)
-                        # Wenn SPL-Daten vorhanden sind, nur Linie (schwarzer Rahmen)
-                        if not has_spl_data:
-                            # Keine SPL-Daten: Fläche + schwarzer Rahmen (wie angewählte, nur Rahmen-Farbe unterschiedlich)
-                            print(f"[DEBUG draw_surfaces] Enabled Surface {surface_id} (nicht angewählt, KEINE SPL-Daten): Füge zu Fläche + Linie hinzu")
-                            valid_inactive_polygons.append((points, surface_id))
-                        else:
-                            print(f"[DEBUG draw_surfaces] Enabled Surface {surface_id} (nicht angewählt, MIT SPL-Daten): Nur Linie, KEINE Fläche")
+                        # Enabled Surface, nicht angewählt: NUR Linie (schwarzer Rahmen)
+                        # Keine Fläche hier - wird nur in show_empty_spl erstellt
                         valid_inactive_lines.append((points, surface_id))
                 except Exception:
                     continue
         
-        # 🎯 WICHTIG: Filtere enabled Surfaces mit SPL-Daten aus valid_inactive_polygons heraus
-        # Nur disabled Surfaces und enabled Surfaces ohne Daten sollen Flächen bekommen
+        # 🎯 WICHTIG: Nur disabled Surfaces bekommen Flächen in draw_surfaces
+        # Enabled Surfaces bekommen KEINE Flächen hier - werden nur in show_empty_spl erstellt
         filtered_inactive_polygons = []
-        enabled_with_spl_skipped = 0
+        print(f"[DEBUG draw_surfaces] Filtere valid_inactive_polygons: {len(valid_inactive_polygons)} total (nur disabled Surfaces)")
         for points, surface_id in valid_inactive_polygons:
             # Prüfe ob dieses Surface enabled ist
             is_enabled_in_polygon = False
@@ -808,20 +828,15 @@ class SPL3DOverlayRenderer:
                 if sid == surface_id:
                     is_enabled_in_polygon = inactive_surface_enabled[idx] if idx < len(inactive_surface_enabled) else False
                     break
-            # Wenn enabled und SPL-Daten vorhanden sind, überspringe (keine Fläche)
-            if is_enabled_in_polygon and has_spl_data:
-                enabled_with_spl_skipped += 1
-                print(f"[DEBUG draw_surfaces] Überspringe enabled Surface {surface_id} mit SPL-Daten (keine graue Fläche)")
-                continue
-            # Ansonsten hinzufügen (disabled Surfaces oder enabled Surfaces ohne Daten)
-            filtered_inactive_polygons.append((points, surface_id))
+            # Nur disabled Surfaces bekommen Flächen
+            if not is_enabled_in_polygon:
+                filtered_inactive_polygons.append((points, surface_id))
         
-        if enabled_with_spl_skipped > 0:
-            print(f"[DEBUG draw_surfaces] Gefiltert: {enabled_with_spl_skipped} enabled Surfaces mit SPL-Daten aus valid_inactive_polygons entfernt")
-        print(f"[DEBUG draw_surfaces] valid_inactive_polygons: {len(valid_inactive_polygons)} total, {len(filtered_inactive_polygons)} nach Filterung (disabled + enabled ohne Daten)")
+        print(f"[DEBUG draw_surfaces] Nach Filterung: {len(filtered_inactive_polygons)} Polygone (nur disabled Surfaces)")
         
         # Zeichne alle gültigen Polygone als Batch (transparente Flächen)
-        print(f"[DEBUG draw_surfaces] Zeichne {len(filtered_inactive_polygons)} inaktive Polygone (disabled + enabled ohne Daten)")
+        # NUR disabled Surfaces - enabled Surfaces bekommen keine Fläche hier
+        print(f"[DEBUG draw_surfaces] Zeichne {len(filtered_inactive_polygons)} inaktive Polygone (nur disabled Surfaces)")
         if filtered_inactive_polygons:
             try:
                 # Sammle alle Punkte und Faces für Batch-Zeichnen
@@ -843,6 +858,7 @@ class SPL3DOverlayRenderer:
                     polygon_mesh.faces = all_polygon_faces
                     
                     actor_name = "surface_disabled_polygons_batch"
+                    print(f"[DEBUG draw_surfaces] Zeichne {len(filtered_inactive_polygons)} inaktive Polygone als graue Fläche: {actor_name}")
                     actor = self.plotter.add_mesh(
                         polygon_mesh,
                         name=actor_name,

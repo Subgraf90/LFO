@@ -479,7 +479,11 @@ class DrawPlotsMainwindow(ModuleBase):
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
+            # Aktualisiere Overlays (ohne graue Flächen für enabled Surfaces)
             plotter.update_overlays(self.settings, self.container)
+            # Erstelle graue Flächen für enabled Surfaces (nur im leeren Plot)
+            if hasattr(plotter, 'overlay_helper'):
+                plotter.overlay_helper.draw_surfaces(self.settings, self.container, create_empty_plot_surfaces=True)
             self.colorbar_canvas.draw()
             # Prüfe ob "SPL over time" aktiv ist
             plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
@@ -712,6 +716,8 @@ class DrawPlotsMainwindow(ModuleBase):
             sound_field_values,
             self.settings.colorization_mode,
         )
+        # 🎯 WICHTIG: update_overlays NACH update_spl_plot aufrufen, damit draw_surfaces
+        # die Textur-Actors findet und die graue Fläche entfernt
         draw_spl_plotter.update_overlays(self.settings, self.container)
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
