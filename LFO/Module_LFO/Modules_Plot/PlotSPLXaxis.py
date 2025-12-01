@@ -77,6 +77,10 @@ class DrawSPLPlot_Xaxis(ModuleBase):
         
         self.ax.clear()
         
+        # Sammle alle geplotteten Daten für Achsen-Setup
+        all_y_data = []
+        all_x_data = []
+        
         for key, value in calculation_Xaxis.items():
             # boleanabfrage. wenn show_in_plot true, wird der plot ausgeführt
             if 'show_in_plot' in value and value['show_in_plot']: 
@@ -84,6 +88,10 @@ class DrawSPLPlot_Xaxis(ModuleBase):
                     continue
                 x_data = value['x_data_xaxis']
                 y_data = value['y_data_xaxis']
+                
+                # Prüfe ob Arrays nicht leer sind
+                if len(x_data) == 0 or len(y_data) == 0:
+                    continue
 
                 # Abrufen der Farbe aus dem Wert des Schlüssels "color"
                 color = value.get('color', 'b')  # 'b' ist ein Standardwert, falls keine Farbe gefunden wird
@@ -98,8 +106,15 @@ class DrawSPLPlot_Xaxis(ModuleBase):
                             linewidth = 1.5  # Ausgewähltes Item
                 
                 self.ax.plot(y_data, x_data, label=key, color=color, linewidth=linewidth)
+                
+                # Sammle Daten für Achsen-Setup
+                all_y_data.extend(y_data)
+                all_x_data.extend(x_data)
 
-                # self.ax.plot.tight_layout(y_data, x_data, label=key, color=color)
+        # Prüfe ob tatsächlich Daten geplottet wurden
+        if len(all_y_data) == 0 or len(all_x_data) == 0:
+            self.initialize_empty_plots()
+            return
 
         # Sammle Segment-Grenzen für "aktuelle_simulation" (werden nach Achsen-Setup gezeichnet)
         segment_boundaries_to_draw = []
@@ -109,8 +124,8 @@ class DrawSPLPlot_Xaxis(ModuleBase):
                 segment_boundaries_to_draw = sim_value.get('segment_boundaries_xaxis', [])
 
         # Intelligente X-Achse Ticks (Position) - adaptive Schrittweite
-        x_min_data = min(y_data)
-        x_max_data = max(y_data)
+        x_min_data = min(all_y_data)
+        x_max_data = max(all_y_data)
         
         # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
         current_xlim = self.ax.get_xlim()
@@ -130,14 +145,14 @@ class DrawSPLPlot_Xaxis(ModuleBase):
         
         # Adaptive Y-Achse (SPL dB) - basierend auf sichtbarem Bereich
         current_ylim = self.ax.get_ylim()
-        if current_ylim[0] != min(x_data) or current_ylim[1] != max(x_data):
+        if current_ylim[0] != min(all_x_data) or current_ylim[1] != max(all_x_data):
             # Bereits gezoomt - verwende sichtbare Grenzen
             y_min_visible, y_max_visible = current_ylim
             self._update_spl_ticks(y_min_visible, y_max_visible)
         else:
             # Nicht gezoomt - verwende Daten-Grenzen
-            y_min_spl = min(x_data)
-            y_max_spl = max(x_data)
+            y_min_spl = min(all_x_data)
+            y_max_spl = max(all_x_data)
             self._update_spl_ticks(y_min_spl, y_max_spl)
             
         self.ax.tick_params(axis='y', labelsize=6)  # Konsistent mit Polar

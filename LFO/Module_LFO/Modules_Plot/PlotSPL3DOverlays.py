@@ -489,6 +489,18 @@ class SPL3DOverlayRenderer:
         # Lösche alte Surfaces
         t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self.clear_category('surfaces')
+        # Entferne auch die Fläche für enabled Surfaces im leeren Plot (falls vorhanden)
+        # Dies stellt sicher, dass die Fläche entfernt wird, wenn SPL-Daten vorhanden sind
+        try:
+            empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
+            if empty_plot_actor is not None:
+                self.plotter.remove_actor('surface_enabled_empty_plot_batch')
+                if 'surface_enabled_empty_plot_batch' in self.overlay_actor_names:
+                    self.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+                if 'surfaces' in self._category_actors and 'surface_enabled_empty_plot_batch' in self._category_actors['surfaces']:
+                    self._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+        except Exception:
+            pass
         t_clear_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self._last_surfaces_state = signature_tuple
         
@@ -508,6 +520,7 @@ class SPL3DOverlayRenderer:
         inactive_points_list = []  # Liste von Punkt-Arrays für inaktive Surfaces
         inactive_lines_list = []   # Liste von Linien-Arrays für inaktive Surfaces
         inactive_surface_ids = []  # Liste von Surface-IDs für inaktive Surfaces (zur Zuordnung)
+        inactive_surface_enabled = []  # Liste von enabled-Status für inaktive Surfaces (zur Unterscheidung)
         
         tolerance = 1e-6
         
@@ -569,6 +582,7 @@ class SPL3DOverlayRenderer:
                     inactive_points_list.append(np.array(closed_coords, dtype=float))
                     inactive_lines_list.append(n_points)
                     inactive_surface_ids.append(str(surface_id))  # Speichere ID für Zuordnung
+                    inactive_surface_enabled.append(enabled)  # Speichere enabled-Status für Unterscheidung
                 
                 surfaces_drawn += 1
             except (ValueError, TypeError, AttributeError, Exception):
@@ -577,6 +591,23 @@ class SPL3DOverlayRenderer:
         # 🎯 Zeichne Surfaces EINZELN mit IDs für Picking (nur für disabled Surfaces)
         # Für enabled Surfaces verwenden wir die SPL-Surface und prüfen beim Klick, welche Surface den Punkt enthält
         # Für disabled Surfaces müssen wir jede einzeln zeichnen, damit wir sie beim Klick identifizieren können
+        
+        # Prüfe ob SPL-Daten vorhanden sind (durch Prüfung ob SPL-Actors existieren)
+        has_spl_data = False
+        try:
+            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                # Prüfe ob SPL-Surface oder SPL-Floor Actors vorhanden sind
+                spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
+                spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
+                # Prüfe auch auf Textur-Actors für enabled Surfaces
+                texture_actor_names = [name for name in self.plotter.renderer.actors.keys() if name.startswith('spl_surface_tex_')]
+                has_texture_actors = len(texture_actor_names) > 0
+                if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors:
+                    has_spl_data = True
+                print(f"[DEBUG draw_surfaces] SPL-Daten-Prüfung: has_spl_data={has_spl_data}, spl_surface={spl_surface_actor is not None}, spl_floor={spl_floor_actor is not None}, texture_actors={len(texture_actor_names)} ({texture_actor_names[:3] if texture_actor_names else []})")
+        except Exception as e:
+            print(f"[DEBUG draw_surfaces] Fehler bei SPL-Daten-Prüfung: {e}")
+            pass
         
         # Zeichne aktive Surfaces als Batch (für Performance)
         if active_points_list:
@@ -589,6 +620,7 @@ class SPL3DOverlayRenderer:
                     active_lines_array.extend(range(point_offset, point_offset + n_pts))
                     point_offset += n_pts
                 
+                # Zeichne Rahmen (immer)
                 active_polyline = self.pv.PolyData(all_active_points)
                 active_polyline.lines = active_lines_array
                 try:
@@ -608,6 +640,59 @@ class SPL3DOverlayRenderer:
                     show_vertices=False,
                     render_lines_as_tubes=False,
                 )
+                
+                # 🎯 Zeichne Fläche nur wenn KEINE SPL-Daten vorhanden sind (leerer Plot)
+                if not has_spl_data:
+                    print(f"[DEBUG draw_surfaces] Zeichne graue Fläche für angewählte enabled Surfaces (KEINE SPL-Daten), Anzahl: {len(active_lines_list)}")
+                    # Erstelle Polygon-Mesh für Fläche
+                    all_polygon_faces = []
+                    point_offset = 0
+                    for n_pts in active_lines_list:
+                        # Face-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                        face = [n_pts] + [point_offset + i for i in range(n_pts)]
+                        all_polygon_faces.extend(face)
+                        point_offset += n_pts
+                    
+                    active_polygon_mesh = self.pv.PolyData(all_active_points)
+                    active_polygon_mesh.faces = all_polygon_faces
+                    
+                    actor_name = "surface_enabled_empty_plot_batch"
+                    actor = self.plotter.add_mesh(
+                        active_polygon_mesh,
+                        name=actor_name,
+                        color='#D3D3D3',  # Hellgrau (heller als vorher)
+                        opacity=0.8,  # 80% Opacity (20% Transparenz)
+                        smooth_shading=False,
+                        show_scalar_bar=False,
+                        reset_camera=False,
+                        show_edges=False,
+                    )
+                    # Nicht pickable, damit Klicks auf dahinterliegende Elemente funktionieren
+                    try:
+                        if actor is not None and hasattr(actor, "SetPickable"):
+                            actor.SetPickable(False)
+                    except Exception:
+                        pass
+                    
+                    if actor_name not in self.overlay_actor_names:
+                        self.overlay_actor_names.append(actor_name)
+                    self._category_actors.setdefault('surfaces', []).append(actor_name)
+                    print(f"[DEBUG draw_surfaces] Graue Fläche für angewählte enabled Surfaces gezeichnet: {actor_name}")
+                else:
+                    print(f"[DEBUG draw_surfaces] KEINE graue Fläche für angewählte enabled Surfaces (SPL-Daten vorhanden)")
+                    # Wenn SPL-Daten vorhanden sind, entferne die Fläche für leeren Plot (falls vorhanden)
+                    try:
+                        empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
+                        if empty_plot_actor is not None:
+                            print(f"[DEBUG draw_surfaces] Entferne vorhandene graue Fläche für enabled Surfaces (SPL-Daten vorhanden)")
+                            self.plotter.remove_actor('surface_enabled_empty_plot_batch')
+                            if 'surface_enabled_empty_plot_batch' in self.overlay_actor_names:
+                                self.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+                            if 'surfaces' in self._category_actors and 'surface_enabled_empty_plot_batch' in self._category_actors['surfaces']:
+                                self._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+                    except Exception as e:
+                        print(f"[DEBUG draw_surfaces] Fehler beim Entfernen der grauen Fläche: {e}")
+                        pass
             except Exception:
                 pass
         
@@ -621,12 +706,24 @@ class SPL3DOverlayRenderer:
         for name in old_inactive_actors:
             try:
                 self.plotter.remove_actor(name)
+                print(f"[DEBUG draw_surfaces] Entferne alten inaktiven Actor: {name}")
             except Exception:
                 pass
             if name in self.overlay_actor_names:
                 self.overlay_actor_names.remove(name)
             if 'surfaces' in self._category_actors and name in self._category_actors['surfaces']:
                 self._category_actors['surfaces'].remove(name)
+        
+        # 🎯 WICHTIG: Wenn SPL-Daten vorhanden sind, entferne auch die Fläche für inaktive enabled Surfaces
+        # (die in surface_disabled_polygons_batch enthalten sein könnte)
+        if has_spl_data:
+            try:
+                disabled_polygons_actor = self.plotter.renderer.actors.get('surface_disabled_polygons_batch')
+                if disabled_polygons_actor is not None:
+                    print(f"[DEBUG draw_surfaces] SPL-Daten vorhanden: Prüfe ob surface_disabled_polygons_batch enabled Surfaces enthält und entferne diese")
+                    # Die Fläche wird unten neu gezeichnet, nur mit disabled Surfaces (ohne enabled Surfaces mit SPL-Daten)
+            except Exception:
+                pass
         
         # 🎯 OPTIMIERUNG: Zeichne inaktive Surfaces als Batch (für Performance)
         # Sammle gültige Polygone und Linien für Batch-Zeichnen
@@ -637,6 +734,7 @@ class SPL3DOverlayRenderer:
             if idx < len(inactive_points_list):
                 try:
                     points = inactive_points_list[idx]
+                    is_enabled = inactive_surface_enabled[idx] if idx < len(inactive_surface_enabled) else False
                     n_pts = len(points)
                     
                     # Prüfe ob Polygon gültig ist (mindestens 3 Punkte, nicht alle auf einer Linie)
@@ -679,21 +777,59 @@ class SPL3DOverlayRenderer:
                             valid_inactive_lines.append((points, surface_id))
                             continue
                     
-                    # Polygon ist gültig - füge zu beiden Listen hinzu
-                    valid_inactive_polygons.append((points, surface_id))
-                    valid_inactive_lines.append((points, surface_id))
+                    # 🎯 Disabled Surfaces: Immer Fläche + Linie
+                    # Enabled Surfaces ohne Daten: Fläche + Linie (wie angewählte, nur Rahmen ist schwarz statt rot)
+                    if not is_enabled:
+                        # Disabled Surface: Füge zu beiden Listen hinzu (Fläche + Linie)
+                        print(f"[DEBUG draw_surfaces] Disabled Surface {surface_id}: Füge zu Fläche + Linie hinzu")
+                        valid_inactive_polygons.append((points, surface_id))
+                        valid_inactive_lines.append((points, surface_id))
+                    else:
+                        # Enabled Surface, nicht angewählt: Fläche + Linie (nur wenn keine SPL-Daten vorhanden)
+                        # Wenn SPL-Daten vorhanden sind, nur Linie (schwarzer Rahmen)
+                        if not has_spl_data:
+                            # Keine SPL-Daten: Fläche + schwarzer Rahmen (wie angewählte, nur Rahmen-Farbe unterschiedlich)
+                            print(f"[DEBUG draw_surfaces] Enabled Surface {surface_id} (nicht angewählt, KEINE SPL-Daten): Füge zu Fläche + Linie hinzu")
+                            valid_inactive_polygons.append((points, surface_id))
+                        else:
+                            print(f"[DEBUG draw_surfaces] Enabled Surface {surface_id} (nicht angewählt, MIT SPL-Daten): Nur Linie, KEINE Fläche")
+                        valid_inactive_lines.append((points, surface_id))
                 except Exception:
                     continue
         
+        # 🎯 WICHTIG: Filtere enabled Surfaces mit SPL-Daten aus valid_inactive_polygons heraus
+        # Nur disabled Surfaces und enabled Surfaces ohne Daten sollen Flächen bekommen
+        filtered_inactive_polygons = []
+        enabled_with_spl_skipped = 0
+        for points, surface_id in valid_inactive_polygons:
+            # Prüfe ob dieses Surface enabled ist
+            is_enabled_in_polygon = False
+            for idx, sid in enumerate(inactive_surface_ids):
+                if sid == surface_id:
+                    is_enabled_in_polygon = inactive_surface_enabled[idx] if idx < len(inactive_surface_enabled) else False
+                    break
+            # Wenn enabled und SPL-Daten vorhanden sind, überspringe (keine Fläche)
+            if is_enabled_in_polygon and has_spl_data:
+                enabled_with_spl_skipped += 1
+                print(f"[DEBUG draw_surfaces] Überspringe enabled Surface {surface_id} mit SPL-Daten (keine graue Fläche)")
+                continue
+            # Ansonsten hinzufügen (disabled Surfaces oder enabled Surfaces ohne Daten)
+            filtered_inactive_polygons.append((points, surface_id))
+        
+        if enabled_with_spl_skipped > 0:
+            print(f"[DEBUG draw_surfaces] Gefiltert: {enabled_with_spl_skipped} enabled Surfaces mit SPL-Daten aus valid_inactive_polygons entfernt")
+        print(f"[DEBUG draw_surfaces] valid_inactive_polygons: {len(valid_inactive_polygons)} total, {len(filtered_inactive_polygons)} nach Filterung (disabled + enabled ohne Daten)")
+        
         # Zeichne alle gültigen Polygone als Batch (transparente Flächen)
-        if valid_inactive_polygons:
+        print(f"[DEBUG draw_surfaces] Zeichne {len(filtered_inactive_polygons)} inaktive Polygone (disabled + enabled ohne Daten)")
+        if filtered_inactive_polygons:
             try:
                 # Sammle alle Punkte und Faces für Batch-Zeichnen
                 all_polygon_points = []
                 all_polygon_faces = []
                 point_offset = 0
                 
-                for points, surface_id in valid_inactive_polygons:
+                for points, surface_id in filtered_inactive_polygons:
                     n_pts = len(points)
                     all_polygon_points.append(points)
                     # Face-Format: [n, 0, 1, 2, ..., n-1] mit offset
@@ -710,8 +846,8 @@ class SPL3DOverlayRenderer:
                     actor = self.plotter.add_mesh(
                         polygon_mesh,
                         name=actor_name,
-                        color='#D3D3D3',  # Hellgrau
-                        opacity=0.1,  # 10% Opacity (90% Transparenz)
+                        color='#D3D3D3',  # Hellgrau (heller als vorher)
+                        opacity=0.8,  # 80% Opacity (20% Transparenz)
                         smooth_shading=False,
                         show_scalar_bar=False,
                         reset_camera=False,

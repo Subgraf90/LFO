@@ -72,7 +72,11 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         if not has_data_to_plot:
             self.initialize_empty_plots()
             return
-        self.ax.clear()        
+        self.ax.clear()
+        
+        # Sammle alle geplotteten Daten für Achsen-Setup
+        all_x_data = []
+        all_y_data = []
 
         for key, value in calculation_Yaxis.items():
             # boleanabfrage. wenn show_in_plot true, wird der plot ausgeführt
@@ -81,6 +85,10 @@ class DrawSPLPlot_Yaxis(ModuleBase):
                     continue
                 x_data = value['x_data_yaxis']
                 y_data = value['y_data_yaxis']
+                
+                # Prüfe ob Arrays nicht leer sind
+                if len(x_data) == 0 or len(y_data) == 0:
+                    continue
 
                 # Abrufen der Farbe aus dem Wert des Schlüssels "color"
                 color = value.get('color', 'b')  # 'b' ist ein Standardwert, falls keine Farbe gefunden wird
@@ -95,6 +103,15 @@ class DrawSPLPlot_Yaxis(ModuleBase):
                             linewidth = 1.5  # Ausgewähltes Item
                 
                 self.ax.plot(x_data, y_data, label=key, color=color, linewidth=linewidth)
+                
+                # Sammle Daten für Achsen-Setup
+                all_x_data.extend(x_data)
+                all_y_data.extend(y_data)
+
+        # Prüfe ob tatsächlich Daten geplottet wurden
+        if len(all_x_data) == 0 or len(all_y_data) == 0:
+            self.initialize_empty_plots()
+            return
 
         # Sammle Segment-Grenzen für "aktuelle_simulation" (werden nach Achsen-Setup gezeichnet)
         segment_boundaries_to_draw = []
@@ -107,8 +124,8 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         self.ax.invert_xaxis()
 
         # Intelligente Y-Achse Ticks (Position) - adaptive Schrittweite
-        y_min_data = min(y_data)
-        y_max_data = max(y_data)
+        y_min_data = min(all_y_data)
+        y_max_data = max(all_y_data)
         
         # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
         current_ylim = self.ax.get_ylim()
@@ -127,14 +144,14 @@ class DrawSPLPlot_Yaxis(ModuleBase):
         
         # Adaptive X-Achse (SPL dB) - basierend auf sichtbarem Bereich
         current_xlim = self.ax.get_xlim()
-        if current_xlim[0] != min(x_data) or current_xlim[1] != max(x_data):
+        if current_xlim[0] != min(all_x_data) or current_xlim[1] != max(all_x_data):
             # Bereits gezoomt - verwende sichtbare Grenzen
             x_min_visible, x_max_visible = current_xlim
             self._update_spl_ticks(x_min_visible, x_max_visible)
         else:
             # Nicht gezoomt - verwende Daten-Grenzen
-            x_min_spl = min(x_data)
-            x_max_spl = max(x_data)
+            x_min_spl = min(all_x_data)
+            x_max_spl = max(all_x_data)
             self._update_spl_ticks(x_min_spl, x_max_spl)
         
         self.ax.yaxis.tick_right()

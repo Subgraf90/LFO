@@ -541,29 +541,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                     actor_name = name
                                     break
                     
-                    # 2) Vertikalflächen: vertical_spl_<surface_id>
+                    # 2) Vertikalflächen: vertical_spl_<surface_id> (direkt getroffen)
                     if isinstance(actor_name, str) and actor_name.startswith("vertical_spl_"):
                         surface_id = actor_name[len("vertical_spl_") :]
-                        print(f"[DEBUG] _handle_surface_click: Vertikale Surface geklickt: {surface_id}")
+                        print(f"[DEBUG] _handle_surface_click: Vertikale Surface direkt geklickt: {surface_id}")
                         self._select_surface_in_treewidget(surface_id)
                         return
                     
-                    # 3) Disabled-Batch-Flächen (horizontale Surfaces als Batch-Mesh)
-                    if isinstance(actor_name, str) and actor_name in (
-                        "surface_disabled_polygons_batch",
-                        "surface_disabled_edges_batch",
-                    ):
-                        print(f"[DEBUG] _handle_surface_click: Disabled-Surface-Batch geklickt ({actor_name}), delegiere an _handle_spl_surface_click")
-                        self._handle_spl_surface_click(click_pos)
-                        return
-                    
-                    # 4) SPL-Hauptfläche
-                    if actor_name == self.SURFACE_NAME:
-                        print("[DEBUG] _handle_surface_click: SPL-Hauptfläche geklickt, delegiere an _handle_spl_surface_click")
-                        self._handle_spl_surface_click(click_pos)
-                        return
-                    
-                    # 5) Kein klarer Actor → prüfe zuerst senkrechte Flächen mit Ray-Casting
+                    # 3) Prüfe zuerst senkrechte Flächen mit Ray-Casting (auch disabled)
+                    # Dies muss VOR der Prüfung auf planare Flächen passieren, damit senkrechte Flächen Vorrang haben
+                    # Auch wenn surface_disabled_polygons_batch getroffen wurde, prüfe ob dahinter eine senkrechte Fläche liegt
                     if (picked_actor is None or not isinstance(actor_name, str) or not actor_name.startswith("vertical_spl_")):
                         print(f"[DEBUG] _handle_surface_click: Prüfe senkrechte Flächen mit Ray-Casting (picked_actor={picked_actor}, actor_name={actor_name})")
                         # Berechne Ray vom Klickpunkt für Fallback-Prüfung
@@ -674,8 +661,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                                         if proj_length > 0:
                                                                             proj_point = ray_start + ray_dir * proj_length
                                                                             dist_to_center = np.linalg.norm(proj_point - mesh_center)
-                                                                            # Größere Toleranz für schräge Winkel: 5 Meter
-                                                                            if dist_to_center < 5.0:
+                                                                            # Toleranz für schräge Winkel bei senkrechten Flächen: 2 Meter
+                                                                            # (höher als bei planaren Flächen, da senkrechte Flächen bei schrägen Winkeln schwerer zu treffen sind)
+                                                                            if dist_to_center < 2.0:
                                                                                 best_t = t_max
                                                                                 best_surface_id = surface_id_candidate
                                                                                 print(f"[DEBUG] _handle_surface_click: Fallback-Bounding-Box für {surface_id_candidate}, dist={dist_to_center:.3f}")
@@ -687,9 +675,39 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                             self._select_surface_in_treewidget(best_surface_id)
                                             return
                     
-                    # 6) Kein klarer Actor → versuche generisch SPL-Surface
+                    # 4) Disabled-Batch-Flächen (horizontale Surfaces als Batch-Mesh)
+                    # Nur prüfen, wenn keine senkrechte Fläche gefunden wurde
+                    # HINWEIS: Diese sind nicht pickable, daher wird actor_name niemals auf diese zeigen
+                    # Wir müssen stattdessen immer _handle_spl_surface_click aufrufen, damit Ray-Casting
+                    # auch disabled Surfaces findet
+                    if isinstance(actor_name, str) and actor_name in (
+                        "surface_disabled_polygons_batch",
+                        "surface_disabled_edges_batch",
+                    ):
+                        print(f"[DEBUG] _handle_surface_click: Disabled-Surface-Batch geklickt ({actor_name}), delegiere an _handle_spl_surface_click")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 5) SPL-Hauptfläche oder andere pickable Surfaces
+                    # Auch hier müssen wir _handle_spl_surface_click aufrufen, damit Ray-Casting
+                    # die am nächsten zur Kamera liegende Surface findet (enabled oder disabled)
+                    if actor_name == self.SURFACE_NAME:
+                        print("[DEBUG] _handle_surface_click: SPL-Hauptfläche geklickt, delegiere an _handle_spl_surface_click für Ray-Casting")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 6) Kein klarer Actor → versuche generisch SPL-Surface mit Ray-Casting
+                    # Ray-Casting findet sowohl enabled als auch disabled Surfaces
                     if picked_point and len(picked_point) >= 3:
-                        print("[DEBUG] _handle_surface_click: Kein spezifischer Surface-Actor, aber PickPoint vorhanden → _handle_spl_surface_click")
+                        print("[DEBUG] _handle_surface_click: PickPoint vorhanden → _handle_spl_surface_click für Ray-Casting")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 7) Wenn ein pickable Actor gefunden wurde, aber nicht erkannt wurde,
+                    # verwende trotzdem Ray-Casting, um die am nächsten zur Kamera liegende
+                    # Surface zu finden (kann enabled oder disabled sein)
+                    if picked_actor is not None:
+                        print(f"[DEBUG] _handle_surface_click: Pickable Actor gefunden ({actor_name}), verwende Ray-Casting für Surface-Erkennung")
                         self._handle_spl_surface_click(click_pos)
                         return
             except ImportError:
@@ -699,7 +717,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 except Exception:
                     pass
             
-            # Kein Actor gefunden - prüfe ob auf SPL-Surface geklickt wurde (für enabled Surfaces)
+            # Kein Actor gefunden - prüfe ob auf SPL-Surface geklickt wurde (für enabled und disabled Surfaces)
+            # Ray-Casting findet sowohl enabled als auch disabled Surfaces
+            print("[DEBUG] _handle_surface_click: Kein Actor gefunden, verwende Ray-Casting für Surface-Erkennung")
             self._handle_spl_surface_click(click_pos)
         except Exception as e:  # noqa: BLE001
             # Bei Fehler einfach ignorieren
@@ -1043,7 +1063,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                         
                                         # Wenn Ray die Bounding Box schneidet (t_min <= t_max) oder sehr nah ist
                                         intersects = t_min <= t_max and t_max >= 0
-                                        is_close = dist_to_ray < 2.0  # Max 2 Meter Distanz
+                                        is_close = dist_to_ray < 0.5  # Max 50 cm Distanz
                                         
                                         if intersects or is_close:
                                             # Kombinierte Distanz: Distanz zum Ray + Distanz entlang des Rays
@@ -1055,7 +1075,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                 closest_speaker_info = (key, cached_actor_name)
                                                 print(f"[DEBUG] _handle_speaker_click: Found speaker actor: {cached_actor_name}, dist_to_ray={dist_to_ray:.3f}, proj_length={proj_length:.3f}, combined_dist={combined_dist:.3f}")
                         
-                        if speaker_actor_at_click and min_dist < 5.0:  # Max 5 Meter kombinierte Distanz
+                        if speaker_actor_at_click and min_dist < 0.5:  # Max 50 cm kombinierte Distanz
                             print(f"[DEBUG] _handle_speaker_click: Using prioritized speaker actor: {closest_speaker_info[1]}, dist={min_dist:.3f}")
                         else:
                             speaker_actor_at_click = None
@@ -1159,7 +1179,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                         closest_actor = actor
                                                         print(f"[DEBUG] _handle_speaker_click: Found closer actor: {name}, dist={dist}")
                             
-                            if closest_actor and min_dist < 10.0:  # Max 10 Meter Distanz
+                            if closest_actor and min_dist < 0.5:  # Max 50 cm Distanz
                                 picked_actor = closest_actor
                                 print(f"[DEBUG] _handle_speaker_click: Using closest actor from ray-casting, dist={min_dist}")
                     
@@ -1230,7 +1250,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                         closest_speaker_info = (key, cached_actor_name)
                                                         print(f"[DEBUG] _handle_speaker_click: Found closer speaker actor: {cached_actor_name}, dist={dist}")
                                 
-                                if closest_speaker_actor and min_dist < 5.0:  # Max 5 Meter Distanz
+                                if closest_speaker_actor and min_dist < 0.5:  # Max 50 cm Distanz
                                     array_id, speaker_idx, geom_idx = closest_speaker_info[0]
                                     actor_name = closest_speaker_info[1]
                                     print(f"[DEBUG] _handle_speaker_click: Using closest speaker actor from fallback: {actor_name}, array_id={array_id}, dist={min_dist}")
@@ -1785,20 +1805,21 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Prüfe welche Surface (enabled oder disabled) den Ray schneidet
             surface_definitions = getattr(self.settings, 'surface_definitions', {})
             if not isinstance(surface_definitions, dict):
+                print(f"[DEBUG] _handle_spl_surface_click: Keine surface_definitions gefunden")
                 return
+            
+            print(f"[DEBUG] _handle_spl_surface_click: Prüfe {len(surface_definitions)} Surfaces mit Ray-Casting")
             
             # Durchsuche alle Surfaces (enabled und disabled)
             checked_count = 0
-            skipped_disabled = 0
             skipped_hidden = 0
             skipped_too_few_points = 0
             
-            # Zuerst prüfe enabled Surfaces (höhere Priorität) und merke den nächstgelegenen Treffer
+            # Prüfe alle Surfaces (enabled und disabled) gleichberechtigt, sortiert nur nach Distanz zur Kamera
             best_surface_id: str | None = None
             best_t: float = float("inf")
-            best_is_disabled = False
 
-            # Enabled Surfaces
+            # Prüfe alle Surfaces in einer Schleife (enabled und disabled gleichberechtigt)
             for surface_id, surface_def in surface_definitions.items():
                 # Normalisiere Surface-Definition
                 if isinstance(surface_def, SurfaceDefinition):
@@ -1819,73 +1840,96 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     skipped_too_few_points += 1
                     continue
                 
-                if not enabled:
-                    skipped_disabled += 1
-                    # Prüfe disabled Surfaces später (niedrigere Priorität)
-                    continue
-                
+                # Prüfe sowohl enabled als auch disabled Surfaces (keine Priorität)
                 checked_count += 1
                 
                 # Fallback-Z für konstante Ebene aus erstem Punkt
                 fallback_z = float(points[0].get("z", 0.0)) if points else 0.0
                 
-                # Berechne plane_model dynamisch, falls nicht vorhanden
-                if plane_model is None:
-                    plane_model, _ = derive_surface_plane(points)
-                    # Wenn plane_model immer noch None ist, verwende konstante Ebene
-                    if plane_model is None:
-                        plane_model = {"mode": "constant", "base": fallback_z, "intercept": fallback_z}
-
-                # Berechne Schnittpunkt des Rays mit der Ebene dieser Surface
-                intersect = _intersect_ray_with_surface_plane(ray_start, ray_dir, plane_model, fallback_z)
-                if intersect is None:
-                    continue
-                x_click, y_click, t_hit = intersect
-
-                # Berechne Bounding Box der Surface für schnelle Vorprüfung
+                # Extrahiere Koordinaten für Analyse
                 surface_xs = [p.get('x', 0.0) for p in points]
                 surface_ys = [p.get('y', 0.0) for p in points]
-                if surface_xs and surface_ys:
-                    min_x, max_x = min(surface_xs), max(surface_xs)
-                    min_y, max_y = min(surface_ys), max(surface_ys)
-                    
-                    # Schnelle Bounding-Box-Prüfung zuerst
-                    if x_click < min_x or x_click > max_x or y_click < min_y or y_click > max_y:
-                        continue
-                    
-                    # Prüfe ob Punkt in diesem Polygon liegt (nur X/Y, Z wird ignoriert)
-                    # Für schräge Flächen wird der Ray bereits mit der Ebene geschnitten,
-                    # daher ist die XY-Prüfung ausreichend
-                    is_inside = self._point_in_polygon(x_click, y_click, points)
-                    
-                    if is_inside and t_hit < best_t:
-                        best_t = t_hit
-                        best_surface_id = str(surface_id)
-                        best_is_disabled = False
-            
-            # Prüfe zusätzlich disabled Surfaces (niedrigere Priorität, aber evtl. näher am Ray)
-            # (immer prüfen, auch wenn enabled Surfaces gefunden wurden, falls der Klick auf disabled Surface war)
-            if skipped_disabled > 0:
-                # Prüfe disabled Surfaces
-                for surface_id, surface_def in surface_definitions.items():
-                    # Normalisiere Surface-Definition
-                    if isinstance(surface_def, SurfaceDefinition):
-                        enabled = bool(getattr(surface_def, 'enabled', False))
-                        hidden = bool(getattr(surface_def, 'hidden', False))
-                        points = getattr(surface_def, 'points', []) or []
-                        plane_model = getattr(surface_def, 'plane_model', None)
-                    else:
-                        enabled = surface_def.get('enabled', False)
-                        hidden = surface_def.get('hidden', False)
-                        points = surface_def.get('points', [])
-                        plane_model = surface_def.get('plane_model')
-                    
-                    if enabled or hidden or len(points) < 3:
-                        continue
-                    
-                    # Fallback-Z für konstante Ebene aus erstem Punkt
-                    fallback_z = float(points[0].get("z", 0.0)) if points else 0.0
-                    
+                surface_zs = [p.get('z', 0.0) for p in points]
+                
+                if not surface_xs or not surface_ys:
+                    continue
+                
+                # Prüfe ob Fläche senkrecht ist (analog zu _render_surfaces_textured)
+                poly_x = np.array(surface_xs, dtype=float)
+                poly_y = np.array(surface_ys, dtype=float)
+                poly_z = np.array(surface_zs, dtype=float)
+                
+                x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
+                y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
+                z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
+                
+                eps_line = 1e-6
+                has_height = z_span > 1e-3
+                is_vertical = False
+                wall_axis = None
+                wall_value = None
+                
+                # Prüfe ob senkrechte Fläche (X-Z-Wand oder Y-Z-Wand)
+                if y_span < eps_line and x_span >= eps_line and has_height:
+                    # X-Z-Wand: y ≈ const
+                    is_vertical = True
+                    wall_axis = "y"
+                    wall_value = float(np.mean(poly_y))
+                elif x_span < eps_line and y_span >= eps_line and has_height:
+                    # Y-Z-Wand: x ≈ const
+                    is_vertical = True
+                    wall_axis = "x"
+                    wall_value = float(np.mean(poly_x))
+                
+                # Für senkrechte Flächen: Ray-Casting mit der Fläche direkt
+                if is_vertical:
+                    # Berechne Schnittpunkt des Rays mit der senkrechten Fläche
+                    if wall_axis == "y":
+                        # X-Z-Wand: y = wall_value
+                        # Ray: ray_start + t * ray_dir
+                        # y = ray_start[1] + t * ray_dir[1] = wall_value
+                        if abs(ray_dir[1]) < 1e-8:
+                            continue  # Ray parallel zur Wand
+                        t_hit = (wall_value - ray_start[1]) / ray_dir[1]
+                        if t_hit <= 0:
+                            continue
+                        hit_point = ray_start + ray_dir * t_hit
+                        x_click = hit_point[0]
+                        y_click = wall_value
+                        z_click = hit_point[2]
+                        
+                        # Prüfe ob Punkt in X-Z-Projektion der Fläche liegt
+                        min_x, max_x = float(poly_x.min()), float(poly_x.max())
+                        min_z, max_z = float(poly_z.min()), float(poly_z.max())
+                        if x_click < min_x or x_click > max_x or z_click < min_z or z_click > max_z:
+                            continue
+                        
+                        # Prüfe ob Punkt in Polygon liegt (X-Z-Projektion)
+                        points_xz = [{"x": p.get("x", 0.0), "y": p.get("z", 0.0)} for p in points]
+                        is_inside = self._point_in_polygon(x_click, z_click, points_xz)
+                    else:  # wall_axis == "x"
+                        # Y-Z-Wand: x = wall_value
+                        if abs(ray_dir[0]) < 1e-8:
+                            continue  # Ray parallel zur Wand
+                        t_hit = (wall_value - ray_start[0]) / ray_dir[0]
+                        if t_hit <= 0:
+                            continue
+                        hit_point = ray_start + ray_dir * t_hit
+                        x_click = wall_value
+                        y_click = hit_point[1]
+                        z_click = hit_point[2]
+                        
+                        # Prüfe ob Punkt in Y-Z-Projektion der Fläche liegt
+                        min_y, max_y = float(poly_y.min()), float(poly_y.max())
+                        min_z, max_z = float(poly_z.min()), float(poly_z.max())
+                        if y_click < min_y or y_click > max_y or z_click < min_z or z_click > max_z:
+                            continue
+                        
+                        # Prüfe ob Punkt in Polygon liegt (Y-Z-Projektion)
+                        points_yz = [{"x": p.get("y", 0.0), "y": p.get("z", 0.0)} for p in points]
+                        is_inside = self._point_in_polygon(y_click, z_click, points_yz)
+                else:
+                    # Planare Fläche: verwende plane_model
                     # Berechne plane_model dynamisch, falls nicht vorhanden
                     if plane_model is None:
                         plane_model, _ = derive_surface_plane(points)
@@ -1899,27 +1943,39 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         continue
                     x_click, y_click, t_hit = intersect
 
-                    # Prüfe ob Punkt in diesem Polygon liegt
-                    surface_xs = [p.get('x', 0.0) for p in points]
-                    surface_ys = [p.get('y', 0.0) for p in points]
-                    if surface_xs and surface_ys:
-                        min_x, max_x = min(surface_xs), max(surface_xs)
-                        min_y, max_y = min(surface_ys), max(surface_ys)
-                        
-                        # Schnelle Bounding-Box-Prüfung zuerst
-                        if x_click < min_x or x_click > max_x or y_click < min_y or y_click > max_y:
-                            continue
-                        
-                        is_inside = self._point_in_polygon(x_click, y_click, points)
-                        if is_inside and t_hit < best_t:
-                            best_t = t_hit
-                            best_surface_id = str(surface_id)
-                            best_is_disabled = True
+                    # Berechne Bounding Box der Surface für schnelle Vorprüfung
+                    min_x, max_x = min(surface_xs), max(surface_xs)
+                    min_y, max_y = min(surface_ys), max(surface_ys)
+                    
+                    # Schnelle Bounding-Box-Prüfung zuerst
+                    if x_click < min_x or x_click > max_x or y_click < min_y or y_click > max_y:
+                        continue
+                    
+                    # Prüfe ob Punkt in diesem Polygon liegt (nur X/Y, Z wird ignoriert)
+                    # Für schräge Flächen wird der Ray bereits mit der Ebene geschnitten,
+                    # daher ist die XY-Prüfung ausreichend
+                    is_inside = self._point_in_polygon(x_click, y_click, points)
+                    t_hit = t_hit  # t_hit wurde bereits von _intersect_ray_with_surface_plane berechnet
+                
+                # Debug-Ausgabe und Auswahl (für beide Fälle: senkrecht und planar)
+                if is_inside:
+                    surface_type = "senkrecht" if is_vertical else "planar"
+                    print(f"[DEBUG] _handle_spl_surface_click: Surface {surface_id} (enabled={enabled}, {surface_type}) getroffen bei t={t_hit:.3f}, aktuell best_t={best_t:.3f}")
+                
+                # Wähle die am nächsten zur Kamera liegende Surface (unabhängig von enabled/disabled)
+                if is_inside and t_hit < best_t:
+                    best_t = t_hit
+                    best_surface_id = str(surface_id)
+                    surface_type = "senkrecht" if is_vertical else "planar"
+                    print(f"[DEBUG] _handle_spl_surface_click: Surface {surface_id} ({surface_type}) ist jetzt die beste (t={t_hit:.3f})")
             
             # Wähle die am nächsten zur Kamera liegende Surface, falls vorhanden
             if best_surface_id is not None:
+                print(f"[DEBUG] _handle_spl_surface_click: Wähle Surface {best_surface_id} (t={best_t:.3f})")
                 self._select_surface_in_treewidget(best_surface_id)
                 return
+            else:
+                print(f"[DEBUG] _handle_spl_surface_click: Keine Surface gefunden (checked={checked_count}, skipped_hidden={skipped_hidden}, skipped_too_few_points={skipped_too_few_points})")
             
             # Debug output removed
             
@@ -2564,6 +2620,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._surface_actors.pop(sid, None)
 
         # Zeichne alle aktiven Surfaces als Texturflächen
+        print(f"[DEBUG update_spl_plot] Rufe _render_surfaces_textured auf für SPL-Texturen auf enabled Surfaces")
         self._render_surfaces_textured(
             geometry,
             original_plot_values,
@@ -2573,6 +2630,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             colorization_mode_used,
             cbar_step,
         )
+        print(f"[DEBUG update_spl_plot] _render_surfaces_textured abgeschlossen")
+        
+        # 🎯 WICHTIG: Setze Signatur zurück, damit draw_surfaces nach update_overlays aufgerufen wird
+        # (um die graue Fläche zu entfernen, wenn SPL-Daten vorhanden sind)
+        if hasattr(self, '_last_overlay_signatures') and 'surfaces' in self._last_overlay_signatures:
+            # Entferne 'surfaces' aus der letzten Signatur, damit sie als geändert erkannt wird
+            prev_surf = self._last_overlay_signatures.get('surfaces')
+            print(f"[DEBUG update_spl_plot] Setze Surfaces-Signatur zurück (vorher: {prev_surf}), damit draw_surfaces aufgerufen wird")
+            # Setze auf None, damit die Signatur als geändert erkannt wird
+            self._last_overlay_signatures['surfaces'] = None
 
         # ------------------------------------------------------------
         # 🎯 SPL-Teppich (Floor) nur anzeigen, wenn KEINE Surfaces aktiv sind
@@ -2726,10 +2793,20 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         previous = self._last_overlay_signatures or {}
         if not previous:
             categories_to_refresh = set(signatures.keys())
+            print(f"[DEBUG update_overlays] Erste Signatur-Berechnung, alle Kategorien werden aktualisiert: {categories_to_refresh}")
         else:
             categories_to_refresh = {
                 key for key, value in signatures.items() if value != previous.get(key)
             }
+            # Debug: Prüfe ob surfaces-Signatur sich geändert hat
+            if 'surfaces' in categories_to_refresh:
+                prev_surf = previous.get('surfaces', None)
+                curr_surf = signatures.get('surfaces', None)
+                print(f"[DEBUG update_overlays] Surfaces-Signatur geändert! Vorher: {prev_surf}, Jetzt: {curr_surf}")
+            elif 'surfaces' not in categories_to_refresh:
+                prev_surf = previous.get('surfaces', None)
+                curr_surf = signatures.get('surfaces', None)
+                print(f"[DEBUG update_overlays] Surfaces-Signatur UNVERÄNDERT. Vorher: {prev_surf}, Jetzt: {curr_surf}")
         t_compare = time.perf_counter()
         
         if not categories_to_refresh:
@@ -3985,6 +4062,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     surface_obj = surface_def
                 if enabled and not hidden and len(points) >= 3:
                     enabled_surfaces.append((str(surface_id), points, surface_obj))
+        
+        print(f"[DEBUG _render_surfaces_textured] Gefunden: {len(enabled_surfaces)} enabled Surfaces für SPL-Textur-Rendering")
 
         # Nicht mehr benötigte Textur-Actors entfernen
         active_ids = {sid for sid, _, _ in enabled_surfaces}
@@ -4278,6 +4357,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         show_scalar_bar=False,
                         reset_camera=False,
                     )
+                    print(f"[DEBUG _render_surfaces_textured] SPL-Textur für Surface {surface_id} erstellt: {actor_name}")
                     # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
                     if hasattr(actor, 'SetPickable'):
                         actor.SetPickable(False)
@@ -4999,13 +5079,30 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             highlight_ids_tuple = tuple()
         
-        surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id, highlight_ids_tuple)
+        # 🎯 Prüfe ob SPL-Daten vorhanden sind (für Signatur, damit draw_surfaces nach update_spl_plot aufgerufen wird)
+        has_spl_data_for_signature = False
+        try:
+            if hasattr(self, 'plotter') and hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
+                spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
+                texture_actor_names = [name for name in self.plotter.renderer.actors.keys() if name.startswith('spl_surface_tex_')]
+                has_texture_actors = len(texture_actor_names) > 0
+                # Prüfe auch _surface_texture_actors direkt (falls Actors noch nicht im Renderer registriert sind)
+                has_texture_actors_direct = hasattr(self, '_surface_texture_actors') and len(self._surface_texture_actors) > 0
+                if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors or has_texture_actors_direct:
+                    has_spl_data_for_signature = True
+                    print(f"[DEBUG _compute_overlay_signatures] SPL-Daten gefunden: spl_surface={spl_surface_actor is not None}, spl_floor={spl_floor_actor is not None}, texture_actors={len(texture_actor_names)}, direct={has_texture_actors_direct}")
+        except Exception as e:
+            print(f"[DEBUG _compute_overlay_signatures] Fehler bei SPL-Daten-Prüfung: {e}")
+            pass
+        
+        surfaces_signature_with_active = (surfaces_signature_tuple, active_surface_id, highlight_ids_tuple, has_spl_data_for_signature)
         
         result = {
             'axis': axis_signature,
             'speakers': speakers_signature_with_highlights,  # Enthält Highlight-IDs für rote Umrandung
             'impulse': impulse_signature_tuple,
-            'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id und has_speaker_arrays
+            'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id, highlight_ids und has_spl_data
         }
         
         

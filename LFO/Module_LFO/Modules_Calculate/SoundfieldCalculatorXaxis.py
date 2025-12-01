@@ -313,6 +313,18 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         else:
             surface_segments = []
         
+        # 🎯 WICHTIG: Wenn keine enabled und nicht-hidden Surfaces die Linie schneiden, zeige Empty Plot
+        # Setze show_in_plot auf False und beende die Funktion früh
+        if not surface_segments:
+            self.calculation_spl["aktuelle_simulation"] = {
+                "x_data_xaxis": np.array([]),
+                "y_data_xaxis": np.array([]),
+                "show_in_plot": False,
+                "color": "#6A5ACD",
+                "segment_boundaries_xaxis": []
+            }
+            return
+        
         # Wenn Surface-Punkte gefunden wurden, verwende diese
         if surface_segments:
             # Berechne SPL pro Segment separat
@@ -347,16 +359,6 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             # Kombiniere alle Segmente
             sound_field_x_xaxis_calc = np.concatenate(all_interpolated_x)
             sound_field_p = np.concatenate(all_sound_field_p)
-            
-        else:
-            # 🚫 Keine XY-aktiven Surfaces → für X-Achse "Empty Plot" erzeugen
-            # Erzeuge konstante -inf-Kurve über die Breite, so dass der Plotter sie als leer interpretieren kann
-            sound_field_x_xaxis_calc = np.arange(
-                (self.settings.width / 2 * -1),
-                ((self.settings.width / 2) + resolution),
-                resolution,
-            )
-            sound_field_p = np.full_like(sound_field_x_xaxis_calc, 0.0, dtype=float)
     
         sound_field_p_calc = self.functions.mag2db(sound_field_p)
 
