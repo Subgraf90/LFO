@@ -707,7 +707,7 @@ class SPL3DOverlayRenderer:
                     polygon_mesh.faces = all_polygon_faces
                     
                     actor_name = "surface_disabled_polygons_batch"
-                    self.plotter.add_mesh(
+                    actor = self.plotter.add_mesh(
                         polygon_mesh,
                         name=actor_name,
                         color='#D3D3D3',  # Hellgrau
@@ -717,6 +717,13 @@ class SPL3DOverlayRenderer:
                         reset_camera=False,
                         show_edges=False,
                     )
+                    # WICHTIG: Disabled-Surfaces sollen nicht klickbar sein,
+                    # damit Klicks auf senkrechte/horizontale aktive Flächen dahinter ankommen.
+                    try:
+                        if actor is not None and hasattr(actor, "SetPickable"):
+                            actor.SetPickable(False)
+                    except Exception:
+                        pass
                     
                     if actor_name not in self.overlay_actor_names:
                         self.overlay_actor_names.append(actor_name)
@@ -753,7 +760,7 @@ class SPL3DOverlayRenderer:
                             pass
                     
                     edge_actor_name = "surface_disabled_edges_batch"
-                    self.plotter.add_mesh(
+                    edge_actor = self.plotter.add_mesh(
                         polyline_mesh,
                         name=edge_actor_name,
                         color='#000000',  # Schwarz
@@ -764,6 +771,12 @@ class SPL3DOverlayRenderer:
                         reset_camera=False,
                         render_lines_as_tubes=False,
                     )
+                    # Auch die Kanten der disabled-Surfaces nicht pickbar machen
+                    try:
+                        if edge_actor is not None and hasattr(edge_actor, "SetPickable"):
+                            edge_actor.SetPickable(False)
+                    except Exception:
+                        pass
                     
                     if edge_actor_name not in self.overlay_actor_names:
                         self.overlay_actor_names.append(edge_actor_name)

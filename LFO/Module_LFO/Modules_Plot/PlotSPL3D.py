@@ -548,9 +548,25 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         self._select_surface_in_treewidget(surface_id)
                         return
                     
-                    # 2b) Fallback: Prüfe senkrechte Flächen mit Ray-Casting, wenn Picker nichts gefunden hat
-                    if picked_actor is None or not isinstance(actor_name, str) or not actor_name.startswith("vertical_spl_"):
-                        # Berechne Ray vom Klickpunkt
+                    # 3) Disabled-Batch-Flächen (horizontale Surfaces als Batch-Mesh)
+                    if isinstance(actor_name, str) and actor_name in (
+                        "surface_disabled_polygons_batch",
+                        "surface_disabled_edges_batch",
+                    ):
+                        print(f"[DEBUG] _handle_surface_click: Disabled-Surface-Batch geklickt ({actor_name}), delegiere an _handle_spl_surface_click")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 4) SPL-Hauptfläche
+                    if actor_name == self.SURFACE_NAME:
+                        print("[DEBUG] _handle_surface_click: SPL-Hauptfläche geklickt, delegiere an _handle_spl_surface_click")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 5) Kein klarer Actor → prüfe zuerst senkrechte Flächen mit Ray-Casting
+                    if (picked_actor is None or not isinstance(actor_name, str) or not actor_name.startswith("vertical_spl_")):
+                        print(f"[DEBUG] _handle_surface_click: Prüfe senkrechte Flächen mit Ray-Casting (picked_actor={picked_actor}, actor_name={actor_name})")
+                        # Berechne Ray vom Klickpunkt für Fallback-Prüfung
                         render_size = renderer.GetSize()
                         if render_size[0] > 0 and render_size[1] > 0:
                             viewport_x = display_x
@@ -582,6 +598,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                         ray_dir = ray_dir / ray_len
                                         
                                         # Prüfe alle senkrechten Flächen
+                                        print(f"[DEBUG] _handle_surface_click: Prüfe {len(self._vertical_surface_meshes)} senkrechte Flächen")
                                         best_surface_id = None
                                         best_t = float('inf')
                                         
@@ -612,32 +629,56 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                                     t_max = max(t_max, min(t1, t2))
                                                             
                                                             if t_max >= 0 and t_min < best_t:
-                                                                # Prüfe ob Schnittpunkt innerhalb des Meshes liegt
-                                                                t_hit = t_max
-                                                                hit_point = ray_start + t_hit * ray_dir
-                                                                
-                                                                # Verwende VTK's PointLocator für präzise Prüfung
+                                                                # Verwende VTK's CellLocator für robuste Ray-Mesh-Intersection
+                                                                # CellLocator ist viel robuster bei schrägen Winkeln als PointLocator
                                                                 try:
-                                                                    from vtkmodules.vtkCommonDataModel import vtkPointLocator
-                                                                    locator = vtkPointLocator()
-                                                                    locator.SetDataSet(mesh)
-                                                                    locator.BuildLocator()
+                                                                    from vtkmodules.vtkCommonDataModel import vtkCellLocator
+                                                                    cell_locator = vtkCellLocator()
+                                                                    cell_locator.SetDataSet(mesh)
+                                                                    cell_locator.BuildLocator()
                                                                     
-                                                                    # Finde nächsten Punkt im Mesh
-                                                                    closest_point_id = locator.FindClosestPoint(hit_point)
-                                                                    if closest_point_id >= 0:
-                                                                        closest_point = mesh.GetPoint(closest_point_id)
-                                                                        dist = np.linalg.norm(np.array(hit_point) - np.array(closest_point))
-                                                                        
-                                                                        # Wenn Distanz klein genug, ist es ein Treffer
-                                                                        if dist < 1.0:  # Toleranz: 1 Meter
-                                                                            best_t = t_hit
-                                                                            best_surface_id = surface_id_candidate
-                                                                except Exception:
-                                                                    # Fallback: Wenn PointLocator fehlschlägt, verwende Bounding-Box
-                                                                    if t_max >= 0:
-                                                                        best_t = t_hit
+                                                                    # Ray-Casting: Finde Schnittpunkt des Rays mit dem Mesh
+                                                                    tolerance = 0.01  # Toleranz für Ray-Intersection (1 cm)
+                                                                    t_hit = [0.0]  # Output-Parameter für t
+                                                                    x_hit = [0.0, 0.0, 0.0]  # Output-Parameter für Schnittpunkt
+                                                                    pcoords = [0.0, 0.0, 0.0]  # Output-Parameter für Zellkoordinaten
+                                                                    sub_id = [0]  # Output-Parameter für Sub-Zell-ID
+                                                                    cell_id = cell_locator.IntersectWithLine(
+                                                                        ray_start.tolist(),
+                                                                        (ray_start + ray_dir * 1000.0).tolist(),  # Ray-Endpunkt weit weg
+                                                                        tolerance,
+                                                                        t_hit,
+                                                                        x_hit,
+                                                                        pcoords,
+                                                                        sub_id
+                                                                    )
+                                                                    
+                                                                    # Wenn eine Zelle getroffen wurde (cell_id >= 0)
+                                                                    if cell_id >= 0 and t_hit[0] >= 0 and t_hit[0] < best_t:
+                                                                        best_t = t_hit[0]
                                                                         best_surface_id = surface_id_candidate
+                                                                        print(f"[DEBUG] _handle_surface_click: Ray schneidet senkrechte Fläche {surface_id_candidate} bei t={t_hit[0]:.3f}")
+                                                                except Exception as e:
+                                                                    # Fallback: Wenn CellLocator fehlschlägt, verwende Bounding-Box mit größerer Toleranz
+                                                                    print(f"[DEBUG] _handle_surface_click: CellLocator fehlgeschlagen für {surface_id_candidate}: {e}")
+                                                                    # Verwende t_max (nähester Punkt der Bounding-Box) mit größerer Toleranz
+                                                                    if t_max >= 0 and t_max < best_t:
+                                                                        # Berechne Distanz vom Ray zum Mesh-Zentrum als zusätzliche Prüfung
+                                                                        mesh_center = np.array([
+                                                                            (bounds[0] + bounds[1]) / 2.0,
+                                                                            (bounds[2] + bounds[3]) / 2.0,
+                                                                            (bounds[4] + bounds[5]) / 2.0,
+                                                                        ])
+                                                                        ray_to_center = mesh_center - ray_start
+                                                                        proj_length = np.dot(ray_to_center, ray_dir)
+                                                                        if proj_length > 0:
+                                                                            proj_point = ray_start + ray_dir * proj_length
+                                                                            dist_to_center = np.linalg.norm(proj_point - mesh_center)
+                                                                            # Größere Toleranz für schräge Winkel: 5 Meter
+                                                                            if dist_to_center < 5.0:
+                                                                                best_t = t_max
+                                                                                best_surface_id = surface_id_candidate
+                                                                                print(f"[DEBUG] _handle_surface_click: Fallback-Bounding-Box für {surface_id_candidate}, dist={dist_to_center:.3f}")
                                             except Exception:
                                                 continue
                                         
@@ -646,22 +687,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                             self._select_surface_in_treewidget(best_surface_id)
                                             return
                     
-                    # 3) Disabled-Batch-Flächen (horizontale Surfaces als Batch-Mesh)
-                    if isinstance(actor_name, str) and actor_name in (
-                        "surface_disabled_polygons_batch",
-                        "surface_disabled_edges_batch",
-                    ):
-                        print(f"[DEBUG] _handle_surface_click: Disabled-Surface-Batch geklickt ({actor_name}), delegiere an _handle_spl_surface_click")
-                        self._handle_spl_surface_click(click_pos)
-                        return
-                    
-                    # 4) SPL-Hauptfläche
-                    if actor_name == self.SURFACE_NAME:
-                        print("[DEBUG] _handle_surface_click: SPL-Hauptfläche geklickt, delegiere an _handle_spl_surface_click")
-                        self._handle_spl_surface_click(click_pos)
-                        return
-                    
-                    # 5) Kein klarer Actor → versuche generisch SPL-Surface
+                    # 6) Kein klarer Actor → versuche generisch SPL-Surface
                     if picked_point and len(picked_point) >= 3:
                         print("[DEBUG] _handle_surface_click: Kein spezifischer Surface-Actor, aber PickPoint vorhanden → _handle_spl_surface_click")
                         self._handle_spl_surface_click(click_pos)
