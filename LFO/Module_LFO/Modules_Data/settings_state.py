@@ -209,6 +209,11 @@ class Settings:
             'a_source_db': 94,
             'position_x_axis': 0,
             'position_y_axis': 30,
+            # 3D-Achsen-Darstellung
+            # axis_3d_view: False  -> Nur Linien
+            # axis_3d_transparency in Prozent (0 = voll sichtbar, 100 = komplett transparent)
+            'axis_3d_view': False,
+            'axis_3d_transparency': 10.0,
             'freq_index': 3,
             'window_resolution': 10000,
             'window_std': 1000,
@@ -286,6 +291,8 @@ class Settings:
             'a_source_db': self.a_source_db,
             'position_x_axis': self.position_x_axis,
             'position_y_axis': self.position_y_axis,
+            'axis_3d_view': getattr(self, 'axis_3d_view', False),
+            'axis_3d_transparency': getattr(self, 'axis_3d_transparency', 10.0),
             'freq_index': self.freq_index,
             'window_resolution': self.window_resolution,
             'window_std': self.window_std,

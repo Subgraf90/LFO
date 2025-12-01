@@ -3,17 +3,13 @@ from __future__ import annotations
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+    derive_surface_plane,
+    _points_in_polygon_batch_uv,
+)
 from typing import List, Dict, Tuple, Optional, Any
 
 DEBUG_SOUNDFIELD = bool(int(__import__("os").environ.get("LFO_DEBUG_SOUNDFIELD", "1")))
-
-# Optional: ShadowCalculator für Schattenberechnung
-try:
-    from Module_LFO.Modules_Calculate.ShadowCalculator import ShadowCalculator
-    SHADOW_CALCULATOR_AVAILABLE = True
-except ImportError:
-    SHADOW_CALCULATOR_AVAILABLE = False
-    ShadowCalculator = None
 
 
 class SoundFieldCalculator(ModuleBase):
@@ -33,14 +29,6 @@ class SoundFieldCalculator(ModuleBase):
         
         # 🎯 GRID-CALCULATOR: Separate Instanz für Grid-Erstellung
         self._grid_calculator = SurfaceGridCalculator(settings)
-        
-        # 🎯 SHADOW-CALCULATOR: Optional für Schattenberechnung (nur bei Superposition)
-        self._shadow_calculator = None
-        if SHADOW_CALCULATOR_AVAILABLE:
-            try:
-                self._shadow_calculator = ShadowCalculator(settings)
-            except Exception:
-                self._shadow_calculator = None
    
     def calculate_soundfield_pressure(self):
         (
@@ -178,59 +166,26 @@ class SoundFieldCalculator(ModuleBase):
         ny_points = len(sound_field_y)
         surface_meshes = self._grid_calculator.get_surface_meshes()
         surface_samples = self._grid_calculator.get_surface_sampling_points()
+        # Sichtbarkeits-Occluder aus aktuellen Surface-Definitionen ableiten
+        # HINWEIS: Occlusion / Schattenbildung vorübergehend deaktiviert
+        occluders: List[Dict[str, Any]] = []
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         surface_mask_flat = surface_mask.reshape(-1)
-        
-        # 🎯 DEBUG: Prüfe ob Hindernisfläche in surface_mask enthalten ist
-        if DEBUG_SOUNDFIELD and enabled_surfaces:
-            # Finde Hindernis-Surfaces (vertikale oder mit signifikanter Z-Ausdehnung)
-            obstacle_surfaces = []
-            for surface_id, surface_dict in enabled_surfaces:
-                points = surface_dict.get("points", [])
-                if len(points) >= 3:
-                    zs = [p.get("z", 0.0) for p in points]
-                    z_span = max(zs) - min(zs) if zs else 0.0
-                    if z_span > 0.5:  # Signifikante Z-Ausdehnung
-                        obstacle_surfaces.append(surface_id)
-            
-            if obstacle_surfaces:
-                # Prüfe ob Punkte auf Hindernis-Surfaces in surface_mask enthalten sind
-                for obstacle_id in obstacle_surfaces:
-                    obstacle_dict = next((s[1] for s in enabled_surfaces if s[0] == obstacle_id), None)
-                    if obstacle_dict:
-                        points = obstacle_dict.get("points", [])
-                        if len(points) >= 3:
-                            # Prüfe ob Mittelpunkt des Hindernisses in surface_mask enthalten ist
-                            xs = [p.get("x", 0.0) for p in points]
-                            ys = [p.get("y", 0.0) for p in points]
-                            center_x = (min(xs) + max(xs)) / 2.0
-                            center_y = (min(ys) + max(ys)) / 2.0
-                            
-                            # Finde nächsten Grid-Punkt
-                            distances = np.sqrt((X_grid - center_x)**2 + (Y_grid - center_y)**2)
-                            min_idx = np.unravel_index(np.argmin(distances), X_grid.shape)
-                            mask_value = surface_mask[min_idx]
-                            
-                            print(
-                                f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
-                                f"Center=({center_x:.3f}, {center_y:.3f}), "
-                                f"surface_mask={mask_value} (True=in Maske, False=nicht in Maske)"
-                            )
-        
-        # ============================================================
-        # SCHATTEN-BERECHNUNG (nur bei Superposition)
-        # ============================================================
-        # Bei Superposition verhält sich Schall wie Licht: direkter Schatten,
-        # keine Beugung. Punkte im Schatten werden NICHT berechnet.
-        # Bei FEM/FDTD wird Schatten NICHT angewendet, da Beugung berücksichtigt wird.
-        # 
-        # WICHTIG: Schatten wird PRO LAUTSPRECHER geprüft!
-        # Jeder Lautsprecher prüft einzeln, ob ein Hindernis zwischen ihm und dem Punkt liegt.
-        shadow_calculator_ready = (
-            self._shadow_calculator is not None 
-            and enabled_surfaces
-            and getattr(self.settings, "enable_shadow_calculation", True)
-        )
+        # Optionaler Diagnose-Check zur Symmetrie von Grid & Masken
+        if DEBUG_SOUNDFIELD:
+            try:
+                self._debug_check_grid_and_mask_symmetry(
+                    sound_field_x,
+                    sound_field_y,
+                    X_grid,
+                    Y_grid,
+                    Z_grid,
+                    surface_mask,
+                    enabled_surfaces,
+                )
+            except Exception as e:
+                print(f"[SoundFieldCalculator] Symmetrie-Check konnte nicht ausgeführt werden: {e}")
+
         surface_field_buffers: Dict[str, np.ndarray] = {}
         surface_point_buffers: Dict[str, np.ndarray] = {}
         if surface_samples:
@@ -414,280 +369,15 @@ class SoundFieldCalculator(ModuleBase):
                         "polarity": polarity_flag,
                         "distances": source_dists.reshape(-1),
                     }
-                    # ============================================================
-                    # SCHATTEN-PRÜFUNG PRO LAUTSPRECHER
-                    # ============================================================
-                    # Prüfe für DIESEN spezifischen Lautsprecher, ob ein Hindernis
-                    # zwischen ihm und jedem Punkt liegt
-                    # 🎯 WICHTIG: Initialisiere combined_mask mit surface_mask
-                    # (Punkte außerhalb von Surfaces werden sowieso nicht berechnet)
-                    combined_mask = surface_mask_flat.copy() if surface_mask_flat is not None else None
-                    
-                    if shadow_calculator_ready:
-                        try:
-                            import time
-                            shadow_start_time = time.time()
-                            
-                            # Prüfe Schatten nur für DIESEN Lautsprecher
-                            # WICHTIG: Verwende akustische Positionen (source_position_calc_*)
-                            # aus SpeakerPositionCalculator (berechnet in calculate_stack_center)
-                            source_pos_single = [
-                                (
-                                    float(source_position_x[isrc]),
-                                    float(source_position_y[isrc]),
-                                    float(source_position_z[isrc]),
-                                )
-                            ]
-                            
-                            # Debug: Zeige verwendete akustische Position
-                            if DEBUG_SOUNDFIELD:
-                                print(
-                                    f"[SoundFieldCalculator] ===== Schatten-Berechnung für Lautsprecher {isrc} ({speaker_name}) ====="
-                                )
-                                print(
-                                    f"[SoundFieldCalculator] Akustische Position: ({source_pos_single[0][0]:.3f}, "
-                                    f"{source_pos_single[0][1]:.3f}, {source_pos_single[0][2]:.3f}) m"
-                                )
-                                print(
-                                    f"[SoundFieldCalculator] Grid-Punkte: {len(grid_points)}, "
-                                    f"Enabled Surfaces: {len(enabled_surfaces)}"
-                                )
-                            
-                            # Berechne Schatten-Maske nur für diesen Lautsprecher
-                            # 🎯 OPTIMIERUNG: Resolution-basierte Toleranz (nur bei kleineren Grids)
-                            # Punkte im Schatten, die innerhalb der Resolution zu sichtbaren Punkten liegen,
-                            # werden trotzdem berechnet (für bessere Darstellung)
-                            # ⚠️ PERFORMANCE: Nur bei Grids < 10000 Punkten aktivieren
-                            resolution = self.settings.resolution
-                            num_grid_points = len(grid_points)
-                            use_resolution_tolerance = num_grid_points < 10000
-                            
-                            if DEBUG_SOUNDFIELD:
-                                print(
-                                    f"[SoundFieldCalculator] Resolution-Toleranz: "
-                                    f"{'AKTIV' if use_resolution_tolerance else 'DEAKTIV'} "
-                                    f"(Grid-Punkte: {num_grid_points}, Threshold: 10000)"
-                                )
-                            
-                            # 🎯 Verwende compute_shadow_mask_for_calculation: Nur Punkte tief im Schatten werden deaktiviert
-                            # Randpunkte (mit benachbarten sichtbaren Punkten) werden trotzdem berechnet
-                            shadow_mask_this_source = self._shadow_calculator.compute_shadow_mask_for_calculation(
-                                grid_points,
-                                source_pos_single,
-                                enabled_surfaces,
-                                X_grid,
-                                Y_grid,
-                                tolerance=0.01,
-                            )
-                            
-                            shadow_time = time.time() - shadow_start_time
-                            
-                            # Debug: Zeige wie viele Punkte im Schatten sind
-                            if DEBUG_SOUNDFIELD:
-                                num_shadow = np.count_nonzero(shadow_mask_this_source)
-                                num_visible = len(grid_points) - num_shadow
-                                print(
-                                    f"[SoundFieldCalculator] Ergebnis: {num_shadow}/{len(grid_points)} Punkte im Schatten "
-                                    f"({100.0*num_shadow/len(grid_points):.1f}%), "
-                                    f"{num_visible} sichtbar ({100.0*num_visible/len(grid_points):.1f}%)"
-                                )
-                                print(
-                                    f"[SoundFieldCalculator] Berechnungszeit: {shadow_time:.3f}s "
-                                    f"({len(grid_points)/shadow_time:.0f} Punkte/s)"
-                                )
-                                
-                                # 🎯 DEBUG: Prüfe speziell für Hindernis 'test_2'
-                                obstacle_id = 'test_2'
-                                obstacle_dict = next((s[1] for s in enabled_surfaces if s[0] == obstacle_id), None)
-                                if obstacle_dict:
-                                    points = obstacle_dict.get("points", [])
-                                    if len(points) >= 3:
-                                        xs = [p.get("x", 0.0) for p in points]
-                                        ys = [p.get("y", 0.0) for p in points]
-                                        zs = [p.get("z", 0.0) for p in points]
-                                        x_min, x_max = min(xs), max(xs)
-                                        y_min, y_max = min(ys), max(ys)
-                                        z_min, z_max = min(zs), max(zs)
-                                        
-                                        # Finde Punkte auf dem Hindernis
-                                        tolerance = 0.1
-                                        on_obstacle = (
-                                            (grid_points[:, 0] >= x_min - tolerance) &
-                                            (grid_points[:, 0] <= x_max + tolerance) &
-                                            (grid_points[:, 1] >= y_min - tolerance) &
-                                            (grid_points[:, 1] <= y_max + tolerance) &
-                                            (grid_points[:, 2] >= z_min - tolerance) &
-                                            (grid_points[:, 2] <= z_max + tolerance)
-                                        )
-                                        
-                                        num_on_obstacle = np.count_nonzero(on_obstacle)
-                                        num_on_obstacle_in_shadow = np.count_nonzero(on_obstacle & shadow_mask_this_source)
-                                        num_on_obstacle_visible = num_on_obstacle - num_on_obstacle_in_shadow
-                                        
-                                        print(
-                                            f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
-                                            f"{num_on_obstacle} Punkte auf Hindernis, "
-                                            f"{num_on_obstacle_in_shadow} im Schatten, "
-                                            f"{num_on_obstacle_visible} sichtbar"
-                                        )
-                                        
-                                        # 🎯 DEBUG: Prüfe auch Punkte HINTER dem Hindernis (im Schatten)
-                                        # Finde Punkte, die im Schatten sind, aber NICHT auf dem Hindernis
-                                        points_in_shadow_not_on_obstacle = shadow_mask_this_source & ~on_obstacle
-                                        num_in_shadow_not_on_obstacle = np.count_nonzero(points_in_shadow_not_on_obstacle)
-                                        print(
-                                            f"[SoundFieldCalculator] Punkte HINTER '{obstacle_id}' (im Schatten, nicht auf Hindernis): "
-                                            f"{num_in_shadow_not_on_obstacle} Punkte"
-                                        )
-                                        
-                                        # Prüfe auch surface_mask
-                                        num_on_obstacle_in_surface_mask = np.count_nonzero(on_obstacle & surface_mask_flat)
-                                        print(
-                                            f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
-                                            f"{num_on_obstacle_in_surface_mask}/{num_on_obstacle} Punkte in surface_mask"
-                                        )
-                                        
-                            # 🎯 WICHTIG: Entferne Punkte auf Hindernissen aus der Schatten-Maske
-                            # Punkte auf Hindernissen sollen IMMER sichtbar sein (nicht im Schatten)
-                            # Finde alle Hindernisse und deren Punkte
-                            obstacle_points_mask = np.zeros(len(grid_points), dtype=bool)
-                            for surface_id, surface_dict in enabled_surfaces:
-                                points = surface_dict.get("points", [])
-                                if len(points) < 3:
-                                    continue
-                                
-                                # Prüfe ob Surface ein Hindernis ist (vertikal oder signifikante Z-Ausdehnung)
-                                zs = [p.get("z", 0.0) for p in points]
-                                z_span = max(zs) - min(zs) if zs else 0.0
-                                
-                                if z_span < 0.5:  # Weniger als 50cm Z-Ausdehnung → kein Hindernis
-                                    continue
-                                
-                                # Finde Punkte auf diesem Hindernis
-                                xs = [p.get("x", 0.0) for p in points]
-                                ys = [p.get("y", 0.0) for p in points]
-                                x_min, x_max = min(xs), max(xs)
-                                y_min, y_max = min(ys), max(ys)
-                                z_min, z_max = min(zs), max(zs)
-                                
-                                tolerance = 0.2  # 20cm Toleranz
-                                on_this_obstacle = (
-                                    (grid_points[:, 0] >= x_min - tolerance) &
-                                    (grid_points[:, 0] <= x_max + tolerance) &
-                                    (grid_points[:, 1] >= y_min - tolerance) &
-                                    (grid_points[:, 1] <= y_max + tolerance) &
-                                    (grid_points[:, 2] >= z_min - tolerance) &
-                                    (grid_points[:, 2] <= z_max + tolerance)
-                                )
-                                
-                                obstacle_points_mask |= on_this_obstacle
-                            
-                            # 🎯 DEBUG: Berechne VOR der Korrektur, wie viele Punkte entfernt werden
-                            if DEBUG_SOUNDFIELD:
-                                num_obstacle_points = np.count_nonzero(obstacle_points_mask)
-                                num_obstacle_points_in_shadow_before = np.count_nonzero(obstacle_points_mask & shadow_mask_this_source)
-                            
-                            # Entferne Punkte auf Hindernissen aus der Schatten-Maske
-                            shadow_mask_this_source = shadow_mask_this_source & ~obstacle_points_mask
-                            
-                            if DEBUG_SOUNDFIELD:
-                                print(
-                                    f"[SoundFieldCalculator] {num_obstacle_points} Punkte auf Hindernissen gefunden, "
-                                    f"{num_obstacle_points_in_shadow_before} aus Schatten-Maske entfernt "
-                                    f"(von {num_obstacle_points} waren {num_obstacle_points_in_shadow_before} im Schatten)"
-                                )
-                                        
-                            # Invertiere: True = sichtbar von diesem Lautsprecher, False = im Schatten
-                            visible_from_this_source = ~shadow_mask_this_source
-                            
-                            # 🎯 WICHTIG: 
-                            # - Punkte auf Hindernissen, die von diesem Lautsprecher sichtbar sind → berechnen
-                            # - Punkte auf Hindernissen, die im Schatten sind → nicht berechnen
-                            # - Punkte hinter Hindernissen → nicht berechnen (im Schatten)
-                            # Die Schatten-Maske sollte bereits korrekt sein: Punkte auf Hindernissen
-                            # werden nicht als Schatten markiert (siehe ShadowCalculator Logik)
-                            
-                            # 🎯 DEBUG: Prüfe combined_mask VOR Kombination
-                            if DEBUG_SOUNDFIELD:
-                                num_in_shadow = np.count_nonzero(shadow_mask_this_source)
-                                num_in_surface = np.count_nonzero(surface_mask_flat) if surface_mask_flat is not None else len(grid_points)
-                                num_in_combined_before = np.count_nonzero(combined_mask) if combined_mask is not None else len(grid_points)
-                                # Prüfe wie viele Punkte im Schatten sind, die NICHT in surface_mask sind
-                                if surface_mask_flat is not None:
-                                    num_in_shadow_not_in_surface = np.count_nonzero(shadow_mask_this_source & ~surface_mask_flat)
-                                else:
-                                    num_in_shadow_not_in_surface = 0
-                                print(
-                                    f"[SoundFieldCalculator] VOR Kombination: "
-                                    f"{num_in_shadow} Punkte im Schatten "
-                                    f"(davon {num_in_shadow_not_in_surface} NICHT in surface_mask), "
-                                    f"{num_in_surface} in surface_mask, "
-                                    f"{num_in_combined_before} in combined_mask"
-                                )
-                            
-                            if combined_mask is not None:
-                                # Kombiniere: Punkt muss in Surface UND von diesem Lautsprecher sichtbar sein
-                                combined_mask = combined_mask & visible_from_this_source
-                            else:
-                                combined_mask = visible_from_this_source
-                            
-                            # 🎯 DEBUG: Prüfe combined_mask NACH Kombination
-                            if DEBUG_SOUNDFIELD:
-                                num_in_combined_after = np.count_nonzero(combined_mask) if combined_mask is not None else 0
-                                num_removed_from_combined = num_in_combined_before - num_in_combined_after
-                                print(
-                                    f"[SoundFieldCalculator] NACH Kombination: "
-                                    f"{num_in_combined_after} in combined_mask, "
-                                    f"{num_removed_from_combined} Punkte entfernt (sollten im Schatten sein)"
-                                )
-                            
-                            # 🎯 DEBUG: Prüfe combined_mask NACH Kombination
-                            if DEBUG_SOUNDFIELD and enabled_surfaces:
-                                for obstacle_id in obstacle_surfaces:
-                                    obstacle_dict = next((s[1] for s in enabled_surfaces if s[0] == obstacle_id), None)
-                                    if obstacle_dict:
-                                        points = obstacle_dict.get("points", [])
-                                        if len(points) >= 3:
-                                            xs = [p.get("x", 0.0) for p in points]
-                                            ys = [p.get("y", 0.0) for p in points]
-                                            zs = [p.get("z", 0.0) for p in points]
-                                            x_min, x_max = min(xs), max(xs)
-                                            y_min, y_max = min(ys), max(ys)
-                                            z_min, z_max = min(zs), max(zs)
-                                            
-                                            tolerance = 0.1
-                                            on_obstacle = (
-                                                (grid_points[:, 0] >= x_min - tolerance) &
-                                                (grid_points[:, 0] <= x_max + tolerance) &
-                                                (grid_points[:, 1] >= y_min - tolerance) &
-                                                (grid_points[:, 1] <= y_max + tolerance) &
-                                                (grid_points[:, 2] >= z_min - tolerance) &
-                                                (grid_points[:, 2] <= z_max + tolerance)
-                                            )
-                                            
-                                            num_on_obstacle = np.count_nonzero(on_obstacle)
-                                            if combined_mask is not None:
-                                                num_on_obstacle_in_combined = np.count_nonzero(on_obstacle & combined_mask)
-                                                print(
-                                                    f"[SoundFieldCalculator] Hindernis '{obstacle_id}': "
-                                                    f"{num_on_obstacle_in_combined}/{num_on_obstacle} Punkte in combined_mask "
-                                                    f"(NACH Kombination mit Lautsprecher {isrc})"
-                                                )
-                                
-                        except Exception as exc:
-                            if DEBUG_SOUNDFIELD:
-                                print(
-                                    f"[SoundFieldCalculator] Fehler bei Schattenprüfung für Lautsprecher {isrc}: {exc}"
-                                )
-                                import traceback
-                                traceback.print_exc()
-                            # Bei Fehler: verwende nur Surface-Maske (kein Schatten)
-                            pass
-                    
+
+                    # 🎯 MASKEN-LOGIK: Nur Punkte auf aktiven Surfaces berechnen
                     mask_options = {
                         "min_distance": 0.001,
-                        "additional_mask": combined_mask,
                     }
+                    # Sichtbarkeitsmaske (Raytracing gegen vertikale Flächen)
+                    # Occlusion-Logik aktuell deaktiviert: nur Surface-Maske verwenden
+                    if surface_mask_flat is not None:
+                        mask_options["additional_mask"] = surface_mask_flat
                     wave_flat = self._compute_wave_for_points(
                         grid_points,
                         source_position,
@@ -755,11 +445,14 @@ class SoundFieldCalculator(ModuleBase):
                                 "polarity": polarity_flag,
                                 "distances": sample_dists,
                             }
+
+                            # Occlusion-Logik aktuell deaktiviert
+                            mask_options_samples = {"min_distance": 0.001}
                             sample_wave = self._compute_wave_for_points(
                                 coords,
                                 source_position,
                                 sample_props,
-                                {"min_distance": 0.001},
+                                mask_options_samples,
                             )
                             point_buffer += sample_wave
                     if capture_arrays:
@@ -809,11 +502,6 @@ class SoundFieldCalculator(ModuleBase):
                 self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
             else:
                 self.calculation_spl['surface_mask_strict'] = surface_mask.astype(bool).tolist()
-            
-            # 🎯 Schatten-Maske wird nicht mehr global gespeichert,
-            # da sie pro Lautsprecher berechnet wird
-            # (könnte später für Visualisierung erweitert werden)
-            self.calculation_spl['shadow_mask'] = None
             if surface_meshes:
                 self.calculation_spl['surface_meshes'] = [
                     mesh.to_payload() for mesh in surface_meshes
@@ -1229,3 +917,310 @@ class SoundFieldCalculator(ModuleBase):
                 enabled.append((surface_id, surface_data))
         
         return enabled
+
+    # ============================================================
+    # RAYTRACING / SICHTBARKEITSPRÜFUNG
+    # ============================================================
+
+    def _build_vertical_occluders(
+        self, enabled_surfaces: List[Tuple[str, Dict]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Baut eine Liste einfacher vertikaler Occluder-Flächen auf.
+
+        Für Rechenaufwand-Schonung werden nur klar senkrechte Flächen
+        betrachtet, deren XY-Projektion praktisch eine Linie ist:
+        - XZ-Wände:   y ≈ const  → axis='y'
+        - YZ-Wände:   x ≈ const  → axis='x'
+
+        Die Fläche wird als Rechteck in (u,z) angenähert; das genügt für
+        eine robuste Sichtbarkeitsprüfung.
+        """
+        occluders: List[Dict[str, Any]] = []
+        if not enabled_surfaces:
+            return occluders
+
+        for surface_id, surface_def in enabled_surfaces:
+            points = surface_def.get("points") or []
+            if len(points) < 3:
+                continue
+
+            # Versuche, ein planare Z(x,y)-Fläche zu erkennen. Wenn das
+            # gelingt, ist die Fläche nicht senkrecht und wird hier nicht
+            # als Occluder verwendet (sie wird bereits im Z_grid berücksichtigt).
+            try:
+                model, _ = derive_surface_plane(points)
+            except Exception:
+                model = None
+            if model is not None:
+                # Planare "Boden"- oder Rampenflächen -> keine vertikale Wand
+                continue
+
+            xs = np.array([float(p.get("x", 0.0)) for p in points], dtype=float)
+            ys = np.array([float(p.get("y", 0.0)) for p in points], dtype=float)
+            zs = np.array([float(p.get("z", 0.0)) for p in points], dtype=float)
+
+            x_span = float(np.ptp(xs))
+            y_span = float(np.ptp(ys))
+            z_span = float(np.ptp(zs))
+
+            # Echte vertikale Wand hat signifikante Höhe
+            if z_span <= 1e-3:
+                continue
+
+            # Fall 1: XZ-Wand (y ≈ const)
+            if y_span < 1e-6 and x_span >= 1e-6:
+                y_wall = float(np.mean(ys))
+                occluders.append(
+                    {
+                        "surface_id": surface_id,
+                        "axis": "y",
+                        "value": y_wall,
+                        "u_min": float(xs.min()),
+                        "u_max": float(xs.max()),
+                        "z_min": float(zs.min()),
+                        "z_max": float(zs.max()),
+                        # Polygon in (u,z) = (x,z)
+                        "poly_u": xs.copy(),
+                        "poly_v": zs.copy(),
+                    }
+                )
+            # Fall 2: YZ-Wand (x ≈ const)
+            elif x_span < 1e-6 and y_span >= 1e-6:
+                x_wall = float(np.mean(xs))
+                occluders.append(
+                    {
+                        "surface_id": surface_id,
+                        "axis": "x",
+                        "value": x_wall,
+                        "u_min": float(ys.min()),
+                        "u_max": float(ys.max()),
+                        "z_min": float(zs.min()),
+                        "z_max": float(zs.max()),
+                        # Polygon in (u,z) = (y,z)
+                        "poly_u": ys.copy(),
+                        "poly_v": zs.copy(),
+                    }
+                )
+
+        return occluders
+
+    def _compute_visibility_mask_for_source(
+        self,
+        source_position: np.ndarray,
+        grid_points: np.ndarray,
+        grid_z: np.ndarray,
+        occluders: List[Dict[str, Any]],
+        exclude_surface_ids: Optional[set] = None,
+    ) -> np.ndarray:
+        """
+        Berechnet für einen Lautsprecher eine Sichtbarkeitsmaske über alle
+        Berechnungspunkte mittels sehr einfacher Raytracing-Logik.
+
+        Für jede vertikale Fläche (Occluder) wird geprüft, ob der Strahl von
+        der Quelle zum Punkt die Ebene der Wand schneidet UND der
+        Schnittpunkt innerhalb des (u,z)-Rechtecks der Wand liegt.
+
+        Rückgabe:
+            visibility_mask (bool, Shape: [N]): True = sichtbar, False = verdeckt
+        """
+        if not occluders or grid_points.size == 0:
+            return np.ones(grid_points.shape[0], dtype=bool)
+
+        src = np.asarray(source_position, dtype=float).reshape(3)
+        pts = np.asarray(grid_points, dtype=float).reshape(-1, 3)
+        z_pts = np.asarray(grid_z, dtype=float).reshape(-1)
+
+        # Standardmäßig alle Punkte sichtbar
+        visible = np.ones(pts.shape[0], dtype=bool)
+
+        xs, ys, zs = src[0], src[1], src[2]
+        px = pts[:, 0]
+        py = pts[:, 1]
+        pz = z_pts  # bereits aus Z_grid übernommen
+
+        for occ in occluders:
+            surf_id = occ.get("surface_id")
+            if exclude_surface_ids and surf_id in exclude_surface_ids:
+                continue
+            axis = occ.get("axis")
+            wall_val = float(occ.get("value", 0.0))
+            u_min = float(occ.get("u_min", 0.0))
+            u_max = float(occ.get("u_max", 0.0))
+            z_min = float(occ.get("z_min", 0.0))
+            z_max = float(occ.get("z_max", 0.0))
+            poly_u = np.asarray(occ.get("poly_u", []), dtype=float)
+            poly_v = np.asarray(occ.get("poly_v", []), dtype=float)
+
+            # Punkte, bei denen Strahl überhaupt die Wand-Ebene schneiden kann
+            if axis == "y":
+                # Ebene y = wall_val
+                denom = py - ys
+                # Quelle und Punkt auf derselben Seite -> kein Schnitt
+                side_src = ys - wall_val
+                side_pts = py - wall_val
+            elif axis == "x":
+                # Ebene x = wall_val
+                denom = px - xs
+                side_src = xs - wall_val
+                side_pts = px - wall_val
+            else:
+                continue
+
+            # Nur Punkte mit echter Richtungsänderung zur Wand
+            different_side = (side_src * side_pts) < 0.0
+            # Numerische Stabilität
+            valid_denom = np.abs(denom) > 1e-9
+            candidates = different_side & valid_denom
+            if not np.any(candidates):
+                continue
+
+            # Schnittparameter t im Intervall (0,1)
+            if axis == "y":
+                t = (wall_val - ys) / denom
+            else:
+                t = (wall_val - xs) / denom
+            between = (t > 0.0) & (t < 1.0)
+            cand_idx = candidates & between
+            if not np.any(cand_idx):
+                continue
+
+            # Schnittkoordinaten entlang des Strahls
+            x_int = xs + t * (px - xs)
+            y_int = ys + t * (py - ys)
+            z_int = zs + t * (pz - zs)
+
+            if axis == "y":
+                u_int = x_int
+            else:
+                u_int = y_int
+
+            # Grober Bounding-Box-Test im (u,z)-Raum
+            inside_u_bb = (u_int >= (u_min - 1e-6)) & (u_int <= (u_max + 1e-6))
+            inside_z_bb = (z_int >= (z_min - 1e-6)) & (z_int <= (z_max + 1e-6))
+            cand_poly = cand_idx & inside_u_bb & inside_z_bb
+            if not np.any(cand_poly):
+                continue
+
+            # Exakter Polygon-Test im (u,z)-Raum
+            try:
+                if poly_u.size >= 3 and poly_v.size >= 3:
+                    U = u_int[cand_poly].reshape(1, -1)
+                    V = z_int[cand_poly].reshape(1, -1)
+                    poly_mask = _points_in_polygon_batch_uv(U, V, poly_u, poly_v)
+                    if poly_mask is not None:
+                        poly_inside = poly_mask.reshape(-1)
+                        tmp = np.zeros_like(cand_poly, dtype=bool)
+                        tmp[np.where(cand_poly)[0]] = poly_inside
+                        cand_poly = cand_poly & tmp
+            except Exception:
+                # Fallback: nur Bounding-Box verwenden
+                pass
+
+            occluded_here = cand_poly
+            if np.any(occluded_here):
+                visible[occluded_here] = False
+
+        return visible
+
+    # ============================================================
+    # DEBUG / VALIDIERUNG
+    # ============================================================
+
+    def _debug_check_grid_and_mask_symmetry(
+        self,
+        sound_field_x: np.ndarray,
+        sound_field_y: np.ndarray,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        enabled_surfaces: List[Tuple[str, Dict]],
+    ) -> None:
+        """
+        Führt einen reinen Diagnose-Check durch:
+        - Achsensymmetrie von X/Y (Spiegelung um 0)
+        - Symmetrie der Surface-Maske
+        - Grundlegende Konsistenz von Z-Grid
+
+        Verändert KEINE Daten, gibt nur Debug-Infos auf stdout aus.
+        """
+        print("=== [SoundFieldCalculator] Symmetrie-Check: Grid & Surfaces ===")
+        if enabled_surfaces:
+            print(f"  Aktivierte Surfaces: {len(enabled_surfaces)}")
+        else:
+            print("  Keine aktivierten Surfaces – Fallback-Grid wird genutzt.")
+
+        # --- 1) Achsensymmetrie der Koordinaten prüfen -----------------
+        def _check_axis(axis_name: str, values: np.ndarray) -> None:
+            if values.size == 0:
+                print(f"  Achse {axis_name}: LEER")
+                return
+            symmetric = np.allclose(values, -values[::-1], atol=1e-6)
+            print(
+                f"  Achse {axis_name}: "
+                f"min={values.min():.3f}, max={values.max():.3f}, "
+                f"N={values.size}, symmetrisch_zu_0={bool(symmetric)}"
+            )
+            if not symmetric:
+                center = 0.0
+                idx_center = int((np.abs(values - center)).argmin())
+                print(
+                    f"    Nächster Punkt zu 0 auf {axis_name}: "
+                    f"index={idx_center}, value={values[idx_center]:.6f}"
+                )
+
+        _check_axis("X", sound_field_x)
+        _check_axis("Y", sound_field_y)
+
+        # --- 2) Maske auf grobe Links/Rechts-Symmetrie prüfen ----------
+        ny, nx = surface_mask.shape
+        print(f"  Grid-Shape: ny={ny}, nx={nx}")
+        # Spiegelung entlang X-Achse (Spaltenachse)
+        mask_lr_diff = surface_mask ^ surface_mask[:, ::-1]
+        num_diff_lr = int(mask_lr_diff.sum())
+        print(
+            "  Surface-Maske Links/Rechts:"
+            f" true={int(surface_mask.sum())}, "
+            f"abweichende Spiegel-Punkte={num_diff_lr}"
+        )
+
+        # Spiegelung entlang Y-Achse (Zeilenachse)
+        mask_tb_diff = surface_mask ^ surface_mask[::-1, :]
+        num_diff_tb = int(mask_tb_diff.sum())
+        print(
+            "  Surface-Maske Oben/Unten:"
+            f" abweichende Spiegel-Punkte={num_diff_tb}"
+        )
+
+        # Wenn es deutliche Unterschiede gibt, ein paar Beispielpunkte ausgeben
+        max_examples = 10
+        if num_diff_lr > 0:
+            ys, xs = np.where(mask_lr_diff)
+            print("  Beispiel unsymmetrischer LR-Maskenpunkte (max 10):")
+            for k in range(min(max_examples, ys.size)):
+                i = int(ys[k])
+                j = int(xs[k])
+                j_mirror = nx - 1 - j
+                print(
+                    f"    (y={i}, x={j}) -> Maske={surface_mask[i, j]}, "
+                    f"Mirror(x={j_mirror})={surface_mask[i, j_mirror]}"
+                )
+
+        # --- 3) Z-Grid Konsistenz prüfen -------------------------------
+        if Z_grid is None:
+            print("  Z-Grid: None")
+            print("=== [SoundFieldCalculator] Symmetrie-Check Ende ===")
+            return
+        z_valid = Z_grid[surface_mask]
+        if z_valid.size == 0:
+            print("  Z-Grid: keine Punkte innerhalb der Surface-Maske.")
+        else:
+            print(
+                f"  Z-Grid (innerhalb Surface-Maske): "
+                f"min={float(z_valid.min()):.3f}, "
+                f"max={float(z_valid.max()):.3f}, "
+                f"mean={float(z_valid.mean()):.3f}"
+            )
+        print("=== [SoundFieldCalculator] Symmetrie-Check Ende ===")
+

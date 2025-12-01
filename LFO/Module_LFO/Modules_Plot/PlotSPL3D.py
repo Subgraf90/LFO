@@ -306,37 +306,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self._last_press_pos = press_pos
                 print(f"[DEBUG] Press gespeichert: _last_press_time={self._last_press_time}, _last_press_pos={self._last_press_pos}")
                 
-                # 🎯 WICHTIG: Event akzeptieren, damit PyVista's Standard-Handler NICHT ausgeführt wird
-                # Dies verhindert, dass PyVista's Standard-Rotation aktiviert wird
+                # 🎯 WICHTIG: Event akzeptieren, damit PyVista's Standard-Handler NICHT ausgeführt wird.
+                # Dies verhindert, dass PyVista's Standard-Rotation aktiviert wird.
+                # Achsen-Klick und -Drag im 3D-Plot sind deaktiviert; Achsenpositionen
+                # werden nur noch über die UI gesteuert.
                 event.accept()
-                # NICHT return True hier - wir müssen die Achsenlinien-Prüfung durchführen
-                # Prüfe ob auf eine Achsenlinie geklickt wurde (bevor Rotation startet)
-                axis_clicked = self._handle_axis_line_click(press_pos)
-                if axis_clicked:
-                    # Achsenlinie wurde geklickt
-                    if self._axis_selected == self._axis_drag_type:
-                        # Gleiche Achse wurde erneut geklickt - starte Drag
-                        self._axis_drag_active = True
-                        self._axis_drag_start_pos = press_pos
-                        self._axis_drag_start_value = self.settings.position_x_axis if self._axis_drag_type == 'x' else self.settings.position_y_axis
-                        self.widget.setCursor(QtCore.Qt.SizeHorCursor if self._axis_drag_type == 'x' else QtCore.Qt.SizeVerCursor)
-                        print(f"[DEBUG] Achsenlinie Drag gestartet: {self._axis_drag_type}")
-                    else:
-                        # Neue Achse wurde geklickt - wähle sie aus (Highlight)
-                        self._axis_selected = self._axis_drag_type
-                        self._update_axis_highlight()
-                        self.widget.setCursor(QtCore.Qt.PointingHandCursor)
-                        print(f"[DEBUG] Achsenlinie ausgewählt: {self._axis_selected}")
-                    event.accept()
-                    return True
-                else:
-                    # Keine Achsenlinie geklickt - prüfe ob daneben geklickt wurde
-                    if self._axis_selected is not None:
-                        # Auswahl aufheben
-                        self._axis_selected = None
-                        self._update_axis_highlight()
-                        self.widget.unsetCursor()
-                        print(f"[DEBUG] Achsenlinien-Auswahl aufgehoben")
                 # 🎯 DOPPELKLICK DEAKTIVIERT - Rotation wird normal aktiviert
                 # Rotation wird erst im MouseMove-Handler aktiviert, wenn sich die Maus tatsächlich bewegt.
                 # Nur die Start-Position speichern, aber Rotation noch nicht aktivieren.
@@ -347,13 +321,22 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if etype == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
                 # Prüfe ob es ein Klick war (kein Drag)
                 click_pos = QtCore.QPoint(event.pos())
+                move_dx = abs(click_pos.x() - self._click_start_pos.x()) if self._click_start_pos is not None else 0
+                move_dy = abs(click_pos.y() - self._click_start_pos.y()) if self._click_start_pos is not None else 0
+                # Etwas großzügigerer Schwellenwert, damit leichte Handbewegungen
+                # (z.B. beim Klicken auf senkrechte Flächen) trotzdem als Klick zählen.
+                click_threshold = 6
                 is_click = (
                     self._click_start_pos is not None
-                    and abs(click_pos.x() - self._click_start_pos.x()) < 3
-                    and abs(click_pos.y() - self._click_start_pos.y()) < 3
+                    and move_dx < click_threshold
+                    and move_dy < click_threshold
                 )
                 
-                print(f"[DEBUG] MouseButtonRelease: _rotate_active={self._rotate_active}, is_click={is_click}, _click_start_pos={self._click_start_pos}")
+                print(
+                    f"[DEBUG] MouseButtonRelease: _rotate_active={self._rotate_active}, "
+                    f"is_click={is_click}, _click_start_pos={self._click_start_pos}, "
+                    f"move_dx={move_dx}, move_dy={move_dy}, thr={click_threshold}"
+                )
                 
                 # Rotation IMMER beenden bei ButtonRelease
                 self._rotate_active = False
@@ -367,36 +350,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 #     self._double_click_handled = False
                 
                 # 🎯 Doppelklick ist deaktiviert
-                # Wenn es ein Klick war (kein Drag), prüfe ob ein Lautsprecher oder eine Surface geklickt wurde
+                # Wenn es ein Klick war (kein Drag), prüfe ob auf eine Surface geklickt wurde.
+                # Achsen-Klicks und Lautsprecher-Klicks im Plot sind deaktiviert.
                 if is_click:
                     print(f"[DEBUG] Einfacher Klick erkannt")
-                    # Prüfe zuerst auf Achsenlinien-Klick, dann Lautsprecher, dann Surface
-                    print(f"[DEBUG] MouseButtonRelease: Prüfe auf Achsenlinien-Klick bei ({click_pos.x()}, {click_pos.y()})")
-                    axis_clicked = self._handle_axis_line_click(click_pos)
-                    print(f"[DEBUG] MouseButtonRelease: axis_clicked={axis_clicked}, _axis_drag_type={self._axis_drag_type}")
-                    if axis_clicked:
-                        # Achsenlinie wurde geklickt - setze Auswahl
-                        if self._axis_selected == self._axis_drag_type:
-                            # Gleiche Achse wurde erneut geklickt - Auswahl bleibt
-                            print(f"[DEBUG] Gleiche Achse bereits ausgewählt: {self._axis_selected}")
-                        else:
-                            # Neue Achse wurde geklickt - wähle sie aus (Highlight)
-                            self._axis_selected = self._axis_drag_type
-                            self._update_axis_highlight()
-                            self.widget.setCursor(QtCore.Qt.PointingHandCursor)
-                            print(f"[DEBUG] Achsenlinie ausgewählt beim Release: {self._axis_selected}")
-                    else:
-                        # Keine Achsenlinie geklickt - prüfe ob daneben geklickt wurde
-                        if self._axis_selected is not None:
-                            # Auswahl aufheben (daneben geklickt)
-                            self._axis_selected = None
-                            self._update_axis_highlight()
-                            self.widget.unsetCursor()
-                            print(f"[DEBUG] Achsenlinien-Auswahl aufgehoben beim Release (daneben geklickt)")
-                        # Prüfe auf Lautsprecher oder Surface
-                        speaker_clicked = self._handle_speaker_click(click_pos)
-                        if not speaker_clicked:
-                            self._handle_surface_click(click_pos)
+                    # Prüfe nur auf Surface-Klick.
+                    self._handle_surface_click(click_pos)
                     # Speichere Zeitpunkt und Position für einfache Klicks (nicht für Doppelklick)
                     self._last_click_time = time.time()
                     self._last_click_pos = QtCore.QPoint(click_pos)
@@ -555,73 +514,163 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if renderer is None:
                 return
             
-            # Verwende VTK CellPicker für präzises Picking
+            # Verwende VTK CellPicker für präzises Picking (Vertikalflächen + horizontale Fläche)
             try:
                 from vtkmodules.vtkRenderingCore import vtkCellPicker
                 picker = vtkCellPicker()
-                picker.SetTolerance(0.001)
+                picker.SetTolerance(0.05)  # Erhöht für besseres Picking von senkrechten Flächen
                 
-                # Konvertiere Qt-Koordinaten zu VTK-Koordinaten (Viewport-Koordinaten)
-                # VTK verwendet Viewport-Koordinaten (0-1 normalisiert)
+                # Konvertiere Qt-Koordinaten zu VTK-Display-Koordinaten (Pixel)
                 size = self.widget.size()
                 if size.width() > 0 and size.height() > 0:
-                    x_norm = click_pos.x() / size.width()
-                    y_norm = 1.0 - (click_pos.y() / size.height())  # VTK Y ist invertiert
+                    display_x = float(click_pos.x())
+                    display_y = float(size.height() - click_pos.y())  # VTK Y ist invertiert
                     
-                    picker.Pick(x_norm, y_norm, 0.0, renderer)
-                    
+                    # 1) Picke Actor an dieser Position
+                    picker.Pick(display_x, display_y, 0.0, renderer)
                     picked_actor = picker.GetActor()
                     picked_point = picker.GetPickPosition()
                     
-                    
+                    actor_name = None
                     if picked_actor is not None:
-                        # Hole Actor-Name
-                        actor_name = None
-                        if hasattr(picked_actor, 'GetProperty'):
-                            # Versuche Name über verschiedene Wege zu bekommen
-                            actor_name = getattr(picked_actor, 'name', None)
-                            if actor_name is None:
-                                # Prüfe ob Actor in plotter.renderer.actors ist
-                                for name, actor in renderer.actors.items():
-                                    if actor == picked_actor:
-                                        actor_name = name
-                                        break
-                        
-                        # Prüfe ob gepickter Actor eine Achsenlinie ist (nochmal zur Sicherheit)
-                        if actor_name and actor_name in axis_actor_names:
-                            print(f"[DEBUG] _handle_surface_click: Achsenlinie {actor_name} wurde gepickt, ignoriere Surface-Click")
-                            return
-                        
-                        # Prüfe ob es eine disabled Surface-Batch-Fläche ist
-                        # (Batch-Actors haben feste Namen, Picking erfolgt über point-in-polygon-Prüfung)
-                        if actor_name and isinstance(actor_name, str) and actor_name in ('surface_disabled_polygons_batch', 'surface_disabled_edges_batch'):
-                            # Batch-Actor - hole 3D-Koordinaten vom Picker und prüfe point-in-polygon
-                            if picked_point and len(picked_point) >= 3:
-                                x_click, y_click = picked_point[0], picked_point[1]
-                                # Rufe _handle_spl_surface_click auf für point-in-polygon-Prüfung
-                                self._handle_spl_surface_click(click_pos)
-                                return
-                            else:
-                                # Kein Punkt vom Picker - verwende mesh-basierten Lookup
-                                self._handle_spl_surface_click(click_pos)
-                                return
-                        
-                        # Prüfe ob es die SPL-Surface ist (für enabled Surfaces)
-                        if actor_name == self.SURFACE_NAME:
-                            self._handle_spl_surface_click(click_pos)
-                            return
+                        # Versuche Actor-Name herauszufinden
+                        actor_name = getattr(picked_actor, "name", None)
+                        if actor_name is None:
+                            for name, actor in renderer.actors.items():
+                                if actor == picked_actor:
+                                    actor_name = name
+                                    break
                     
-                    # Wenn kein Actor gepickt wurde, aber ein Punkt vorhanden ist, prüfe SPL-Surface
+                    # 2) Vertikalflächen: vertical_spl_<surface_id>
+                    if isinstance(actor_name, str) and actor_name.startswith("vertical_spl_"):
+                        surface_id = actor_name[len("vertical_spl_") :]
+                        print(f"[DEBUG] _handle_surface_click: Vertikale Surface geklickt: {surface_id}")
+                        self._select_surface_in_treewidget(surface_id)
+                        return
+                    
+                    # 2b) Fallback: Prüfe senkrechte Flächen mit Ray-Casting, wenn Picker nichts gefunden hat
+                    if picked_actor is None or not isinstance(actor_name, str) or not actor_name.startswith("vertical_spl_"):
+                        # Berechne Ray vom Klickpunkt
+                        render_size = renderer.GetSize()
+                        if render_size[0] > 0 and render_size[1] > 0:
+                            viewport_x = display_x
+                            viewport_y = display_y
+                            
+                            renderer.SetDisplayPoint(viewport_x, viewport_y, 0.0)
+                            renderer.DisplayToWorld()
+                            world_point_near = renderer.GetWorldPoint()
+                            
+                            renderer.SetDisplayPoint(viewport_x, viewport_y, 1.0)
+                            renderer.DisplayToWorld()
+                            world_point_far = renderer.GetWorldPoint()
+                            
+                            if world_point_near and world_point_far and len(world_point_near) >= 4 and len(world_point_far) >= 4:
+                                if abs(world_point_near[3]) > 1e-6 and abs(world_point_far[3]) > 1e-6:
+                                    ray_start = np.array([
+                                        world_point_near[0] / world_point_near[3],
+                                        world_point_near[1] / world_point_near[3],
+                                        world_point_near[2] / world_point_near[3],
+                                    ])
+                                    ray_end = np.array([
+                                        world_point_far[0] / world_point_far[3],
+                                        world_point_far[1] / world_point_far[3],
+                                        world_point_far[2] / world_point_far[3],
+                                    ])
+                                    ray_dir = ray_end - ray_start
+                                    ray_len = np.linalg.norm(ray_dir)
+                                    if ray_len > 1e-8:
+                                        ray_dir = ray_dir / ray_len
+                                        
+                                        # Prüfe alle senkrechten Flächen
+                                        best_surface_id = None
+                                        best_t = float('inf')
+                                        
+                                        for vertical_actor_name, vertical_actor in self._vertical_surface_meshes.items():
+                                            if not vertical_actor_name.startswith("vertical_spl_"):
+                                                continue
+                                            
+                                            surface_id_candidate = vertical_actor_name[len("vertical_spl_"):]
+                                            
+                                            # Versuche Ray mit Mesh zu schneiden
+                                            try:
+                                                # Hole das Mesh aus dem Actor
+                                                if hasattr(vertical_actor, 'mapper') and hasattr(vertical_actor.mapper, 'GetInput'):
+                                                    mesh = vertical_actor.mapper.GetInput()
+                                                    if mesh is not None:
+                                                        # Prüfe ob Ray das Mesh schneidet
+                                                        bounds = mesh.GetBounds()
+                                                        if bounds and len(bounds) >= 6:
+                                                            # Einfache Bounding-Box-Prüfung
+                                                            t_min = float('inf')
+                                                            t_max = float('-inf')
+                                                            
+                                                            for i in range(3):
+                                                                if abs(ray_dir[i]) > 1e-8:
+                                                                    t1 = (bounds[i*2] - ray_start[i]) / ray_dir[i]
+                                                                    t2 = (bounds[i*2+1] - ray_start[i]) / ray_dir[i]
+                                                                    t_min = min(t_min, max(t1, t2))
+                                                                    t_max = max(t_max, min(t1, t2))
+                                                            
+                                                            if t_max >= 0 and t_min < best_t:
+                                                                # Prüfe ob Schnittpunkt innerhalb des Meshes liegt
+                                                                t_hit = t_max
+                                                                hit_point = ray_start + t_hit * ray_dir
+                                                                
+                                                                # Verwende VTK's PointLocator für präzise Prüfung
+                                                                try:
+                                                                    from vtkmodules.vtkCommonDataModel import vtkPointLocator
+                                                                    locator = vtkPointLocator()
+                                                                    locator.SetDataSet(mesh)
+                                                                    locator.BuildLocator()
+                                                                    
+                                                                    # Finde nächsten Punkt im Mesh
+                                                                    closest_point_id = locator.FindClosestPoint(hit_point)
+                                                                    if closest_point_id >= 0:
+                                                                        closest_point = mesh.GetPoint(closest_point_id)
+                                                                        dist = np.linalg.norm(np.array(hit_point) - np.array(closest_point))
+                                                                        
+                                                                        # Wenn Distanz klein genug, ist es ein Treffer
+                                                                        if dist < 1.0:  # Toleranz: 1 Meter
+                                                                            best_t = t_hit
+                                                                            best_surface_id = surface_id_candidate
+                                                                except Exception:
+                                                                    # Fallback: Wenn PointLocator fehlschlägt, verwende Bounding-Box
+                                                                    if t_max >= 0:
+                                                                        best_t = t_hit
+                                                                        best_surface_id = surface_id_candidate
+                                            except Exception:
+                                                continue
+                                        
+                                        if best_surface_id is not None:
+                                            print(f"[DEBUG] _handle_surface_click: Vertikale Surface (Fallback) geklickt: {best_surface_id}")
+                                            self._select_surface_in_treewidget(best_surface_id)
+                                            return
+                    
+                    # 3) Disabled-Batch-Flächen (horizontale Surfaces als Batch-Mesh)
+                    if isinstance(actor_name, str) and actor_name in (
+                        "surface_disabled_polygons_batch",
+                        "surface_disabled_edges_batch",
+                    ):
+                        print(f"[DEBUG] _handle_surface_click: Disabled-Surface-Batch geklickt ({actor_name}), delegiere an _handle_spl_surface_click")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 4) SPL-Hauptfläche
+                    if actor_name == self.SURFACE_NAME:
+                        print("[DEBUG] _handle_surface_click: SPL-Hauptfläche geklickt, delegiere an _handle_spl_surface_click")
+                        self._handle_spl_surface_click(click_pos)
+                        return
+                    
+                    # 5) Kein klarer Actor → versuche generisch SPL-Surface
                     if picked_point and len(picked_point) >= 3:
+                        print("[DEBUG] _handle_surface_click: Kein spezifischer Surface-Actor, aber PickPoint vorhanden → _handle_spl_surface_click")
                         self._handle_spl_surface_click(click_pos)
                         return
             except ImportError:
                 # Fallback: Versuche PyVista pick über renderer
                 try:
-                    # QtInteractor sollte Plotter-Methoden haben, aber vielleicht nicht pick()
-                    # Versuche über renderer.actors zu iterieren und Distanz zu prüfen
                     pass
-                except Exception as e:
+                except Exception:
                     pass
             
             # Kein Actor gefunden - prüfe ob auf SPL-Surface geklickt wurde (für enabled Surfaces)
@@ -1569,12 +1618,87 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             renderer = self.plotter.renderer
             if renderer is None:
                 return
-            
+
             # Versuche direkt auf das Surface-Mesh zuzugreifen und die Zelle an der geklickten Position zu finden
+            # Das erlaubt echtes 3D‑Picking auch für schräge/vertikale Flächen.
             if self.surface_mesh is None:
                 return
-            
+
             try:
+                # Hilfsfunktion: Ray-Schnitt mit planarem Modell der Surface.
+                def _intersect_ray_with_surface_plane(
+                    ray_start: np.ndarray,
+                    ray_dir: np.ndarray,
+                    plane_model: dict | None,
+                    fallback_z: float,
+                ) -> tuple[float, float, float] | None:
+                    """
+                    Berechnet den Schnittpunkt eines Rays mit der Fläche:
+                    - nutzt das planare Modell (mode: constant, x, y, xy)
+                    - fällt bei fehlendem Modell auf eine konstante Z-Ebene (fallback_z) zurück
+                    Gibt (x, y) des Schnittpunkts zurück oder None bei Parallelität / Fehler.
+                    """
+                    # Sicherstellen, dass wir keine Division durch 0 haben
+                    if plane_model is None:
+                        # Konstante Ebene z = fallback_z
+                        denom = ray_dir[2]
+                        if abs(denom) < 1e-8:
+                            return None
+                        t = (fallback_z - ray_start[2]) / denom
+                        if t <= 0:
+                            return None
+                        p = ray_start + t * ray_dir
+                        return float(p[0]), float(p[1]), float(t)
+                    
+                    mode = plane_model.get("mode", "constant")
+                    # Allgemeine Form: z = f(x, y)
+                    if mode == "constant":
+                        z_plane = float(plane_model.get("base", plane_model.get("intercept", fallback_z)))
+                        denom = ray_dir[2]
+                        if abs(denom) < 1e-8:
+                            return None
+                        t = (z_plane - ray_start[2]) / denom
+                    elif mode == "x":
+                        slope = float(plane_model.get("slope", 0.0))
+                        intercept = float(plane_model.get("intercept", 0.0))
+                        # z0 + t*dz = slope*(x0 + t*dx) + intercept
+                        # (dz - slope*dx)*t + (z0 - slope*x0 - intercept) = 0
+                        denom = ray_dir[2] - slope * ray_dir[0]
+                        num = ray_start[2] - slope * ray_start[0] - intercept
+                        if abs(denom) < 1e-8:
+                            return None
+                        t = -num / denom
+                    elif mode == "y":
+                        slope = float(plane_model.get("slope", 0.0))
+                        intercept = float(plane_model.get("intercept", 0.0))
+                        # z0 + t*dz = slope*(y0 + t*dy) + intercept
+                        denom = ray_dir[2] - slope * ray_dir[1]
+                        num = ray_start[2] - slope * ray_start[1] - intercept
+                        if abs(denom) < 1e-8:
+                            return None
+                        t = -num / denom
+                    elif mode == "xy":
+                        slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
+                        slope_y = float(plane_model.get("slope_y", 0.0))
+                        intercept = float(plane_model.get("intercept", 0.0))
+                        # z0 + t*dz = sx*(x0 + t*dx) + sy*(y0 + t*dy) + c
+                        denom = ray_dir[2] - slope_x * ray_dir[0] - slope_y * ray_dir[1]
+                        num = ray_start[2] - slope_x * ray_start[0] - slope_y * ray_start[1] - intercept
+                        if abs(denom) < 1e-8:
+                            return None
+                        t = -num / denom
+                    else:
+                        # Unbekannter Modus – fallback auf konstante Ebene
+                        denom = ray_dir[2]
+                        if abs(denom) < 1e-8:
+                            return None
+                        t = (fallback_z - ray_start[2]) / denom
+                    
+                    if t <= 0:
+                        return None
+                    p = ray_start + t * ray_dir
+                    return float(p[0]), float(p[1]), float(t)
+
                 from vtkmodules.vtkRenderingCore import vtkCellPicker
                 from vtkmodules.util.numpy_support import vtk_to_numpy
                 
@@ -1586,137 +1710,43 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     x_norm = click_pos.x() / size.width()
                     y_norm = 1.0 - (click_pos.y() / size.height())  # VTK Y ist invertiert
                     
-                    
-                    # Picke auf dem Renderer
-                    picker.Pick(x_norm, y_norm, 0.0, renderer)
-                    picked_cell_id = picker.GetCellId()
-                    picked_point = picker.GetPickPosition()
-                    
-                    
-                    # Hilfsfunktion für mesh-basierten Lookup
-                    def use_mesh_lookup():
-                        
-                        try:
-                            # Verwende VTK Renderer mit normalisierten Display-Koordinaten
-                            # VTK Renderer erwartet normalisierte Koordinaten (0-1) in SetDisplayPoint
-                            # Aber SetDisplayPoint verwendet Viewport-Koordinaten (nicht Pixel)
-                            # Wir müssen die normalisierten Koordinaten korrekt konvertieren
-                            
-                            # Hole Viewport-Größe vom Renderer
-                            viewport = renderer.GetViewport()
-                            render_size = renderer.GetSize()
-                            
-                            if render_size[0] <= 0 or render_size[1] <= 0:
-                                return None
-                            
-                            # Konvertiere normalisierte Koordinaten (0-1) zu Viewport-Koordinaten
-                            viewport_width = render_size[0]
-                            viewport_height = render_size[1]
-                            
-                            # Viewport-Koordinaten: (0,0) ist unten links, (width, height) ist oben rechts
-                            # x_norm und y_norm sind bereits normalisiert (0-1), y_norm ist invertiert (oben = 0)
-                            viewport_x = x_norm * viewport_width
-                            viewport_y = y_norm * viewport_height
-                            
-                            
-                            # Konvertiere Display-Koordinaten (Viewport) zu World-Koordinaten
-                            renderer.SetDisplayPoint(viewport_x, viewport_y, 0.0)
-                            renderer.DisplayToWorld()
-                            world_point_near = renderer.GetWorldPoint()
-                            
-                            renderer.SetDisplayPoint(viewport_x, viewport_y, 1.0)
-                            renderer.DisplayToWorld()
-                            world_point_far = renderer.GetWorldPoint()
-                            
-                            if world_point_near is not None and world_point_far is not None and len(world_point_near) >= 4:
-                                # VTK gibt homogene Koordinaten zurück [x, y, z, w]
-                                if abs(world_point_near[3]) > 1e-6 and abs(world_point_far[3]) > 1e-6:
-                                    ray_start = np.array([
-                                        world_point_near[0] / world_point_near[3],
-                                        world_point_near[1] / world_point_near[3],
-                                        world_point_near[2] / world_point_near[3]
-                                    ])
-                                    ray_end = np.array([
-                                        world_point_far[0] / world_point_far[3],
-                                        world_point_far[1] / world_point_far[3],
-                                        world_point_far[2] / world_point_far[3]
-                                    ])
-                                    
-                                    
-                                    # Berechne Schnittpunkt des Rays mit der Z=0 Ebene
-                                    ray_dir = ray_end - ray_start
-                                    if abs(ray_dir[2]) > 1e-6:  # Ray ist nicht parallel zur Z-Ebene
-                                        # Parametrische Form: point = ray_start + t * ray_dir
-                                        # Z = 0: ray_start[2] + t * ray_dir[2] = 0
-                                        t = -ray_start[2] / ray_dir[2]
-                                        intersection = ray_start + t * ray_dir
-                                        
-                                        return (float(intersection[0]), float(intersection[1]), float(intersection[2]))
-                                    else:
-                                        # Ray ist parallel zur Z-Ebene - verwende Ray-Mitte
-                                        ray_mid = (ray_start + ray_end) / 2.0
-                                        return (float(ray_mid[0]), float(ray_mid[1]), float(ray_mid[2]))
-                                else:
-                                    return None
-                            else:
-                                return None
-                        except Exception as e:
-                            import traceback
-                            traceback.print_exc()
-                            return None
-                    
-                    # Wenn Picker keine Zelle findet, verwende mesh-basierten Lookup
-                    if picked_cell_id < 0 or picked_point is None:
-                        result = use_mesh_lookup()
-                        if result is None:
-                            return
-                        x_click, y_click, z_click = result
-                    else:
-                        # Picker hat einen Punkt gefunden - prüfe ob er im gültigen Bereich liegt
-                        x_click, y_click, z_click = picked_point[0], picked_point[1], picked_point[2]
-                        
-                        # Berechne gültigen Bereich aus allen enabled Surfaces
-                        surface_definitions = getattr(self.settings, 'surface_definitions', {})
-                        if isinstance(surface_definitions, dict):
-                            valid_x_min, valid_x_max = None, None
-                            valid_y_min, valid_y_max = None, None
-                            
-                            for surface_def in surface_definitions.values():
-                                if isinstance(surface_def, SurfaceDefinition):
-                                    enabled = bool(getattr(surface_def, 'enabled', False))
-                                    points = getattr(surface_def, 'points', []) or []
-                                else:
-                                    enabled = surface_def.get('enabled', False)
-                                    points = surface_def.get('points', [])
-                                
-                                if enabled and len(points) >= 3:
-                                    surface_xs = [p.get('x', 0.0) if isinstance(p, dict) else getattr(p, 'x', 0.0) for p in points]
-                                    surface_ys = [p.get('y', 0.0) if isinstance(p, dict) else getattr(p, 'y', 0.0) for p in points]
-                                    if surface_xs and surface_ys:
-                                        if valid_x_min is None:
-                                            valid_x_min, valid_x_max = min(surface_xs), max(surface_xs)
-                                            valid_y_min, valid_y_max = min(surface_ys), max(surface_ys)
-                                        else:
-                                            valid_x_min = min(valid_x_min, min(surface_xs))
-                                            valid_x_max = max(valid_x_max, max(surface_xs))
-                                            valid_y_min = min(valid_y_min, min(surface_ys))
-                                            valid_y_max = max(valid_y_max, max(surface_ys))
-                            
-                            # Prüfe ob Picker-Punkt im gültigen Bereich liegt (mit Toleranz)
-                            tolerance = 5.0  # 5 Meter Toleranz
-                            if valid_x_min is not None:
-                                if (x_click < valid_x_min - tolerance or x_click > valid_x_max + tolerance or
-                                    y_click < valid_y_min - tolerance or y_click > valid_y_max + tolerance):
-                                    result = use_mesh_lookup()
-                                    if result is None:
-                                        return
-                                    x_click, y_click, z_click = result
-                                else:
-                                    pass
-                            else:
-                                pass
-                        else:
-                            pass
+                    # Berechne den 3D-Ray durch den Klickpunkt (Near/Far auf dem Viewport)
+                    render_size = renderer.GetSize()
+                    if render_size[0] <= 0 or render_size[1] <= 0:
+                        return
+                    viewport_width = render_size[0]
+                    viewport_height = render_size[1]
+                    viewport_x = x_norm * viewport_width
+                    viewport_y = y_norm * viewport_height
+
+                    renderer.SetDisplayPoint(viewport_x, viewport_y, 0.0)
+                    renderer.DisplayToWorld()
+                    world_point_near = renderer.GetWorldPoint()
+
+                    renderer.SetDisplayPoint(viewport_x, viewport_y, 1.0)
+                    renderer.DisplayToWorld()
+                    world_point_far = renderer.GetWorldPoint()
+
+                    if world_point_near is None or world_point_far is None or len(world_point_near) < 4:
+                        return
+                    if abs(world_point_near[3]) <= 1e-6 or abs(world_point_far[3]) <= 1e-6:
+                        return
+
+                    ray_start = np.array([
+                        world_point_near[0] / world_point_near[3],
+                        world_point_near[1] / world_point_near[3],
+                        world_point_near[2] / world_point_near[3],
+                    ])
+                    ray_end = np.array([
+                        world_point_far[0] / world_point_far[3],
+                        world_point_far[1] / world_point_far[3],
+                        world_point_far[2] / world_point_far[3],
+                    ])
+                    ray_dir = ray_end - ray_start
+                    ray_len = np.linalg.norm(ray_dir)
+                    if ray_len <= 1e-8:
+                        return
+                    ray_dir = ray_dir / ray_len
                 else:
                     return
             except ImportError:
@@ -1726,7 +1756,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 traceback.print_exc()
                 return
             
-            # Prüfe welche Surface (enabled oder disabled) diesen Punkt enthält
+            # Prüfe welche Surface (enabled oder disabled) den Ray schneidet
             surface_definitions = getattr(self.settings, 'surface_definitions', {})
             if not isinstance(surface_definitions, dict):
                 return
@@ -1737,16 +1767,24 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             skipped_hidden = 0
             skipped_too_few_points = 0
             
-            # Zuerst prüfe enabled Surfaces (höhere Priorität)
+            # Zuerst prüfe enabled Surfaces (höhere Priorität) und merke den nächstgelegenen Treffer
+            best_surface_id: str | None = None
+            best_t: float = float("inf")
+            best_is_disabled = False
+
+            # Enabled Surfaces
             for surface_id, surface_def in surface_definitions.items():
+                # Normalisiere Surface-Definition
                 if isinstance(surface_def, SurfaceDefinition):
                     enabled = bool(getattr(surface_def, 'enabled', False))
                     hidden = bool(getattr(surface_def, 'hidden', False))
                     points = getattr(surface_def, 'points', []) or []
+                    plane_model = getattr(surface_def, 'plane_model', None)
                 else:
                     enabled = surface_def.get('enabled', False)
                     hidden = surface_def.get('hidden', False)
                     points = surface_def.get('points', [])
+                    plane_model = surface_def.get('plane_model')
                 
                 if hidden:
                     skipped_hidden += 1
@@ -1762,44 +1800,79 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 
                 checked_count += 1
                 
-                # Debug: Berechne Bounding Box der Surface für Vergleich
+                # Fallback-Z für konstante Ebene aus erstem Punkt
+                fallback_z = float(points[0].get("z", 0.0)) if points else 0.0
+                
+                # Berechne plane_model dynamisch, falls nicht vorhanden
+                if plane_model is None:
+                    plane_model, _ = derive_surface_plane(points)
+                    # Wenn plane_model immer noch None ist, verwende konstante Ebene
+                    if plane_model is None:
+                        plane_model = {"mode": "constant", "base": fallback_z, "intercept": fallback_z}
+
+                # Berechne Schnittpunkt des Rays mit der Ebene dieser Surface
+                intersect = _intersect_ray_with_surface_plane(ray_start, ray_dir, plane_model, fallback_z)
+                if intersect is None:
+                    continue
+                x_click, y_click, t_hit = intersect
+
+                # Berechne Bounding Box der Surface für schnelle Vorprüfung
                 surface_xs = [p.get('x', 0.0) for p in points]
                 surface_ys = [p.get('y', 0.0) for p in points]
                 if surface_xs and surface_ys:
                     min_x, max_x = min(surface_xs), max(surface_xs)
                     min_y, max_y = min(surface_ys), max(surface_ys)
                     
+                    # Schnelle Bounding-Box-Prüfung zuerst
+                    if x_click < min_x or x_click > max_x or y_click < min_y or y_click > max_y:
+                        continue
+                    
                     # Prüfe ob Punkt in diesem Polygon liegt (nur X/Y, Z wird ignoriert)
+                    # Für schräge Flächen wird der Ray bereits mit der Ebene geschnitten,
+                    # daher ist die XY-Prüfung ausreichend
                     is_inside = self._point_in_polygon(x_click, y_click, points)
                     
-                    # Debug: Zeige erste paar Punkte des Polygons für Vergleich
-                    if checked_count <= 10 or is_inside:
-                        first_point = points[0] if points else {}
-                        pass
-                    
-                    if is_inside:
-                        self._select_surface_in_treewidget(str(surface_id))
-                        return
-                else:
-                    pass
+                    if is_inside and t_hit < best_t:
+                        best_t = t_hit
+                        best_surface_id = str(surface_id)
+                        best_is_disabled = False
             
-            # Wenn keine enabled Surface gefunden wurde, prüfe disabled Surfaces
+            # Prüfe zusätzlich disabled Surfaces (niedrigere Priorität, aber evtl. näher am Ray)
             # (immer prüfen, auch wenn enabled Surfaces gefunden wurden, falls der Klick auf disabled Surface war)
             if skipped_disabled > 0:
                 # Prüfe disabled Surfaces
                 for surface_id, surface_def in surface_definitions.items():
+                    # Normalisiere Surface-Definition
                     if isinstance(surface_def, SurfaceDefinition):
                         enabled = bool(getattr(surface_def, 'enabled', False))
                         hidden = bool(getattr(surface_def, 'hidden', False))
                         points = getattr(surface_def, 'points', []) or []
+                        plane_model = getattr(surface_def, 'plane_model', None)
                     else:
                         enabled = surface_def.get('enabled', False)
                         hidden = surface_def.get('hidden', False)
                         points = surface_def.get('points', [])
+                        plane_model = surface_def.get('plane_model')
                     
                     if enabled or hidden or len(points) < 3:
                         continue
                     
+                    # Fallback-Z für konstante Ebene aus erstem Punkt
+                    fallback_z = float(points[0].get("z", 0.0)) if points else 0.0
+                    
+                    # Berechne plane_model dynamisch, falls nicht vorhanden
+                    if plane_model is None:
+                        plane_model, _ = derive_surface_plane(points)
+                        # Wenn plane_model immer noch None ist, verwende konstante Ebene
+                        if plane_model is None:
+                            plane_model = {"mode": "constant", "base": fallback_z, "intercept": fallback_z}
+
+                    # Berechne Schnittpunkt des Rays mit der Ebene dieser Surface
+                    intersect = _intersect_ray_with_surface_plane(ray_start, ray_dir, plane_model, fallback_z)
+                    if intersect is None:
+                        continue
+                    x_click, y_click, t_hit = intersect
+
                     # Prüfe ob Punkt in diesem Polygon liegt
                     surface_xs = [p.get('x', 0.0) for p in points]
                     surface_ys = [p.get('y', 0.0) for p in points]
@@ -1812,9 +1885,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                             continue
                         
                         is_inside = self._point_in_polygon(x_click, y_click, points)
-                        if is_inside:
-                            self._select_surface_in_treewidget(str(surface_id))
-                            return
+                        if is_inside and t_hit < best_t:
+                            best_t = t_hit
+                            best_surface_id = str(surface_id)
+                            best_is_disabled = True
+            
+            # Wähle die am nächsten zur Kamera liegende Surface, falls vorhanden
+            if best_surface_id is not None:
+                self._select_surface_in_treewidget(best_surface_id)
+                return
             
             # Debug output removed
             
@@ -2030,11 +2109,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         
         # Prüfe ob es ein Doppelklick ist (basierend auf letztem Klick)
         current_time = time.time()
-        if hasattr(self, '_last_colorbar_click_time') and hasattr(self, '_last_colorbar_click_pos'):
-            time_diff = current_time - self._last_colorbar_click_time
+        last_time = getattr(self, '_last_colorbar_click_time', None)
+        last_pos = getattr(self, '_last_colorbar_click_pos', None)
+
+        # Nur auswerten, wenn Zeit und Position bereits gültig gesetzt wurden
+        if last_time is not None and last_pos is not None:
+            time_diff = current_time - last_time
             pos_diff = (
-                abs(event.x - self._last_colorbar_click_pos[0]) < 10 and
-                abs(event.y - self._last_colorbar_click_pos[1]) < 10
+                abs(event.x - last_pos[0]) < 10 and
+                abs(event.y - last_pos[1]) < 10
             )
             
             # Doppelklick wenn innerhalb von 500ms und ähnlicher Position (10 Pixel Toleranz)
@@ -2748,6 +2831,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 # Actor kann entweder direkt der Actor oder nur der Name sein
                 if isinstance(name, str):
                     self.plotter.remove_actor(name)
+                elif actor is not None:
+                    # Falls der Key kein String ist, versuche den Actor direkt zu entfernen
+                    try:
+                        self.plotter.remove_actor(actor)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         self._vertical_surface_meshes.clear()
@@ -2757,14 +2846,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         Zeichnet / aktualisiert SPL-Flächen für senkrechte Surfaces auf Basis von
         calculation_spl['surface_samples'] und calculation_spl['surface_fields'].
         
-        Im Texture-Modus werden senkrechte Flächen bereits als Textur gerendert,
-        daher werden sie hier übersprungen, um Doppel-Rendering zu vermeiden.
+        Hinweis:
+        - Für horizontale Flächen verwenden wir ausschließlich den Texture-Pfad.
+        - Für senkrechte / stark geneigte Flächen rendern wir hier explizite Meshes
+          (vertical_spl_<surface_id>), damit sie im 3D-Plot separat anwählbar sind.
         """
-        # Im Texture-Modus: Senkrechte Flächen werden bereits als Textur gerendert
-        # Entferne alte Mesh-Actors für senkrechte Flächen, falls vorhanden
-        self._clear_vertical_spl_surfaces()
-        return
-        
         container = self.container
         if container is None or not hasattr(container, "calculation_spl"):
             self._clear_vertical_spl_surfaces()
@@ -2873,6 +2959,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     reset_camera=False,
                     interpolate_before_map=not is_step_mode,
                 )
+                # Stelle sicher, dass senkrechte Flächen pickable sind
+                if actor and hasattr(actor, 'SetPickable'):
+                    actor.SetPickable(True)
                 # Im Color-Step-Modus explizit flache Interpolation erzwingen,
                 # damit die Stufen wie bei der horizontalen Fläche erscheinen.
                 if is_step_mode and hasattr(actor, "prop") and actor.prop is not None:
@@ -4694,11 +4783,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             return tuple(result)
 
         # 🎯 WICHTIG: selected_axis zur Signatur hinzufügen, damit Highlight-Änderungen erkannt werden
+        # Berechne maximale Surface-Dimension für Achsenflächen-Größe
+        max_surface_dim = self.overlay_helper._get_max_surface_dimension(settings)
+        
         axis_signature = (
             float(getattr(settings, 'position_x_axis', 0.0)),
             float(getattr(settings, 'position_y_axis', 0.0)),
             float(getattr(settings, 'length', 0.0)),
             float(getattr(settings, 'width', 0.0)),
+            float(getattr(settings, 'axis_3d_transparency', 10.0)),
+            float(max_surface_dim),  # Maximale Surface-Dimension für Achsenflächen-Größe
             getattr(self, '_axis_selected', None),  # Highlight-Status in Signatur aufnehmen
         )
 

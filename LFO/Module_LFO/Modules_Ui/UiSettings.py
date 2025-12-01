@@ -175,6 +175,9 @@ class UiSettings(QtWidgets.QWidget):
         self.use_air_absorption.stateChanged.connect(self.on_AirAbsorption_changed)
         self.position_plot_length.editingFinished.connect(self.on_PositionLength_changed)
         self.position_plot_width.editingFinished.connect(self.on_PositionWidth_changed)
+        # 3D-Achsenanzeige
+        if hasattr(self, "axis_3d_transparency"):
+            self.axis_3d_transparency.editingFinished.connect(self.on_AxisTransparency_changed)
 
         checkbox_mapping = {
             self.spl_plot_superposition: "spl_plot_superposition",
@@ -263,6 +266,14 @@ class UiSettings(QtWidgets.QWidget):
         self.position_plot_width.setFixedWidth(LINE_EDIT_WIDTH)
         position_section.addLayout(
             self._create_form_row("X Axis plot position", self.position_plot_width)
+        )
+
+        self.axis_3d_transparency = QLineEdit()
+        # Transparenz in Prozent (0–100)
+        self.axis_3d_transparency.setValidator(QIntValidator(0, 100))
+        self.axis_3d_transparency.setFixedWidth(LINE_EDIT_WIDTH)
+        position_section.addLayout(
+            self._create_form_row("Axis transparency (%)", self.axis_3d_transparency)
         )
 
         # Polar Frequenzen
@@ -680,6 +691,13 @@ class UiSettings(QtWidgets.QWidget):
         self.min_spl.setText(str(self.settings.colorbar_range['min']))
         self.db_step.setText(str(self.settings.colorbar_range['step']))
 
+        # 3D-Achsen-Ansicht
+        if hasattr(self, "axis_3d_view"):
+            self.axis_3d_view.setChecked(getattr(self.settings, "axis_3d_view", False))
+        if hasattr(self, "axis_3d_transparency"):
+            transparency = float(getattr(self.settings, "axis_3d_transparency", 10.0))
+            self.axis_3d_transparency.setText(str(int(round(transparency))))
+
 
 # ----- SIGNAL SET -----
 
@@ -1066,6 +1084,34 @@ class UiSettings(QtWidgets.QWidget):
 
         except (ValueError, IndexError) as e:
             print(f"Fehler beim Setzen der Polar-Frequenz: {e}")
+
+    def on_AxisTransparency_changed(self):
+        """Setzt die Transparenz der Achsenfläche (0–100 %, 10 % Default) und aktualisiert Overlays."""
+        try:
+            value = float(self.axis_3d_transparency.text())
+        except ValueError:
+            value = getattr(self.settings, "axis_3d_transparency", 10.0)
+
+        # Begrenze auf 0–100 %
+        value = max(0.0, min(100.0, value))
+
+        if getattr(self.settings, "axis_3d_transparency", 10.0) == value:
+            # UI ggf. korrigieren, aber keine Neu-Zeichnung nötig
+            self.axis_3d_transparency.setText(str(int(round(value))))
+            return
+
+        self.settings.axis_3d_transparency = value
+        self.axis_3d_transparency.setText(str(int(round(value))))
+
+        # Nur Overlays aktualisieren
+        try:
+            draw_plots = getattr(self.main_window, "draw_plots", None)
+            if draw_plots and hasattr(draw_plots, "draw_spl_plotter"):
+                plotter = draw_plots.draw_spl_plotter
+                if hasattr(plotter, "update_overlays"):
+                    plotter.update_overlays(self.settings, self.main_window.container)
+        except Exception as e:
+            print(f"[UiSettings] Fehler beim Aktualisieren der Achsentransparenz: {e}")
 
 
 

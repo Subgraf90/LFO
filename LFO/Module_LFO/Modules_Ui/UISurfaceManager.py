@@ -1207,12 +1207,30 @@ class UISurfaceManager(ModuleBase):
             checked = (state == Qt.Checked)
             if isinstance(surface, SurfaceDefinition):
                 surface.xy_enabled = checked
+                is_hidden = bool(getattr(surface, 'hidden', False))
+                is_enabled = bool(getattr(surface, 'enabled', False))
             else:
                 surface['xy_enabled'] = checked
-            
-            # Aktualisiere Berechnungen (falls nötig)
-            if hasattr(self.main_window, 'update_speaker_array_calculations'):
-                self.main_window.update_speaker_array_calculations()
+                is_hidden = bool(surface.get('hidden', False))
+                is_enabled = bool(surface.get('enabled', False))
+
+            # Nur neu berechnen / Overlays aktualisieren, wenn Surface nicht versteckt ist
+            if not is_hidden:
+                # Leichte Variante: nur Overlays (XY-Achsen) neu zeichnen
+                if (
+                    hasattr(self.main_window, 'draw_plots')
+                    and hasattr(self.main_window.draw_plots, 'draw_spl_plotter')
+                    and hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays')
+                ):
+                    self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
+                # Zusätzlich: Achsen-SPL neu berechnen, wenn Bedingungen erfüllt
+                if hasattr(self.main_window, 'calculate_axes'):
+                    # Beim Aktivieren: nur wenn Surface sichtbar und enabled
+                    if checked and is_enabled and not is_hidden:
+                        self.main_window.calculate_axes(update_plot=True)
+                    # Beim Deaktivieren: immer neu berechnen, um Kurve zu entfernen
+                    elif not checked:
+                        self.main_window.calculate_axes(update_plot=True)
     
     def on_group_enable_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert"""
@@ -1271,10 +1289,34 @@ class UISurfaceManager(ModuleBase):
         
         # Aktualisiere alle Child-Checkboxen
         self._update_group_child_checkboxes(group_item, 3, checked)
-        
-        # Aktualisiere Berechnungen (falls nötig)
-        if hasattr(self.main_window, 'update_speaker_array_calculations'):
-            self.main_window.update_speaker_array_calculations()
+
+        # Nur neu berechnen / Overlays aktualisieren, wenn Gruppe nicht versteckt ist
+        is_hidden = False
+        is_enabled = True
+        if group_id in self.surface_groups:
+            is_hidden = bool(self.surface_groups[group_id].get('hidden', False))
+            is_enabled = bool(self.surface_groups[group_id].get('enabled', True))
+        elif group:
+            # Fallback, falls Cache noch nicht befüllt ist
+            is_hidden = bool(getattr(group, 'hidden', False))
+            is_enabled = bool(getattr(group, 'enabled', True))
+
+        if not is_hidden:
+            # Leichte Variante: nur Overlays (XY-Achsen) neu zeichnen
+            if (
+                hasattr(self.main_window, 'draw_plots')
+                and hasattr(self.main_window.draw_plots, 'draw_spl_plotter')
+                and hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays')
+            ):
+                self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
+            # Zusätzlich: Achsen-SPL neu berechnen, wenn Bedingungen erfüllt
+            if hasattr(self.main_window, 'calculate_axes'):
+                # Beim Aktivieren der Gruppe: nur wenn Gruppe sichtbar und enabled
+                if checked and is_enabled and not is_hidden:
+                    self.main_window.calculate_axes(update_plot=True)
+                # Beim Deaktivieren: immer neu berechnen, um Kurven zu entfernen
+                elif not checked:
+                    self.main_window.calculate_axes(update_plot=True)
     
     def on_surface_item_text_changed(self, item, column):
         """Wird aufgerufen, wenn sich der Text eines Surface-Items ändert"""

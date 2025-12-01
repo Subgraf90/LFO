@@ -268,6 +268,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         
         
         # Prüfe ob aktive Surfaces vorhanden sind, die die Linie y=position_y schneiden
+        # Berücksichtige nur Surfaces mit xy_enabled=True, enabled=True, hidden=False
         active_surfaces = self._get_active_xy_surfaces()
         all_x_coords = []
         all_z_coords = []
@@ -348,13 +349,14 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             sound_field_p = np.concatenate(all_sound_field_p)
             
         else:
-            # Standard-Verhalten: Verwende feste Breite
-            total_rows = int(self.settings.length / resolution)
-            row_index = int((position_y / resolution) + (total_rows / 2))
-            row_index = max(0, min(row_index, total_rows - 1))
-            
-            sound_field_p = self.calculate_sound_field_row(row_index)[0].flatten()
-            sound_field_x_xaxis_calc = np.arange((self.settings.width / 2 * -1), ((self.settings.width / 2) + resolution), resolution)
+            # 🚫 Keine XY-aktiven Surfaces → für X-Achse "Empty Plot" erzeugen
+            # Erzeuge konstante -inf-Kurve über die Breite, so dass der Plotter sie als leer interpretieren kann
+            sound_field_x_xaxis_calc = np.arange(
+                (self.settings.width / 2 * -1),
+                ((self.settings.width / 2) + resolution),
+                resolution,
+            )
+            sound_field_p = np.full_like(sound_field_x_xaxis_calc, 0.0, dtype=float)
     
         sound_field_p_calc = self.functions.mag2db(sound_field_p)
 

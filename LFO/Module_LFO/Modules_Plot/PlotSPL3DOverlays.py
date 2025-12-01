@@ -11,6 +11,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     DEBUG_SURFACE_GEOMETRY,
     SurfaceDefinition,
 )
+from Module_LFO.Modules_Calculate.Functions import FunctionToolbox
 
 DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
 
@@ -106,11 +107,16 @@ class SPL3DOverlayRenderer:
         """
         t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
+        # Berechne maximale Surface-Dimension für Achsenflächen-Größe
+        max_surface_dim = self._get_max_surface_dimension(settings)
+        
         state = (
             float(getattr(settings, 'position_x_axis', 0.0)),
             float(getattr(settings, 'position_y_axis', 0.0)),
             float(getattr(settings, 'length', 0.0)),
             float(getattr(settings, 'width', 0.0)),
+            float(getattr(settings, 'axis_3d_transparency', 10.0)),
+            float(max_surface_dim),  # Maximale Surface-Dimension für Achsenflächen-Größe
             selected_axis,  # Highlight-Status in State aufnehmen
         )
         existing_names = self._category_actors.get('axis', [])
@@ -118,9 +124,11 @@ class SPL3DOverlayRenderer:
             return
 
         t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+        # Linien und evtl. Achsenflächen leeren
         self.clear_category('axis')
+        self.clear_category('axis_plane')
         t_clear_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-        x_axis, y_axis, length, width, selected_axis_from_state = state
+        x_axis, y_axis, length, width, axis_3d_transparency_from_state, max_surface_dim_from_state, selected_axis_from_state = state
 
         # Hole aktive Surfaces für XY-Berechnung (xy_enabled=True, enabled=True, hidden=False)
         t_surfaces_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
@@ -277,7 +285,124 @@ class SPL3DOverlayRenderer:
             print(f"[DEBUG draw_axis_lines]   - Y-Achsenlinien: {t_y:.2f}ms ({y_lines_drawn} Linien, {y_segments_total} Segmente)")
             print(f"[DEBUG draw_axis_lines] Zusammenfassung: {x_lines_drawn} X-Linien, {y_lines_drawn} Y-Linien gezeichnet")
         
+        # 3D-Achsenfläche immer zeichnen
+        try:
+            self._draw_axis_planes(x_axis, y_axis, length, width, settings)
+        except Exception as e:  # noqa: BLE001
+            print(f"[DEBUG draw_axis_lines] Fehler beim Zeichnen der Achsenflächen: {e}")
+
         self._last_axis_state = state
+
+    def _draw_axis_planes(self, x_axis: float, y_axis: float, length: float, width: float, settings) -> None:
+        """Zeichnet halbtransparente, quadratische Flächen durch die X- und Y-Achse.
+        
+        - Größe: Basierend auf allen nicht-versteckten Surfaces: max(Breite, Länge) * 3.0
+        - Orientierung:
+          - X-Achse: Vertikale X-Z-Ebene bei y = y_axis.
+          - Y-Achse: Vertikale Y-Z-Ebene bei x = x_axis.
+        - Maus-Transparenz: Flächen werden als eigene Kategorie 'axis_plane' hinzugefügt
+          und im Renderer explizit als nicht pickable markiert.
+        """
+        # Berechne Größe basierend auf allen nicht-versteckten Surfaces
+        # _get_max_surface_dimension gibt bereits max_dimension * 1.5 zurück
+        # Für Faktor 3 der max Dimension: L = max_dimension * 3 = (L_current / 1.5) * 3 = L_current * 2
+        L_base = self._get_max_surface_dimension(settings)
+        if L_base <= 0.0:
+            return
+        
+        # Faktor 3 der max Dimension: L_base ist bereits max_dim * 1.5, also L = L_base * 2 = max_dim * 3
+        L = L_base * 2.0
+        # Vertikale Höhe soll kürzer sein: Faktor 0.75 der Länge
+        H = L * 0.75
+
+        # Transparenz: Wert in Prozent (0–100), 10 % Standard
+        transparency_pct = float(getattr(settings, "axis_3d_transparency", 10.0))
+        transparency_pct = max(0.0, min(100.0, transparency_pct))
+        # PyVista-Opacity: 1.0 = voll sichtbar, 0.0 = komplett transparent
+        # Hier interpretieren wir den Wert als Opazität in Prozent
+        opacity = max(0.0, min(1.0, transparency_pct / 100.0))
+
+        # Diskrete Auflösung der Fläche (nur wenige Stützpunkte nötig)
+        n = 2
+
+        # X-Achsen-Ebene: X-Z-Fläche bei y = y_axis
+        try:
+            x_vals = np.linspace(-L / 2.0, L / 2.0, n)
+            # Vertikale Höhe: zentriert mit Faktor 0.75 der Länge
+            z_vals = np.linspace(-H / 2.0, H / 2.0, n)
+            X, Z = np.meshgrid(x_vals, z_vals)
+            Y = np.full_like(X, y_axis)
+            grid_x = self.pv.StructuredGrid(X, Y, Z)
+            # Kleiner Offset in Z, damit die Fläche minimal über dem Plot liegt
+            points = grid_x.points
+            points[:, 2] += self._planar_z_offset
+            grid_x.points = points
+            self._add_overlay_mesh(
+                grid_x,
+                color="gray",  # Grau statt weiß
+                opacity=opacity,
+                category="axis_plane",
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[DEBUG _draw_axis_planes] Fehler bei X-Achsenfläche: {e}")
+
+        # Y-Achsen-Ebene: Y-Z-Fläche bei x = x_axis
+        try:
+            y_vals = np.linspace(-L / 2.0, L / 2.0, n)
+            # Vertikale Höhe: zentriert mit Faktor 0.75 der Länge
+            z_vals = np.linspace(-H / 2.0, H / 2.0, n)
+            Y2, Z2 = np.meshgrid(y_vals, z_vals)
+            X2 = np.full_like(Y2, x_axis)
+            grid_y = self.pv.StructuredGrid(X2, Y2, Z2)
+            points2 = grid_y.points
+            points2[:, 2] += self._planar_z_offset
+            grid_y.points = points2
+            self._add_overlay_mesh(
+                grid_y,
+                color="gray",  # Grau statt weiß
+                opacity=opacity,
+                category="axis_plane",
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[DEBUG _draw_axis_planes] Fehler bei Y-Achsenfläche: {e}")
+
+    def _get_max_surface_dimension(self, settings) -> float:
+        """Berechnet die maximale Dimension (Breite oder Länge) aller nicht-versteckten Surfaces.
+        
+        Returns:
+            float: max(Breite, Länge) * 1.5 der größten nicht-versteckten Surface, oder 0.0 wenn keine gefunden
+        """
+        surface_store = getattr(settings, 'surface_definitions', {})
+        if not isinstance(surface_store, dict):
+            return 0.0
+        
+        max_dimension = 0.0
+        
+        for surface_id, surface in surface_store.items():
+            # Prüfe ob Surface nicht versteckt ist
+            if isinstance(surface, SurfaceDefinition):
+                hidden = surface.hidden
+                points = surface.points
+            else:
+                hidden = surface.get('hidden', False)
+                points = surface.get('points', [])
+            
+            # Überspringe versteckte Surfaces
+            if hidden:
+                continue
+            
+            # Berechne Breite und Länge für dieses Surface
+            if points:
+                try:
+                    width, length = FunctionToolbox.surface_dimensions(points)
+                    max_dim = max(float(width), float(length))
+                    max_dimension = max(max_dimension, max_dim)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[DEBUG _get_max_surface_dimension] Fehler bei Surface {surface_id}: {e}")
+                    continue
+        
+        # Multipliziere mit 1.5 (50% größer)
+        return max_dimension * 1.5
 
     def draw_surfaces(self, settings) -> None:
         """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot."""
@@ -1826,6 +1951,20 @@ class SPL3DOverlayRenderer:
                 print(f"[DEBUG] _add_overlay_mesh: Fehler beim Setzen der Pickable-Eigenschaft für {name}: {e}")
                 import traceback
                 traceback.print_exc()
+        
+        # Achsenflächen (axis_plane) sollen für Mausereignisse transparent sein
+        if category == 'axis_plane':
+            try:
+                if hasattr(actor, 'SetPickable'):
+                    actor.SetPickable(False)
+                # Zusätzliche Sicherheit über Property, falls verfügbar
+                if hasattr(actor, 'GetProperty'):
+                    prop = actor.GetProperty()
+                    if prop:
+                        # Nur Transparenz/Erscheinung, Picking bleibt über Actor deaktiviert
+                        prop.PickableOff() if hasattr(prop, 'PickableOff') else None
+            except Exception:  # noqa: BLE001
+                pass
         
         # Stelle sicher, dass Edges angezeigt werden, wenn edge_color gesetzt wurde
         if edge_color is not None and hasattr(actor, 'prop') and actor.prop is not None:
