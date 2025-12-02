@@ -124,14 +124,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                 # Versuche, die Methode zu überschreiben
                                 # Verwende types.MethodType für bessere Kompatibilität
                                 setattr(interactor_style, handler_name, types.MethodType(lambda self, *args, **kwargs: None, interactor_style))
-                                print(f"[DEBUG] VTK's {handler_name} deaktiviert")
-                            except Exception as e:
+                            except Exception:
                                 try:
                                     # Fallback: Direkte Zuweisung
                                     setattr(interactor_style, handler_name, empty_handler)
-                                    print(f"[DEBUG] VTK's {handler_name} deaktiviert (Fallback)")
-                                except Exception as e2:
-                                    print(f"[DEBUG] Konnte {handler_name} nicht deaktivieren: {e}, {e2}")
+                                except Exception:
+                                    pass
                     
                     # ZUSÄTZLICH: Deaktiviere auch alle anderen Doppelklick-Handler
                     all_double_click_handlers = [
@@ -142,13 +140,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         if hasattr(interactor_style, handler_name):
                             try:
                                 setattr(interactor_style, handler_name, types.MethodType(lambda self, *args, **kwargs: None, interactor_style))
-                                print(f"[DEBUG] VTK's {handler_name} deaktiviert")
-                            except Exception as e:
+                            except Exception:
                                 try:
                                     setattr(interactor_style, handler_name, empty_handler)
-                                    print(f"[DEBUG] VTK's {handler_name} deaktiviert (Fallback)")
-                                except Exception as e2:
-                                    print(f"[DEBUG] Konnte {handler_name} nicht deaktivieren: {e}, {e2}")
+                                except Exception:
+                                    pass
                     
                     # ZUSÄTZLICH: Deaktiviere auch OnMouseMove für Linksklick-Rotation
                     # Wir fangen MouseMove-Events im eventFilter ab, daher können wir OnMouseMove komplett deaktivieren
@@ -159,13 +155,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                 # Komplett deaktiviert - MouseMove wird im eventFilter behandelt
                                 pass
                             setattr(interactor_style, 'OnMouseMove', types.MethodType(disabled_mousemove, interactor_style))
-                            print("[DEBUG] VTK's OnMouseMove für Linksklick-Rotation deaktiviert")
-                        except Exception as e:
-                            print(f"[DEBUG] Konnte OnMouseMove nicht deaktivieren: {e}")
-                    
-                    print("[DEBUG] VTK's Standard-Linksklick-Rotation und ALLE Doppelklick-Handler deaktiviert")
-        except Exception as e:
-            print(f"[DEBUG] Konnte VTK's Standard-Rotation nicht deaktivieren: {e}")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         self._pan_active = False
         self._pan_last_pos: Optional[QtCore.QPoint] = None
         self._rotate_active = False
@@ -248,14 +241,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             etype = event.type()
             # 🎯 DOPPELKLICK KOMPLETT SPERREN - Fange Doppelklick-Events ab, bevor PyVista sie verarbeitet
             if etype == QtCore.QEvent.MouseButtonDblClick:
-                print(f"[DEBUG] Doppelklick-Event im 3D-Plot ABGEFANGEN und IGNORIERT (nur auf Colorbar aktiv)")
                 event.accept()
                 return True  # Event abgefangen, PyVista verarbeitet es nicht
             
             if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
                 press_pos = QtCore.QPoint(event.pos())
-                print(f"[DEBUG] MouseButtonPress: _rotate_active={self._rotate_active}, _last_press_time={self._last_press_time}, _last_press_pos={self._last_press_pos}")
-                
                 # 🎯 DOPPELKLICK DEAKTIVIERT - Alle Doppelklick-Funktionen sind auskommentiert
                 # # 🎯 WICHTIG: Doppelklick-Erkennung BEIM PRESS, nicht beim Release!
                 # # Prüfe ob es ein Doppelklick ist (basierend auf letztem Press, nicht Release)
@@ -308,8 +298,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 # Speichere Press-Zeitpunkt und Position für Doppelklick-Erkennung
                 self._last_press_time = time.time()
                 self._last_press_pos = press_pos
-                print(f"[DEBUG] Press gespeichert: _last_press_time={self._last_press_time}, _last_press_pos={self._last_press_pos}")
-                
                 # 🎯 WICHTIG: Event akzeptieren, damit PyVista's Standard-Handler NICHT ausgeführt wird.
                 # Dies verhindert, dass PyVista's Standard-Rotation aktiviert wird.
                 # Achsen-Klick und -Drag im 3D-Plot sind deaktiviert; Achsenpositionen
@@ -336,12 +324,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     and move_dy < click_threshold
                 )
                 
-                print(
-                    f"[DEBUG] MouseButtonRelease: _rotate_active={self._rotate_active}, "
-                    f"is_click={is_click}, _click_start_pos={self._click_start_pos}, "
-                    f"move_dx={move_dx}, move_dy={move_dy}, thr={click_threshold}"
-                )
-                
                 # Rotation IMMER beenden bei ButtonRelease
                 self._rotate_active = False
                 self._rotate_last_pos = None
@@ -356,19 +338,16 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 # 🎯 Doppelklick ist deaktiviert
                 # Wenn es ein Klick war (kein Drag), prüfe Speaker und Surfaces gleichwertig.
                 if is_click:
-                    print(f"[DEBUG] Einfacher Klick erkannt")
                     # 🎯 GLEICHWERTIGE BEHANDLUNG: Ray-Casting für beide (Speaker UND Surfaces)
                     # und wähle das Element, das näher zur Kamera ist (kleineres t)
                     
                     # 1. Prüfe Speaker
                     speaker_t, speaker_array_id, speaker_index = self._pick_speaker_at_position(click_pos)
-                    print(f"[DEBUG] Speaker-Picking: t={speaker_t}, array_id={speaker_array_id}, index={speaker_index}")
                     speaker_screen_dist = getattr(self, "_last_speaker_pick_screen_dist", None)
                     speaker_is_fallback = getattr(self, "_last_speaker_pick_is_fallback", False)
                     
                     # 2. Prüfe Surfaces
                     surface_t, surface_id = self._pick_surface_at_position(click_pos)
-                    print(f"[DEBUG] Surface-Picking: t={surface_t}, surface_id={surface_id}")
                     
                     # 3. Vergleiche Distanzen und wähle näheres Element
                     if speaker_t is not None and surface_t is not None:
@@ -377,10 +356,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                             # 🎯 Screen-Space-Heuristik: wenn der Speaker-Fallback aktiv ist
                             # und wir nahe an der 2D-Projektion geklickt haben, bevorzuge
                             # den Speaker unabhängig vom exakten t-Vergleich.
-                            print(
-                                "[DEBUG] Screen-Space-Heuristik aktiv "
-                                f"(speaker_screen_dist={speaker_screen_dist:.1f}px), wähle Speaker"
-                            )
                             self._select_speaker_in_treewidget(speaker_array_id, speaker_index)
                         else:
                             # Standard: wähle das näherliegende Objekt entlang des Rays
@@ -388,29 +363,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                             if speaker_t <= surface_t or abs(speaker_t - surface_t) <= depth_eps:
                                 # Speaker ist näher oder praktisch gleich weit -> bevorzuge Speaker,
                                 # damit Subs direkt auf der Stage gegenüber der Fläche gewinnen.
-                                print(
-                                    f"[DEBUG] Speaker bevorzugt (t_speaker={speaker_t:.3f}, "
-                                    f"t_surface={surface_t:.3f}, depth_eps={depth_eps}), wähle Speaker"
-                                )
                                 self._select_speaker_in_treewidget(speaker_array_id, speaker_index)
                             else:
-                                print(
-                                    f"[DEBUG] Surface ist klar näher (t_surface={surface_t:.3f} < "
-                                    f"t_speaker={speaker_t:.3f} - depth_eps), wähle Surface"
-                                )
                                 self._select_surface_in_treewidget(surface_id)
                     elif speaker_t is not None:
                         # Nur Speaker gefunden
-                        print(f"[DEBUG] Nur Speaker gefunden, wähle Speaker")
                         self._select_speaker_in_treewidget(speaker_array_id, speaker_index)
                     elif surface_t is not None:
                         # Nur Surface gefunden
-                        print(f"[DEBUG] Nur Surface gefunden, wähle Surface")
                         self._select_surface_in_treewidget(surface_id)
                     else:
                         # Nichts gefunden
-                        print(f"[DEBUG] Weder Speaker noch Surface gefunden")
-                    
+                        pass
                     # Speichere Zeitpunkt und Position für einfache Klicks (nicht für Doppelklick)
                     self._last_click_time = time.time()
                     self._last_click_pos = QtCore.QPoint(click_pos)
@@ -460,12 +424,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         # NUR wenn Maus gedrückt bleibt (buttons() & QtCore.Qt.LeftButton)
                         self._rotate_active = True
                         self.widget.setCursor(QtCore.Qt.OpenHandCursor)
-                        print(f"[DEBUG] Rotation aktiviert nach Mausbewegung: move_distance={move_distance:.1f}")
                 
                 # Wenn Rotation aktiv ist, verarbeite die Bewegung
                 # DOPPELKLICK DEAKTIVIERT - Doppelklick-Check entfernt
                 if self._rotate_active and self._rotate_last_pos is not None and self._axis_selected is None:
-                    print(f"[DEBUG] MouseMove während Rotation: _rotate_active={self._rotate_active}, _axis_selected={self._axis_selected}")
                     current_pos = QtCore.QPoint(event.pos())
                     delta = current_pos - self._rotate_last_pos
                     self._rotate_last_pos = current_pos
@@ -474,7 +436,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     return True
                 # Wenn Achse ausgewählt ist, verhindere Rotation
                 if self._axis_selected is not None and self._rotate_active:
-                    print(f"[DEBUG] Rotation verhindert: Achse ausgewählt ({self._axis_selected})")
                     self._rotate_active = False
                     self._rotate_last_pos = None
             if etype == QtCore.QEvent.MouseMove and self._pan_active and self._pan_last_pos is not None:
@@ -495,7 +456,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self._handle_mouse_move_3d(event.pos())
                 # Nicht akzeptieren, damit andere Handler auch reagieren können
             if etype == QtCore.QEvent.Leave:
-                print(f"[DEBUG] Leave-Event: _rotate_active={self._rotate_active}")
                 if self._pan_active or self._rotate_active or self._axis_drag_active:
                     self._pan_active = False
                     self._rotate_active = False
@@ -537,7 +497,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         x_norm = click_pos.x() / size.width()
                         y_norm = 1.0 - (click_pos.y() / size.height())
                         
-                        print(f"[DEBUG] _handle_surface_click: Prüfe auf Achsenlinien bei ({x_norm:.3f}, {y_norm:.3f})")
                         picker.Pick(x_norm, y_norm, 0.0, renderer)
                         picked_actor = picker.GetActor()
                         
@@ -551,15 +510,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                     if actor == picked_actor:
                                         actor_name = name
                                         break
-                            
-                            print(f"[DEBUG] _handle_surface_click: Gepickter Actor: {actor_name}, ist Achsenlinie? {actor_name in axis_actor_names if actor_name else False}")
-                            
                             # Wenn Achsenlinie gepickt wurde, ignoriere Surface-Click
                             if actor_name and actor_name in axis_actor_names:
-                                print(f"[DEBUG] _handle_surface_click: Achsenlinie {actor_name} wurde gepickt, ignoriere Surface-Click")
                                 return
-                except Exception as e:  # noqa: BLE001
-                    print(f"[DEBUG] _handle_surface_click: Fehler beim Prüfen auf Achsenlinien: {e}")
+                except Exception:  # noqa: BLE001
                     import traceback
                     traceback.print_exc()
             
@@ -599,7 +553,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     # 2) Vertikalflächen: vertical_spl_<surface_id> (direkt getroffen)
                     if isinstance(actor_name, str) and actor_name.startswith("vertical_spl_"):
                         surface_id = actor_name[len("vertical_spl_") :]
-                        print(f"[DEBUG] _handle_surface_click: Vertikale Surface direkt geklickt: {surface_id}")
                         self._select_surface_in_treewidget(surface_id)
                         return
                     
@@ -607,7 +560,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     # Dies muss VOR der Prüfung auf planare Flächen passieren, damit senkrechte Flächen Vorrang haben
                     # Auch wenn surface_disabled_polygons_batch getroffen wurde, prüfe ob dahinter eine senkrechte Fläche liegt
                     if (picked_actor is None or not isinstance(actor_name, str) or not actor_name.startswith("vertical_spl_")):
-                        print(f"[DEBUG] _handle_surface_click: Prüfe senkrechte Flächen mit Ray-Casting (picked_actor={picked_actor}, actor_name={actor_name})")
                         # Berechne Ray vom Klickpunkt für Fallback-Prüfung
                         render_size = renderer.GetSize()
                         if render_size[0] > 0 and render_size[1] > 0:
@@ -640,7 +592,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                         ray_dir = ray_dir / ray_len
                                         
                                         # Prüfe alle senkrechten Flächen
-                                        print(f"[DEBUG] _handle_surface_click: Prüfe {len(self._vertical_surface_meshes)} senkrechte Flächen")
                                         best_surface_id = None
                                         best_t = float('inf')
                                         
@@ -699,10 +650,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                                     if cell_id >= 0 and t_hit[0] >= 0 and t_hit[0] < best_t:
                                                                         best_t = t_hit[0]
                                                                         best_surface_id = surface_id_candidate
-                                                                        print(f"[DEBUG] _handle_surface_click: Ray schneidet senkrechte Fläche {surface_id_candidate} bei t={t_hit[0]:.3f}")
-                                                                except Exception as e:
+                                                                except Exception:
                                                                     # Fallback: Wenn CellLocator fehlschlägt, verwende Bounding-Box mit größerer Toleranz
-                                                                    print(f"[DEBUG] _handle_surface_click: CellLocator fehlgeschlagen für {surface_id_candidate}: {e}")
                                                                     # Verwende t_max (nähester Punkt der Bounding-Box) mit größerer Toleranz
                                                                     if t_max >= 0 and t_max < best_t:
                                                                         # Berechne Distanz vom Ray zum Mesh-Zentrum als zusätzliche Prüfung
@@ -721,12 +670,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                                                             if dist_to_center < 2.0:
                                                                                 best_t = t_max
                                                                                 best_surface_id = surface_id_candidate
-                                                                                print(f"[DEBUG] _handle_surface_click: Fallback-Bounding-Box für {surface_id_candidate}, dist={dist_to_center:.3f}")
                                             except Exception:
                                                 continue
                                         
                                         if best_surface_id is not None:
-                                            print(f"[DEBUG] _handle_surface_click: Vertikale Surface (Fallback) geklickt: {best_surface_id}")
                                             self._select_surface_in_treewidget(best_surface_id)
                                             return
                     
@@ -739,7 +686,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         "surface_disabled_polygons_batch",
                         "surface_disabled_edges_batch",
                     ):
-                        print(f"[DEBUG] _handle_surface_click: Disabled-Surface-Batch geklickt ({actor_name}), delegiere an _handle_spl_surface_click")
                         self._handle_spl_surface_click(click_pos)
                         return
                     
@@ -747,14 +693,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     # Auch hier müssen wir _handle_spl_surface_click aufrufen, damit Ray-Casting
                     # die am nächsten zur Kamera liegende Surface findet (enabled oder disabled)
                     if actor_name == self.SURFACE_NAME:
-                        print("[DEBUG] _handle_surface_click: SPL-Hauptfläche geklickt, delegiere an _handle_spl_surface_click für Ray-Casting")
                         self._handle_spl_surface_click(click_pos)
                         return
                     
                     # 6) Kein klarer Actor → versuche generisch SPL-Surface mit Ray-Casting
                     # Ray-Casting findet sowohl enabled als auch disabled Surfaces
                     if picked_point and len(picked_point) >= 3:
-                        print("[DEBUG] _handle_surface_click: PickPoint vorhanden → _handle_spl_surface_click für Ray-Casting")
                         self._handle_spl_surface_click(click_pos)
                         return
                     
@@ -762,7 +706,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     # verwende trotzdem Ray-Casting, um die am nächsten zur Kamera liegende
                     # Surface zu finden (kann enabled oder disabled sein)
                     if picked_actor is not None:
-                        print(f"[DEBUG] _handle_surface_click: Pickable Actor gefunden ({actor_name}), verwende Ray-Casting für Surface-Erkennung")
                         self._handle_spl_surface_click(click_pos)
                         return
             except ImportError:
@@ -774,7 +717,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             # Kein Actor gefunden - prüfe ob auf SPL-Surface geklickt wurde (für enabled und disabled Surfaces)
             # Ray-Casting findet sowohl enabled als auch disabled Surfaces
-            print("[DEBUG] _handle_surface_click: Kein Actor gefunden, verwende Ray-Casting für Surface-Erkennung")
             self._handle_spl_surface_click(click_pos)
         except Exception as e:  # noqa: BLE001
             # Bei Fehler einfach ignorieren
@@ -816,26 +758,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 x_norm = click_pos.x() / size.width()
                 y_norm = 1.0 - (click_pos.y() / size.height())
                 
-                print(f"[DEBUG] _handle_axis_line_click: Pick bei ({x_norm:.3f}, {y_norm:.3f}), Toleranz=0.05")
-                print(f"[DEBUG] _handle_axis_line_click: Verfügbare Achsenlinien-Actors: {len(axis_actor_names)}")
-                for name in axis_actor_names[:3]:  # Zeige erste 3
-                    print(f"  - {name}")
-                
                 picker.Pick(x_norm, y_norm, 0.0, renderer)
                 picked_actor = picker.GetActor()
                 
                 if picked_actor is None:
-                    print(f"[DEBUG] _handle_axis_line_click: Kein Actor gepickt")
-                    # Versuche alle Achsenlinien-Actors direkt zu prüfen (Ray-Casting)
-                    print(f"[DEBUG] _handle_axis_line_click: Versuche Ray-Casting für {len(axis_actor_names)} Achsenlinien-Actors")
-                    # Hole alle Actors aus dem Renderer
-                    for actor_name in axis_actor_names:
-                        actor = renderer.actors.get(actor_name)
-                        if actor is None:
-                            continue
-                        # Prüfe ob Actor pickable ist
-                        is_pickable = actor.GetPickable() if hasattr(actor, 'GetPickable') else True
-                        print(f"[DEBUG] _handle_axis_line_click: Actor {actor_name} pickable={is_pickable}")
+                    # Kein Actor gepickt
                     return False
                 
                 # Prüfe ob der gepickte Actor eine Achsenlinie ist
@@ -848,9 +775,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         if actor == picked_actor:
                             actor_name = name
                             break
-                
-                print(f"[DEBUG] _handle_axis_line_click: Gepickter Actor: {actor_name}")
-                print(f"[DEBUG] _handle_axis_line_click: Ist Achsenlinie? {actor_name in axis_actor_names if actor_name else False}")
                 
                 if actor_name and actor_name in axis_actor_names:
                     # Achsenlinie wurde geklickt - bestimme ob X- oder Y-Achse
@@ -869,10 +793,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         # Bestimme welche Achse geklickt wurde (die nähere)
                         if dist_to_x_axis < dist_to_y_axis:
                             self._axis_drag_type = 'x'
-                            print(f"[DEBUG] X-Achsenlinie geklickt bei y={y_picked:.2f}, x_axis={x_axis:.2f}")
                         else:
                             self._axis_drag_type = 'y'
-                            print(f"[DEBUG] Y-Achsenlinie geklickt bei x={x_picked:.2f}, y_axis={y_axis:.2f}")
                         
                         self._axis_drag_active = True
                         return True
@@ -880,11 +802,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 return False
             except ImportError:
                 return False
-            except Exception as e:
-                print(f"[DEBUG] Fehler beim Achsenlinien-Picking: {e}")
+            except Exception:
                 return False
-        except Exception as e:
-            print(f"[DEBUG] Fehler in _handle_axis_line_click: {e}")
+        except Exception:
             return False
 
     def _handle_axis_line_drag(self, current_pos: QtCore.QPoint) -> None:
@@ -966,8 +886,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         # Aktualisiere Berechnungen
                         if self.main_window and hasattr(self.main_window, 'update_speaker_array_calculations'):
                             self.main_window.update_speaker_array_calculations()
-        except Exception as e:
-            print(f"[DEBUG] Fehler in _handle_axis_line_drag: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
 
@@ -981,8 +900,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     ui.position_plot_length.setText(str(self.settings.position_x_axis))
                 if hasattr(ui, 'position_plot_width'):
                     ui.position_plot_width.setText(str(self.settings.position_y_axis))
-        except Exception as e:
-            print(f"[DEBUG] Fehler beim Aktualisieren der UI: {e}")
+        except Exception:
+            pass
 
     def _update_axis_highlight(self) -> None:
         """Aktualisiert die Highlight-Farbe der Achsenlinien (rot wenn ausgewählt).
@@ -992,10 +911,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Zeichne Achsenlinien neu mit Highlight-Status
             # Die Signatur enthält jetzt selected_axis, daher wird 'axis' automatisch in categories_to_refresh sein
             if hasattr(self, 'update_overlays') and hasattr(self, 'settings') and hasattr(self, 'container'):
-                print(f"[DEBUG] _update_axis_highlight: Aktualisiere Achsenlinien mit selected_axis={self._axis_selected}")
                 self.update_overlays(self.settings, self.container)
-        except Exception as e:
-            print(f"[DEBUG] Fehler in _update_axis_highlight: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
     
@@ -1016,7 +933,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
             renderer = self.plotter.renderer
             if renderer is None:
-                print("[DEBUG] _pick_speaker_at_position: renderer is None")
                 return (None, None, None)
             
             try:
@@ -1035,8 +951,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 y_norm = 1.0 - (click_pos.y() / size.height())  # VTK Y ist invertiert
                 display_x = float(x_norm * render_size[0])
                 display_y = float(y_norm * render_size[1])
-                
-                print(f"[DEBUG] _pick_speaker_at_position: display_x={display_x}, display_y={display_y}")
 
                 # Berechne Ray für alle nachfolgenden Berechnungen
                 renderer.SetDisplayPoint(display_x, display_y, 0.0)
@@ -1072,8 +986,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 if ray_length <= 0:
                     return (None, None, None)
                 ray_dir = ray_dir / ray_length
-                        
-                print(f"[DEBUG] _pick_speaker_at_position: Ray start={ray_start}, dir={ray_dir}")
 
                 # Vereinfachtes, robustes Picking: nur Speaker-Overlay-Actors in Pick-Liste
                 if not (hasattr(self, "overlay_helper") and hasattr(self.overlay_helper, "_speaker_actor_cache")):
@@ -1082,8 +994,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 speaker_cache = self.overlay_helper._speaker_actor_cache
                 if not isinstance(speaker_cache, dict) or not speaker_cache:
                     return (None, None, None)
-
-                print(f"[DEBUG] _pick_speaker_at_position: Checking {len(speaker_cache)} speaker actors (CellPicker)")
 
                 picker = vtkCellPicker()
                 # Erhöhte Toleranz, damit Lautsprecher-Gehäuse auch bei größerem Zoom
@@ -1109,7 +1019,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 picked_point = picker.GetPickPosition()
                 
                 if picked_actor is None:
-                    print("[DEBUG] _pick_speaker_at_position: CellPicker hat keinen Speaker-Actor getroffen")
                     # 🎯 Fallback: Exaktes Ray‑Mesh‑Intersection über alle Speaker-Meshes
                     # Analog zur Surface-Logik, aber mit echten 3D-Meshes (Dreiecke),
                     # damit auch geflogene/schräge Gehäuse robust getroffen werden.
@@ -1241,13 +1150,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                                     hit_pt = ray_start + float(best_t) * ray_dir
                                     dist_center = float(np.linalg.norm(center - hit_pt))
                                     if dist_center > max_pick_dist:
-                                        print(
-                                            "[DEBUG] _pick_speaker_at_position: Ray-Mesh-Hit verworfen, "
-                                            f"dist_center={dist_center:.3f} m > {max_pick_dist:.3f} m"
-                                        )
-                                        print(
-                                            "[DEBUG] _pick_speaker_at_position: Weder CellPicker noch Ray-Mesh-Fallback haben Speaker gefunden"
-                                        )
+                                        # Treffer außerhalb des zulässigen Abstands – keinen Speaker wählen
                                         return (None, None, None)
                         except Exception:
                             pass
@@ -1258,7 +1161,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         )
                         return (float(best_t), best_array_id, best_speaker_idx)
 
-                    print("[DEBUG] _pick_speaker_at_position: Weder CellPicker noch Ray-Mesh-Fallback haben Speaker gefunden")
                     return (None, None, None)
 
                 # Actor-Namen ermitteln
@@ -1267,14 +1169,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     if actor is picked_actor:
                         picked_name = name
                         break
-                
-                print(f"[DEBUG] _pick_speaker_at_position: CellPicker hit actor={picked_name}")
                 if not isinstance(picked_name, str):
                     return (None, None, None)
 
                 # Speaker-Info aus Cache ermitteln
                 speaker_info = self.overlay_helper._get_speaker_info_from_actor(picked_actor, picked_name)
-                print(f"[DEBUG] _pick_speaker_at_position: CellPicker speaker_info={speaker_info}")
                 if not speaker_info:
                     return (None, None, None)
 
@@ -1323,31 +1222,21 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                             max_pick_dist = max(0.5, 0.5 * box_radius)
                             dist_center = float(np.linalg.norm(center - picked))
                             if dist_center > max_pick_dist:
-                                print(
-                                    "[DEBUG] _pick_speaker_at_position: CellPicker-Hit verworfen, "
-                                    f"dist_center={dist_center:.3f} m > {max_pick_dist:.3f} m"
-                                )
+                                # Trefferpunkt zu weit vom Gehäusezentrum entfernt – verwerfen
                                 return (None, None, None)
                 except Exception:
                     # Bei Problemen mit der Distanzprüfung den Treffer nicht komplett verwerfen
                     pass
 
-                print(
-                    f"[DEBUG] _pick_speaker_at_position: Using CellPicker result: "
-                    f"array={array_id}, idx={speaker_index}, t={t_hit:.3f}, picked_point={picked}"
-                )
                 return (t_hit, str(array_id), int(speaker_index))
             except ImportError as e:
-                print(f"[DEBUG] _pick_speaker_at_position: ImportError: {e}")
                 return (None, None, None)
             except Exception as e:  # noqa: BLE001
                 import traceback
-                print(f"[DEBUG] _pick_speaker_at_position: Exception: {e}")
                 traceback.print_exc()
                 return (None, None, None)
         except Exception as e:  # noqa: BLE001
             import traceback
-            print(f"[DEBUG] _pick_speaker_at_position: Outer Exception: {e}")
             traceback.print_exc()
             return (None, None, None)
     
@@ -1359,16 +1248,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         """
         t, array_id, speaker_index = self._pick_speaker_at_position(click_pos)
         if array_id is not None and speaker_index is not None:
-            print(f"[DEBUG] _handle_speaker_click: Speaker gefunden, wähle aus: array={array_id}, idx={speaker_index}")
             self._select_speaker_in_treewidget(array_id, speaker_index)
             return True
-            return False
+        return False
     
     def _select_speaker_in_treewidget(self, array_id: str, speaker_index: int = None) -> None:
         """Wählt ein Speaker-Array im Sources-TreeWidget aus und wechselt zum Sources Widget."""
         try:
-            print(f"[DEBUG] _select_speaker_in_treewidget: array_id={array_id}, speaker_index={speaker_index}")
-            
             # Finde das Main-Window
             parent = self.parent_widget
             main_window = None
@@ -1377,7 +1263,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             while parent is not None and depth < 15:
                 if hasattr(parent, 'sources_instance'):
                     main_window = parent
-                    print(f"[DEBUG] _select_speaker_in_treewidget: Found main_window via sources_instance")
                     break
                 
                 next_parent = None
@@ -1402,7 +1287,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     if isinstance(parent, QtWidgets.QMainWindow):
                         if hasattr(parent, 'sources_instance'):
                             main_window = parent
-                            print(f"[DEBUG] _select_speaker_in_treewidget: Found main_window via QMainWindow")
                             break
                     if hasattr(parent, 'parent'):
                         parent = parent.parent()
@@ -1412,7 +1296,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         break
                 
                 if main_window is None:
-                    print(f"[DEBUG] _select_speaker_in_treewidget: main_window is None")
                     return
             
             # Wechsle zum Sources Widget (falls im Surface Widget)
@@ -1420,21 +1303,17 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 sources_dock = getattr(main_window.sources_instance, 'sources_dockWidget', None)
                 if sources_dock:
                     sources_dock.raise_()  # Zeige Sources Widget
-                    print(f"[DEBUG] _select_speaker_in_treewidget: Raised sources_dock")
             
             # Hole Sources-Instanz
             sources_instance = main_window.sources_instance
             if not sources_instance:
-                print(f"[DEBUG] _select_speaker_in_treewidget: sources_instance is None")
                 return
             if not hasattr(sources_instance, 'sources_tree_widget'):
-                print(f"[DEBUG] _select_speaker_in_treewidget: sources_instance has no sources_tree_widget")
                 return
             
             # Finde Array-Item im TreeWidget
             tree_widget = sources_instance.sources_tree_widget
             if tree_widget is None:
-                print(f"[DEBUG] _select_speaker_in_treewidget: tree_widget is None")
                 return
             
             # Suche nach Array-Item (rekursiv durch alle Items, inkl. Gruppen)
@@ -1446,7 +1325,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 indent = "  " * depth
                 if parent_item is None:
                     # Suche in allen Top-Level Items
-                    print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Searching in {tree_widget.topLevelItemCount()} top-level items")
                     for i in range(tree_widget.topLevelItemCount()):
                         item = tree_widget.topLevelItem(i)
                         if item:
@@ -1462,18 +1340,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     # Konvertiere item_array_id zu String für Vergleich
                     item_array_id_str = str(item_array_id) if item_array_id is not None else None
                     
-                    print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Checking item '{item_text}' (type={item_type}, array_id={item_array_id}, str={item_array_id_str})")
-                    
                     # Prüfe ob es ein Array-Item ist (nicht eine Gruppe)
                     # Gruppen haben item_type == "group", Arrays haben item_type == None oder einen anderen Wert
                     if item_type != "group" and item_array_id_str == array_id_str:
-                        print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Match found! Returning item '{item_text}'")
                         return parent_item
                     
                     # Suche rekursiv in Children (auch wenn es eine Gruppe ist)
                     child_count = parent_item.childCount()
                     if child_count > 0:
-                        print(f"{indent}[DEBUG] _select_speaker_in_treewidget: Searching in {child_count} children")
                         for i in range(child_count):
                             child = parent_item.child(i)
                             if child:
@@ -1484,7 +1358,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 return None
             
             item = find_array_item()
-            print(f"[DEBUG] _select_speaker_in_treewidget: Found item = {item} (text: {item.text(0) if item else 'None'})")
             if item is not None:
                 # Blockiere Signale während der programmatischen Auswahl
                 tree_widget.blockSignals(True)
@@ -1493,12 +1366,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     parent = item.parent()
                     while parent is not None:
                         parent.setExpanded(True)
-                        print(f"[DEBUG] _select_speaker_in_treewidget: Expanded parent '{parent.text(0)}'")
                         parent = parent.parent()
                     
                     tree_widget.setCurrentItem(item)
                     tree_widget.scrollToItem(item)
-                    print(f"[DEBUG] _select_speaker_in_treewidget: Set current item '{item.text(0)}'")
                 finally:
                     tree_widget.blockSignals(False)
                 
@@ -1510,22 +1381,17 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 # Leere die per-Speaker-Highlight-Liste, damit _update_speaker_highlights
                 # alle Lautsprecher des Arrays rot zeichnet.
                 setattr(self.settings, "active_speaker_highlight_indices", [])
-                print(
-                    "[DEBUG] _select_speaker_in_treewidget: Set array-based highlight IDs "
-                    f"(array_id={array_id}, all speakers of array will be highlighted)"
-                )
                 
                 # Aktualisiere Overlays für rote Umrandung
                 if hasattr(main_window, "draw_plots") and hasattr(main_window.draw_plots, "draw_spl_plotter"):
                     draw_spl = main_window.draw_plots.draw_spl_plotter
                     if hasattr(draw_spl, "update_overlays"):
-                        print(f"[DEBUG] _select_speaker_in_treewidget: Calling update_overlays")
                         draw_spl.update_overlays(self.settings, self.container)
             else:
-                print(f"[DEBUG] _select_speaker_in_treewidget: Item not found in tree")
-        except Exception as e:  # noqa: BLE001
+                # Nichts zu tun, wenn kein Item gefunden wurde
+                pass
+        except Exception:  # noqa: BLE001
             import traceback
-            print(f"[DEBUG] _select_speaker_in_treewidget: Exception: {e}")
             traceback.print_exc()
     
     def _get_z_from_mesh(self, x_pos: float, y_pos: float) -> Optional[float]:
@@ -1901,10 +1767,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Prüfe welche Surface (enabled oder disabled) den Ray schneidet
             surface_definitions = getattr(self.settings, 'surface_definitions', {})
             if not isinstance(surface_definitions, dict):
-                print(f"[DEBUG] _pick_surface_at_position: Keine surface_definitions gefunden")
                 return (None, None)
-            
-            print(f"[DEBUG] _pick_surface_at_position: Prüfe {len(surface_definitions)} Surfaces mit Ray-Casting")
             
             # Durchsuche alle Surfaces (enabled und disabled)
             checked_count = 0
@@ -2053,24 +1916,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     is_inside = self._point_in_polygon(x_click, y_click, points)
                     t_hit = t_hit  # t_hit wurde bereits von _intersect_ray_with_surface_plane berechnet
                 
-                # Debug-Ausgabe und Auswahl (für beide Fälle: senkrecht und planar)
-                if is_inside:
-                    surface_type = "senkrecht" if is_vertical else "planar"
-                    print(f"[DEBUG] _pick_surface_at_position: Surface {surface_id} (enabled={enabled}, {surface_type}) getroffen bei t={t_hit:.3f}, aktuell best_t={best_t:.3f}")
-                
                 # Wähle die am nächsten zur Kamera liegende Surface (unabhängig von enabled/disabled)
                 if is_inside and t_hit < best_t:
                     best_t = t_hit
                     best_surface_id = str(surface_id)
-                    surface_type = "senkrecht" if is_vertical else "planar"
-                    print(f"[DEBUG] _pick_surface_at_position: Surface {surface_id} ({surface_type}) ist jetzt die beste (t={t_hit:.3f})")
             
             # Gebe die am nächsten zur Kamera liegende Surface zurück, falls vorhanden
             if best_surface_id is not None:
-                print(f"[DEBUG] _pick_surface_at_position: Surface gefunden: {best_surface_id} (t={best_t:.3f})")
                 return (best_t, best_surface_id)
             else:
-                print(f"[DEBUG] _pick_surface_at_position: Keine Surface gefunden (checked={checked_count}, skipped_hidden={skipped_hidden}, skipped_too_few_points={skipped_too_few_points})")
                 return (None, None)
             
         except Exception as e:  # noqa: BLE001
@@ -2086,7 +1940,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         """
         t, surface_id = self._pick_surface_at_position(click_pos)
         if surface_id is not None:
-            print(f"[DEBUG] _handle_spl_surface_click: Surface gefunden, wähle aus: {surface_id}")
             self._select_surface_in_treewidget(surface_id)
     
     @staticmethod
@@ -2131,11 +1984,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     
     def _handle_double_click_auto_range(self) -> None:
         """Behandelt Doppelklick auf Colorbar: Findet den höchsten SPL und passt die Colorbar-Range an."""
-        print(f"[DEBUG] _handle_double_click_auto_range: Aufgerufen")
         try:
             # Prüfe ob Settings verfügbar sind
             if not self.settings:
-                print(f"[DEBUG] _handle_double_click_auto_range: Keine Settings")
                 return
             
             # Prüfe ob main_window verfügbar ist (für Plot-Update und Container-Zugriff)
@@ -2258,12 +2109,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             # Berechne Anzahl der Schritte für Debug-Ausgabe
             num_steps = (new_max - new_min) / step
-            print(f"[DEBUG] _handle_double_click_auto_range: SPL min={spl_min:.2f} dB, max={spl_max:.2f} dB")
-            print(f"[DEBUG] _handle_double_click_auto_range: Neue Range: min={new_min:.2f} dB, max={new_max:.2f} dB, step={step:.2f} dB, Schritte={num_steps:.1f}")
             
             # Nur aktualisieren wenn sich die Werte signifikant geändert haben (mindestens 1 dB)
             if abs(new_max - old_max) < 1.0 and abs(new_min - old_min) < 1.0:
-                print(f"[DEBUG] _handle_double_click_auto_range: Werte haben sich nicht signifikant geändert, keine Aktualisierung")
                 return
             
             # Aktualisiere Colorbar-Range
@@ -2310,7 +2158,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             # Doppelklick wenn innerhalb von 500ms und ähnlicher Position (10 Pixel Toleranz)
             if time_diff < 0.5 and pos_diff:
-                print(f"[DEBUG] Doppelklick auf Colorbar erkannt bei ({event.xdata}, {event.ydata})")
                 # Rufe automatische Range-Anpassung auf
                 self._handle_double_click_auto_range()
                 # Reset für nächsten Klick
@@ -2961,9 +2808,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         calc_spl = container.calculation_spl
                         if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
                             has_spl_data = True
-                            print(f"[DEBUG update_overlays] SPL-Daten in container.calculation_spl gefunden (sound_field_p vorhanden)")
-                        else:
-                            print(f"[DEBUG update_overlays] container.calculation_spl vorhanden, aber sound_field_p=None")
                     
                     # Nur wenn sound_field_p nicht vorhanden ist, prüfe auf Actors
                     # (Texture-Actors können auch im leeren Plot existieren als leere Texturen)
@@ -2975,16 +2819,11 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                             # (Texture-Actors können leer sein)
                             if spl_surface_actor is not None or spl_floor_actor is not None:
                                 has_spl_data = True
-                                print(f"[DEBUG update_overlays] SPL-Daten in Renderer-Actors gefunden (spl_surface oder spl_floor)")
                     
                     # Wenn keine SPL-Daten vorhanden sind, zeichne enabled Surfaces für leeren Plot
                     if not has_spl_data:
                         create_empty_plot_surfaces = True
-                        print(f"[DEBUG update_overlays] Keine SPL-Daten gefunden, setze create_empty_plot_surfaces=True")
-                    else:
-                        print(f"[DEBUG update_overlays] SPL-Daten vorhanden, create_empty_plot_surfaces=False")
-                except Exception as e:
-                    print(f"[DEBUG update_overlays] Fehler bei SPL-Daten-Prüfung: {e}")
+                except Exception:
                     import traceback
                     traceback.print_exc()
                     # Bei Fehler: konservativ, zeichne keine enabled Surfaces
@@ -3961,7 +3800,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     self._on_colorbar_double_click
                 )
                 self._colorbar_double_click_connected = True
-                print("[DEBUG] Doppelklick-Handler zur Colorbar hinzugefügt")
 
         self._colorbar_mode = mode_signature
 
@@ -4833,7 +4671,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
                 if hasattr(actor, 'SetPickable'):
                     actor.SetPickable(False)
-                    print(f"[DEBUG] Surface-Actor {actor_name} als nicht-pickable markiert")
                 
                 # 🎯 Speichere Metadaten zusammen mit dem Actor
                 # Diese können für Click-Handling, Koordinaten-Transformation, etc. verwendet werden

@@ -41,7 +41,6 @@ class Ui_MainWindow(object):
         self.colorbar_frame.setObjectName("colorbar_frame")
         # Frame soll expandieren können
         self.colorbar_frame.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
-        print("[DEBUG] Colorbar-Frame erstellt: width=80, Expanding SizePolicy, styleSheet gesetzt")
         
         # Layout für Colorbar-Frame
         colorbar_frame_layout = QtWidgets.QVBoxLayout(self.colorbar_frame)
@@ -67,7 +66,6 @@ class Ui_MainWindow(object):
         self.mouse_position_frame.setMidLineWidth(0)
         self.mouse_position_frame.setStyleSheet("QFrame#mouse_position_frame { border: 1px solid gray; background-color: transparent; }")
         self.mouse_position_frame.setObjectName("mouse_position_frame")
-        print("[DEBUG] Mouse-Position-Frame erstellt: width=80, height=60, styleSheet gesetzt")
         
         # Layout für Frame
         frame_layout = QtWidgets.QVBoxLayout(self.mouse_position_frame)

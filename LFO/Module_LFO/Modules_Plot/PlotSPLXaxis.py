@@ -287,7 +287,6 @@ class DrawSPLPlot_Xaxis(ModuleBase):
             # Callback für Y-Achsen-Zoom (SPL dB)
             self.ax.callbacks.connect('ylim_changed', self._on_ylim_changed)
             self._zoom_callback_connected = True
-            print(f"[PlotSPLXaxis] Zoom-Callbacks erfolgreich verbunden")
         except Exception as e:
             print(f"[PlotSPLXaxis] Fehler beim Verbinden von Zoom-Callbacks: {e}")
             import traceback

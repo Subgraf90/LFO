@@ -697,8 +697,6 @@ class MainWindow(QtWidgets.QMainWindow):
             show_progress: Progress-Bar anzeigen
             update_plot: SPL-Plot aktualisieren
         """
-        print(f"[DEBUG] Main.calculate_fdtd() aufgerufen: show_progress={show_progress}, update_plot={update_plot}")
-        
         # Prüfe ob Speaker-Arrays vorhanden sind (erforderlich für FDTD)
         speaker_arrays = getattr(self.settings, "speaker_arrays", None)
         if not isinstance(speaker_arrays, dict) or not speaker_arrays:
@@ -787,13 +785,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # WICHTIG: Setze show_in_plot=True, damit der Plot angezeigt wird
         # (set_calculation_SPL ersetzt das gesamte Dictionary und könnte show_in_plot überschreiben)
         self.container.calculation_spl["show_in_plot"] = True
-        print(f"[DEBUG] Main.calculate_fdtd() - FDTD-Berechnung abgeschlossen, calculation_spl aktualisiert, show_in_plot=True gesetzt")
         
         # Aktualisiere Plot
         if update_plot:
-            print(f"[DEBUG] Main.calculate_fdtd() - Starte Plot-Update (plot_spl)")
             self.plot_spl(update_axes=False)
-            print(f"[DEBUG] Main.calculate_fdtd() - Plot-Update abgeschlossen")
 
     def calculate_axes(self, include_x: bool = True, include_y: bool = True, update_plot: bool = True):
         """

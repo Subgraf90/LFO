@@ -2280,22 +2280,17 @@ class Sources(ModuleBase, QObject):
         - Unterstützt mehrere ausgewählte Items und Gruppen
         - Triggert update_overlays() für rote Umrandung.
         """
-        print(f"[DEBUG] _handle_sources_tree_selection_changed: Called")
-        
         if not hasattr(self, 'sources_tree_widget'):
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: No sources_tree_widget")
             return
         
         # Hole alle ausgewählten Items (nicht nur currentItem)
         selected_items = self.sources_tree_widget.selectedItems()
-        print(f"[DEBUG] _handle_sources_tree_selection_changed: selected_items count = {len(selected_items)}")
         
         if not selected_items:
             # Keine Auswahl → keine Highlights
             setattr(self.settings, "active_speaker_array_highlight_id", None)
             setattr(self.settings, "active_speaker_array_highlight_ids", [])
             setattr(self.settings, "active_speaker_highlight_indices", [])
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: No selection, clearing highlights")
             # Aktualisiere Overlays
             if hasattr(self, 'main_window') and self.main_window:
                 if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "draw_spl_plotter"):
@@ -2312,12 +2307,10 @@ class Sources(ModuleBase, QObject):
         
         for selected_item in selected_items:
             item_type = selected_item.data(0, Qt.UserRole + 1)
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: item_type = {item_type}")
             
             if item_type == "group":
                 # Für Gruppen: Sammle alle Arrays der Gruppe
                 group_name = selected_item.text(0)
-                print(f"[DEBUG] _handle_sources_tree_selection_changed: Group selected: {group_name}")
                 
                 # Finde die Gruppe in settings.speaker_array_groups
                 group_id = None
@@ -2331,7 +2324,6 @@ class Sources(ModuleBase, QObject):
                     # Hole alle Child-Array-IDs aus der Gruppe
                     group_data = self.settings.speaker_array_groups.get(group_id, {})
                     child_array_ids = group_data.get('child_array_ids', [])
-                    print(f"[DEBUG] _handle_sources_tree_selection_changed: Group has {len(child_array_ids)} child arrays")
                     
                     # Füge alle Child-Array-IDs hinzu
                     for array_id in child_array_ids:
@@ -2358,13 +2350,10 @@ class Sources(ModuleBase, QObject):
             else:
                 # Einzelnes Array
                 speaker_array_id = selected_item.data(0, Qt.UserRole)
-                print(f"[DEBUG] _handle_sources_tree_selection_changed: Array selected: {speaker_array_id}")
                 if speaker_array_id is not None:
                     array_id_str = str(speaker_array_id)
                     if array_id_str not in highlight_array_ids:
                         highlight_array_ids.append(array_id_str)
-        
-        print(f"[DEBUG] _handle_sources_tree_selection_changed: Collected highlight_array_ids = {highlight_array_ids}")
         
         # Setze Highlight-IDs
         if highlight_array_ids:
@@ -2372,31 +2361,21 @@ class Sources(ModuleBase, QObject):
             setattr(self.settings, "active_speaker_array_highlight_id", highlight_array_ids[0])
             setattr(self.settings, "active_speaker_array_highlight_ids", highlight_array_ids)
             setattr(self.settings, "active_speaker_highlight_indices", [])
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: Set highlight_ids = {highlight_array_ids}")
         else:
             setattr(self.settings, "active_speaker_array_highlight_id", None)
             setattr(self.settings, "active_speaker_array_highlight_ids", [])
             setattr(self.settings, "active_speaker_highlight_indices", [])
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: No arrays found, clearing highlights")
         
         # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
         if hasattr(self, 'main_window') and self.main_window:
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: main_window exists")
             if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "draw_spl_plotter"):
                 draw_spl = self.main_window.draw_plots.draw_spl_plotter
-                print(f"[DEBUG] _handle_sources_tree_selection_changed: draw_spl exists")
                 if hasattr(draw_spl, "update_overlays"):
                     try:
-                        print(f"[DEBUG] _handle_sources_tree_selection_changed: Calling update_overlays")
                         draw_spl.update_overlays(self.settings, self.container)
-                    except Exception as e:  # noqa: BLE001
-                        print(f"[DEBUG] _handle_sources_tree_selection_changed: Exception in update_overlays: {e}")
+                    except Exception:  # noqa: BLE001
                         import traceback
                         traceback.print_exc()
-            else:
-                print(f"[DEBUG] _handle_sources_tree_selection_changed: draw_plots or draw_spl_plotter does not exist")
-        else:
-            print(f"[DEBUG] _handle_sources_tree_selection_changed: main_window does not exist")
     
     def eventFilter(self, obj, event):
         """Event-Filter für TreeWidget, um Klicks auf leeres Feld zu erkennen."""
@@ -2412,7 +2391,6 @@ class Sources(ModuleBase, QObject):
                     item = self.sources_tree_widget.itemAt(event.pos())
                     if item is None:
                         # Klick auf leeres Feld - entferne Auswahl
-                        print(f"[DEBUG] eventFilter: Click on empty area, clearing selection")
                         self.sources_tree_widget.clearSelection()
                         # Setze currentItem auf None
                         self.sources_tree_widget.setCurrentItem(None)

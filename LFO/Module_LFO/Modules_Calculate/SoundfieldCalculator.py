@@ -553,23 +553,7 @@ class SoundFieldCalculator(ModuleBase):
         additional_mask = mask_options.get("additional_mask")
         if additional_mask is not None:
             additional_mask_array = np.asarray(additional_mask, dtype=bool).reshape(-1)
-            if DEBUG_SOUNDFIELD and len(additional_mask_array) > 0:
-                num_additional_mask_true = np.count_nonzero(additional_mask_array)
-                num_valid_before = np.count_nonzero(valid_mask)
-                print(
-                    f"[_compute_wave_for_points] additional_mask: "
-                    f"{num_additional_mask_true}/{len(additional_mask_array)} Punkte aktiv, "
-                    f"valid_mask vorher: {num_valid_before}/{len(valid_mask)}"
-                )
             valid_mask &= additional_mask_array
-            if DEBUG_SOUNDFIELD and len(additional_mask_array) > 0:
-                num_valid_after = np.count_nonzero(valid_mask)
-                num_removed_by_mask = num_valid_before - num_valid_after
-                print(
-                    f"[_compute_wave_for_points] valid_mask nachher: "
-                    f"{num_valid_after}/{len(valid_mask)}, "
-                    f"{num_removed_by_mask} Punkte durch additional_mask entfernt"
-                )
         
         wave = np.zeros(points.shape[0], dtype=complex)
         if not np.any(valid_mask):
@@ -1138,89 +1122,8 @@ class SoundFieldCalculator(ModuleBase):
         enabled_surfaces: List[Tuple[str, Dict]],
     ) -> None:
         """
-        Führt einen reinen Diagnose-Check durch:
-        - Achsensymmetrie von X/Y (Spiegelung um 0)
-        - Symmetrie der Surface-Maske
-        - Grundlegende Konsistenz von Z-Grid
-
-        Verändert KEINE Daten, gibt nur Debug-Infos auf stdout aus.
+        Ehemaliger Diagnose-Check (Symmetrie von Grid & Surfaces).
+        Wird aktuell nicht mehr für Konsolenausgaben verwendet.
         """
-        print("=== [SoundFieldCalculator] Symmetrie-Check: Grid & Surfaces ===")
-        if enabled_surfaces:
-            print(f"  Aktivierte Surfaces: {len(enabled_surfaces)}")
-        else:
-            print("  Keine aktivierten Surfaces – Fallback-Grid wird genutzt.")
-
-        # --- 1) Achsensymmetrie der Koordinaten prüfen -----------------
-        def _check_axis(axis_name: str, values: np.ndarray) -> None:
-            if values.size == 0:
-                print(f"  Achse {axis_name}: LEER")
-                return
-            symmetric = np.allclose(values, -values[::-1], atol=1e-6)
-            print(
-                f"  Achse {axis_name}: "
-                f"min={values.min():.3f}, max={values.max():.3f}, "
-                f"N={values.size}, symmetrisch_zu_0={bool(symmetric)}"
-            )
-            if not symmetric:
-                center = 0.0
-                idx_center = int((np.abs(values - center)).argmin())
-                print(
-                    f"    Nächster Punkt zu 0 auf {axis_name}: "
-                    f"index={idx_center}, value={values[idx_center]:.6f}"
-                )
-
-        _check_axis("X", sound_field_x)
-        _check_axis("Y", sound_field_y)
-
-        # --- 2) Maske auf grobe Links/Rechts-Symmetrie prüfen ----------
-        ny, nx = surface_mask.shape
-        print(f"  Grid-Shape: ny={ny}, nx={nx}")
-        # Spiegelung entlang X-Achse (Spaltenachse)
-        mask_lr_diff = surface_mask ^ surface_mask[:, ::-1]
-        num_diff_lr = int(mask_lr_diff.sum())
-        print(
-            "  Surface-Maske Links/Rechts:"
-            f" true={int(surface_mask.sum())}, "
-            f"abweichende Spiegel-Punkte={num_diff_lr}"
-        )
-
-        # Spiegelung entlang Y-Achse (Zeilenachse)
-        mask_tb_diff = surface_mask ^ surface_mask[::-1, :]
-        num_diff_tb = int(mask_tb_diff.sum())
-        print(
-            "  Surface-Maske Oben/Unten:"
-            f" abweichende Spiegel-Punkte={num_diff_tb}"
-        )
-
-        # Wenn es deutliche Unterschiede gibt, ein paar Beispielpunkte ausgeben
-        max_examples = 10
-        if num_diff_lr > 0:
-            ys, xs = np.where(mask_lr_diff)
-            print("  Beispiel unsymmetrischer LR-Maskenpunkte (max 10):")
-            for k in range(min(max_examples, ys.size)):
-                i = int(ys[k])
-                j = int(xs[k])
-                j_mirror = nx - 1 - j
-                print(
-                    f"    (y={i}, x={j}) -> Maske={surface_mask[i, j]}, "
-                    f"Mirror(x={j_mirror})={surface_mask[i, j_mirror]}"
-                )
-
-        # --- 3) Z-Grid Konsistenz prüfen -------------------------------
-        if Z_grid is None:
-            print("  Z-Grid: None")
-            print("=== [SoundFieldCalculator] Symmetrie-Check Ende ===")
-            return
-        z_valid = Z_grid[surface_mask]
-        if z_valid.size == 0:
-            print("  Z-Grid: keine Punkte innerhalb der Surface-Maske.")
-        else:
-            print(
-                f"  Z-Grid (innerhalb Surface-Maske): "
-                f"min={float(z_valid.min()):.3f}, "
-                f"max={float(z_valid.max()):.3f}, "
-                f"mean={float(z_valid.mean()):.3f}"
-            )
-        print("=== [SoundFieldCalculator] Symmetrie-Check Ende ===")
+        return
 

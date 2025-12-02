@@ -134,13 +134,9 @@ class SPL3DOverlayRenderer:
         t_surfaces_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         active_surfaces = self._get_active_xy_surfaces(settings)
         t_surfaces_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-        print(f"[DEBUG draw_axis_lines] Gefundene aktive Surfaces: {len(active_surfaces)}")
-        for sid, s in active_surfaces:
-            print(f"  - Surface ID: {sid}")
         
         # Strich-Punkt-Pattern (0xF4F4 = Strich-Punkt-Strich-Punkt, besser sichtbar als 0xF0F0)
         dash_dot_pattern = 0xF4F4
-        print(f"[DEBUG draw_axis_lines] Pattern: 0x{dash_dot_pattern:X}, Line Width: 5.0")
         
         # Zeichne X-Achsenlinie (y=y_axis, konstant) auf allen aktiven Surfaces
         t_x_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
@@ -150,7 +146,6 @@ class SPL3DOverlayRenderer:
             intersection_points = self._get_surface_intersection_points_xz(y_axis, surface, settings)
             if intersection_points is not None:
                 x_coords, z_coords = intersection_points
-                print(f"[DEBUG draw_axis_lines] X-Achse auf Surface {surface_id}: {len(x_coords)} Punkte")
                 if len(x_coords) >= 2:
                     # Erstelle 3D-Linie auf dem Surface
                     points_3d = np.column_stack([x_coords, np.full_like(x_coords, y_axis), z_coords])
@@ -160,8 +155,6 @@ class SPL3DOverlayRenderer:
                     
                     # Füge kleinen Z-Offset hinzu, damit Achsenlinien beim Picking bevorzugt werden
                     points_3d[:, 2] += self._axis_z_offset
-                    
-                    print(f"[DEBUG draw_axis_lines] X-Linie Punkte (erste 3): {points_3d[:min(3, len(points_3d))]}")
                     
                     # Erstelle Strich-Punkt-Linie durch Segmentierung (optimiert: größere Segmente, weniger Actors)
                     t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
@@ -193,15 +186,11 @@ class SPL3DOverlayRenderer:
                             t_seg = (t_segment_end - t_segment_start) * 1000 if t_segment_end and t_segment_start else 0
                             t_comb = (t_combine_end - t_combine_start) * 1000 if t_combine_end and t_combine_start else 0
                             t_dr = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
-                            print(f"[DEBUG draw_axis_lines] X-Linie Actor erstellt (1 Mesh mit {len(dash_dot_segments)} Segmenten), Width: 5.0")
-                            print(f"[DEBUG draw_axis_lines]   Zeit: Segmentierung={t_seg:.2f}ms, Kombinieren={t_comb:.2f}ms, Zeichnen={t_dr:.2f}ms")
                         else:
                             t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                            print(f"[DEBUG draw_axis_lines] X-Linie: Fehler beim Kombinieren der Segmente")
                     else:
                         t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                         t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        print(f"[DEBUG draw_axis_lines] X-Linie: Keine Segmente erstellt")
                     x_lines_drawn += 1
         t_x_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
@@ -213,7 +202,6 @@ class SPL3DOverlayRenderer:
             intersection_points = self._get_surface_intersection_points_yz(x_axis, surface, settings)
             if intersection_points is not None:
                 y_coords, z_coords = intersection_points
-                print(f"[DEBUG draw_axis_lines] Y-Achse auf Surface {surface_id}: {len(y_coords)} Punkte")
                 if len(y_coords) >= 2:
                     # Erstelle 3D-Linie auf dem Surface
                     points_3d = np.column_stack([np.full_like(y_coords, x_axis), y_coords, z_coords])
@@ -223,8 +211,6 @@ class SPL3DOverlayRenderer:
                     
                     # Füge kleinen Z-Offset hinzu, damit Achsenlinien beim Picking bevorzugt werden
                     points_3d[:, 2] += self._axis_z_offset
-                    
-                    print(f"[DEBUG draw_axis_lines] Y-Linie Punkte (erste 3): {points_3d[:min(3, len(points_3d))]}")
                     
                     # Erstelle Strich-Punkt-Linie durch Segmentierung (optimiert: größere Segmente, weniger Actors)
                     t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
@@ -256,15 +242,11 @@ class SPL3DOverlayRenderer:
                             t_seg = (t_segment_end - t_segment_start) * 1000 if t_segment_end and t_segment_start else 0
                             t_comb = (t_combine_end - t_combine_start) * 1000 if t_combine_end and t_combine_start else 0
                             t_dr = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
-                            print(f"[DEBUG draw_axis_lines] Y-Linie Actor erstellt (1 Mesh mit {len(dash_dot_segments)} Segmenten), Width: 5.0")
-                            print(f"[DEBUG draw_axis_lines]   Zeit: Segmentierung={t_seg:.2f}ms, Kombinieren={t_comb:.2f}ms, Zeichnen={t_dr:.2f}ms")
                         else:
                             t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                            print(f"[DEBUG draw_axis_lines] Y-Linie: Fehler beim Kombinieren der Segmente")
                     else:
                         t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                         t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        print(f"[DEBUG draw_axis_lines] Y-Linie: Keine Segmente erstellt")
                     y_lines_drawn += 1
         t_y_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
@@ -276,20 +258,12 @@ class SPL3DOverlayRenderer:
             t_surfaces = (t_surfaces_end - t_surfaces_start) * 1000 if t_surfaces_end and t_surfaces_start else 0
             t_x = (t_x_end - t_x_start) * 1000 if t_x_end and t_x_start else 0
             t_y = (t_y_end - t_y_start) * 1000 if t_y_end and t_y_start else 0
-            
-            print(f"[DEBUG draw_axis_lines] ===== ZEITMESSUNG =====")
-            print(f"[DEBUG draw_axis_lines] Gesamtzeit: {t_total:.2f}ms")
-            print(f"[DEBUG draw_axis_lines]   - Clear: {t_clear:.2f}ms")
-            print(f"[DEBUG draw_axis_lines]   - Surfaces finden: {t_surfaces:.2f}ms")
-            print(f"[DEBUG draw_axis_lines]   - X-Achsenlinien: {t_x:.2f}ms ({x_lines_drawn} Linien, {x_segments_total} Segmente)")
-            print(f"[DEBUG draw_axis_lines]   - Y-Achsenlinien: {t_y:.2f}ms ({y_lines_drawn} Linien, {y_segments_total} Segmente)")
-            print(f"[DEBUG draw_axis_lines] Zusammenfassung: {x_lines_drawn} X-Linien, {y_lines_drawn} Y-Linien gezeichnet")
         
         # 3D-Achsenfläche immer zeichnen
         try:
             self._draw_axis_planes(x_axis, y_axis, length, width, settings)
-        except Exception as e:  # noqa: BLE001
-            print(f"[DEBUG draw_axis_lines] Fehler beim Zeichnen der Achsenflächen: {e}")
+        except Exception:  # noqa: BLE001
+            pass
 
         self._last_axis_state = state
 
@@ -343,8 +317,8 @@ class SPL3DOverlayRenderer:
                 opacity=opacity,
                 category="axis_plane",
             )
-        except Exception as e:  # noqa: BLE001
-            print(f"[DEBUG _draw_axis_planes] Fehler bei X-Achsenfläche: {e}")
+        except Exception:  # noqa: BLE001
+            pass
 
         # Y-Achsen-Ebene: Y-Z-Fläche bei x = x_axis
         try:
@@ -363,8 +337,8 @@ class SPL3DOverlayRenderer:
                 opacity=opacity,
                 category="axis_plane",
             )
-        except Exception as e:  # noqa: BLE001
-            print(f"[DEBUG _draw_axis_planes] Fehler bei Y-Achsenfläche: {e}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _get_max_surface_dimension(self, settings) -> float:
         """Berechnet die maximale Dimension (Breite oder Länge) aller nicht-versteckten Surfaces.
@@ -397,8 +371,7 @@ class SPL3DOverlayRenderer:
                     width, length = FunctionToolbox.surface_dimensions(points)
                     max_dim = max(float(width), float(length))
                     max_dimension = max(max_dimension, max_dim)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[DEBUG _get_max_surface_dimension] Fehler bei Surface {surface_id}: {e}")
+                except Exception:  # noqa: BLE001
                     continue
         
         # Multipliziere mit 1.5 (50% größer)
@@ -627,9 +600,7 @@ class SPL3DOverlayRenderer:
             except (ValueError, TypeError, AttributeError, Exception):
                 continue
         
-        print(f"[DEBUG draw_surfaces] Surfaces gefunden: {enabled_count} enabled, {disabled_count} disabled")
-        print(f"[DEBUG draw_surfaces] Aktiv: {len(active_enabled_points_list)} enabled, {len(active_disabled_points_list)} disabled")
-        print(f"[DEBUG draw_surfaces] Inaktiv: {sum(1 for x in inactive_surface_enabled if x)} enabled, {sum(1 for x in inactive_surface_enabled if not x)} disabled in inactive_surface_enabled")
+        # Debug-Ausgaben entfernt: Surfaces-Zusammenfassung
         
         # 🎯 Zeichne Surfaces EINZELN mit IDs für Picking (nur für disabled Surfaces)
         # Für enabled Surfaces verwenden wir die SPL-Surface und prüfen beim Klick, welche Surface den Punkt enthält
@@ -644,7 +615,6 @@ class SPL3DOverlayRenderer:
                 direct_texture_count = len(getattr(self.plotter, '_surface_texture_actors', {}))
                 if direct_texture_count > 0:
                     has_spl_data = True
-                    print(f"[DEBUG draw_surfaces] SPL-Daten in plotter._surface_texture_actors gefunden: {direct_texture_count} Actors")
             
             # Prüfe auch Renderer-Actors (falls bereits registriert)
             if not has_spl_data and hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
@@ -654,7 +624,6 @@ class SPL3DOverlayRenderer:
                 has_texture_actors = len(texture_actor_names) > 0
                 if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors:
                     has_spl_data = True
-                    print(f"[DEBUG draw_surfaces] SPL-Daten in Renderer-Actors gefunden: texture_actors={len(texture_actor_names)}")
             
             # 🎯 ZUSÄTZLICH: Prüfe ob container calculation_spl Daten hat (wichtig beim Laden)
             # Dies hilft beim Laden, wenn draw_surfaces vor update_spl_plot aufgerufen wird
@@ -667,16 +636,9 @@ class SPL3DOverlayRenderer:
                     # Zeichne keine graue Fläche, da SPL-Daten geplottet werden sollen
                     if not has_spl_data:
                         has_spl_data = True
-                        print(f"[DEBUG draw_surfaces] SPL-Daten in container.calculation_spl gefunden, keine graue Fläche")
-                else:
-                    print(f"[DEBUG draw_surfaces] container.calculation_spl vorhanden, aber sound_field_p=None oder nicht dict")
-            else:
-                print(f"[DEBUG draw_surfaces] container={container is not None}, has_calculation_spl={container is not None and hasattr(container, 'calculation_spl') if container else False}")
-        except Exception as e:
-            print(f"[DEBUG draw_surfaces] Fehler bei SPL-Daten-Prüfung: {e}")
+        except Exception:
+            # Fehler bei SPL-Daten-Prüfung ignorieren – Plot wird einfach ohne graue Fläche gezeichnet
             pass
-        
-        print(f"[DEBUG draw_surfaces] FINAL has_spl_data={has_spl_data}, container={container is not None}")
         
         # Zeichne aktive ENABLED Surfaces als Batch (roter Rahmen, keine Fläche)
         if active_enabled_points_list:
@@ -750,10 +712,6 @@ class SPL3DOverlayRenderer:
         # (wird nur in show_empty_spl gesetzt)
         # BOTH active AND inactive enabled Surfaces bekommen graue Flächen im leeren Plot
         if create_empty_plot_surfaces:
-            print(f"[DEBUG draw_surfaces] create_empty_plot_surfaces=True, sammle enabled Surfaces")
-            print(f"[DEBUG draw_surfaces] active_enabled_points_list: {len(active_enabled_points_list)} Surfaces")
-            print(f"[DEBUG draw_surfaces] inactive_points_list: {len(inactive_points_list)} Surfaces, inactive_surface_enabled: {len(inactive_surface_enabled)} Einträge")
-            
             # Sammle alle enabled Surfaces (aktiv und inaktiv) für graue Fläche
             enabled_points_for_empty_plot = []
             enabled_faces_for_empty_plot = []
@@ -761,7 +719,6 @@ class SPL3DOverlayRenderer:
             
             # Aktive enabled Surfaces
             if active_enabled_points_list:
-                print(f"[DEBUG draw_surfaces] Füge {len(active_enabled_points_list)} aktive enabled Surfaces hinzu")
                 for idx, points in enumerate(active_enabled_points_list):
                     n_pts = len(points)
                     enabled_points_for_empty_plot.append(points)
@@ -785,20 +742,15 @@ class SPL3DOverlayRenderer:
                             enabled_faces_for_empty_plot.extend(face)
                             point_offset += n_pts
                 if inactive_enabled_count > 0:
-                    print(f"[DEBUG draw_surfaces] Füge {inactive_enabled_count} inaktive enabled Surfaces hinzu")
-            
-            print(f"[DEBUG draw_surfaces] Gesamt enabled Surfaces für leeren Plot: {len(enabled_points_for_empty_plot)}")
+                    # Anzahl inaktiver enabled Surfaces hier nicht mehr ausführlich loggen
+                    pass
             
             # Zeichne alle enabled Surfaces (aktiv + inaktiv) als Batch
             if enabled_points_for_empty_plot:
                 try:
-                    print(f"[DEBUG draw_surfaces] Zeichne {len(enabled_points_for_empty_plot)} enabled Surfaces für leeren Plot")
                     all_enabled_points = np.vstack(enabled_points_for_empty_plot)
-                    print(f"[DEBUG draw_surfaces] VStack erfolgreich: {all_enabled_points.shape}")
                     enabled_polygon_mesh = self.pv.PolyData(all_enabled_points)
                     enabled_polygon_mesh.faces = enabled_faces_for_empty_plot
-                    print(f"[DEBUG draw_surfaces] Polygon-Mesh erstellt: {len(enabled_faces_for_empty_plot)} Faces")
-                    
                     actor_name = "surface_enabled_empty_plot_batch"
                     actor = self.plotter.add_mesh(
                         enabled_polygon_mesh,
@@ -810,7 +762,6 @@ class SPL3DOverlayRenderer:
                         reset_camera=False,
                         show_edges=False,
                     )
-                    print(f"[DEBUG draw_surfaces] Actor erstellt: {actor_name}, actor={actor is not None}")
                     # Nicht pickable, damit Klicks auf dahinterliegende Elemente funktionieren
                     try:
                         if actor is not None and hasattr(actor, "SetPickable"):
@@ -821,9 +772,7 @@ class SPL3DOverlayRenderer:
                     if actor_name not in self.overlay_actor_names:
                         self.overlay_actor_names.append(actor_name)
                     self._category_actors.setdefault('surfaces', []).append(actor_name)
-                    print(f"[DEBUG draw_surfaces] Enabled Surfaces für leeren Plot erfolgreich gezeichnet")
-                except Exception as e:
-                    print(f"[DEBUG draw_surfaces] FEHLER beim Zeichnen der enabled Surfaces für leeren Plot: {e}")
+                except Exception:
                     import traceback
                     traceback.print_exc()
         else:
@@ -862,8 +811,8 @@ class SPL3DOverlayRenderer:
             try:
                 disabled_polygons_actor = self.plotter.renderer.actors.get('surface_disabled_polygons_batch')
                 if disabled_polygons_actor is not None:
-                    print(f"[DEBUG draw_surfaces] SPL-Daten vorhanden: Prüfe ob surface_disabled_polygons_batch enabled Surfaces enthält und entferne diese")
                     # Die Fläche wird unten neu gezeichnet, nur mit disabled Surfaces (ohne enabled Surfaces mit SPL-Daten)
+                    pass
             except Exception:
                 pass
         
@@ -920,7 +869,6 @@ class SPL3DOverlayRenderer:
                 except Exception:
                     continue
         
-        print(f"[DEBUG draw_surfaces] Zeichne {len(valid_disabled_polygons)} disabled Polygone als graue Fläche (aktiv und inaktiv)")
         if valid_disabled_polygons:
             try:
                 # Sammle alle Punkte und Faces für Batch-Zeichnen
@@ -942,7 +890,6 @@ class SPL3DOverlayRenderer:
                     polygon_mesh.faces = all_polygon_faces
                     
                     actor_name = "surface_disabled_polygons_batch"
-                    print(f"[DEBUG draw_surfaces] Zeichne {len(valid_disabled_polygons)} disabled Polygone als graue Fläche: {actor_name}")
                     actor = self.plotter.add_mesh(
                         polygon_mesh,
                         name=actor_name,
@@ -1348,17 +1295,12 @@ class SPL3DOverlayRenderer:
             Tuple[str, int] oder None: (array_id, speaker_index) wenn gefunden, sonst None
         """
         try:
-            print(f"[DEBUG] _get_speaker_info_from_actor: actor_name = {actor_name}")
-            print(f"[DEBUG] _get_speaker_info_from_actor: cache size = {len(self._speaker_actor_cache)}")
-            
             renderer = self.plotter.renderer
             if not renderer or not actor:
-                print(f"[DEBUG] _get_speaker_info_from_actor: No renderer or actor")
                 return None
             
             # WICHTIG: PyVista generiert Actor-Namen neu, daher müssen wir direkt über das Actor-Objekt suchen
             # Strategie: Verwende actor_obj aus dem Cache für direkten Vergleich
-            print(f"[DEBUG] _get_speaker_info_from_actor: Searching cache by comparing actor objects")
             
             # Durchsuche alle Cache-Einträge
             # WICHTIG: Ein Lautsprecher kann mehrere Flächen (Geometrien) haben, die alle zum selben Speaker gehören
@@ -1371,7 +1313,6 @@ class SPL3DOverlayRenderer:
                 if cached_actor_obj is actor:
                     array_id, speaker_idx, geom_idx = key
                     cached_actor_name = info.get('actor', 'unknown')
-                    print(f"[DEBUG] _get_speaker_info_from_actor: Found match via actor_obj! array_id={array_id}, speaker_idx={speaker_idx}, geom_idx={geom_idx}, cached_actor_name={cached_actor_name}")
                     matching_entries.append((array_id, speaker_idx, geom_idx, 'actor_obj'))
                 
                 # Fallback: Versuche über Actor-Namen
@@ -1383,7 +1324,6 @@ class SPL3DOverlayRenderer:
                     # Direkter Objekt-Vergleich
                     if cached_actor is actor:
                         array_id, speaker_idx, geom_idx = key
-                        print(f"[DEBUG] _get_speaker_info_from_actor: Found match via actor name! array_id={array_id}, speaker_idx={speaker_idx}, geom_idx={geom_idx}, cached_actor_name={cached_actor_name}")
                         # Prüfe ob dieser Eintrag bereits in matching_entries ist (über actor_obj gefunden)
                         if not any(entry[0] == array_id and entry[1] == speaker_idx and entry[2] == geom_idx for entry in matching_entries):
                             matching_entries.append((array_id, speaker_idx, geom_idx, 'actor_name'))
@@ -1391,16 +1331,12 @@ class SPL3DOverlayRenderer:
             # Wenn Einträge gefunden wurden, gib den ersten zurück (array_id und speaker_idx sind für alle gleich)
             if matching_entries:
                 array_id, speaker_idx, geom_idx, match_type = matching_entries[0]
-                print(f"[DEBUG] _get_speaker_info_from_actor: Returning first match: array_id={array_id}, speaker_idx={speaker_idx}, geom_idx={geom_idx}, match_type={match_type}, total_matches={len(matching_entries)}")
                 return (str(array_id), int(speaker_idx))
             
             # Falls nicht gefunden: Der Actor-Name im Cache könnte veraltet sein
             # Durchsuche alle Renderer-Actors und finde den, der mit dem picked_actor übereinstimmt
-            print(f"[DEBUG] _get_speaker_info_from_actor: No match via cached names, searching all renderer actors")
             for renderer_actor_name, renderer_actor in renderer.actors.items():
                 if renderer_actor is actor:
-                    print(f"[DEBUG] _get_speaker_info_from_actor: Found actor in renderer with name: {renderer_actor_name}")
-                    
                     # Jetzt müssen wir herausfinden, welcher Cache-Eintrag zu diesem Actor gehört
                     # Da sich die Namen geändert haben, müssen wir alle Renderer-Actors durchsuchen
                     # und mit den Cache-Einträgen vergleichen
@@ -1415,27 +1351,19 @@ class SPL3DOverlayRenderer:
                         # Wenn der Actor aus dem Renderer mit dem picked_actor übereinstimmt
                         if cached_actor_from_renderer is actor:
                             array_id, speaker_idx, geom_idx = cache_key
-                            print(f"[DEBUG] _get_speaker_info_from_actor: Found match via renderer lookup! array_id={array_id}, speaker_idx={speaker_idx}, cached_actor_name={cached_actor_name}, renderer_name={renderer_actor_name}")
                             return (str(array_id), int(speaker_idx))
                     
                     # Wenn wir hier ankommen, haben wir den Actor im Renderer gefunden, aber nicht im Cache
                     # Versuche über den aktuellen Renderer-Namen zu suchen (falls er zufällig im Cache ist)
-                    print(f"[DEBUG] _get_speaker_info_from_actor: Trying direct name match with renderer name: {renderer_actor_name}")
                     for cache_key, cache_info in self._speaker_actor_cache.items():
                         cached_actor_name = cache_info.get('actor')
                         if cached_actor_name == renderer_actor_name:
                             array_id, speaker_idx, geom_idx = cache_key
-                            print(f"[DEBUG] _get_speaker_info_from_actor: Found match via renderer name! array_id={array_id}, speaker_idx={speaker_idx}")
                             return (str(array_id), int(speaker_idx))
                     break
             
-            print(f"[DEBUG] _get_speaker_info_from_actor: No match found")
-            print(f"[DEBUG] _get_speaker_info_from_actor: Cache keys: {list(self._speaker_actor_cache.keys())}")
-            print(f"[DEBUG] _get_speaker_info_from_actor: Cache actor names: {[info.get('actor') for info in self._speaker_actor_cache.values()]}")
-            print(f"[DEBUG] _get_speaker_info_from_actor: Renderer actor names (overlay_*): {[name for name in renderer.actors.keys() if isinstance(name, str) and name.startswith('overlay_')]}")
             return None
-        except Exception as e:  # noqa: BLE001
-            print(f"[DEBUG] _get_speaker_info_from_actor: Exception: {e}")
+        except Exception:  # noqa: BLE001
             import traceback
             traceback.print_exc()
             return None
@@ -1455,8 +1383,6 @@ class SPL3DOverlayRenderer:
                 highlight_array_ids_str = [str(highlight_array_id)]
             else:
                 highlight_array_ids_str = []
-            
-            print(f"[DEBUG] _update_speaker_highlights: highlight_array_ids={highlight_array_ids_str}, highlight_indices={highlight_indices}")
             
             if not highlight_array_ids_str and not highlight_indices:
                 # Keine Highlights - setze alle auf schwarz
@@ -1489,8 +1415,6 @@ class SPL3DOverlayRenderer:
                 elif highlight_array_ids_str:
                     # Alle Speaker der Arrays - prüfe ob Array-ID in der Liste ist
                     is_highlighted = array_id_str in highlight_array_ids_str
-                    if is_highlighted:
-                        print(f"[DEBUG] _update_speaker_highlights: Array {array_id_str} is highlighted (in {highlight_array_ids_str})")
                 
                 # Versuche zuerst actor_obj (direktes Objekt), dann actor_name
                 actor = info.get('actor_obj')
@@ -1507,7 +1431,6 @@ class SPL3DOverlayRenderer:
                             if is_highlighted:
                                 prop.SetEdgeColor(1, 0, 0)  # Rot
                                 prop.SetLineWidth(3.0)
-                                print(f"[DEBUG] _update_speaker_highlights: Set RED edge for actor {actor_name}, array_id={array_id_str}, speaker_idx={speaker_idx}, geom_idx={geom_idx}")
                             else:
                                 prop.SetEdgeColor(0, 0, 0)  # Schwarz
                                 prop.SetLineWidth(1.5)
@@ -1517,15 +1440,9 @@ class SPL3DOverlayRenderer:
                             prop.SetRepresentationToSurface()  # Surface-Darstellung für Edges
                             # Render-Update triggern
                             actor.Modified()
-                            # Prüfe ob Edge-Color tatsächlich gesetzt wurde
-                            edge_color = prop.GetEdgeColor()
-                            print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} edge_color={edge_color}, edge_visibility={prop.GetEdgeVisibility()}, line_width={prop.GetLineWidth()}")
-                    except Exception as e:  # noqa: BLE001
-                        print(f"[DEBUG] _update_speaker_highlights: Exception for actor {actor_name}: {e}")
+                    except Exception:  # noqa: BLE001
                         import traceback
                         traceback.print_exc()
-                else:
-                    print(f"[DEBUG] _update_speaker_highlights: Actor {actor_name} not found (actor_obj={info.get('actor_obj') is not None}, actor_name={actor_name})")
             
             # Render-Update triggern, damit Änderungen sichtbar werden
             try:
@@ -2177,8 +2094,6 @@ class SPL3DOverlayRenderer:
         
         if render_lines_as_tubes is not None:
             kwargs['render_lines_as_tubes'] = bool(render_lines_as_tubes)
-            if render_lines_as_tubes and category == 'axis':
-                print(f"[DEBUG] _add_overlay_mesh: Rendere Achsenlinie {name} als Tubes (line_width={line_width})")
         
         # 🎯 Stelle sicher, dass keine Eckpunkte angezeigt werden (nur Linien)
         if not show_vertices and hasattr(mesh, 'lines') and mesh.lines is not None:
@@ -2194,8 +2109,6 @@ class SPL3DOverlayRenderer:
                 # Stelle sicher, dass der Actor pickable ist
                 if hasattr(actor, 'SetPickable'):
                     actor.SetPickable(True)
-                    actual_pickable = actor.GetPickable() if hasattr(actor, 'GetPickable') else None
-                    print(f"[DEBUG] _add_overlay_mesh: Achsenlinie {name} als pickable markiert, GetPickable()={actual_pickable}")
                 
                 # Stelle sicher, dass der Actor auch über GetProperty pickable ist
                 if hasattr(actor, 'GetProperty'):
@@ -2205,19 +2118,10 @@ class SPL3DOverlayRenderer:
                         prop.SetOpacity(1.0)
                         # Stelle sicher, dass die Linie sichtbar ist
                         prop.SetLineWidth(line_width)
-                        # Render-Order: Stelle sicher, dass Linien nach Surfaces gerendert werden
-                        # durch SetRenderOrder oder durch Z-Offset (bereits implementiert)
-                        print(f"[DEBUG] _add_overlay_mesh: Achsenlinie {name} Property gesetzt, LineWidth={line_width}, Pickable={actor.GetPickable() if hasattr(actor, 'GetPickable') else 'N/A'}")
                 
                 # Stelle sicher, dass der Actor in der Render-Liste ist
                 actor.Modified()
-                
-                # Prüfe ob Actor wirklich im Renderer ist
-                if hasattr(self.plotter, 'renderer') and self.plotter.renderer:
-                    actor_in_renderer = name in self.plotter.renderer.actors
-                    print(f"[DEBUG] _add_overlay_mesh: Achsenlinie {name} im Renderer: {actor_in_renderer}")
-            except Exception as e:  # noqa: BLE001
-                print(f"[DEBUG] _add_overlay_mesh: Fehler beim Setzen der Pickable-Eigenschaft für {name}: {e}")
+            except Exception:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()
         
@@ -2263,7 +2167,6 @@ class SPL3DOverlayRenderer:
         # line_pattern nur bei echten Polylines anwenden, nicht bei Tube-Meshes
         if line_pattern is not None and not is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
             try:
-                print(f"[DEBUG _add_overlay_mesh] Setze Pattern für {name}: 0x{line_pattern:X}, repeat={line_repeat}, is_tube_mesh={is_tube_mesh}, line_width={line_width}")
                 # Stelle sicher, dass Line-Stippling aktiviert ist (Tubes deaktivieren)
                 actor.prop.SetRenderLinesAsTubes(False)  # WICHTIG: Deaktiviere Tubes für Stippling
                 # Stelle sicher, dass Line-Width gesetzt ist
@@ -2275,21 +2178,16 @@ class SPL3DOverlayRenderer:
                 actual_pattern = actor.prop.GetLineStipplePattern()
                 actual_repeat = actor.prop.GetLineStippleRepeatFactor()
                 actual_width = actor.prop.GetLineWidth()
-                print(f"[DEBUG _add_overlay_mesh] Pattern tatsächlich gesetzt: 0x{actual_pattern:X}, repeat={actual_repeat}, width={actual_width}")
-            except Exception as e:  # noqa: BLE001
-                print(f"[DEBUG _add_overlay_mesh] Fehler beim Setzen des Patterns: {e}")
+            except Exception:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()
         elif is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
             # Für Tube-Meshes: Explizit durchgezogene Linie setzen (kein Stipple-Pattern)
             try:
-                print(f"[DEBUG _add_overlay_mesh] Tube-Mesh erkannt für {name}, setze durchgezogene Linie")
                 actor.prop.SetLineStipplePattern(0xFFFF)  # Durchgezogen
                 actor.prop.SetLineStippleRepeatFactor(1)
             except Exception:  # noqa: BLE001
                 pass
-        elif line_pattern is not None:
-            print(f"[DEBUG _add_overlay_mesh] WARNUNG: Pattern 0x{line_pattern:X} konnte nicht gesetzt werden für {name} (is_tube_mesh={is_tube_mesh}, has_prop={hasattr(actor, 'prop')})")
         self.overlay_actor_names.append(name)
         self._category_actors.setdefault(category, []).append(name)
         return name
