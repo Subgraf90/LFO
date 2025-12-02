@@ -1,0 +1,672 @@
+"""Surface-Overlay-Rendering für den 3D-SPL-Plot."""
+
+from __future__ import annotations
+
+import os
+import time
+from typing import List, Optional, Tuple, Any, Callable
+
+import numpy as np
+
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
+
+DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
+
+
+def compute_surfaces_signature(settings) -> tuple:
+    """Berechnet die Signatur für Surfaces.
+    
+    Args:
+        settings: Settings-Objekt
+        
+    Returns:
+        Tuple mit Signatur-Daten
+    """
+    surface_definitions = getattr(settings, 'surface_definitions', {})
+    if not isinstance(surface_definitions, dict):
+        return (tuple(), tuple())
+    
+    # Hole aktives Surface bzw. Highlight-Liste
+    active_surface_id = getattr(settings, 'active_surface_id', None)
+    highlight_ids = getattr(settings, 'active_surface_highlight_ids', None)
+    if isinstance(highlight_ids, (list, tuple, set)):
+        active_ids_set = {str(sid) for sid in highlight_ids}
+    else:
+        active_ids_set = set()
+    if active_surface_id is not None:
+        active_ids_set.add(str(active_surface_id))
+    
+    surfaces_signature: List[tuple] = []
+    for surface_id in sorted(surface_definitions.keys()):
+        surface_def = surface_definitions[surface_id]
+        if isinstance(surface_def, SurfaceDefinition):
+            enabled = bool(getattr(surface_def, 'enabled', False))
+            hidden = bool(getattr(surface_def, 'hidden', False))
+            points = getattr(surface_def, 'points', []) or []
+        else:
+            enabled = bool(surface_def.get('enabled', False))
+            hidden = bool(surface_def.get('hidden', False))
+            points = surface_def.get('points', [])
+        
+        # Erstelle Signatur aus enabled, hidden, Punkten
+        points_tuple = []
+        for point in points:
+            try:
+                x = float(point.get('x', 0.0))
+                y = float(point.get('y', 0.0))
+                z = float(point.get('z', 0.0))
+                points_tuple.append((x, y, z))
+            except (ValueError, TypeError, AttributeError):
+                continue
+        
+        surfaces_signature.append((
+            str(surface_id),
+            enabled,
+            hidden,
+            tuple(points_tuple)
+        ))
+    
+    return (tuple(surfaces_signature), tuple(sorted(active_ids_set)))
+
+
+def draw_surfaces(
+    plotter: Any,
+    pv_module: Any,
+    settings: Any,
+    container: Any,
+    add_overlay_mesh_func: Callable,
+    clear_category_func: Callable,
+    category_actors: dict,
+    overlay_actor_names: List[str],
+    last_surfaces_state: Optional[tuple],
+    create_empty_plot_surfaces: bool = False,
+    planar_z_offset: float = 0.0,
+) -> Optional[tuple]:
+    """Zeichnet alle aktivierten, nicht versteckten Surfaces als Polygone im 3D-Plot.
+    
+    Args:
+        plotter: PyVista Plotter
+        pv_module: PyVista Modul
+        settings: Settings-Objekt
+        container: Container-Objekt (optional)
+        add_overlay_mesh_func: Funktion zum Hinzufügen von Overlay-Meshes
+        clear_category_func: Funktion zum Löschen einer Kategorie
+        category_actors: Dictionary mit Category-Actors
+        overlay_actor_names: Liste der Overlay-Actor-Namen
+        last_surfaces_state: Letzter bekannter State
+        create_empty_plot_surfaces: Wenn True, werden graue Flächen für enabled Surfaces erstellt
+        planar_z_offset: Z-Offset für planare Overlays
+        
+    Returns:
+        Neuer State oder None wenn unverändert
+    """
+    t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    
+    # Erstelle Signatur für Änderungsdetektion
+    surface_definitions = getattr(settings, 'surface_definitions', {})
+    if not isinstance(surface_definitions, dict):
+        clear_category_func('surfaces')
+        return None
+
+    # Hole aktives Surface bzw. Highlight-Liste für Signatur und Markierung
+    active_surface_id = getattr(settings, 'active_surface_id', None)
+    highlight_ids = getattr(settings, 'active_surface_highlight_ids', None)
+    if isinstance(highlight_ids, (list, tuple, set)):
+        active_ids_set = {str(sid) for sid in highlight_ids}
+    else:
+        active_ids_set = set()
+    # Füge das "klassische" aktive Surface optional hinzu, falls nicht hidden
+    if active_surface_id is not None:
+        active_ids_set.add(str(active_surface_id))
+
+    t_sig_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    surfaces_signature: List[tuple] = []
+    for surface_id in sorted(surface_definitions.keys()):
+        surface_def = surface_definitions[surface_id]
+        if isinstance(surface_def, SurfaceDefinition):
+            enabled = bool(getattr(surface_def, 'enabled', False))
+            hidden = bool(getattr(surface_def, 'hidden', False))
+            points = getattr(surface_def, 'points', []) or []
+        else:
+            enabled = bool(surface_def.get('enabled', False))
+            hidden = bool(surface_def.get('hidden', False))
+            points = surface_def.get('points', [])
+        
+        # Erstelle Signatur aus enabled, hidden, Punkten und aktiver Surface-ID
+        points_tuple = []
+        for point in points:
+            try:
+                x = float(point.get('x', 0.0))
+                y = float(point.get('y', 0.0))
+                z = float(point.get('z', 0.0))
+                points_tuple.append((x, y, z))
+            except (ValueError, TypeError, AttributeError):
+                continue
+        
+        surfaces_signature.append((
+            str(surface_id),
+            enabled,
+            hidden,
+            tuple(points_tuple)
+        ))
+    t_sig_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    
+    # Prüfe ob Speaker Arrays vorhanden sind (nicht versteckt) - nur für Darstellung, nicht für Signatur
+    speaker_arrays = getattr(settings, 'speaker_arrays', {})
+    has_speaker_arrays_for_signature = False
+    if isinstance(speaker_arrays, dict):
+        for array in speaker_arrays.values():
+            if not getattr(array, 'hide', False):
+                has_speaker_arrays_for_signature = True
+                break
+    
+    # Signatur: Surface-Definitionen + aktive Highlight-IDs (für Auswahländerungen)
+    signature_tuple = (tuple(surfaces_signature), tuple(sorted(active_ids_set)))
+    
+    # Prüfe ob sich etwas geändert hat (ohne has_speaker_arrays zu berücksichtigen)
+    # Prüfe ob sich die Signatur geändert hat (Surface-Definitionen + Highlight-IDs)
+    # WICHTIG: Wenn create_empty_plot_surfaces=True, immer ausführen (auch wenn Signatur gleich ist)
+    signature_changed = True
+    if last_surfaces_state is not None and not create_empty_plot_surfaces:
+        if len(last_surfaces_state) == 2:
+            last_signature_tuple, last_ids = last_surfaces_state
+            last_ids_set = set(last_ids) if isinstance(last_ids, (list, tuple, set)) else set()
+            if (last_signature_tuple == tuple(surfaces_signature) and 
+                last_ids_set == active_ids_set):
+                signature_changed = False
+        elif last_surfaces_state == signature_tuple:
+            signature_changed = False
+    
+    if not signature_changed and not create_empty_plot_surfaces:
+        return last_surfaces_state
+    
+    # Lösche alte Surfaces
+    t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    clear_category_func('surfaces')
+    # Entferne auch die Fläche für enabled Surfaces im leeren Plot (falls vorhanden)
+    try:
+        empty_plot_actor = plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
+        if empty_plot_actor is not None:
+            plotter.remove_actor('surface_enabled_empty_plot_batch')
+            if 'surface_enabled_empty_plot_batch' in overlay_actor_names:
+                overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+            if 'surfaces' in category_actors and 'surface_enabled_empty_plot_batch' in category_actors['surfaces']:
+                category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+    except Exception:
+        pass
+    t_clear_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    
+    # Verwende has_speaker_arrays aus der Signatur-Berechnung
+    has_speaker_arrays = has_speaker_arrays_for_signature
+    
+    # Zeichne alle nicht versteckten Surfaces (enabled und disabled)
+    # OPTIMIERUNG: Batch-Zeichnen - kombiniere alle Surfaces in zwei PolyData-Objekte
+    # (eines für aktive, eines für inaktive) statt einzelner add_mesh Aufrufe
+    z_offset = planar_z_offset
+    surfaces_drawn = 0
+    t_draw_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    
+    # Sammle alle Punkte und Linien für Batch-Zeichnen
+    active_enabled_points_list = []  # Liste von Punkt-Arrays für aktive ENABLED Surfaces (roter Rahmen, keine Fläche)
+    active_enabled_lines_list = []   # Liste von Linien-Arrays für aktive ENABLED Surfaces
+    active_disabled_points_list = []  # Liste von Punkt-Arrays für aktive DISABLED Surfaces (roter Rahmen)
+    active_disabled_lines_list = []   # Liste von Linien-Arrays für aktive DISABLED Surfaces
+    inactive_points_list = []  # Liste von Punkt-Arrays für inaktive Surfaces
+    inactive_lines_list = []   # Liste von Linien-Arrays für inaktive Surfaces
+    inactive_surface_ids = []  # Liste von Surface-IDs für inaktive Surfaces (zur Zuordnung)
+    inactive_surface_enabled = []  # Liste von enabled-Status für inaktive Surfaces (zur Unterscheidung)
+    disabled_surface_ids = []  # Liste von ALLEN disabled Surface-IDs (aktiv und inaktiv) für graue Fläche
+    disabled_surface_points = []  # Liste von Punkt-Arrays für ALLE disabled Surfaces (für graue Fläche)
+    
+    tolerance = 1e-6
+    
+    enabled_count = 0
+    disabled_count = 0
+    
+    for surface_id, surface_def in surface_definitions.items():
+        if isinstance(surface_def, SurfaceDefinition):
+            enabled = bool(getattr(surface_def, 'enabled', False))
+            hidden = bool(getattr(surface_def, 'hidden', False))
+            points = getattr(surface_def, 'points', []) or []
+        else:
+            enabled = surface_def.get('enabled', False)
+            hidden = surface_def.get('hidden', False)
+            points = surface_def.get('points', [])
+        
+        # Überspringe nur versteckte Surfaces
+        if hidden:
+            continue
+        
+        if len(points) < 3:
+            continue
+        
+        if enabled:
+            enabled_count += 1
+        else:
+            disabled_count += 1
+        
+        # Prüfe ob dies ein aktives Surface ist (Einzel- oder Gruppen-Selektion)
+        # Stelle sicher, dass surface_id als String verglichen wird
+        is_active = (str(surface_id) in active_ids_set)
+        
+        # Konvertiere Punkte zu numpy-Array
+        try:
+            point_coords = []
+            for point in points:
+                x = float(point.get('x', 0.0))
+                y = float(point.get('y', 0.0))
+                z = float(point.get('z', 0.0)) + z_offset
+                point_coords.append([x, y, z])
+            
+            if len(point_coords) < 3:
+                continue
+            
+            # Prüfe ob Polygon bereits geschlossen ist
+            first_point = point_coords[0]
+            last_point = point_coords[-1]
+            is_already_closed = (
+                abs(first_point[0] - last_point[0]) < tolerance
+                and abs(first_point[1] - last_point[1]) < tolerance
+                and abs(first_point[2] - last_point[2]) < tolerance
+            )
+
+            # Erzeuge IMMER ein explizit geschlossenes Polygon
+            if is_already_closed:
+                closed_coords = point_coords
+            else:
+                closed_coords = point_coords + [point_coords[0]]
+            
+            n_points = len(closed_coords)
+            closed_coords_array = np.array(closed_coords, dtype=float)
+            
+            # NEUE LOGIK: Disabled Surfaces (aktiv oder inaktiv) bekommen immer graue Fläche
+            # Für Rahmen: aktiv = rot, inaktiv = schwarz
+            if not enabled:
+                # Disabled Surface: Immer zur grauen Flächen-Liste hinzufügen
+                disabled_surface_ids.append(str(surface_id))
+                disabled_surface_points.append(closed_coords_array)
+                
+                # Für Rahmen: Unterscheide aktiv/inaktiv
+                if is_active:
+                    # Aktive disabled: Roter Rahmen (zusätzlich zur grauen Fläche)
+                    active_disabled_points_list.append(closed_coords_array)
+                    active_disabled_lines_list.append(n_points)
+                else:
+                    # Inaktive disabled: Schwarzer Rahmen (wie bisher)
+                    inactive_points_list.append(closed_coords_array)
+                    inactive_lines_list.append(n_points)
+                    inactive_surface_ids.append(str(surface_id))
+                    inactive_surface_enabled.append(False)
+            else:
+                # Enabled Surface: Alte Logik (roter Rahmen wenn aktiv, sonst schwarzer Rahmen)
+                if is_active:
+                    active_enabled_points_list.append(closed_coords_array)
+                    active_enabled_lines_list.append(n_points)
+                else:
+                    inactive_points_list.append(closed_coords_array)
+                    inactive_lines_list.append(n_points)
+                    inactive_surface_ids.append(str(surface_id))
+                    inactive_surface_enabled.append(True)
+            
+            surfaces_drawn += 1
+        except (ValueError, TypeError, AttributeError, Exception):
+            continue
+    
+    # Prüfe ob SPL-Daten vorhanden sind (durch Prüfung ob SPL-Actors existieren)
+    has_spl_data = False
+    try:
+        # WICHTIG: Prüfe zuerst _surface_texture_actors direkt (falls Actors noch nicht im Renderer registriert sind)
+        if hasattr(plotter, '_surface_texture_actors'):
+            direct_texture_count = len(getattr(plotter, '_surface_texture_actors', {}))
+            if direct_texture_count > 0:
+                has_spl_data = True
+        
+        # Prüfe auch Renderer-Actors (falls bereits registriert)
+        if not has_spl_data and hasattr(plotter, 'renderer') and hasattr(plotter.renderer, 'actors'):
+            spl_surface_actor = plotter.renderer.actors.get('spl_surface')
+            spl_floor_actor = plotter.renderer.actors.get('spl_floor')
+            texture_actor_names = [name for name in plotter.renderer.actors.keys() if name.startswith('spl_surface_tex_')]
+            has_texture_actors = len(texture_actor_names) > 0
+            if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors:
+                has_spl_data = True
+        
+        # ZUSÄTZLICH: Prüfe ob container calculation_spl Daten hat (wichtig beim Laden)
+        if container is not None and hasattr(container, 'calculation_spl'):
+            calc_spl = container.calculation_spl
+            if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
+                if not has_spl_data:
+                    has_spl_data = True
+    except Exception:
+        pass
+    
+    # Zeichne aktive ENABLED Surfaces als Batch (roter Rahmen, keine Fläche)
+    if active_enabled_points_list:
+        try:
+            all_active_enabled_points = np.vstack(active_enabled_points_list)
+            active_enabled_lines_array = []
+            point_offset = 0
+            for n_pts in active_enabled_lines_list:
+                active_enabled_lines_array.append(n_pts)
+                active_enabled_lines_array.extend(range(point_offset, point_offset + n_pts))
+                point_offset += n_pts
+            
+            # Zeichne Rahmen (immer)
+            active_enabled_polyline = pv_module.PolyData(all_active_enabled_points)
+            active_enabled_polyline.lines = active_enabled_lines_array
+            try:
+                active_enabled_polyline.verts = np.empty(0, dtype=np.int64)
+            except Exception:
+                try:
+                    active_enabled_polyline.verts = []
+                except Exception:
+                    pass
+            
+            add_overlay_mesh_func(
+                active_enabled_polyline,
+                color='#FF0000',
+                line_width=3.5,
+                opacity=1.0,
+                category='surfaces',
+                show_vertices=False,
+                render_lines_as_tubes=False,
+            )
+        except Exception:
+            pass
+    
+    # Zeichne aktive DISABLED Surfaces als Batch (roter Rahmen, Fläche wird später gezeichnet)
+    if active_disabled_points_list:
+        try:
+            all_active_disabled_points = np.vstack(active_disabled_points_list)
+            active_disabled_lines_array = []
+            point_offset = 0
+            for n_pts in active_disabled_lines_list:
+                active_disabled_lines_array.append(n_pts)
+                active_disabled_lines_array.extend(range(point_offset, point_offset + n_pts))
+                point_offset += n_pts
+            
+            # Zeichne Rahmen (roter Rahmen für aktive disabled Surfaces)
+            active_disabled_polyline = pv_module.PolyData(all_active_disabled_points)
+            active_disabled_polyline.lines = active_disabled_lines_array
+            try:
+                active_disabled_polyline.verts = np.empty(0, dtype=np.int64)
+            except Exception:
+                try:
+                    active_disabled_polyline.verts = []
+                except Exception:
+                    pass
+            
+            add_overlay_mesh_func(
+                active_disabled_polyline,
+                color='#FF0000',
+                line_width=3.5,
+                opacity=1.0,
+                category='surfaces',
+                show_vertices=False,
+                render_lines_as_tubes=False,
+            )
+        except Exception:
+            pass
+    
+    # Zeichne Fläche für enabled Surfaces NUR wenn create_empty_plot_surfaces=True
+    if create_empty_plot_surfaces:
+        # Sammle alle enabled Surfaces (aktiv und inaktiv) für graue Fläche
+        enabled_points_for_empty_plot = []
+        enabled_faces_for_empty_plot = []
+        point_offset = 0
+        
+        # Aktive enabled Surfaces
+        if active_enabled_points_list:
+            for idx, points in enumerate(active_enabled_points_list):
+                n_pts = len(points)
+                enabled_points_for_empty_plot.append(points)
+                # Face-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                face = [n_pts] + [point_offset + i for i in range(n_pts)]
+                enabled_faces_for_empty_plot.extend(face)
+                point_offset += n_pts
+        
+        # Inaktive enabled Surfaces (nur die, die enabled sind)
+        if inactive_points_list:
+            for idx, points in enumerate(inactive_points_list):
+                if idx < len(inactive_surface_ids) and idx < len(inactive_surface_enabled):
+                    is_enabled = inactive_surface_enabled[idx]
+                    if is_enabled:  # Nur enabled Surfaces
+                        n_pts = len(points)
+                        enabled_points_for_empty_plot.append(points)
+                        # Face-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                        face = [n_pts] + [point_offset + i for i in range(n_pts)]
+                        enabled_faces_for_empty_plot.extend(face)
+                        point_offset += n_pts
+        
+        # Zeichne alle enabled Surfaces (aktiv + inaktiv) als Batch
+        if enabled_points_for_empty_plot:
+            try:
+                all_enabled_points = np.vstack(enabled_points_for_empty_plot)
+                enabled_polygon_mesh = pv_module.PolyData(all_enabled_points)
+                enabled_polygon_mesh.faces = enabled_faces_for_empty_plot
+                actor_name = "surface_enabled_empty_plot_batch"
+                actor = plotter.add_mesh(
+                    enabled_polygon_mesh,
+                    name=actor_name,
+                    color='#D3D3D3',
+                    opacity=0.8,
+                    smooth_shading=False,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    show_edges=False,
+                )
+                # Nicht pickable, damit Klicks auf dahinterliegende Elemente funktionieren
+                try:
+                    if actor is not None and hasattr(actor, "SetPickable"):
+                        actor.SetPickable(False)
+                except Exception:
+                    pass
+                
+                if actor_name not in overlay_actor_names:
+                    overlay_actor_names.append(actor_name)
+                category_actors.setdefault('surfaces', []).append(actor_name)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+    else:
+        # Entferne die Fläche für leeren Plot (falls vorhanden)
+        try:
+            empty_plot_actor = plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
+            if empty_plot_actor is not None:
+                plotter.remove_actor('surface_enabled_empty_plot_batch')
+                if 'surface_enabled_empty_plot_batch' in overlay_actor_names:
+                    overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+                if 'surfaces' in category_actors and 'surface_enabled_empty_plot_batch' in category_actors['surfaces']:
+                    category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+        except Exception:
+            pass
+    
+    # Zeichne inaktive Surfaces als transparente hellgraue Flächen
+    # Lösche alte inaktive Surface-Actors (die nicht mehr existieren)
+    old_inactive_actors = [
+        name for name in overlay_actor_names
+        if name in ("surface_disabled_polygons_batch", "surface_disabled_edges_batch")
+    ]
+    for name in old_inactive_actors:
+        try:
+            plotter.remove_actor(name)
+        except Exception:
+            pass
+        if name in overlay_actor_names:
+            overlay_actor_names.remove(name)
+        if 'surfaces' in category_actors and name in category_actors['surfaces']:
+            category_actors['surfaces'].remove(name)
+    
+    # WICHTIG: Wenn SPL-Daten vorhanden sind, entferne auch die Fläche für inaktive enabled Surfaces
+    if has_spl_data:
+        try:
+            disabled_polygons_actor = plotter.renderer.actors.get('surface_disabled_polygons_batch')
+            if disabled_polygons_actor is not None:
+                pass
+        except Exception:
+            pass
+    
+    # Zeichne graue Flächen für ALLE disabled Surfaces (aktiv und inaktiv)
+    valid_disabled_polygons = []
+    
+    for idx, surface_id in enumerate(disabled_surface_ids):
+        if idx < len(disabled_surface_points):
+            try:
+                points = disabled_surface_points[idx]
+                n_pts = len(points)
+                
+                if n_pts < 3:
+                    continue
+                
+                points_array = np.array(points)
+                if len(points_array) < 3:
+                    continue
+                
+                # Prüfe ob Punkte nicht alle auf einer Linie liegen
+                vectors = points_array[1:] - points_array[:-1]
+                if len(vectors) >= 2:
+                    v1 = vectors[0]
+                    v1_norm = np.linalg.norm(v1)
+                    if v1_norm < 1e-6:
+                        continue
+                    v1_normalized = v1 / v1_norm
+                    
+                    all_parallel = True
+                    for v in vectors[1:]:
+                        v_norm = np.linalg.norm(v)
+                        if v_norm < 1e-6:
+                            all_parallel = False
+                            break
+                        v_normalized = v / v_norm
+                        cross = np.cross(v1_normalized, v_normalized)
+                        if np.linalg.norm(cross) > 1e-3:
+                            all_parallel = False
+                            break
+                    
+                    if all_parallel:
+                        continue
+                
+                valid_disabled_polygons.append((points, surface_id))
+            except Exception:
+                continue
+    
+    if valid_disabled_polygons:
+        try:
+            # Sammle alle Punkte und Faces für Batch-Zeichnen
+            all_polygon_points = []
+            all_polygon_faces = []
+            point_offset = 0
+            
+            for points, surface_id in valid_disabled_polygons:
+                n_pts = len(points)
+                all_polygon_points.append(points)
+                # Face-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                face = [n_pts] + [point_offset + i for i in range(n_pts)]
+                all_polygon_faces.extend(face)
+                point_offset += n_pts
+            
+            if all_polygon_points:
+                all_points = np.vstack(all_polygon_points)
+                polygon_mesh = pv_module.PolyData(all_points)
+                polygon_mesh.faces = all_polygon_faces
+                
+                actor_name = "surface_disabled_polygons_batch"
+                actor = plotter.add_mesh(
+                    polygon_mesh,
+                    name=actor_name,
+                    color='#D3D3D3',
+                    opacity=0.8,
+                    smooth_shading=False,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    show_edges=False,
+                )
+                # WICHTIG: Disabled-Surfaces sollen nicht klickbar sein
+                try:
+                    if actor is not None and hasattr(actor, "SetPickable"):
+                        actor.SetPickable(False)
+                except Exception:
+                    pass
+                
+                if actor_name not in overlay_actor_names:
+                    overlay_actor_names.append(actor_name)
+                category_actors.setdefault('surfaces', []).append(actor_name)
+        except Exception:
+            pass
+    
+    # Sammle inaktive Linien für schwarze Rahmen
+    valid_inactive_lines = []
+    
+    for idx, surface_id in enumerate(inactive_surface_ids):
+        if idx < len(inactive_points_list):
+            try:
+                points = inactive_points_list[idx]
+                n_pts = len(points)
+                
+                if n_pts < 3:
+                    continue
+                
+                valid_inactive_lines.append((points, surface_id))
+            except Exception:
+                continue
+    
+    # Zeichne alle gültigen Linien als Batch (opake schwarze Linien)
+    if valid_inactive_lines:
+        try:
+            all_line_points = []
+            all_line_arrays = []
+            point_offset = 0
+            
+            for points, surface_id in valid_inactive_lines:
+                n_pts = len(points)
+                all_line_points.append(points)
+                # Line-Format: [n, 0, 1, 2, ..., n-1] mit offset
+                line_array = [n_pts] + [point_offset + i for i in range(n_pts)]
+                all_line_arrays.extend(line_array)
+                point_offset += n_pts
+            
+            if all_line_points:
+                all_points = np.vstack(all_line_points)
+                polyline_mesh = pv_module.PolyData(all_points)
+                polyline_mesh.lines = all_line_arrays
+                try:
+                    polyline_mesh.verts = np.empty(0, dtype=np.int64)
+                except Exception:
+                    try:
+                        polyline_mesh.verts = []
+                    except Exception:
+                        pass
+                
+                edge_actor_name = "surface_disabled_edges_batch"
+                edge_actor = plotter.add_mesh(
+                    polyline_mesh,
+                    name=edge_actor_name,
+                    color='#000000',
+                    line_width=1.5,
+                    opacity=1.0,
+                    smooth_shading=False,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    render_lines_as_tubes=False,
+                )
+                # Auch die Kanten der disabled-Surfaces nicht pickbar machen
+                try:
+                    if edge_actor is not None and hasattr(edge_actor, "SetPickable"):
+                        edge_actor.SetPickable(False)
+                except Exception:
+                    pass
+                
+                if edge_actor_name not in overlay_actor_names:
+                    overlay_actor_names.append(edge_actor_name)
+                category_actors.setdefault('surfaces', []).append(edge_actor_name)
+        except Exception:
+            pass
+    
+    t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
+    
+    if DEBUG_OVERLAY_PERF and t_start is not None:
+        t_total = (t_draw_end - t_start) * 1000 if t_draw_end else 0
+        t_sig = (t_sig_end - t_sig_start) * 1000 if t_sig_end and t_sig_start else 0
+        t_clear = (t_clear_end - t_clear_start) * 1000 if t_clear_end and t_clear_start else 0
+        t_draw = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
+    
+    return signature_tuple
