@@ -165,7 +165,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 speaker_array_id = array_ids[0]
                 self._last_selected_speaker_array_id = speaker_array_id
             else:
-                self.draw_plots.show_empty_spl()
+                self.draw_plots.show_empclearty_spl()
                 if update_axes:
                     self.draw_plots.show_empty_axes()
                     self.draw_plots.show_empty_polar()

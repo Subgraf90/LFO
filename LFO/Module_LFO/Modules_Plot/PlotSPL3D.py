@@ -194,6 +194,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._axis_drag_start_pos: Optional[QtCore.QPoint] = None  # Start-Position des Drags (2D)
         self._axis_drag_start_value: Optional[float] = None  # Start-Wert der Achsenposition
 
+        # Letztes Speaker-Picking in Bildschirmkoordinaten (für Screen-Space-Heuristik)
+        self._last_speaker_pick_screen_dist: Optional[float] = None
+        self._last_speaker_pick_is_fallback: bool = False
+
         if not hasattr(self.plotter, '_cmap_to_lut'):
             self.plotter._cmap_to_lut = types.MethodType(self._fallback_cmap_to_lut, self.plotter)  # type: ignore[attr-defined]
 
@@ -350,12 +354,63 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 #     self._double_click_handled = False
                 
                 # 🎯 Doppelklick ist deaktiviert
-                # Wenn es ein Klick war (kein Drag), prüfe ob auf eine Surface geklickt wurde.
-                # Achsen-Klicks und Lautsprecher-Klicks im Plot sind deaktiviert.
+                # Wenn es ein Klick war (kein Drag), prüfe Speaker und Surfaces gleichwertig.
                 if is_click:
                     print(f"[DEBUG] Einfacher Klick erkannt")
-                    # Prüfe nur auf Surface-Klick.
-                    self._handle_surface_click(click_pos)
+                    # 🎯 GLEICHWERTIGE BEHANDLUNG: Ray-Casting für beide (Speaker UND Surfaces)
+                    # und wähle das Element, das näher zur Kamera ist (kleineres t)
+                    
+                    # 1. Prüfe Speaker
+                    speaker_t, speaker_array_id, speaker_index = self._pick_speaker_at_position(click_pos)
+                    print(f"[DEBUG] Speaker-Picking: t={speaker_t}, array_id={speaker_array_id}, index={speaker_index}")
+                    speaker_screen_dist = getattr(self, "_last_speaker_pick_screen_dist", None)
+                    speaker_is_fallback = getattr(self, "_last_speaker_pick_is_fallback", False)
+                    
+                    # 2. Prüfe Surfaces
+                    surface_t, surface_id = self._pick_surface_at_position(click_pos)
+                    print(f"[DEBUG] Surface-Picking: t={surface_t}, surface_id={surface_id}")
+                    
+                    # 3. Vergleiche Distanzen und wähle näheres Element
+                    if speaker_t is not None and surface_t is not None:
+                        # Beide gefunden
+                        if speaker_is_fallback and speaker_screen_dist is not None:
+                            # 🎯 Screen-Space-Heuristik: wenn der Speaker-Fallback aktiv ist
+                            # und wir nahe an der 2D-Projektion geklickt haben, bevorzuge
+                            # den Speaker unabhängig vom exakten t-Vergleich.
+                            print(
+                                "[DEBUG] Screen-Space-Heuristik aktiv "
+                                f"(speaker_screen_dist={speaker_screen_dist:.1f}px), wähle Speaker"
+                            )
+                            self._select_speaker_in_treewidget(speaker_array_id, speaker_index)
+                        else:
+                            # Standard: wähle das näherliegende Objekt entlang des Rays
+                            depth_eps = 0.5  # Meter Toleranz entlang des Rays
+                            if speaker_t <= surface_t or abs(speaker_t - surface_t) <= depth_eps:
+                                # Speaker ist näher oder praktisch gleich weit -> bevorzuge Speaker,
+                                # damit Subs direkt auf der Stage gegenüber der Fläche gewinnen.
+                                print(
+                                    f"[DEBUG] Speaker bevorzugt (t_speaker={speaker_t:.3f}, "
+                                    f"t_surface={surface_t:.3f}, depth_eps={depth_eps}), wähle Speaker"
+                                )
+                                self._select_speaker_in_treewidget(speaker_array_id, speaker_index)
+                            else:
+                                print(
+                                    f"[DEBUG] Surface ist klar näher (t_surface={surface_t:.3f} < "
+                                    f"t_speaker={speaker_t:.3f} - depth_eps), wähle Surface"
+                                )
+                                self._select_surface_in_treewidget(surface_id)
+                    elif speaker_t is not None:
+                        # Nur Speaker gefunden
+                        print(f"[DEBUG] Nur Speaker gefunden, wähle Speaker")
+                        self._select_speaker_in_treewidget(speaker_array_id, speaker_index)
+                    elif surface_t is not None:
+                        # Nur Surface gefunden
+                        print(f"[DEBUG] Nur Surface gefunden, wähle Surface")
+                        self._select_surface_in_treewidget(surface_id)
+                    else:
+                        # Nichts gefunden
+                        print(f"[DEBUG] Weder Speaker noch Surface gefunden")
+                    
                     # Speichere Zeitpunkt und Position für einfache Klicks (nicht für Doppelklick)
                     self._last_click_time = time.time()
                     self._last_click_pos = QtCore.QPoint(click_pos)
@@ -944,336 +999,369 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             import traceback
             traceback.print_exc()
     
+    def _pick_speaker_at_position(self, click_pos: QtCore.QPoint) -> Tuple[Optional[float], Optional[str], Optional[int]]:
+        """Findet den Speaker am Klickpunkt und gibt die Distanz zur Kamera zurück.
+
+        Args:
+            click_pos: Klickposition im Widget
+        
+        Returns:
+            Tuple[Optional[float], Optional[str], Optional[int]]:
+                (distanz_zur_kamera, array_id, speaker_index) oder (None, None, None)
+        """
+        try:
+            # Reset Screen-Space-Status für dieses Picking
+            self._last_speaker_pick_screen_dist = None
+            self._last_speaker_pick_is_fallback = False
+
+            renderer = self.plotter.renderer
+            if renderer is None:
+                print("[DEBUG] _pick_speaker_at_position: renderer is None")
+                return (None, None, None)
+            
+            try:
+                from vtkmodules.vtkRenderingCore import vtkCellPicker
+                
+                size = self.widget.size()
+                if size.width() <= 0 or size.height() <= 0:
+                    return (None, None, None)
+                
+                # 🎯 WICHTIG: Verwende dieselbe Normalisierung wie bei _pick_surface_at_position,
+                # damit der Ray wirklich durch den sichtbaren Klickpunkt im Render-Viewport geht.
+                render_size = renderer.GetSize()
+                if render_size[0] <= 0 or render_size[1] <= 0:
+                    return (None, None, None)
+                x_norm = click_pos.x() / size.width()
+                y_norm = 1.0 - (click_pos.y() / size.height())  # VTK Y ist invertiert
+                display_x = float(x_norm * render_size[0])
+                display_y = float(y_norm * render_size[1])
+                
+                print(f"[DEBUG] _pick_speaker_at_position: display_x={display_x}, display_y={display_y}")
+
+                # Berechne Ray für alle nachfolgenden Berechnungen
+                renderer.SetDisplayPoint(display_x, display_y, 0.0)
+                renderer.DisplayToWorld()
+                world_point_near = renderer.GetWorldPoint()
+                
+                renderer.SetDisplayPoint(display_x, display_y, 1.0)
+                renderer.DisplayToWorld()
+                world_point_far = renderer.GetWorldPoint()
+                
+                if not world_point_near or not world_point_far or len(world_point_near) < 4 or len(world_point_far) < 4:
+                    return (None, None, None)
+                if abs(world_point_near[3]) <= 1e-6 or abs(world_point_far[3]) <= 1e-6:
+                    return (None, None, None)
+
+                # Berechne Ray-Start und Ray-Ende
+                ray_start = np.array(
+                    [
+                        world_point_near[0] / world_point_near[3],
+                        world_point_near[1] / world_point_near[3],
+                        world_point_near[2] / world_point_near[3],
+                    ]
+                )
+                ray_end = np.array(
+                    [
+                        world_point_far[0] / world_point_far[3],
+                        world_point_far[1] / world_point_far[3],
+                        world_point_far[2] / world_point_far[3],
+                    ]
+                )
+                ray_dir = ray_end - ray_start
+                ray_length = np.linalg.norm(ray_dir)
+                if ray_length <= 0:
+                    return (None, None, None)
+                ray_dir = ray_dir / ray_length
+                        
+                print(f"[DEBUG] _pick_speaker_at_position: Ray start={ray_start}, dir={ray_dir}")
+
+                # Vereinfachtes, robustes Picking: nur Speaker-Overlay-Actors in Pick-Liste
+                if not (hasattr(self, "overlay_helper") and hasattr(self.overlay_helper, "_speaker_actor_cache")):
+                    return (None, None, None)
+
+                speaker_cache = self.overlay_helper._speaker_actor_cache
+                if not isinstance(speaker_cache, dict) or not speaker_cache:
+                    return (None, None, None)
+
+                print(f"[DEBUG] _pick_speaker_at_position: Checking {len(speaker_cache)} speaker actors (CellPicker)")
+
+                picker = vtkCellPicker()
+                # Erhöhte Toleranz, damit Lautsprecher-Gehäuse auch bei größerem Zoom
+                # bzw. kleinen Screen‑Projektionen zuverlässiger getroffen werden.
+                # Vorher: 0.02 – jetzt 0.08 für robusteres Picking.
+                picker.SetTolerance(0.08)
+                picker.PickFromListOn()
+
+                actor_name_to_obj: dict[str, object] = {}
+                for _key, info in speaker_cache.items():
+                    cached_actor_name = info.get("actor")
+                    if not cached_actor_name:
+                        continue
+                    actor = renderer.actors.get(cached_actor_name)
+                    if actor is None:
+                        continue
+                    picker.AddPickList(actor)
+                    actor_name_to_obj[str(cached_actor_name)] = actor
+
+                # Pick ausführen
+                picker.Pick(display_x, display_y, 0.0, renderer)
+                picked_actor = picker.GetActor()
+                picked_point = picker.GetPickPosition()
+                
+                if picked_actor is None:
+                    print("[DEBUG] _pick_speaker_at_position: CellPicker hat keinen Speaker-Actor getroffen")
+                    # 🎯 Fallback: Exaktes Ray‑Mesh‑Intersection über alle Speaker-Meshes
+                    # Analog zur Surface-Logik, aber mit echten 3D-Meshes (Dreiecke),
+                    # damit auch geflogene/schräge Gehäuse robust getroffen werden.
+                    from math import isfinite
+
+                    def _ray_triangle_intersect(
+                        origin: np.ndarray,
+                        direction: np.ndarray,
+                        v0: np.ndarray,
+                        v1: np.ndarray,
+                        v2: np.ndarray,
+                        eps: float = 1e-8,
+                    ) -> Optional[float]:
+                        edge1 = v1 - v0
+                        edge2 = v2 - v0
+                        pvec = np.cross(direction, edge2)
+                        det = float(np.dot(edge1, pvec))
+                        if abs(det) < eps:
+                            return None
+                        inv_det = 1.0 / det
+                        tvec = origin - v0
+                        u = float(np.dot(tvec, pvec) * inv_det)
+                        if u < 0.0 or u > 1.0:
+                            return None
+                        qvec = np.cross(tvec, edge1)
+                        v = float(np.dot(direction, qvec) * inv_det)
+                        if v < 0.0 or u + v > 1.0:
+                            return None
+                        t = float(np.dot(edge2, qvec) * inv_det)
+                        if t <= 0.0:
+                            return None
+                        return t
+
+                    best_t: Optional[float] = None
+                    best_array_id: Optional[str] = None
+                    best_speaker_idx: Optional[int] = None
+
+                    for cache_key, cache_info in speaker_cache.items():
+                        try:
+                            array_id_key, speaker_idx_key, _geom_idx = cache_key
+                        except Exception:
+                            continue
+
+                        mesh = cache_info.get("mesh")
+                        if mesh is None or not hasattr(mesh, "points") or not hasattr(mesh, "faces"):
+                            continue
+
+                        try:
+                            points = np.asarray(mesh.points, dtype=float)
+                            faces = np.asarray(mesh.faces, dtype=int)
+                        except Exception:
+                            continue
+                        if points.size == 0 or faces.size == 0:
+                            continue
+
+                        i = 0
+                        while i < faces.size:
+                            n = faces[i]
+                            if n < 3:
+                                i += 1 + n
+                                continue
+                            idx0 = faces[i + 1]
+                            idx1 = faces[i + 2]
+                            idx2 = faces[i + 3]
+                            if (
+                                idx0 < 0
+                                or idx1 < 0
+                                or idx2 < 0
+                                or idx0 >= points.shape[0]
+                                or idx1 >= points.shape[0]
+                                or idx2 >= points.shape[0]
+                            ):
+                                i += 1 + n
+                                continue
+                            v0 = points[idx0]
+                            v1 = points[idx1]
+                            v2 = points[idx2]
+                            t_hit = _ray_triangle_intersect(ray_start, ray_dir, v0, v1, v2)
+                            if t_hit is not None and isfinite(t_hit):
+                                if best_t is None or t_hit < best_t:
+                                    best_t = t_hit
+                                    best_array_id = str(array_id_key)
+                                    best_speaker_idx = int(speaker_idx_key)
+
+                            # Wenn es sich um ein Quad (4 Punkte) handelt, trianguliere in zwei Dreiecke
+                            if n == 4:
+                                idx3 = faces[i + 4]
+                                if (
+                                    0 <= idx3 < points.shape[0]
+                                    and 0 <= idx2 < points.shape[0]
+                                ):
+                                    v3 = points[idx3]
+                                    t_hit2 = _ray_triangle_intersect(ray_start, ray_dir, v0, v2, v3)
+                                    if t_hit2 is not None and isfinite(t_hit2):
+                                        if best_t is None or t_hit2 < best_t:
+                                            best_t = t_hit2
+                                            best_array_id = str(array_id_key)
+                                            best_speaker_idx = int(speaker_idx_key)
+
+                            i += 1 + n
+
+                    if best_t is not None and best_array_id is not None and best_speaker_idx is not None:
+                        # Prüfe auch hier die Distanz zwischen Trefferpunkt und Gehäusezentrum
+                        try:
+                            cache_info = speaker_cache.get((best_array_id, best_speaker_idx, 0)) or None
+                            mesh_for_hit = None
+                            if cache_info is not None:
+                                mesh_for_hit = cache_info.get("mesh")
+                            if (
+                                mesh_for_hit is not None
+                                and hasattr(mesh_for_hit, "points")
+                                and hasattr(mesh_for_hit, "bounds")
+                            ):
+                                pts = np.asarray(mesh_for_hit.points, dtype=float)
+                                bounds = getattr(mesh_for_hit, "bounds", None)
+                                if pts.size > 0 and bounds is not None and len(bounds) >= 6:
+                                    center = pts.mean(axis=0)
+                                    xmin, xmax, ymin, ymax, zmin, zmax = map(float, bounds)
+                                    extents = np.array(
+                                        [
+                                            0.5 * (xmax - xmin),
+                                            0.5 * (ymax - ymin),
+                                            0.5 * (zmax - zmin),
+                                        ],
+                                        dtype=float,
+                                    )
+                                    box_radius = float(np.linalg.norm(extents))
+                                    max_pick_dist = max(0.5, 0.5 * box_radius)
+                                    hit_pt = ray_start + float(best_t) * ray_dir
+                                    dist_center = float(np.linalg.norm(center - hit_pt))
+                                    if dist_center > max_pick_dist:
+                                        print(
+                                            "[DEBUG] _pick_speaker_at_position: Ray-Mesh-Hit verworfen, "
+                                            f"dist_center={dist_center:.3f} m > {max_pick_dist:.3f} m"
+                                        )
+                                        print(
+                                            "[DEBUG] _pick_speaker_at_position: Weder CellPicker noch Ray-Mesh-Fallback haben Speaker gefunden"
+                                        )
+                                        return (None, None, None)
+                        except Exception:
+                            pass
+
+                        print(
+                            "[DEBUG] _pick_speaker_at_position: Ray-Mesh-Fallback-Treffer für Speaker "
+                            f"array={best_array_id}, idx={best_speaker_idx}, t={best_t:.3f}"
+                        )
+                        return (float(best_t), best_array_id, best_speaker_idx)
+
+                    print("[DEBUG] _pick_speaker_at_position: Weder CellPicker noch Ray-Mesh-Fallback haben Speaker gefunden")
+                    return (None, None, None)
+
+                # Actor-Namen ermitteln
+                picked_name: Optional[str] = None
+                for name, actor in actor_name_to_obj.items():
+                    if actor is picked_actor:
+                        picked_name = name
+                        break
+                
+                print(f"[DEBUG] _pick_speaker_at_position: CellPicker hit actor={picked_name}")
+                if not isinstance(picked_name, str):
+                    return (None, None, None)
+
+                # Speaker-Info aus Cache ermitteln
+                speaker_info = self.overlay_helper._get_speaker_info_from_actor(picked_actor, picked_name)
+                print(f"[DEBUG] _pick_speaker_at_position: CellPicker speaker_info={speaker_info}")
+                if not speaker_info:
+                    return (None, None, None)
+
+                array_id, speaker_index = speaker_info
+
+                # t-Wert entlang des Rays bestimmen (für Vergleich mit Surface-t)
+                picked = np.array(picked_point[:3], dtype=float)
+                vec = picked - ray_start
+                t_hit = float(np.dot(vec, ray_dir))
+                if t_hit < 0:
+                    # Fallback: direkte Distanz nutzen, wenn Projektion „hinter“ der Kamera liegt
+                    t_hit = float(np.linalg.norm(vec))
+
+                # 🎯 Klick-Präzision verfeinern: akzeptiere nur Treffer, deren
+                # Mittelpunkt in sinnvoller Distanz zum Pick-Punkt liegt.
+                try:
+                    mesh_for_hit = None
+                    for cache_key, cache_info in speaker_cache.items():
+                        try:
+                            array_id_key, speaker_idx_key, _geom_idx = cache_key
+                        except Exception:
+                            continue
+                        if str(array_id_key) == str(array_id) and int(speaker_idx_key) == int(speaker_index):
+                            mesh_for_hit = cache_info.get("mesh")
+                            if mesh_for_hit is not None:
+                                break
+                    if mesh_for_hit is not None and hasattr(mesh_for_hit, "points") and hasattr(
+                        mesh_for_hit, "bounds"
+                    ):
+                        pts = np.asarray(mesh_for_hit.points, dtype=float)
+                        bounds = getattr(mesh_for_hit, "bounds", None)
+                        if pts.size > 0 and bounds is not None and len(bounds) >= 6:
+                            center = pts.mean(axis=0)
+                            xmin, xmax, ymin, ymax, zmin, zmax = map(float, bounds)
+                            extents = np.array(
+                                [
+                                    0.5 * (xmax - xmin),
+                                    0.5 * (ymax - ymin),
+                                    0.5 * (zmax - zmin),
+                                ],
+                                dtype=float,
+                            )
+                            # Erlaube Klicks bis zur halben Diagonale des Gehäuses,
+                            # mindestens aber 0.5 m (für sehr kleine Kisten).
+                            box_radius = float(np.linalg.norm(extents))
+                            max_pick_dist = max(0.5, 0.5 * box_radius)
+                            dist_center = float(np.linalg.norm(center - picked))
+                            if dist_center > max_pick_dist:
+                                print(
+                                    "[DEBUG] _pick_speaker_at_position: CellPicker-Hit verworfen, "
+                                    f"dist_center={dist_center:.3f} m > {max_pick_dist:.3f} m"
+                                )
+                                return (None, None, None)
+                except Exception:
+                    # Bei Problemen mit der Distanzprüfung den Treffer nicht komplett verwerfen
+                    pass
+
+                print(
+                    f"[DEBUG] _pick_speaker_at_position: Using CellPicker result: "
+                    f"array={array_id}, idx={speaker_index}, t={t_hit:.3f}, picked_point={picked}"
+                )
+                return (t_hit, str(array_id), int(speaker_index))
+            except ImportError as e:
+                print(f"[DEBUG] _pick_speaker_at_position: ImportError: {e}")
+                return (None, None, None)
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                print(f"[DEBUG] _pick_speaker_at_position: Exception: {e}")
+                traceback.print_exc()
+                return (None, None, None)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            print(f"[DEBUG] _pick_speaker_at_position: Outer Exception: {e}")
+            traceback.print_exc()
+            return (None, None, None)
+    
     def _handle_speaker_click(self, click_pos: QtCore.QPoint) -> bool:
         """Behandelt einen Klick auf einen Lautsprecher im 3D-Plot und wählt das entsprechende Array im TreeWidget aus.
         
         Returns:
             bool: True wenn ein Lautsprecher geklickt wurde, False sonst.
         """
-        try:
-            renderer = self.plotter.renderer
-            if renderer is None:
-                print("[DEBUG] _handle_speaker_click: renderer is None")
-                return False
-            
-            # Verwende VTK CellPicker für präzises Picking
-            try:
-                from vtkmodules.vtkRenderingCore import vtkCellPicker, vtkWorldPointPicker, vtkPropPicker
-                from vtkmodules.vtkRenderingCore import vtkRenderer
-                
-                size = self.widget.size()
-                if size.width() <= 0 or size.height() <= 0:
-                    return False
-                
-                # VTK Display-Koordinaten (Pixel-Koordinaten)
-                display_x = float(click_pos.x())
-                display_y = float(size.height() - click_pos.y())  # VTK Y ist invertiert
-                
-                print(f"[DEBUG] _handle_speaker_click: display_x={display_x}, display_y={display_y}, size={size.width()}x{size.height()}")
-                
-                # Versuche zuerst CellPicker mit höherer Toleranz
-                picker = vtkCellPicker()
-                picker.SetTolerance(0.1)  # Erhöhte Toleranz für besseres Picking aus allen Winkeln
-                
-                # Priorisiere Speaker-Actors: Berechne 3D-Position direkt aus Click-Punkt (Ray-Casting)
-                # und finde den nächstgelegenen Speaker-Actor
-                speaker_actor_at_click = None
-                if hasattr(self, 'overlay_helper') and hasattr(self.overlay_helper, '_speaker_actor_cache'):
-                    speaker_cache = self.overlay_helper._speaker_actor_cache
-                    
-                    # Debug: Zeige alle Array-IDs im Cache
-                    cache_array_ids = set()
-                    for key in speaker_cache.keys():
-                        array_id, speaker_idx, geom_idx = key
-                        cache_array_ids.add(str(array_id))
-                    print(f"[DEBUG] _handle_speaker_click: Cache contains {len(speaker_cache)} speaker actors from {len(cache_array_ids)} arrays: {sorted(cache_array_ids)}")
-                    
-                    # Berechne 3D-Position direkt aus Click-Punkt (Ray-Casting)
-                    # Konvertiere Display-Koordinaten zu World-Koordinaten
-                    renderer.SetDisplayPoint(display_x, display_y, 0.0)
-                    renderer.DisplayToWorld()
-                    world_point_near = renderer.GetWorldPoint()
-                    
-                    renderer.SetDisplayPoint(display_x, display_y, 1.0)
-                    renderer.DisplayToWorld()
-                    world_point_far = renderer.GetWorldPoint()
-                    
-                    if world_point_near and world_point_far and len(world_point_near) >= 4 and len(world_point_far) >= 4:
-                        # Berechne Ray-Start und Ray-End
-                        ray_start = np.array([
-                            world_point_near[0] / world_point_near[3],
-                            world_point_near[1] / world_point_near[3],
-                            world_point_near[2] / world_point_near[3]
-                        ])
-                        ray_end = np.array([
-                            world_point_far[0] / world_point_far[3],
-                            world_point_far[1] / world_point_far[3],
-                            world_point_far[2] / world_point_far[3]
-                        ])
-                        ray_dir = ray_end - ray_start
-                        ray_length = np.linalg.norm(ray_dir)
-                        if ray_length > 0:
-                            ray_dir = ray_dir / ray_length
-                        
-                        print(f"[DEBUG] _handle_speaker_click: Checking {len(speaker_cache)} speaker actors with ray-casting")
-                        print(f"[DEBUG] _handle_speaker_click: Ray start={ray_start}, dir={ray_dir}")
-                        
-                        min_dist = float('inf')
-                        closest_speaker_info = None
-                        
-                        # Durchsuche alle Speaker-Actors und finde den, der dem Ray am nächsten ist
-                        for key, info in speaker_cache.items():
-                            cached_actor_name = info.get('actor')
-                            if cached_actor_name:
-                                cached_actor = renderer.actors.get(cached_actor_name)
-                                if cached_actor and hasattr(cached_actor, 'GetBounds'):
-                                    bounds = cached_actor.GetBounds()
-                                    if bounds and len(bounds) >= 6:
-                                        # Berechne Zentrum der Bounding Box
-                                        center_x = (bounds[0] + bounds[1]) / 2.0
-                                        center_y = (bounds[2] + bounds[3]) / 2.0
-                                        center_z = (bounds[4] + bounds[5]) / 2.0
-                                        center = np.array([center_x, center_y, center_z])
-                                        
-                                        # Berechne Distanz vom Ray zum Zentrum
-                                        # Vektor vom Ray-Start zum Zentrum
-                                        to_center = center - ray_start
-                                        
-                                        # Projektion auf Ray-Richtung
-                                        proj_length = np.dot(to_center, ray_dir)
-                                        
-                                        # Nächstgelegener Punkt auf dem Ray
-                                        closest_point_on_ray = ray_start + proj_length * ray_dir
-                                        
-                                        # Distanz vom Zentrum zum nächstgelegenen Punkt auf dem Ray
-                                        dist_to_ray = np.linalg.norm(center - closest_point_on_ray)
-                                        
-                                        # Zusätzlich: Prüfe ob der Ray durch die Bounding Box geht
-                                        # (vereinfachte Prüfung: Ray schneidet Bounding Box)
-                                        # Berechne Schnittpunkte des Rays mit den Bounding Box Ebenen
-                                        t_min = float('-inf')
-                                        t_max = float('inf')
-                                        
-                                        for i in range(3):
-                                            if abs(ray_dir[i]) > 1e-6:
-                                                t1 = (bounds[i*2] - ray_start[i]) / ray_dir[i]
-                                                t2 = (bounds[i*2+1] - ray_start[i]) / ray_dir[i]
-                                                t_min = max(t_min, min(t1, t2))
-                                                t_max = min(t_max, max(t1, t2))
-                                        
-                                        # Wenn Ray die Bounding Box schneidet (t_min <= t_max) oder sehr nah ist
-                                        intersects = t_min <= t_max and t_max >= 0
-                                        is_close = dist_to_ray < 0.5  # Max 50 cm Distanz
-                                        
-                                        if intersects or is_close:
-                                            # Kombinierte Distanz: Distanz zum Ray + Distanz entlang des Rays
-                                            combined_dist = dist_to_ray + abs(proj_length) * 0.1
-                                            
-                                            if combined_dist < min_dist:
-                                                min_dist = combined_dist
-                                                speaker_actor_at_click = cached_actor
-                                                closest_speaker_info = (key, cached_actor_name)
-                                                print(f"[DEBUG] _handle_speaker_click: Found speaker actor: {cached_actor_name}, dist_to_ray={dist_to_ray:.3f}, proj_length={proj_length:.3f}, combined_dist={combined_dist:.3f}")
-                        
-                        if speaker_actor_at_click and min_dist < 0.5:  # Max 50 cm kombinierte Distanz
-                            print(f"[DEBUG] _handle_speaker_click: Using prioritized speaker actor: {closest_speaker_info[1]}, dist={min_dist:.3f}")
-                        else:
-                            speaker_actor_at_click = None
-                
-                # Verwende Speaker-Actor falls gefunden, sonst den vom CellPicker
-                if speaker_actor_at_click:
-                    picked_actor = speaker_actor_at_click
-                    print(f"[DEBUG] _handle_speaker_click: Using prioritized speaker actor")
-                else:
-                    # Normale CellPicker-Logik
-                    picker.Pick(display_x, display_y, 0.0, renderer)
-                    picked_actor = picker.GetActor()
-                    print(f"[DEBUG] _handle_speaker_click: CellPicker picked_actor = {picked_actor}")
-                
-                # Falls CellPicker nichts findet, versuche PropPicker (funktioniert besser aus verschiedenen Winkeln)
-                if picked_actor is None:
-                    print(f"[DEBUG] _handle_speaker_click: CellPicker found nothing, trying PropPicker")
-                    prop_picker = vtkPropPicker()
-                    prop_picker.Pick(display_x, display_y, 0.0, renderer)
-                    picked_actor = prop_picker.GetActor()
-                    print(f"[DEBUG] _handle_speaker_click: PropPicker picked_actor = {picked_actor}")
-                
-                # Falls immer noch nichts gefunden, verwende Ray-Casting-Ansatz
-                if picked_actor is None:
-                    print(f"[DEBUG] _handle_speaker_click: Both pickers found nothing, trying ray-casting approach")
-                    picked_point = picker.GetPickPosition()
-                    print(f"[DEBUG] _handle_speaker_click: picked_point = {picked_point}")
-                    
-                    # Hole Kamera-Position und Richtung für Ray-Casting
-                    camera = renderer.GetActiveCamera()
-                    if camera:
-                        cam_pos = camera.GetPosition()
-                        # Berechne Ray-Richtung vom Klick-Punkt
-                        renderer.SetWorldPoint(picked_point[0], picked_point[1], picked_point[2])
-                        renderer.WorldToDisplay()
-                        display_coords = renderer.GetDisplayPoint()
-                        
-                        # Erstelle Ray vom Klick-Punkt in die Szene
-                        renderer.SetDisplayPoint(display_x, display_y, 0.0)
-                        renderer.DisplayToWorld()
-                        world_point = renderer.GetWorldPoint()
-                        if world_point and len(world_point) >= 4:
-                            ray_start = [world_point[0]/world_point[3], world_point[1]/world_point[3], world_point[2]/world_point[3]]
-                            
-                            # Durchsuche alle Speaker-Actors und finde den, der den Ray schneidet
-                            min_dist = float('inf')
-                            closest_actor = None
-                            
-                            # Hole alle Speaker-Actors aus dem Overlay-Helper
-                            if hasattr(self, 'overlay_helper') and hasattr(self.overlay_helper, '_speaker_actor_cache'):
-                                speaker_cache = self.overlay_helper._speaker_actor_cache
-                                print(f"[DEBUG] _handle_speaker_click: Checking {len(speaker_cache)} speaker actors in cache")
-                                
-                                for key, info in speaker_cache.items():
-                                    actor_name = info.get('actor')
-                                    if actor_name:
-                                        actor = renderer.actors.get(actor_name)
-                                        if actor and hasattr(actor, 'GetBounds'):
-                                            bounds = actor.GetBounds()
-                                            if bounds and len(bounds) >= 6:
-                                                # Prüfe ob Ray die Bounding Box schneidet
-                                                # Vereinfachte Prüfung: Distanz zum Mittelpunkt der Bounding Box
-                                                center_x = (bounds[0] + bounds[1]) / 2.0
-                                                center_y = (bounds[2] + bounds[3]) / 2.0
-                                                center_z = (bounds[4] + bounds[5]) / 2.0
-                                                
-                                                # Berechne Distanz vom Ray-Start zum Zentrum
-                                                dist = ((ray_start[0] - center_x)**2 + 
-                                                       (ray_start[1] - center_y)**2 + 
-                                                       (ray_start[2] - center_z)**2)**0.5
-                                                
-                                                # Prüfe ob der Klick-Punkt innerhalb der Bounding Box ist (mit Toleranz)
-                                                if (bounds[0] - 0.5 <= picked_point[0] <= bounds[1] + 0.5 and
-                                                    bounds[2] - 0.5 <= picked_point[1] <= bounds[3] + 0.5 and
-                                                    bounds[4] - 0.5 <= picked_point[2] <= bounds[5] + 0.5):
-                                                    if dist < min_dist:
-                                                        min_dist = dist
-                                                        closest_actor = actor
-                                                        print(f"[DEBUG] _handle_speaker_click: Found intersecting actor: {actor_name}, dist={dist}")
-                            
-                            # Fallback: Durchsuche alle Overlay-Actors direkt im Renderer
-                            if closest_actor is None:
-                                for name, actor in renderer.actors.items():
-                                    if isinstance(name, str) and name.startswith("overlay_"):
-                                        if hasattr(actor, 'GetBounds'):
-                                            bounds = actor.GetBounds()
-                                            if bounds and len(bounds) >= 6:
-                                                # Prüfe ob Klick-Punkt innerhalb der Bounding Box ist
-                                                if (bounds[0] - 0.5 <= picked_point[0] <= bounds[1] + 0.5 and
-                                                    bounds[2] - 0.5 <= picked_point[1] <= bounds[3] + 0.5 and
-                                                    bounds[4] - 0.5 <= picked_point[2] <= bounds[5] + 0.5):
-                                                    center_x = (bounds[0] + bounds[1]) / 2.0
-                                                    center_y = (bounds[2] + bounds[3]) / 2.0
-                                                    center_z = (bounds[4] + bounds[5]) / 2.0
-                                                    
-                                                    dist = ((picked_point[0] - center_x)**2 + 
-                                                           (picked_point[1] - center_y)**2 + 
-                                                           (picked_point[2] - center_z)**2)**0.5
-                                                    if dist < min_dist:
-                                                        min_dist = dist
-                                                        closest_actor = actor
-                                                        print(f"[DEBUG] _handle_speaker_click: Found closer actor: {name}, dist={dist}")
-                            
-                            if closest_actor and min_dist < 0.5:  # Max 50 cm Distanz
-                                picked_actor = closest_actor
-                                print(f"[DEBUG] _handle_speaker_click: Using closest actor from ray-casting, dist={min_dist}")
-                    
-                # Verarbeite gefundenen Actor
-                if picked_actor is not None:
-                    print(f"[DEBUG] _handle_speaker_click: Processing picked_actor (not None)")
-                    # Hole Actor-Name
-                    actor_name = None
-                    for name, actor in renderer.actors.items():
-                        if actor == picked_actor:
-                            actor_name = name
-                            break
-                    
-                    print(f"[DEBUG] _handle_speaker_click: actor_name = {actor_name}")
-                    
-                    # Prüfe ob es ein Speaker-Actor ist (beginnt mit "overlay_" und ist in category 'speakers')
-                    if actor_name and isinstance(actor_name, str) and actor_name.startswith("overlay_"):
-                        print(f"[DEBUG] _handle_speaker_click: Found overlay actor: {actor_name}")
-                        # Hole Overlay-Helper und prüfe ob Actor in speakers category ist
-                        if hasattr(self, 'overlay_helper'):
-                            print(f"[DEBUG] _handle_speaker_click: overlay_helper exists")
-                            speaker_info = self.overlay_helper._get_speaker_info_from_actor(picked_actor, actor_name)
-                            print(f"[DEBUG] _handle_speaker_click: speaker_info = {speaker_info}")
-                            if speaker_info:
-                                array_id, speaker_index = speaker_info
-                                print(f"[DEBUG] _handle_speaker_click: Calling _select_speaker_in_treewidget with array_id={array_id}, speaker_index={speaker_index}")
-                                self._select_speaker_in_treewidget(array_id, speaker_index)
-                                return True
-                            else:
-                                print(f"[DEBUG] _handle_speaker_click: speaker_info is None")
-                        else:
-                            print(f"[DEBUG] _handle_speaker_click: overlay_helper does not exist")
-                    else:
-                        # Actor ist kein Speaker-Actor - versuche Ray-Casting als Fallback
-                        print(f"[DEBUG] _handle_speaker_click: actor_name does not start with 'overlay_' or is not a string, trying ray-casting fallback")
-                        picked_point = picker.GetPickPosition()
-                        if picked_point and len(picked_point) >= 3:
-                            # Durchsuche alle Speaker-Actors im Cache
-                            if hasattr(self, 'overlay_helper') and hasattr(self.overlay_helper, '_speaker_actor_cache'):
-                                speaker_cache = self.overlay_helper._speaker_actor_cache
-                                print(f"[DEBUG] _handle_speaker_click: Checking {len(speaker_cache)} speaker actors in cache for fallback")
-                                
-                                min_dist = float('inf')
-                                closest_speaker_actor = None
-                                closest_speaker_info = None
-                                
-                                for key, info in speaker_cache.items():
-                                    cached_actor_name = info.get('actor')
-                                    if cached_actor_name:
-                                        cached_actor = renderer.actors.get(cached_actor_name)
-                                        if cached_actor and hasattr(cached_actor, 'GetBounds'):
-                                            bounds = cached_actor.GetBounds()
-                                            if bounds and len(bounds) >= 6:
-                                                # Prüfe ob Klick-Punkt innerhalb der Bounding Box ist (mit größerer Toleranz)
-                                                if (bounds[0] - 1.0 <= picked_point[0] <= bounds[1] + 1.0 and
-                                                    bounds[2] - 1.0 <= picked_point[1] <= bounds[3] + 1.0 and
-                                                    bounds[4] - 1.0 <= picked_point[2] <= bounds[5] + 1.0):
-                                                    center_x = (bounds[0] + bounds[1]) / 2.0
-                                                    center_y = (bounds[2] + bounds[3]) / 2.0
-                                                    center_z = (bounds[4] + bounds[5]) / 2.0
-                                                    
-                                                    dist = ((picked_point[0] - center_x)**2 + 
-                                                           (picked_point[1] - center_y)**2 + 
-                                                           (picked_point[2] - center_z)**2)**0.5
-                                                    if dist < min_dist:
-                                                        min_dist = dist
-                                                        closest_speaker_actor = cached_actor
-                                                        closest_speaker_info = (key, cached_actor_name)
-                                                        print(f"[DEBUG] _handle_speaker_click: Found closer speaker actor: {cached_actor_name}, dist={dist}")
-                                
-                                if closest_speaker_actor and min_dist < 0.5:  # Max 50 cm Distanz
-                                    array_id, speaker_idx, geom_idx = closest_speaker_info[0]
-                                    actor_name = closest_speaker_info[1]
-                                    print(f"[DEBUG] _handle_speaker_click: Using closest speaker actor from fallback: {actor_name}, array_id={array_id}, dist={min_dist}")
-                                    speaker_info = self.overlay_helper._get_speaker_info_from_actor(closest_speaker_actor, actor_name)
-                                    if speaker_info:
-                                        array_id, speaker_index = speaker_info
-                                        print(f"[DEBUG] _handle_speaker_click: Calling _select_speaker_in_treewidget with array_id={array_id}, speaker_index={speaker_index}")
-                                        self._select_speaker_in_treewidget(array_id, speaker_index)
-                                        return True
-                else:
-                    print(f"[DEBUG] _handle_speaker_click: picked_actor is None")
-            except ImportError as e:
-                print(f"[DEBUG] _handle_speaker_click: ImportError: {e}")
-            except Exception as e:  # noqa: BLE001
-                import traceback
-                print(f"[DEBUG] _handle_speaker_click: Exception: {e}")
-                traceback.print_exc()
-            
-            return False
-        except Exception as e:  # noqa: BLE001
-            import traceback
-            print(f"[DEBUG] _handle_speaker_click: Outer Exception: {e}")
-            traceback.print_exc()
+        t, array_id, speaker_index = self._pick_speaker_at_position(click_pos)
+        if array_id is not None and speaker_index is not None:
+            print(f"[DEBUG] _handle_speaker_click: Speaker gefunden, wähle aus: array={array_id}, idx={speaker_index}")
+            self._select_speaker_in_treewidget(array_id, speaker_index)
+            return True
             return False
     
     def _select_speaker_in_treewidget(self, array_id: str, speaker_index: int = None) -> None:
@@ -1414,15 +1502,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 finally:
                     tree_widget.blockSignals(False)
                 
-                # Setze Highlight-IDs für rote Umrandung
-                # Setze sowohl einzelne ID (Rückwärtskompatibilität) als auch Liste
-                # WICHTIG: Beim Klick auf einen Lautsprecher soll das gesamte Array hervorgehoben werden,
-                # nicht nur der einzelne Speaker. Daher setzen wir highlight_indices auf leer.
+                # Setze Highlight-IDs für rote Umrandung ARRAY-BASIERT:
+                # Wenn ein einzelner Lautsprecher angeklickt wird, soll das komplette
+                # zugehörige Array hervorgehoben werden (Stack und Flown).
                 setattr(self.settings, "active_speaker_array_highlight_id", array_id)
                 setattr(self.settings, "active_speaker_array_highlight_ids", [str(array_id)])
-                # Setze highlight_indices auf leer, damit alle Speaker des Arrays hervorgehoben werden
+                # Leere die per-Speaker-Highlight-Liste, damit _update_speaker_highlights
+                # alle Lautsprecher des Arrays rot zeichnet.
                 setattr(self.settings, "active_speaker_highlight_indices", [])
-                print(f"[DEBUG] _select_speaker_in_treewidget: Set highlight IDs (array_id={array_id}, all speakers of array will be highlighted)")
+                print(
+                    "[DEBUG] _select_speaker_in_treewidget: Set array-based highlight IDs "
+                    f"(array_id={array_id}, all speakers of array will be highlighted)"
+                )
                 
                 # Aktualisiere Overlays für rote Umrandung
                 if hasattr(main_window, "draw_plots") and hasattr(main_window.draw_plots, "draw_spl_plotter"):
@@ -1657,8 +1748,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except Exception as e:
             return None, None
 
-    def _handle_spl_surface_click(self, click_pos: QtCore.QPoint) -> None:
-        """Behandelt einen Klick auf die SPL-Surface (für enabled Surfaces)."""
+    def _pick_surface_at_position(self, click_pos: QtCore.QPoint) -> Tuple[Optional[float], Optional[str]]:
+        """Findet die Surface am Klickpunkt und gibt die Distanz zur Kamera zurück.
+        
+        Args:
+            click_pos: Klickposition im Widget
+            
+        Returns:
+            Tuple[Optional[float], Optional[str]]: (distanz_zur_kamera, surface_id) oder (None, None)
+        """
         try:
             # Hole 3D-Koordinaten des geklickten Punktes über VTK CellPicker
             renderer = self.plotter.renderer
@@ -1803,10 +1901,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Prüfe welche Surface (enabled oder disabled) den Ray schneidet
             surface_definitions = getattr(self.settings, 'surface_definitions', {})
             if not isinstance(surface_definitions, dict):
-                print(f"[DEBUG] _handle_spl_surface_click: Keine surface_definitions gefunden")
-                return
+                print(f"[DEBUG] _pick_surface_at_position: Keine surface_definitions gefunden")
+                return (None, None)
             
-            print(f"[DEBUG] _handle_spl_surface_click: Prüfe {len(surface_definitions)} Surfaces mit Ray-Casting")
+            print(f"[DEBUG] _pick_surface_at_position: Prüfe {len(surface_definitions)} Surfaces mit Ray-Casting")
             
             # Durchsuche alle Surfaces (enabled und disabled)
             checked_count = 0
@@ -1958,28 +2056,38 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 # Debug-Ausgabe und Auswahl (für beide Fälle: senkrecht und planar)
                 if is_inside:
                     surface_type = "senkrecht" if is_vertical else "planar"
-                    print(f"[DEBUG] _handle_spl_surface_click: Surface {surface_id} (enabled={enabled}, {surface_type}) getroffen bei t={t_hit:.3f}, aktuell best_t={best_t:.3f}")
+                    print(f"[DEBUG] _pick_surface_at_position: Surface {surface_id} (enabled={enabled}, {surface_type}) getroffen bei t={t_hit:.3f}, aktuell best_t={best_t:.3f}")
                 
                 # Wähle die am nächsten zur Kamera liegende Surface (unabhängig von enabled/disabled)
                 if is_inside and t_hit < best_t:
                     best_t = t_hit
                     best_surface_id = str(surface_id)
                     surface_type = "senkrecht" if is_vertical else "planar"
-                    print(f"[DEBUG] _handle_spl_surface_click: Surface {surface_id} ({surface_type}) ist jetzt die beste (t={t_hit:.3f})")
+                    print(f"[DEBUG] _pick_surface_at_position: Surface {surface_id} ({surface_type}) ist jetzt die beste (t={t_hit:.3f})")
             
-            # Wähle die am nächsten zur Kamera liegende Surface, falls vorhanden
+            # Gebe die am nächsten zur Kamera liegende Surface zurück, falls vorhanden
             if best_surface_id is not None:
-                print(f"[DEBUG] _handle_spl_surface_click: Wähle Surface {best_surface_id} (t={best_t:.3f})")
-                self._select_surface_in_treewidget(best_surface_id)
-                return
+                print(f"[DEBUG] _pick_surface_at_position: Surface gefunden: {best_surface_id} (t={best_t:.3f})")
+                return (best_t, best_surface_id)
             else:
-                print(f"[DEBUG] _handle_spl_surface_click: Keine Surface gefunden (checked={checked_count}, skipped_hidden={skipped_hidden}, skipped_too_few_points={skipped_too_few_points})")
-            
-            # Debug output removed
+                print(f"[DEBUG] _pick_surface_at_position: Keine Surface gefunden (checked={checked_count}, skipped_hidden={skipped_hidden}, skipped_too_few_points={skipped_too_few_points})")
+                return (None, None)
             
         except Exception as e:  # noqa: BLE001
             import traceback
             traceback.print_exc()
+            return (None, None)
+    
+    def _handle_spl_surface_click(self, click_pos: QtCore.QPoint) -> None:
+        """Behandelt einen Klick auf die SPL-Surface (Wrapper für Kompatibilität).
+        
+        Diese Methode wird von älteren Code-Stellen aufgerufen und ruft intern
+        _pick_surface_at_position auf.
+        """
+        t, surface_id = self._pick_surface_at_position(click_pos)
+        if surface_id is not None:
+            print(f"[DEBUG] _handle_spl_surface_click: Surface gefunden, wähle aus: {surface_id}")
+            self._select_surface_in_treewidget(surface_id)
     
     @staticmethod
     def _point_in_polygon(x: float, y: float, polygon_points: List[Dict[str, float]]) -> bool:
@@ -2392,6 +2500,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         
         # Konfiguriere Plotter nur bei Bedarf (nicht die Kamera überschreiben)
         self._configure_plotter(configure_camera=not preserve_camera)
+        
+        # Stelle sicher, dass beim Neuaufbau der Szene alle Overlays
+        # (insbesondere Lautsprecher) und der zugehörige Cache sauber
+        # neu aufgebaut werden, damit Picking zuverlässig funktioniert.
+        try:
+            if hasattr(self, 'overlay_helper') and self.settings is not None:
+                current_container = getattr(self, 'container', None)
+                self.update_overlays(self.settings, current_container)
+        except Exception:
+            # Overlay-Neuaufbau ist nicht kritisch für den leeren Plot;
+            # Fehler hier sollen den Plot nicht komplett verhindern.
+            pass
         # scene_frame wurde entfernt - nicht mehr benötigt
 
         if camera_state is not None:
