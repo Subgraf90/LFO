@@ -2055,45 +2055,27 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if step <= 0:
                 step = 3.0
             
-            # 🎯 NEUE LOGIK: Min wird basierend auf Max und color_step berechnet
-            # Die Anzahl der Farbstufen (basierend auf step) bestimmt den minimalen SPL
-            # Beispiel: max=120 dB, step=3 dB → Anzahl Schritte bestimmt min
-            # Wenn wir z.B. 10 Schritte haben: min = max - (10 * step) = 120 - 30 = 90 dB
+            # 🎯 LOGIK IDENTISCH ZUR SETTINGS UI: Verwende 11 Farben (num_colors = 11)
+            # Wie in on_max_spl_changed: new_min = value - (step * (num_colors - 1))
+            # Wie in on_min_spl_changed: new_max = value + (step * (num_colors - 1))
+            num_colors = 11  # Identisch zur Settings UI
             
             # Berechne Max als Vielfaches von step (aufgerundet)
             new_max = np.ceil(spl_max_rounded / step) * step
             
-            # Berechne wie viele Schritte vom tatsächlichen Min bis Max wären
-            steps_from_actual_min = (spl_max_rounded - spl_min_rounded) / step
+            # Berechne Min basierend auf Max und num_colors (wie in Settings UI)
+            # Min = Max - (step * (num_colors - 1))
+            new_min = new_max - (step * (num_colors - 1))
             
-            # Bestimme optimale Anzahl von Schritten (10-20 Schritte für gute Darstellung)
-            if steps_from_actual_min > 20:
-                # Zu viele Schritte - begrenze auf 20 Schritte
-                optimal_steps = 20
-            elif steps_from_actual_min < 10:
-                # Zu wenige Schritte - verwende mindestens 10 Schritte
-                optimal_steps = 10
-            else:
-                # Sinnvolle Anzahl - verwende die tatsächliche Anzahl (gerundet)
-                optimal_steps = int(np.round(steps_from_actual_min))
-            
-            # Berechne Min basierend auf Max und optimaler Anzahl von Schritten
-            # Min = Max - (Anzahl_Schritte * step)
-            new_min = new_max - (optimal_steps * step)
-            
-            # Stelle sicher, dass Min nicht kleiner als der tatsächliche Min ist (mit Toleranz)
+            # Stelle sicher, dass Min nicht kleiner als der tatsächliche Min ist
             # Aber runde auf Vielfaches von step ab
             actual_min_rounded = np.floor(spl_min_rounded / step) * step
             
-            # Wenn berechnetes Min kleiner als tatsächlicher Min ist, verwende tatsächlichen Min
+            # Wenn berechnetes Min kleiner als tatsächlicher Min ist, passe Max an
             if new_min < actual_min_rounded:
+                # Rechne Max neu, damit Min = actual_min_rounded
+                new_max = actual_min_rounded + (step * (num_colors - 1))
                 new_min = actual_min_rounded
-                # Rechne Max neu, damit die Anzahl der Schritte stimmt
-                # Aber nur wenn das nicht zu viele Schritte ergibt
-                recalculated_steps = (new_max - new_min) / step
-                if recalculated_steps > 25:
-                    # Zu viele Schritte - begrenze Min
-                    new_min = new_max - (20 * step)
             
             # Stelle sicher, dass Min nicht größer oder gleich Max ist
             if new_min >= new_max:
@@ -2102,13 +2084,20 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Stelle sicher, dass Min nicht negativ wird
             if new_min < 0:
                 new_min = 0.0
+                # Rechne Max neu, damit die Anzahl der Farben stimmt
+                new_max = new_min + (step * (num_colors - 1))
+            
+            # Stelle sicher, dass Max nicht größer als 150 ist (wie in Settings UI)
+            if new_max > 150:
+                new_max = 150.0
+                # Rechne Min neu
+                new_min = new_max - (step * (num_colors - 1))
+                if new_min < 0:
+                    new_min = 0.0
             
             # Hole alte Werte für Vergleich
             old_min = colorbar_range.get('min', 90.0)
             old_max = colorbar_range.get('max', 120.0)
-            
-            # Berechne Anzahl der Schritte für Debug-Ausgabe
-            num_steps = (new_max - new_min) / step
             
             # Nur aktualisieren wenn sich die Werte signifikant geändert haben (mindestens 1 dB)
             if abs(new_max - old_max) < 1.0 and abs(new_min - old_min) < 1.0:
@@ -2116,13 +2105,30 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             # Aktualisiere Colorbar-Range
             colorbar_range['min'] = float(new_min)
-            colorbar_range['max'] = new_max
+            colorbar_range['max'] = float(new_max)
             
             # Stelle sicher, dass step und tick_step sinnvoll sind
             tick_step = colorbar_range.get('tick_step', 6.0)
             
             # Setze colorbar_range im Settings
             setattr(self.settings, 'colorbar_range', colorbar_range)
+            
+            # 🎯 AKTUALISIERE SETTINGS UI EINGABEFELDER
+            if hasattr(self.main_window, 'ui_settings') and self.main_window.ui_settings is not None:
+                ui_settings = self.main_window.ui_settings
+                # Aktualisiere die Eingabefelder (ohne die Signal-Handler auszulösen)
+                if hasattr(ui_settings, 'min_spl'):
+                    ui_settings.min_spl.blockSignals(True)
+                    ui_settings.min_spl.setText(str(int(new_min)))
+                    ui_settings.min_spl.blockSignals(False)
+                if hasattr(ui_settings, 'max_spl'):
+                    ui_settings.max_spl.blockSignals(True)
+                    ui_settings.max_spl.setText(str(int(new_max)))
+                    ui_settings.max_spl.blockSignals(False)
+                if hasattr(ui_settings, 'db_step'):
+                    ui_settings.db_step.blockSignals(True)
+                    ui_settings.db_step.setText(str(int(step)))
+                    ui_settings.db_step.blockSignals(False)
             
             # Aktualisiere Plot über main_window
             if hasattr(self.main_window, 'plot_spl'):
