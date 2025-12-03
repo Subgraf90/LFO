@@ -401,7 +401,7 @@ class Sources(ModuleBase, QObject):
             # Setze die SizePolicy, damit das TreeWidget vertikal expandiert
             self.sources_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             self.sources_tree_widget.setMinimumHeight(235)  # Setze eine Mindesthöhe
-            self.sources_tree_widget.setFixedWidth(200)
+            self.sources_tree_widget.setFixedWidth(300)  # Breiter gemacht für bessere Lesbarkeit
             
             # Verbinde Signale mit Slots
             self.sources_tree_widget.itemSelectionChanged.connect(self.show_sources_tab)

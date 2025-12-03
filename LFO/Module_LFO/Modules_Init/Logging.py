@@ -11,6 +11,9 @@ import traceback
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from contextlib import ContextDecorator
+import time
+import functools
 
 import faulthandler
 from logging.handlers import TimedRotatingFileHandler
@@ -41,7 +44,96 @@ LOG_DIRECTORY_NAME = "LFO"
 _FAULT_HANDLER_FILE = None
 _FAULT_HANDLER_STREAM = None
 
-__all__ = ["configure_logging", "CrashReporter"]
+# Einfacher, global steuerbarer Schalter für Performance‑Messungen
+PERF_ENABLED = os.environ.get("LFO_DEBUG_PERF", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+__all__ = ["configure_logging", "CrashReporter", "PerfTimer", "perf_section", "measure_time"]
+
+
+class PerfTimer(ContextDecorator):
+    """
+    Kontextmanager / Dekorator zur Zeitmessung.
+    Nutzung:
+        with PerfTimer("update_calculations"):
+            ...
+    oder:
+        @measure_time("UiSources.on_x_position_changed")
+        def handler(...):
+            ...
+    """
+
+    def __init__(self, label: str, **context):
+        """
+        label: Klarer Name des Messpunkts, z.B. 'Main.calculate_spl' oder
+               'UiSources.show_sources_tab'.
+        context: Beliebige Schlüssel/Werte (speaker_array_id=..., plot_mode=..., usw.),
+                 die zur besseren Zuordnung mit ausgegeben werden.
+        """
+        self.label = label
+        self.context = context or {}
+        self._start = None
+
+    def __enter__(self):
+        if not PERF_ENABLED:
+            return self
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if not PERF_ENABLED or self._start is None:
+            return False
+        duration_ms = (time.perf_counter() - self._start) * 1000.0
+        ctx = ""
+        if self.context:
+            # Kleine, einzeilige Kontextdarstellung, eindeutig zuordenbar
+            # z.B. [speaker_array_id=4, plot_mode=SPL plot]
+            pairs = [f"{k}={v}" for k, v in sorted(self.context.items())]
+            ctx = " [" + ", ".join(pairs) + "]"
+        print(f"[PERF] {self.label}: {duration_ms:.2f} ms{ctx}")
+        return False
+
+
+def perf_section(label: str, **context) -> PerfTimer:
+    """
+    Hilfsfunktion für kurze with‑Blöcke:
+        with perf_section("Main.update_speaker_array_calculations", step="beamsteering"):
+            ...
+    """
+    return PerfTimer(label, **context)
+
+
+def measure_time(label: str | None = None):
+    """
+    Dekorator für Funktionen/Methoden.
+    Beispiel:
+        @measure_time("UiSources.on_y_position_changed")
+        def on_y_position_changed(...):
+            ...
+    Wenn kein Label angegeben wird, wird qualname der Funktion verwendet.
+    """
+
+    def decorator(func):
+        name = label or func.__qualname__
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not PERF_ENABLED:
+                return func(*args, **kwargs)
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                duration_ms = (time.perf_counter() - start) * 1000.0
+                print(f"[PERF] {name}: {duration_ms:.2f} ms")
+
+        return wrapper
+
+    return decorator
 
 
 def _get_log_directory() -> Path:

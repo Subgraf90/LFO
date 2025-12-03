@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 DEBUG_SURFACE_GEOMETRY = bool(int(os.environ.get("LFO_DEBUG_SURFACE_GEOMETRY", "1")))
+DEBUG_GEOMETRY_TIMING = bool(int(os.environ.get("LFO_DEBUG_TIMING", "0")))
 
 
 @dataclass
@@ -1098,6 +1099,8 @@ def prepare_plot_geometry(
     """
     Bereitet die Plot-Geometrie für den SPL-Renderer vor (Upscaling + Z-Interpolation).
     """
+    t_start_total = time.perf_counter() if DEBUG_GEOMETRY_TIMING else 0.0
+
     source_x = np.asarray(sound_field_x, dtype=float)
     source_y = np.asarray(sound_field_y, dtype=float)
     values = np.asarray(plot_values, dtype=float)
@@ -1127,10 +1130,14 @@ def prepare_plot_geometry(
     if DEBUG_SURFACE_GEOMETRY:
         total_points = int(plot_x.size * plot_y.size)
 
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_setup = time.perf_counter()
+
     z_coords = _extract_plot_z_coordinates(container, len(source_y), len(source_x))
     surface_mask = _extract_surface_mask(container, len(source_y), len(source_x))
 
-    surface_mask = None
+    # Lokale Plot-Maske initialisieren; wird ggf. im Upscaling-Block gesetzt
+    plot_mask = None
 
     if (
         upscale_factor > 1
@@ -1173,6 +1180,9 @@ def prepare_plot_geometry(
         else:
             plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings, dilate=False)
     
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_upscale = time.perf_counter()
+
     if plot_mask is None:
         plot_mask = _build_plot_surface_mask(plot_x, plot_y, settings, dilate=False)
     if plot_mask is None and surface_mask is not None:
@@ -1187,6 +1197,16 @@ def prepare_plot_geometry(
         np.array_equal(plot_x, source_x) and np.array_equal(plot_y, source_y)
     )
     was_upscaled = upscale_factor > 1 and requires_resample
+
+    if DEBUG_GEOMETRY_TIMING:
+        t_end = time.perf_counter()
+        print(
+            "[SurfaceGeometryCalculator] prepare_plot_geometry timings:\n"
+            f"  setup/validation : {(t_after_setup - t_start_total) * 1000.0:7.2f} ms\n"
+            f"  upscaling/masks  : {(t_after_upscale - t_after_setup) * 1000.0:7.2f} ms\n"
+            f"  final bookkeeping: {(t_end - t_after_upscale) * 1000.0:7.2f} ms\n"
+            f"  TOTAL            : {(t_end - t_start_total) * 1000.0:7.2f} ms"
+        )
 
     return PlotSurfaceGeometry(
         plot_x=plot_x,
@@ -1224,6 +1244,8 @@ def prepare_vertical_plot_geometry(
     if settings is None or container is None:
         return None
 
+    t_start_total = time.perf_counter() if DEBUG_GEOMETRY_TIMING else 0.0
+
     surface_definitions = getattr(settings, "surface_definitions", {})
     if not isinstance(surface_definitions, dict):
         return None
@@ -1239,6 +1261,9 @@ def prepare_vertical_plot_geometry(
     points = surface_data.get("points", []) or []
     if len(points) < 3:
         return None
+
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_surface = time.perf_counter()
 
     # Extrahiere Polygonkoordinaten
     xs = np.array([float(p.get("x", 0.0)) for p in points], dtype=float)
@@ -1293,6 +1318,9 @@ def prepare_vertical_plot_geometry(
             pass
         return None
 
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_samples = time.perf_counter()
+
     coords = np.asarray(payload.get("coordinates", []), dtype=float)
     if coords.size == 0:
         if DEBUG_SURFACE_GEOMETRY:
@@ -1335,6 +1363,9 @@ def prepare_vertical_plot_geometry(
             pass
         return None
 
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_axes = time.perf_counter()
+
     # 2D-Gitter der komplexen Feldwerte aufbauen:
     # Wir initialisieren mit 0 und befüllen jede (v,u)-Zelle, für die ein Sample
     # existiert. Mehrfache Treffer überschreiben sich mit identischen Werten.
@@ -1361,6 +1392,9 @@ def prepare_vertical_plot_geometry(
     pressure_mag = np.clip(pressure_mag, 1e-12, None)
     spl_db = 20.0 * np.log10(pressure_mag)
 
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_field = time.perf_counter()
+
     # Maskenmatrix im (u, v)-Grid analog _build_plot_surface_mask (Punkt-Maske)
     # WICHTIG: Diese Maske ist "strict" entlang der Polygonlinie; das
     # eigentliche "calculate beyond surface" passiert bereits bei der
@@ -1369,6 +1403,9 @@ def prepare_vertical_plot_geometry(
     if mask_uv is None:
         # Fallback: alles sichtbar
         mask_uv = np.ones_like(U, dtype=bool)
+
+    if DEBUG_GEOMETRY_TIMING:
+        t_after_mask = time.perf_counter()
 
     # ------------------------------------------------------------
     # Optionales Upscaling NUR für die Darstellung:
@@ -1410,7 +1447,18 @@ def prepare_vertical_plot_geometry(
         # Kein Upscaling: Achsen/Maske bleiben wie sie sind
         plot_u = u_axis
         plot_v = v_axis
-
+    
+    if DEBUG_GEOMETRY_TIMING:
+        t_end = time.perf_counter()
+        print(
+            f"[SurfaceGeometryCalculator] prepare_vertical_plot_geometry(surface_id={surface_id}) timings:\n"
+            f"  surface_lookup   : {(t_after_surface - t_start_total) * 1000.0:7.2f} ms\n"
+            f"  samples/fields   : {(t_after_samples - t_after_surface) * 1000.0:7.2f} ms\n"
+            f"  axes/grid        : {(t_after_axes - t_after_samples) * 1000.0:7.2f} ms\n"
+            f"  field->SPL/mask  : {(t_after_mask - t_after_field) * 1000.0:7.2f} ms\n"
+            f"  upscaling        : {(t_end - t_after_mask) * 1000.0:7.2f} ms\n"
+            f"  TOTAL            : {(t_end - t_start_total) * 1000.0:7.2f} ms"
+        )
 
     return VerticalPlotGeometry(
         surface_id=surface_id,

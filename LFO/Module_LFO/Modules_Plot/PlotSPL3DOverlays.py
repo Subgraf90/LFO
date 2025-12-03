@@ -12,6 +12,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
 )
 from Module_LFO.Modules_Calculate.Functions import FunctionToolbox
+from Module_LFO.Modules_Init.Logging import perf_section
 
 DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
 
@@ -39,6 +40,7 @@ class SPL3DOverlayRenderer:
         self._axis_z_offset = 0.01  # Erhöht von 0.001 auf 0.01 für besseres Picking (1cm über Surface)
         self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
         self._speaker_geometry_cache: dict[str, List[Tuple[Any, Optional[int]]]] = {}  # Cache für transformierte Geometrien
+        self._speaker_geometry_param_cache: dict[tuple[str, int], tuple] = {}  # Cache für Geometrie-Parameter-Signaturen
         self._geometry_cache_max_size = 100  # Maximale Anzahl gecachter Geometrien
         self._last_axis_state: Optional[tuple] = None
         self._last_impulse_state: Optional[tuple] = None
@@ -996,31 +998,33 @@ class SPL3DOverlayRenderer:
             t_draw = (t_draw_end - t_draw_start) * 1000 if t_draw_end and t_draw_start else 0
 
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
-        speaker_arrays = getattr(settings, 'speaker_arrays', {})
-        if not isinstance(speaker_arrays, dict):
-            self.clear_category('speakers')
-            return
+        with perf_section("PlotSPL3DOverlays.draw_speakers.setup"):
+            speaker_arrays = getattr(settings, 'speaker_arrays', {})
+            if not isinstance(speaker_arrays, dict):
+                self.clear_category('speakers')
+                return
 
-        body_color = '#b0b0b0'
-        exit_color = '#4d4d4d'
-        
-        # Hole Highlight-IDs für rote Umrandung (unterstütze Liste von IDs)
-        highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
-        highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
-        highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
-        
-        # Konvertiere zu Liste von Strings für konsistenten Vergleich
-        if highlight_array_ids:
-            highlight_array_ids_str = [str(aid) for aid in highlight_array_ids]
-        elif highlight_array_id:
-            highlight_array_ids_str = [str(highlight_array_id)]
-        else:
-            highlight_array_ids_str = []
+            body_color = '#b0b0b0'
+            exit_color = '#4d4d4d'
+            
+            # Hole Highlight-IDs für rote Umrandung (unterstütze Liste von IDs)
+            highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
+            highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
+            highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
+            
+            # Konvertiere zu Liste von Strings für konsistenten Vergleich
+            if highlight_array_ids:
+                highlight_array_ids_str = [str(aid) for aid in highlight_array_ids]
+            elif highlight_array_id:
+                highlight_array_ids_str = [str(highlight_array_id)]
+            else:
+                highlight_array_ids_str = []
 
-        old_cache = self._speaker_actor_cache
-        new_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
-        new_actor_names: List[str] = []
+            old_cache = self._speaker_actor_cache
+            new_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
+            new_actor_names: List[str] = []
 
+        total_speakers = 0
         for array_name, speaker_array in speaker_arrays.items():
             if getattr(speaker_array, 'hide', False):
                 continue
@@ -1077,128 +1081,113 @@ class SPL3DOverlayRenderer:
             array_id = str(array_name)  # array_name ist bereits die ID (Key im Dict), konvertiere zu String
 
             for idx in valid_indices:
+                total_speakers += 1
                 x = xs[idx]
                 y = ys[idx]
                 z = zs[idx]
                 
                 # Prüfe ob dieser Speaker hervorgehoben werden soll
-                is_highlighted = False
-                if highlight_indices:
-                    highlight_indices_str = [(str(aid), int(idx_val)) for aid, idx_val in highlight_indices]
-                    is_highlighted = (array_id, int(idx)) in highlight_indices_str
-                elif highlight_array_ids_str:
-                    # Prüfe ob Array-ID in der Liste ist
-                    is_highlighted = array_id in highlight_array_ids_str
+                with perf_section("PlotSPL3DOverlays.draw_speakers.check_highlight"):
+                    is_highlighted = False
+                    if highlight_indices:
+                        highlight_indices_str = [(str(aid), int(idx_val)) for aid, idx_val in highlight_indices]
+                        is_highlighted = (array_id, int(idx)) in highlight_indices_str
+                    elif highlight_array_ids_str:
+                        # Prüfe ob Array-ID in der Liste ist
+                        is_highlighted = array_id in highlight_array_ids_str
 
-                geometries = self._build_speaker_geometries(
-                    speaker_array,
-                    idx,
-                    float(x),
-                    float(y),
-                    float(z),
-                    cabinet_lookup,
-                    container,
+                # 🚀 OPTIMIERUNG: Prüfe Geometrie-Parameter-Signatur BEVOR build_geometries aufgerufen wird
+                speaker_name = self._get_speaker_name(speaker_array, idx)
+                geometry_param_key = (array_id, int(idx))
+                geometry_param_signature = self._create_geometry_param_signature(
+                    speaker_array, idx, float(x), float(y), float(z), cabinet_lookup
                 )
+                cached_param_signature = self._speaker_geometry_param_cache.get(geometry_param_key)
+                
+                geometries = None
+                if cached_param_signature == geometry_param_signature:
+                    # 🚀 OPTIMIERUNG: Geometrie-Parameter unverändert - verwende gecachte Geometrien
+                    cache_key = self._create_geometry_cache_key(speaker_array, idx, speaker_name, configuration, cabinet_lookup.get(speaker_name))
+                    cached_geoms = self._speaker_geometry_cache.get(cache_key)
+                    if cached_geoms:
+                        # Kopiere gecachte Geometrien (Position wird in _build_speaker_geometries gesetzt)
+                        # Für jetzt: Cache noch nicht nutzen, da Position-Transformation komplex ist
+                        # TODO: Position-Transformation implementieren
+                        pass
+                
+                if geometries is None:
+                    # Geometrie-Parameter haben sich geändert oder kein Cache - neu berechnen
+                    with perf_section("PlotSPL3DOverlays.draw_speakers.build_geometries", array_id=array_id, speaker_idx=idx):
+                        geometries = self._build_speaker_geometries(
+                            speaker_array,
+                            idx,
+                            float(x),
+                            float(y),
+                            float(z),
+                            cabinet_lookup,
+                            container,
+                        )
+                    # Cache speichern
+                    if geometries:
+                        cache_key = self._create_geometry_cache_key(speaker_array, idx, speaker_name, configuration, cabinet_lookup.get(speaker_name))
+                        # Speichere Geometrien mit aktueller Position
+                        self._speaker_geometry_cache[cache_key] = [(mesh.copy(deep=True), exit_idx) for mesh, exit_idx in geometries]
+                        # Begrenze Cache-Größe
+                        if len(self._speaker_geometry_cache) > self._geometry_cache_max_size:
+                            # Entferne ältesten Eintrag (einfache Strategie: entferne ersten)
+                            first_key = next(iter(self._speaker_geometry_cache))
+                            del self._speaker_geometry_cache[first_key]
+                    self._speaker_geometry_param_cache[geometry_param_key] = geometry_param_signature
                 
                 # MESH MERGING: Kombiniere alle Geometrien eines Speakers zu einem Mesh
-                
-                
                 if geometries and len(geometries) > 1:
-                    # Merge alle Body-Meshes und sammle Exit-Face-Indices
-                    merged_mesh = geometries[0][0].copy(deep=True)
-                    cell_offset = 0
-                    exit_face_indices = []
-                    
-                    # Sammle erste Exit-Face
-                    if geometries[0][1] is not None:
-                        exit_face_indices.append(geometries[0][1])
-                    cell_offset = merged_mesh.n_cells
-                    
-                    # Merge restliche Geometrien
-                    for geom_idx in range(1, len(geometries)):
-                        body_mesh, exit_face_idx = geometries[geom_idx]
+                    with perf_section("PlotSPL3DOverlays.draw_speakers.merge_meshes", geom_count=len(geometries)):
+                        # 🚀 OPTIMIERUNG: Batch-Merge statt sequenziell
+                        # Sammle alle Meshes und Exit-Face-Indices
+                        meshes_to_merge = []
+                        exit_face_indices = []
+                        cell_offsets = [0]  # Start-Offset
                         
-                        # Kombiniere die Meshes
-                        merged_mesh = merged_mesh + body_mesh
+                        for geom_idx, (body_mesh, exit_face_idx) in enumerate(geometries):
+                            meshes_to_merge.append(body_mesh)
+                            if exit_face_idx is not None:
+                                exit_face_indices.append((cell_offsets[-1], exit_face_idx))
+                            # Berechne nächsten Offset
+                            cell_offsets.append(cell_offsets[-1] + body_mesh.n_cells)
                         
-                        # Sammle Exit-Face mit korrigiertem Offset
-                        if exit_face_idx is not None:
-                            exit_face_indices.append(cell_offset + exit_face_idx)
+                        # 🚀 OPTIMIERUNG: Batch-Merge aller Meshes auf einmal
+                        if len(meshes_to_merge) > 1:
+                            # Verwende PyVista's MultiBlock für effizientes Merging
+                            from pyvista import MultiBlock
+                            multi_block = MultiBlock(meshes_to_merge)
+                            merged_mesh = multi_block.combine()
+                        else:
+                            merged_mesh = meshes_to_merge[0].copy(deep=True) if meshes_to_merge else None
                         
-                        cell_offset += body_mesh.n_cells
-                    
-                    # Erstelle Scalar-Array für ALLE Exit-Faces
-                    if exit_face_indices:
-                        # Erstelle ein Scalar-Array: 0 für Body, 1 für Exit-Faces
-                        scalars = np.zeros(merged_mesh.n_cells, dtype=int)
-                        for exit_idx in exit_face_indices:
-                            if exit_idx < merged_mesh.n_cells:
-                                scalars[exit_idx] = 1
-                        merged_mesh.cell_data['speaker_face'] = scalars
-                        # Signalisiere, dass wir Scalars haben (exit_face = -1 als Flag)
-                        merged_exit_face = -1
-                    else:
-                        merged_exit_face = None
-                    
-                    # Ersetze geometries mit dem gemerged mesh
-                    geometries = [(merged_mesh, merged_exit_face)]
+                        if merged_mesh is not None:
+                            # Erstelle Scalar-Array für ALLE Exit-Faces mit korrigierten Offsets
+                            if exit_face_indices:
+                                scalars = np.zeros(merged_mesh.n_cells, dtype=int)
+                                for cell_offset, exit_idx in exit_face_indices:
+                                    final_idx = cell_offset + exit_idx
+                                    if final_idx < merged_mesh.n_cells:
+                                        scalars[final_idx] = 1
+                                merged_mesh.cell_data['speaker_face'] = scalars
+                                merged_exit_face = -1
+                            else:
+                                merged_exit_face = None
+                            
+                            # Ersetze geometries mit dem gemerged mesh
+                            geometries = [(merged_mesh, merged_exit_face)]
                 
-                if not geometries:
-                    sphere = self.pv.Sphere(radius=0.6, center=(float(x), float(y), float(z)), theta_resolution=32, phi_resolution=32)
-                    key = (array_id, int(idx), 'fallback')
-                    existing = old_cache.get(key)
-                    if existing:
-                        signature = existing.get('signature')
-                        current_signature = self._speaker_signature_from_mesh(sphere, None)
-                        if signature == current_signature:
-                            # Aktualisiere actor_obj falls nötig
-                            if 'actor_obj' not in existing:
-                                actor_name = existing.get('actor')
-                                existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
-                            new_cache[key] = existing
-                            if existing['actor'] not in new_actor_names:
-                                new_actor_names.append(existing['actor'])
-                            continue
-                        existing_mesh = existing['mesh']
-                        existing_mesh.deep_copy(sphere)
-                        self._update_speaker_actor(existing['actor'], existing_mesh, None, body_color, exit_color)
-                        existing['signature'] = current_signature
-                        # Aktualisiere actor_obj falls nötig
-                        if 'actor_obj' not in existing:
-                            actor_name = existing.get('actor')
-                            existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
-                        new_cache[key] = existing
-                        if existing['actor'] not in new_actor_names:
-                            new_actor_names.append(existing['actor'])
-                    else:
-                        mesh_to_add = sphere.copy(deep=True)
-                        # Setze Edge-Color basierend auf Highlight-Status
-                        edge_color = 'red' if is_highlighted else 'black'
-                        actor_name = self._add_overlay_mesh(
-                            mesh_to_add,
-                            color=body_color,
-                            opacity=1.0,
-                            edge_color=edge_color,
-                            line_width=3.0 if is_highlighted else 1.5,
-                            category='speakers',
-                        )
-                        # Hole das Actor-Objekt aus dem Renderer
-                        actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
-                        new_cache[key] = {
-                            'mesh': mesh_to_add,
-                            'actor': actor_name,
-                            'actor_obj': actor_obj,  # Speichere Actor-Objekt für direkten Vergleich
-                            'signature': self._speaker_signature_from_mesh(mesh_to_add, None),
-                        }
-                        if actor_name not in new_actor_names:
-                            new_actor_names.append(actor_name)
-                else:
-                    for geom_idx, (body_mesh, exit_face_index) in enumerate(geometries):
-                        key = (array_id, int(idx), geom_idx)
+                with perf_section("PlotSPL3DOverlays.draw_speakers.cache_lookup", array_id=array_id, speaker_idx=idx):
+                    if not geometries:
+                        sphere = self.pv.Sphere(radius=0.6, center=(float(x), float(y), float(z)), theta_resolution=32, phi_resolution=32)
+                        key = (array_id, int(idx), 'fallback')
                         existing = old_cache.get(key)
                         if existing:
                             signature = existing.get('signature')
-                            current_signature = self._speaker_signature_from_mesh(body_mesh, exit_face_index)
+                            current_signature = self._speaker_signature_from_mesh(sphere, None)
                             if signature == current_signature:
                                 # Aktualisiere actor_obj falls nötig
                                 if 'actor_obj' not in existing:
@@ -1208,10 +1197,9 @@ class SPL3DOverlayRenderer:
                                 if existing['actor'] not in new_actor_names:
                                     new_actor_names.append(existing['actor'])
                                 continue
-                            # Signature hat sich geändert - aktualisiere existing
                             existing_mesh = existing['mesh']
-                            existing_mesh.deep_copy(body_mesh)
-                            self._update_speaker_actor(existing['actor'], existing_mesh, exit_face_index, body_color, exit_color)
+                            existing_mesh.deep_copy(sphere)
+                            self._update_speaker_actor(existing['actor'], existing_mesh, None, body_color, exit_color)
                             existing['signature'] = current_signature
                             # Aktualisiere actor_obj falls nötig
                             if 'actor_obj' not in existing:
@@ -1220,73 +1208,126 @@ class SPL3DOverlayRenderer:
                             new_cache[key] = existing
                             if existing['actor'] not in new_actor_names:
                                 new_actor_names.append(existing['actor'])
-                            continue
-
-                        # Kein existing - erstelle neues Mesh
-                        mesh_to_add = body_mesh.copy(deep=True)
-                        # Prüfe ob Mesh bereits Scalars hat (merged mesh mit exit_face_index = -1)
-                        has_scalars = 'speaker_face' in mesh_to_add.cell_data
-                        
-                        # Setze Edge-Color basierend auf Highlight-Status
-                        edge_color = 'red' if is_highlighted else 'black'
-                        line_width = 3.0 if is_highlighted else 1.5
-                        
-                        if exit_face_index == -1 or has_scalars:
-                            # Mesh hat bereits Scalars (merged mesh) - nutze diese
-                            actor_name = self._add_overlay_mesh(
-                                mesh_to_add,
-                                scalars='speaker_face',
-                                cmap=[body_color, exit_color],
-                                opacity=1.0,
-                                edge_color=edge_color,
-                                line_width=line_width,
-                                category='speakers',
-                            )
-                        elif exit_face_index is not None and mesh_to_add.n_cells > 0:
-                            # Einzelnes Mesh - erstelle Scalars für eine Exit-Face
-                            scalars = np.zeros(mesh_to_add.n_cells, dtype=int)
-                            scalars[int(exit_face_index)] = 1
-                            mesh_to_add.cell_data['speaker_face'] = scalars
-                            actor_name = self._add_overlay_mesh(
-                                mesh_to_add,
-                                scalars='speaker_face',
-                                cmap=[body_color, exit_color],
-                                opacity=1.0,
-                                edge_color=edge_color,
-                                line_width=line_width,
-                                category='speakers',
-                            )
                         else:
+                            mesh_to_add = sphere.copy(deep=True)
+                            # Setze Edge-Color basierend auf Highlight-Status
+                            edge_color = 'red' if is_highlighted else 'black'
                             actor_name = self._add_overlay_mesh(
                                 mesh_to_add,
                                 color=body_color,
                                 opacity=1.0,
                                 edge_color=edge_color,
-                                line_width=line_width,
+                                line_width=3.0 if is_highlighted else 1.5,
                                 category='speakers',
                             )
-                        # Hole das Actor-Objekt aus dem Renderer
-                        actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
-                        new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name, 'actor_obj': actor_obj}
-                        if actor_name not in new_actor_names:
-                            new_actor_names.append(actor_name)
-                        new_cache[key]['signature'] = self._speaker_signature_from_mesh(mesh_to_add, exit_face_index)
+                            # Hole das Actor-Objekt aus dem Renderer
+                            actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
+                            new_cache[key] = {
+                                'mesh': mesh_to_add,
+                                'actor': actor_name,
+                                'actor_obj': actor_obj,  # Speichere Actor-Objekt für direkten Vergleich
+                                'signature': self._speaker_signature_from_mesh(mesh_to_add, None),
+                            }
+                            if actor_name not in new_actor_names:
+                                new_actor_names.append(actor_name)
+                    else:
+                        for geom_idx, (body_mesh, exit_face_index) in enumerate(geometries):
+                            key = (array_id, int(idx), geom_idx)
+                            existing = old_cache.get(key)
+                            if existing:
+                                signature = existing.get('signature')
+                                current_signature = self._speaker_signature_from_mesh(body_mesh, exit_face_index)
+                                if signature == current_signature:
+                                    # Aktualisiere actor_obj falls nötig
+                                    if 'actor_obj' not in existing:
+                                        actor_name = existing.get('actor')
+                                        existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
+                                    new_cache[key] = existing
+                                    if existing['actor'] not in new_actor_names:
+                                        new_actor_names.append(existing['actor'])
+                                    continue
+                                # Signature hat sich geändert - aktualisiere existing
+                                existing_mesh = existing['mesh']
+                                existing_mesh.deep_copy(body_mesh)
+                                self._update_speaker_actor(existing['actor'], existing_mesh, exit_face_index, body_color, exit_color)
+                                existing['signature'] = current_signature
+                                # Aktualisiere actor_obj falls nötig
+                                if 'actor_obj' not in existing:
+                                    actor_name = existing.get('actor')
+                                    existing['actor_obj'] = self.plotter.renderer.actors.get(actor_name) if actor_name else None
+                                new_cache[key] = existing
+                                if existing['actor'] not in new_actor_names:
+                                    new_actor_names.append(existing['actor'])
+                                continue
 
-        for key, info in old_cache.items():
-            if key not in new_cache:
-                self._remove_actor(info['actor'])
+                            # Kein existing - erstelle neues Mesh
+                            mesh_to_add = body_mesh.copy(deep=True)
+                            # Prüfe ob Mesh bereits Scalars hat (merged mesh mit exit_face_index = -1)
+                            has_scalars = 'speaker_face' in mesh_to_add.cell_data
+                            
+                            # Setze Edge-Color basierend auf Highlight-Status
+                            edge_color = 'red' if is_highlighted else 'black'
+                            line_width = 3.0 if is_highlighted else 1.5
+                            
+                            if exit_face_index == -1 or has_scalars:
+                                # Mesh hat bereits Scalars (merged mesh) - nutze diese
+                                actor_name = self._add_overlay_mesh(
+                                    mesh_to_add,
+                                    scalars='speaker_face',
+                                    cmap=[body_color, exit_color],
+                                    opacity=1.0,
+                                    edge_color=edge_color,
+                                    line_width=line_width,
+                                    category='speakers',
+                                )
+                            elif exit_face_index is not None and mesh_to_add.n_cells > 0:
+                                # Einzelnes Mesh - erstelle Scalars für eine Exit-Face
+                                scalars = np.zeros(mesh_to_add.n_cells, dtype=int)
+                                scalars[int(exit_face_index)] = 1
+                                mesh_to_add.cell_data['speaker_face'] = scalars
+                                actor_name = self._add_overlay_mesh(
+                                    mesh_to_add,
+                                    scalars='speaker_face',
+                                    cmap=[body_color, exit_color],
+                                    opacity=1.0,
+                                    edge_color=edge_color,
+                                    line_width=line_width,
+                                    category='speakers',
+                                )
+                            else:
+                                actor_name = self._add_overlay_mesh(
+                                    mesh_to_add,
+                                    color=body_color,
+                                    opacity=1.0,
+                                    edge_color=edge_color,
+                                    line_width=line_width,
+                                    category='speakers',
+                                )
+                            # Hole das Actor-Objekt aus dem Renderer
+                            actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
+                            new_cache[key] = {'mesh': mesh_to_add, 'actor': actor_name, 'actor_obj': actor_obj}
+                            if actor_name not in new_actor_names:
+                                new_actor_names.append(actor_name)
+                            new_cache[key]['signature'] = self._speaker_signature_from_mesh(mesh_to_add, exit_face_index)
 
-        self._speaker_actor_cache = new_cache
-        self._category_actors['speakers'] = new_actor_names
+        with perf_section("PlotSPL3DOverlays.draw_speakers.cleanup", total_speakers=total_speakers):
+            for key, info in old_cache.items():
+                if key not in new_cache:
+                    self._remove_actor(info['actor'])
+
+            self._speaker_actor_cache = new_cache
+            self._category_actors['speakers'] = new_actor_names
         
-        # Aktualisiere Edge-Color für hervorgehobene Lautsprecher
-        self._update_speaker_highlights(settings)
+        with perf_section("PlotSPL3DOverlays.draw_speakers.update_highlights"):
+            # Aktualisiere Edge-Color für hervorgehobene Lautsprecher
+            self._update_speaker_highlights(settings)
         
-        # Render-Update triggern, damit Änderungen sichtbar werden
-        try:
-            self.plotter.render()
-        except Exception:  # noqa: BLE001
-            pass
+        with perf_section("PlotSPL3DOverlays.draw_speakers.render"):
+            # Render-Update triggern, damit Änderungen sichtbar werden
+            try:
+                self.plotter.render()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _get_speaker_info_from_actor(self, actor: Any, actor_name: str) -> Optional[Tuple[str, int]]:
         """Extrahiert Array-ID und Speaker-Index aus einem Speaker-Actor.
@@ -1535,6 +1576,48 @@ class SPL3DOverlayRenderer:
         return lookup
 
 
+    def _create_geometry_param_signature(
+        self, speaker_array, index: int, x: float, y: float, z: float, cabinet_lookup: dict
+    ) -> tuple:
+        """Erstellt eine Signatur für Geometrie-Parameter (Position, Rotation, Cabinet-Daten).
+        Wird verwendet, um zu prüfen, ob build_geometries neu aufgerufen werden muss.
+        """
+        speaker_name = self._get_speaker_name(speaker_array, index)
+        cabinet_raw = cabinet_lookup.get(speaker_name)
+        if cabinet_raw is None and isinstance(speaker_name, str):
+            cabinet_raw = cabinet_lookup.get(speaker_name.lower())
+        
+        # Relevante Parameter für Signatur
+        params = [
+            round(float(x), 4),
+            round(float(y), 4),
+            round(float(z), 4),
+        ]
+        
+        # Rotation-Parameter
+        azimuth = self._array_value(getattr(speaker_array, 'source_azimuth', None), index)
+        params.append(round(float(azimuth), 4) if azimuth is not None else 0.0)
+        
+        angle_val = self._array_value(getattr(speaker_array, 'source_angle', None), index)
+        params.append(round(float(angle_val), 4) if angle_val is not None else 0.0)
+        
+        site_val = self._array_value(getattr(speaker_array, 'source_site', None), index)
+        params.append(round(float(site_val), 4) if site_val is not None else 0.0)
+        
+        # Cabinet-Daten (Hash für schnellen Vergleich)
+        if cabinet_raw is not None:
+            import hashlib
+            if isinstance(cabinet_raw, (list, tuple)):
+                cab_str = str(sorted(str(cab) for cab in cabinet_raw))
+            else:
+                cab_str = str(cabinet_raw)
+            cab_hash = hashlib.md5(cab_str.encode('utf-8')).hexdigest()[:8]
+            params.append(cab_hash)
+        else:
+            params.append(None)
+        
+        return tuple(params)
+    
     def _create_geometry_cache_key(self, speaker_array, index: int, speaker_name: str, configuration: str, cabinet_raw) -> str:
         """Erstellt einen Cache-Key für die Geometrie basierend auf relevanten Parametern."""
         import hashlib

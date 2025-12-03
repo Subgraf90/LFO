@@ -4,6 +4,19 @@
 - Doppelklick ist komplett deaktiviert (Qt-Ebene + VTK-Ebene)
 - Rotation funktioniert ohne Konflikte
 
+## Timing-Logging für 3D-Plot
+
+- Für detaillierte Laufzeit-Messungen im 3D-SPL-Plot gibt es jetzt ein zentrales Flag:
+  - **Umgebungsvariable**: `LFO_DEBUG_PLOT3D_TIMING=1`
+  - Aktiviert Timing-Ausgaben in:
+    - `DrawSPLPlot3D.update_spl_plot()` (SPL → Geometrie → Texturen → vertikale Flächen → Kamera/Render)
+    - `DrawSPLPlot3D.render()` (reines Rendern durch PyVista/VTK)
+- Für das Berechnungs-Grid der Surfaces:
+  - **Umgebungsvariable**: `LFO_DEBUG_TIMING=1`
+  - Aktiviert Timing-Ausgaben in:
+    - `SurfaceGridCalculator.create_calculation_grid()` (Bounding Box, Achsen, Meshgrid, Maske, Z-Interpolation, Meshes/Samples)
+    - `SurfaceGeometryCalculator.prepare_plot_geometry()` / `prepare_vertical_plot_geometry()`
+
 ## Falls Doppelklick wieder aktiviert wird:
 
 ### ✅ SICHERE Implementierung (verhindert Rotation-Konflikte):

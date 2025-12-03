@@ -18,6 +18,7 @@ from PyQt5.QtCore import Qt
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
+from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate\
     .SurfaceGeometryCalculator import (
     SurfaceDefinition,
@@ -31,6 +32,8 @@ from Module_LFO.Modules_Calculate\
     derive_surface_plane,
 )
 
+
+DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
 
 # Steuerung des Anti-Aliasing-Modus für PyVista:
 # Mögliche Werte (abhängig von PyVista/VTK-Version):
@@ -69,7 +72,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
     SURFACE_NAME = "spl_surface"
     FLOOR_NAME = "spl_floor"
-    UPSCALE_FACTOR = 24  # Erhöht die Anzahl der Grafikpunkte für schärferen Plot (mit Interpolation)
+    UPSCALE_FACTOR = 1  # Erhöht die Anzahl der Grafikpunkte für schärferen Plot (mit Interpolation)
 
     def __init__(self, parent_widget, settings, colorbar_ax):
         if QtInteractor is None or pv is None:  # pragma: no cover - Laufzeitprüfung
@@ -2383,6 +2386,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         if self.time_control is not None:
             self.time_control.hide()
 
+    @measure_time("PlotSPL3D.update_spl_plot")
     def update_spl_plot(
         self,
         sound_field_x: Iterable[float],
@@ -2391,6 +2395,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         colorization_mode: str = "Gradient",
         ):
         """Aktualisiert die SPL-Fläche."""
+        t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+
         camera_state = self._camera_state or self._capture_camera()
 
         if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
@@ -2475,6 +2481,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 self.initialize_empty_scene(preserve_camera=True)
                 return
             plot_values = spl_db
+        
+        if DEBUG_PLOT3D_TIMING:
+            t_after_spl = time.perf_counter()
 
         colorbar_params = self._get_colorbar_params(phase_mode)
         cbar_min = colorbar_params['min']
@@ -2527,6 +2536,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Auch vertikale SPL-Flächen entfernen, da keine gültige Geometrie vorliegt
             self._clear_vertical_spl_surfaces()
             return
+
+        if DEBUG_PLOT3D_TIMING:
+            t_after_geom = time.perf_counter()
 
         plot_x = geometry.plot_x
         plot_y = geometry.plot_y
@@ -2618,6 +2630,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             cbar_step,
         )
         
+        if DEBUG_PLOT3D_TIMING:
+            t_after_textures = time.perf_counter()
+        
         # 🎯 WICHTIG: Setze Signatur zurück, damit draw_surfaces nach update_overlays aufgerufen wird
         # (um die graue Fläche zu entfernen, wenn SPL-Daten vorhanden sind)
         if hasattr(self, '_last_overlay_signatures') and 'surfaces' in self._last_overlay_signatures:
@@ -2705,6 +2720,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._last_colorization_mode = colorization_mode_used
         self._update_vertical_spl_surfaces()
 
+        if DEBUG_PLOT3D_TIMING:
+            t_after_vertical = time.perf_counter()
+
         self.has_data = True
         if time_mode and self.surface_mesh is not None:
             # Prüfe ob Upscaling aktiv ist - wenn ja, deaktiviere schnellen Update-Pfad
@@ -2738,6 +2756,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self.render()
         self._save_camera_state()
         self._colorbar_override = None
+
+        if DEBUG_PLOT3D_TIMING:
+            t_end = time.perf_counter()
+            print(
+                "[PlotSPL3D] update_spl_plot timings:\n"
+                f"  SPL transform   : {(t_after_spl - t_start_total) * 1000.0:7.2f} ms\n"
+                f"  geometry+mask   : {(t_after_geom - t_after_spl) * 1000.0:7.2f} ms\n"
+                f"  textures/floor  : {(t_after_textures - t_after_geom) * 1000.0:7.2f} ms\n"
+                f"  vertical surfaces: {(t_after_vertical - t_after_textures) * 1000.0:7.2f} ms\n"
+                f"  camera/render   : {(t_end - t_after_vertical) * 1000.0:7.2f} ms\n"
+                f"  TOTAL           : {(t_end - t_start_total) * 1000.0:7.2f} ms"
+            )
         
     def update_time_frame_values(
         self,
@@ -2759,28 +2789,44 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         t_start = time.perf_counter()
         
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
-        self.container = container
-        t_container = time.perf_counter()
-        
-        # Wenn kein gültiger calculation_spl-Container vorhanden ist, entferne vertikale SPL-Flächen
-        if not hasattr(container, "calculation_spl"):
-            self._clear_vertical_spl_surfaces()
-        t_clear = time.perf_counter()
+        with perf_section("PlotSPL3D.update_overlays.setup"):
+            self.container = container
+            
+            # Wenn kein gültiger calculation_spl-Container vorhanden ist, entferne vertikale SPL-Flächen
+            if not hasattr(container, "calculation_spl"):
+                self._clear_vertical_spl_surfaces()
         
         # Wir vergleichen Hash-Signaturen pro Kategorie und zeichnen nur dort neu,
         # wo sich Parameter geändert haben. Das verhindert unnötiges Entfernen
         # und erneutes Hinzufügen zahlreicher PyVista-Actor.
-        t_sig_start = time.perf_counter()
-        signatures = self._compute_overlay_signatures(settings, container)
-        t_sig_end = time.perf_counter()
-        previous = self._last_overlay_signatures or {}
-        if not previous:
-            categories_to_refresh = set(signatures.keys())
-        else:
-            categories_to_refresh = {
-                key for key, value in signatures.items() if value != previous.get(key)
-            }
-        t_compare = time.perf_counter()
+        with perf_section("PlotSPL3D.update_overlays.compute_signatures"):
+            signatures = self._compute_overlay_signatures(settings, container)
+            previous = self._last_overlay_signatures or {}
+            if not previous:
+                categories_to_refresh = set(signatures.keys())
+            else:
+                categories_to_refresh = {
+                    key for key, value in signatures.items() 
+                    if key != 'speakers_highlights' and value != previous.get(key)
+                }
+        
+        # 🚀 OPTIMIERUNG: Prüfe ob sich nur Highlights geändert haben
+        highlight_changed = False
+        if previous:
+            prev_highlights = previous.get('speakers_highlights')
+            curr_highlights = signatures.get('speakers_highlights')
+            if prev_highlights != curr_highlights:
+                highlight_changed = True
+        
+        # Wenn sich nur Highlights geändert haben und Speaker bereits gezeichnet sind, nur Highlights updaten
+        if highlight_changed and 'speakers' not in categories_to_refresh and self.overlay_helper._speaker_actor_cache:
+            with perf_section("PlotSPL3D.update_overlays.update_speaker_highlights_only"):
+                if hasattr(self.overlay_helper, '_update_speaker_highlights'):
+                    self.overlay_helper._update_speaker_highlights(settings)
+                    self._last_overlay_signatures = signatures
+                    if not self._rotate_active and not self._pan_active:
+                        self._save_camera_state()
+                    return
         
         if not categories_to_refresh:
             self._last_overlay_signatures = signatures
@@ -2789,91 +2835,85 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             return
         
         prev_debug_state = getattr(self.overlay_helper, 'DEBUG_ON_TOP', False)
-        t_draw_start = time.perf_counter()
         try:
             self.overlay_helper.DEBUG_ON_TOP = True
-            t_axis_start = t_speakers_start = t_surfaces_start = t_impulse_start = t_draw_start
-            t_axis_end = t_speakers_end = t_surfaces_end = t_impulse_end = t_draw_start
             
             if 'axis' in categories_to_refresh:
-                t_axis_start = time.perf_counter()
-                self.overlay_helper.draw_axis_lines(settings, selected_axis=self._axis_selected)
-                t_axis_end = time.perf_counter()
+                with perf_section("PlotSPL3D.update_overlays.draw_axis"):
+                    self.overlay_helper.draw_axis_lines(settings, selected_axis=self._axis_selected)
+            
             if 'surfaces' in categories_to_refresh:
-                t_surfaces_start = time.perf_counter()
-                # Prüfe ob SPL-Daten vorhanden sind, um zu entscheiden ob enabled Surfaces gezeichnet werden sollen
-                create_empty_plot_surfaces = False
-                try:
-                    # Prüfe ob SPL-Daten vorhanden sind (gleiche Logik wie in draw_surfaces)
-                    # WICHTIG: Die entscheidende Prüfung ist sound_field_p, nicht nur ob Texture-Actors existieren
-                    has_spl_data = False
-                    
-                    # 🎯 ZUERST: Prüfe container.calculation_spl (entscheidende Prüfung)
-                    # Dies ist die zuverlässigste Methode, um zu prüfen ob echte SPL-Daten vorhanden sind
-                    if container is not None and hasattr(container, 'calculation_spl'):
-                        calc_spl = container.calculation_spl
-                        if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
-                            has_spl_data = True
-                    
-                    # Nur wenn sound_field_p nicht vorhanden ist, prüfe auf Actors
-                    # (Texture-Actors können auch im leeren Plot existieren als leere Texturen)
-                    if not has_spl_data:
-                        if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
-                            spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
-                            spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
-                            # Prüfe nur auf spl_surface und spl_floor, nicht auf Texture-Actors
-                            # (Texture-Actors können leer sein)
-                            if spl_surface_actor is not None or spl_floor_actor is not None:
-                                has_spl_data = True
-                    
-                    # Wenn keine SPL-Daten vorhanden sind, zeichne enabled Surfaces für leeren Plot
-                    if not has_spl_data:
-                        create_empty_plot_surfaces = True
-                except Exception:
-                    import traceback
-                    traceback.print_exc()
-                    # Bei Fehler: konservativ, zeichne keine enabled Surfaces
+                with perf_section("PlotSPL3D.update_overlays.draw_surfaces"):
+                    # Prüfe ob SPL-Daten vorhanden sind, um zu entscheiden ob enabled Surfaces gezeichnet werden sollen
                     create_empty_plot_surfaces = False
-                
-                self.overlay_helper.draw_surfaces(settings, container, create_empty_plot_surfaces=create_empty_plot_surfaces)
-                t_surfaces_end = time.perf_counter()
+                    try:
+                        # Prüfe ob SPL-Daten vorhanden sind (gleiche Logik wie in draw_surfaces)
+                        # WICHTIG: Die entscheidende Prüfung ist sound_field_p, nicht nur ob Texture-Actors existieren
+                        has_spl_data = False
+                        
+                        # 🎯 ZUERST: Prüfe container.calculation_spl (entscheidende Prüfung)
+                        # Dies ist die zuverlässigste Methode, um zu prüfen ob echte SPL-Daten vorhanden sind
+                        if container is not None and hasattr(container, 'calculation_spl'):
+                            calc_spl = container.calculation_spl
+                            if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
+                                has_spl_data = True
+                        
+                        # Nur wenn sound_field_p nicht vorhanden ist, prüfe auf Actors
+                        # (Texture-Actors können auch im leeren Plot existieren als leere Texturen)
+                        if not has_spl_data:
+                            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                                spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
+                                spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
+                                # Prüfe nur auf spl_surface und spl_floor, nicht auf Texture-Actors
+                                # (Texture-Actors können leer sein)
+                                if spl_surface_actor is not None or spl_floor_actor is not None:
+                                    has_spl_data = True
+                        
+                        # Wenn keine SPL-Daten vorhanden sind, zeichne enabled Surfaces für leeren Plot
+                        if not has_spl_data:
+                            create_empty_plot_surfaces = True
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        # Bei Fehler: konservativ, zeichne keine enabled Surfaces
+                        create_empty_plot_surfaces = False
+                    
+                    self.overlay_helper.draw_surfaces(settings, container, create_empty_plot_surfaces=create_empty_plot_surfaces)
+            
             if 'speakers' in categories_to_refresh:
-                t_speakers_start = time.perf_counter()
-                cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
-                t_cabinet_lookup = time.perf_counter()
-                self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
-                t_speakers_end = time.perf_counter()
+                with perf_section("PlotSPL3D.update_overlays.draw_speakers"):
+                    with perf_section("PlotSPL3D.update_overlays.build_cabinet_lookup"):
+                        cabinet_lookup = self.overlay_helper.build_cabinet_lookup(container)
+                    self.overlay_helper.draw_speakers(settings, container, cabinet_lookup)
             else:
                 # Auch wenn sich die Speaker-Definitionen nicht geändert haben,
                 # müssen wir die Highlights aktualisieren, falls sich die Highlight-IDs geändert haben
-                if hasattr(self.overlay_helper, '_update_speaker_highlights'):
-                    self.overlay_helper._update_speaker_highlights(settings)
-                    # Render-Update triggern, damit Änderungen sichtbar werden
-                    try:
-                        self.plotter.render()
-                    except Exception:  # noqa: BLE001
-                        pass
+                with perf_section("PlotSPL3D.update_overlays.update_speaker_highlights"):
+                    if hasattr(self.overlay_helper, '_update_speaker_highlights'):
+                        self.overlay_helper._update_speaker_highlights(settings)
+                        # Render-Update triggern, damit Änderungen sichtbar werden
+                        try:
+                            self.plotter.render()
+                        except Exception:  # noqa: BLE001
+                            pass
+            
             if 'impulse' in categories_to_refresh:
-                t_impulse_start = time.perf_counter()
-                self.overlay_helper.draw_impulse_points(settings)
-                t_impulse_end = time.perf_counter()
+                with perf_section("PlotSPL3D.update_overlays.draw_impulse"):
+                    self.overlay_helper.draw_impulse_points(settings)
         finally:
             self.overlay_helper.DEBUG_ON_TOP = prev_debug_state
-        t_draw_end = time.perf_counter()
         
-        self._last_overlay_signatures = signatures
-        t_signature_save = time.perf_counter()
-        
-        # 🎯 Beim ersten Start: Zoom auf das Default-Surface einstellen (nach dem Zeichnen aller Overlays)
-        t_zoom_start = time.perf_counter()
-        if (not getattr(self, "_did_initial_overlay_zoom", False)) and 'surfaces' in categories_to_refresh:
-            self._zoom_to_default_surface()
-        t_zoom_end = time.perf_counter()
-        
-        # Verzögertes Rendering: Timer starten/stoppen für Batch-Updates
-        self._schedule_render()
-        if not self._rotate_active and not self._pan_active:
-            self._save_camera_state()
+        with perf_section("PlotSPL3D.update_overlays.finalize"):
+            self._last_overlay_signatures = signatures
+            
+            # 🎯 Beim ersten Start: Zoom auf das Default-Surface einstellen (nach dem Zeichnen aller Overlays)
+            if (not getattr(self, "_did_initial_overlay_zoom", False)) and 'surfaces' in categories_to_refresh:
+                self._zoom_to_default_surface()
+            
+            # Verzögertes Rendering: Timer starten/stoppen für Batch-Updates
+            self._schedule_render()
+            if not self._rotate_active and not self._pan_active:
+                self._save_camera_state()
         t_end = time.perf_counter()
         
 
@@ -2882,6 +2922,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         """Erzwingt ein Rendering der Szene."""
         if self._is_rendering:
             return
+        t_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
         self._is_rendering = True
         try:
             try:
@@ -2896,6 +2937,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._save_camera_state()
         finally:
             self._is_rendering = False
+            if DEBUG_PLOT3D_TIMING:
+                t_end = time.perf_counter()
+                print(f"[PlotSPL3D] render() duration: {(t_end - t_start) * 1000.0:7.2f} ms")
 
     def _schedule_render(self):
         """Plant ein verzögertes Rendering (500ms), um mehrere schnelle Updates zu bündeln."""
@@ -3707,15 +3751,20 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         base_cmap = self.PHASE_CMAP if self._phase_mode_active else cm.get_cmap('jet')
         is_step_mode = colorization_mode == 'Color step' and cbar_step > 0
         if is_step_mode:
-            levels = np.arange(cbar_min, cbar_max + cbar_step, cbar_step)
+            # 🎯 IMMER GENAU 10 FARBEN (11 LEVELS) VERWENDEN
+            # Dies stellt sicher, dass auch nach Doppelklick auf Colorbar immer 10 Farben verwendet werden
+            num_colors_fixed = 11  # 11 Levels = 10 Farben
+            num_segments = num_colors_fixed - 1  # Immer 10 Segmente/Farben
+            
+            # Berechne Levels so, dass sie genau num_colors_fixed Levels ergeben
+            # Verteile die Levels gleichmäßig zwischen min und max
+            levels = np.linspace(cbar_min, cbar_max, num_colors_fixed)
+            
+            # Stelle sicher, dass levels nicht leer ist
             if levels.size == 0:
                 levels = np.array([cbar_min, cbar_max])
-            if levels[-1] < cbar_max:
-                levels = np.append(levels, cbar_max)
             if levels.size < 2:
                 levels = np.array([cbar_min, cbar_max])
-
-            num_segments = max(1, len(levels) - 1)
             if hasattr(base_cmap, "resampled"):
                 sampled_cmap = base_cmap.resampled(num_segments)
             else:
@@ -4021,6 +4070,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except Exception:
             return
 
+        # Optionales Feintiming für diesen Pfad
+        t_textures_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+
         # Quelle: Berechnungsraster
         source_x = np.asarray(getattr(geometry, "source_x", []), dtype=float)
         source_y = np.asarray(getattr(geometry, "source_y", []), dtype=float)
@@ -4032,17 +4084,19 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         is_step_mode = colorization_mode == "Color step" and cbar_step > 0
 
         # Auflösung der Textur in Metern (XY)
-        # Standard: 0.02m (2cm pro Pixel) für schärfere Darstellung (vorher: 0.05m)
-        # 🎯 Gradient-Modus: Leicht erhöhte Auflösung für smooth rendering (Performance-Optimiert)
-        base_tex_res = float(getattr(self.settings, "spl_surface_texture_resolution", 0.02) or 0.02)
+        # Standard-Basiswert aus den Settings (z.B. 0.03m)
+        # 🎯 Gradient-Modus: etwas feinere Auflösung als im Color-Step-Modus
+        base_tex_res = float(
+            getattr(self.settings, "spl_surface_texture_resolution", 0.03) or 0.03
+        )
         if is_step_mode:
             # Color step: Normale Auflösung (harte Stufen benötigen keine hohe Auflösung)
-            tex_res = base_tex_res
+            tex_res_global = base_tex_res
         else:
             # Gradient: 2x feinere Auflösung (Performance-Kompromiss)
             # Bilineare Interpolation sorgt bereits für glatte Übergänge
             # (0.01m = 1cm pro Pixel statt 20mm = 2x mehr Pixel)
-            tex_res = base_tex_res * 0.5
+            tex_res_global = base_tex_res * 0.5
 
         # Colormap vorbereiten
         if isinstance(cmap_object, str):
@@ -4084,9 +4138,42 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         if not enabled_surfaces:
             return
+
+        # Versuche, aus der Plot-Geometrie einen effektiven Upscaling-Faktor zu rekonstruieren.
+        # Hintergrund: Für achsparallele Rechtecke können wir die Textur grober machen,
+        #              wenn das Plot-Raster bereits hochskaliert ist.
+        effective_upscale_factor: int = 4
+        try:
+            plot_x = np.asarray(getattr(geometry, "plot_x", []), dtype=float)
+            plot_y = np.asarray(getattr(geometry, "plot_y", []), dtype=float)
+            if plot_x.size > 1 and plot_y.size > 1 and source_x.size > 1 and source_y.size > 1:
+                # Nutze das Verhältnis der Stützstellen als Approximation
+                ratio_x = (float(plot_x.size) - 1.0) / (float(source_x.size) - 1.0)
+                ratio_y = (float(plot_y.size) - 1.0) / (float(source_y.size) - 1.0)
+                approx = max(ratio_x, ratio_y)
+                if approx > 1.2:
+                    # Runde auf ganzzahligen Faktor und begrenze auf sinnvollen Bereich
+                    effective_upscale_factor = int(round(approx))
+                    if effective_upscale_factor < 1:
+                        effective_upscale_factor = 1
+                    if effective_upscale_factor > 8:
+                        effective_upscale_factor = 8
+        except Exception:
+            effective_upscale_factor = 1
+
+        if DEBUG_PLOT3D_TIMING:
+            print(
+                "[PlotSPL3D] _render_surfaces_textured config: "
+                f"base_tex_res={base_tex_res:.4f} m, "
+                f"tex_res_global={tex_res_global:.4f} m, "
+                f"effective_upscale_factor={effective_upscale_factor}"
+            )
+
+        axis_aligned_count = 0
         for surface_id, points, surface_obj in enabled_surfaces:
             try:
-                t_start = time.perf_counter()
+                t_surface_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+                t_geom_done = t_surface_start
                 poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
                 poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
                 poly_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
@@ -4161,14 +4248,14 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         vmin, vmax = float(poly_z.min()), float(poly_z.max())
                     
                     # Erstelle (u,v)-Grid für senkrechte Fläche
-                    margin = tex_res * 0.5
+                    margin = tex_res_global * 0.5
                     u_start = umin - margin
                     u_end = umax + margin
                     v_start = vmin - margin
                     v_end = vmax + margin
                     
-                    num_u = int(np.ceil((u_end - u_start) / tex_res)) + 1
-                    num_v = int(np.ceil((v_end - v_start) / tex_res)) + 1
+                    num_u = int(np.ceil((u_end - u_start) / tex_res_global)) + 1
+                    num_v = int(np.ceil((v_end - v_start) / tex_res_global)) + 1
                     
                     us = np.linspace(u_start, u_end, num_u, dtype=float)
                     vs = np.linspace(v_start, v_end, num_v, dtype=float)
@@ -4186,6 +4273,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     if not np.any(inside_uv):
                         continue
                     
+                    if DEBUG_PLOT3D_TIMING:
+                        t_geom_done = time.perf_counter()
+
                     # 🎯 Hole SPL-Werte aus vertikalen Samples
                     # Verwende prepare_vertical_plot_geometry für SPL-Werte
                     try:
@@ -4241,6 +4331,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     
                     # Nach uint8 wandeln
                     img_rgba_uv = (np.clip(rgba_uv, 0.0, 1.0) * 255).astype(np.uint8)
+
+                    if DEBUG_PLOT3D_TIMING:
+                        t_color_done = time.perf_counter()
                     
                     # 🎯 Erstelle 3D-Grid für senkrechte Fläche
                     if orientation == "xz":
@@ -4397,25 +4490,99 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                         'actor': actor,
                         'surface_id': surface_id,
                     }
-                    
+
+                    if DEBUG_PLOT3D_TIMING:
+                        t_surface_end = time.perf_counter()
+                        print(
+                            f"[PlotSPL3D] surface {surface_id} (vertical): "
+                            f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
+                            f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
+                            f"actor={(t_surface_end - t_color_done) * 1000.0:7.2f} ms"
+                        )
+
                     continue  # Überspringe normalen planaren Pfad
                 
                 # 🎯 NORMALER PFAD FÜR PLANARE FLÄCHEN (horizontal oder geneigt)
+                # Für jede Surface kann die Textur-Auflösung separat gewählt werden.
+                # Basis ist der globale tex_res_global; für achsparallele Rechtecke
+                # kann die Auflösung gröber gewählt werden (Performance-Optimierung).
+
+                tex_res_surface = tex_res_global
+
+                # Heuristik: Erkenne axis-aligned Rechtecke in der XY-Projektion.
+                # Auch Polygone mit zusätzlichen Stützpunkten entlang der Kanten (mehr als 4 Punkte)
+                # werden als Rechteck erkannt, solange alle Punkte auf dem Rand des
+                # achsparallelen Bounding-Rects liegen.
+                is_axis_aligned_rectangle = False
+                try:
+                    if poly_x.size >= 4 and poly_y.size >= 4:
+                        # Entferne ggf. den letzten Punkt, falls identisch mit dem ersten (geschlossene Polylinie)
+                        px = poly_x
+                        py = poly_y
+                        if (
+                            poly_x.size >= 2
+                            and abs(poly_x[0] - poly_x[-1]) < 1e-6
+                            and abs(poly_y[0] - poly_y[-1]) < 1e-6
+                        ):
+                            px = poly_x[:-1]
+                            py = poly_y[:-1]
+                        if px.size >= 4:
+                            # Bounding-Box des Polygons
+                            xmin_rect = float(px.min())
+                            xmax_rect = float(px.max())
+                            ymin_rect = float(py.min())
+                            ymax_rect = float(py.max())
+                            span_x = xmax_rect - xmin_rect
+                            span_y = ymax_rect - ymin_rect
+                            tol = 1e-3
+
+                            if span_x > tol and span_y > tol:
+                                # Jeder Punkt muss auf einer der vier Rechteckkanten liegen
+                                on_left = np.isclose(px, xmin_rect, atol=tol)
+                                on_right = np.isclose(px, xmax_rect, atol=tol)
+                                on_bottom = np.isclose(py, ymin_rect, atol=tol)
+                                on_top = np.isclose(py, ymax_rect, atol=tol)
+
+                                on_edge = on_left | on_right | on_bottom | on_top
+                                if np.all(on_edge):
+                                    # Stelle sicher, dass jede Kante mindestens einen Punkt hat
+                                    has_left = bool(np.any(on_left))
+                                    has_right = bool(np.any(on_right))
+                                    has_bottom = bool(np.any(on_bottom))
+                                    has_top = bool(np.any(on_top))
+
+                                    # und dass die vier Ecken existieren (innerhalb Toleranz)
+                                    has_tl = bool(np.any(on_left & on_top))
+                                    has_tr = bool(np.any(on_right & on_top))
+                                    has_bl = bool(np.any(on_left & on_bottom))
+                                    has_br = bool(np.any(on_right & on_bottom))
+
+                                    if has_left and has_right and has_bottom and has_top and has_tl and has_tr and has_bl and has_br:
+                                        is_axis_aligned_rectangle = True
+                except Exception:
+                    is_axis_aligned_rectangle = False
+
+                if is_axis_aligned_rectangle and effective_upscale_factor > 1:
+                    axis_aligned_count += 1
+                    # Für "ideale" Rechtecke kann die Textur grober sein, da keine schrägen Kanten
+                    # in XY auftreten. Nutze den rekonstruierten Upscaling-Faktor als Multiplikator.
+                    tex_res_surface = tex_res_global * float(effective_upscale_factor)
+
                 # 🎯 FIX: Reduzierter Margin für schärfere Kanten
                 # Reduziere Margin von 2.0 auf 0.5 für weniger Punkte außerhalb des Polygons
                 # Dies reduziert die "Zacken" am Rand, da weniger Zellen außerhalb gerendert werden
-                margin = tex_res * 0.5  # Nur halber Pixel-Abstand als Margin (vorher: 2.0)
-                
+                margin = tex_res_surface * 0.5  # Nur halber Pixel-Abstand als Margin (vorher: 2.0)
+
                 # Erstelle Grid mit reduziertem Margin (für minimale Interpolation an Rändern)
                 x_start = xmin - margin
                 x_end = xmax + margin
                 y_start = ymin - margin
                 y_end = ymax + margin
-                
+
                 # Berechne Anzahl Punkte (inklusive Endpunkte)
-                num_x = int(np.ceil((x_end - x_start) / tex_res)) + 1
-                num_y = int(np.ceil((y_end - y_start) / tex_res)) + 1
-                
+                num_x = int(np.ceil((x_end - x_start) / tex_res_surface)) + 1
+                num_y = int(np.ceil((y_end - y_start) / tex_res_surface)) + 1
+
                 # Erstelle Grid mit reduziertem Margin
                 xs = np.linspace(x_start, x_end, num_x, dtype=float)
                 ys = np.linspace(y_start, y_end, num_y, dtype=float)
@@ -4435,6 +4602,39 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
                 if not np.any(inside):
                     continue
+
+                # 🎯 Randoptimierung: Nur Randpunkte der Maske entlang der Surface-Kante "einrasten"
+                ny_tex, nx_tex = inside.shape
+                edge_mask = np.zeros_like(inside, dtype=bool)
+                # Finde alle Punkte, die mindestens einen Nachbarn außerhalb haben
+                for jj in range(ny_tex):
+                    for ii in range(nx_tex):
+                        if not inside[jj, ii]:
+                            continue
+                        for dj in (-1, 0, 1):
+                            for di in (-1, 0, 1):
+                                if dj == 0 and di == 0:
+                                    continue
+                                nj = jj + dj
+                                ni = ii + di
+                                if nj < 0 or nj >= ny_tex or ni < 0 or ni >= nx_tex or not inside[nj, ni]:
+                                    edge_mask[jj, ii] = True
+                                    break
+                            if edge_mask[jj, ii]:
+                                break
+
+                if np.any(edge_mask):
+                    # Pro Randpunkt: auf nächstgelegenen Punkt der Surface-Polylinie projizieren
+                    edge_indices = np.argwhere(edge_mask)
+                    for (jj, ii) in edge_indices:
+                        x_old = float(X[jj, ii])
+                        y_old = float(Y[jj, ii])
+                        x_new, y_new = self._project_point_to_polyline(x_old, y_old, poly_x, poly_y)
+                        X[jj, ii] = x_new
+                        Y[jj, ii] = y_new
+
+                if DEBUG_PLOT3D_TIMING:
+                    t_geom_done = time.perf_counter()
 
                 # 🎯 Gradient: Bilineare Interpolation für glatte Farbübergänge
                 # Color step: Nearest-Neighbor für harte Stufen
@@ -4464,6 +4664,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
                 # In Farbe umsetzen
                 rgba = base_cmap(norm(spl_clipped))  # float [0,1], shape (H,W,4)
+
+                if DEBUG_PLOT3D_TIMING:
+                    t_color_done = time.perf_counter()
 
                 # 🎯 Verbesserte Alpha-Maske: Schärfere Kanten durch strikte Polygon-Prüfung
                 # Nur Pixel, die definitiv im Polygon liegen, sind sichtbar
@@ -4689,7 +4892,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     'world_coords_y': ys.copy(),  # 1D-Array der Y-Koordinaten in Metern
                     'world_coords_grid_x': X.copy(),  # 2D-Meshgrid der X-Koordinaten
                     'world_coords_grid_y': Y.copy(),  # 2D-Meshgrid der Y-Koordinaten
-                    'texture_resolution': tex_res,  # Auflösung der Textur in Metern
+                    'texture_resolution': tex_res_surface,  # Auflösung der Textur in Metern
                     'texture_size': (ys.size, xs.size),  # (H, W) in Pixeln
                     'image_shape': img_rgba.shape,  # (H, W, 4)
                     'polygon_bounds': {
@@ -4701,6 +4904,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     'polygon_points': points,  # Original Polygon-Punkte
                     't_coords': t_coords.copy() if t_coords is not None else None,  # Textur-Koordinaten
                     'surface_id': surface_id,
+                    'is_axis_aligned_rectangle': is_axis_aligned_rectangle,
+                    'tex_res_surface': tex_res_surface,
+                    'effective_upscale_factor': effective_upscale_factor,
                 }
                 
                 self._surface_texture_actors[surface_id] = metadata
@@ -4713,14 +4919,84 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                     'actor': actor,
                     'surface_id': surface_id,
                 }
+
+                if DEBUG_PLOT3D_TIMING:
+                    t_surface_end = time.perf_counter()
+                    ny_tex, nx_tex = inside.shape
+                    num_inside = int(np.count_nonzero(inside))
+                    print(
+                        f"[PlotSPL3D] surface {surface_id} (planar): "
+                        f"axis_aligned_rect={is_axis_aligned_rectangle}, "
+                        f"tex_res_surface={tex_res_surface:.4f} m, "
+                        f"upscale_factor={effective_upscale_factor}, "
+                        f"grid={nx_tex}x{ny_tex}, inside={num_inside} "
+                        f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
+                        f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
+                        f"actor={(t_surface_end - t_color_done) * 1000.0:7.2f} ms"
+                    )
             except Exception:
                 continue
+
+        if DEBUG_PLOT3D_TIMING:
+            t_textures_end = time.perf_counter()
+            print(
+                f"[PlotSPL3D] _render_surfaces_textured TOTAL: "
+                f"{(t_textures_end - t_textures_start) * 1000.0:7.2f} ms, "
+                f"axis_aligned_surfaces={axis_aligned_count}"
+            )
 
     def _remove_actor(self, name: str):
         try:
             self.plotter.remove_actor(name)
         except KeyError:
             pass
+
+    @staticmethod
+    def _project_point_to_polyline(x: float, y: float, poly_x: np.ndarray, poly_y: np.ndarray) -> tuple[float, float]:
+        """
+        Projiziert einen Punkt (x, y) auf die nächstgelegene Kante der Polylinie.
+        Wird genutzt, um Rand-Texturpunkte näher an die Surface-Kante zu ziehen.
+        """
+        if poly_x.size < 2 or poly_y.size < 2:
+            return float(x), float(y)
+
+        px = float(x)
+        py = float(y)
+        best_x = px
+        best_y = py
+        best_d2 = float("inf")
+
+        n = poly_x.size
+        for i in range(n):
+            x1 = float(poly_x[i])
+            y1 = float(poly_y[i])
+            j = (i + 1) % n
+            x2 = float(poly_x[j])
+            y2 = float(poly_y[j])
+            vx = x2 - x1
+            vy = y2 - y1
+            seg_len2 = vx * vx + vy * vy
+            if seg_len2 < 1e-12:
+                continue
+            t = ((px - x1) * vx + (py - y1) * vy) / seg_len2
+            if t <= 0.0:
+                proj_x = x1
+                proj_y = y1
+            elif t >= 1.0:
+                proj_x = x2
+                proj_y = y2
+            else:
+                proj_x = x1 + t * vx
+                proj_y = y1 + t * vy
+            dx = proj_x - px
+            dy = proj_y - py
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_x = proj_x
+                best_y = proj_y
+
+        return float(best_x), float(best_y)
 
     def get_texture_metadata(self, surface_id: str) -> Optional[dict[str, Any]]:
         """
@@ -5006,12 +5282,24 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 )
         speakers_signature_tuple = tuple(speakers_signature)
         
-        # Füge Highlight-IDs zur Signatur hinzu, damit Meshes neu erstellt werden, wenn Highlights sich ändern
+        # 🚀 OPTIMIERUNG: Highlight-IDs NICHT zur Signatur hinzufügen
+        # Wenn sich nur Highlights ändern, sollen nicht alle Speaker neu gezeichnet werden
+        # Stattdessen wird nur _update_speaker_highlights() aufgerufen
+        # highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
+        # highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
+        # highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
+        
+        # if isinstance(highlight_indices, (list, tuple, set)):
+        #     highlight_indices_tuple = tuple(sorted((str(aid), int(idx)) for aid, idx in highlight_indices))
+        # else:
+        #     highlight_indices_tuple = tuple()
+        
+        # 🚀 OPTIMIERUNG: Highlights nicht in Speaker-Signatur, damit sich Signatur nicht ändert bei nur Highlight-Änderungen
+        # Separate Highlight-Signatur für schnelles Highlight-Update ohne Neuzeichnen
         highlight_array_id = getattr(settings, 'active_speaker_array_highlight_id', None)
         highlight_array_ids = getattr(settings, 'active_speaker_array_highlight_ids', [])
         highlight_indices = getattr(settings, 'active_speaker_highlight_indices', [])
         
-        # Konvertiere zu Liste von Strings
         if highlight_array_ids:
             highlight_array_ids_list = [str(aid) for aid in highlight_array_ids]
         elif highlight_array_id:
@@ -5024,9 +5312,10 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         else:
             highlight_indices_tuple = tuple()
         
-        # Sortiere Array-IDs für konsistente Signatur
         highlight_array_ids_tuple = tuple(sorted(highlight_array_ids_list))
-        speakers_signature_with_highlights = (speakers_signature_tuple, highlight_array_ids_tuple, highlight_indices_tuple)
+        highlight_signature = (highlight_array_ids_tuple, highlight_indices_tuple)
+        
+        speakers_signature_with_highlights = speakers_signature_tuple
 
         impulse_points = getattr(settings, 'impulse_points', []) or []
         impulse_signature: List[tuple] = []
@@ -5127,7 +5416,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         
         result = {
             'axis': axis_signature,
-            'speakers': speakers_signature_with_highlights,  # Enthält Highlight-IDs für rote Umrandung
+            'speakers': speakers_signature_with_highlights,  # 🚀 OPTIMIERT: Enthält KEINE Highlight-IDs mehr
+            'speakers_highlights': highlight_signature,  # 🚀 NEU: Separate Highlight-Signatur für schnelles Update
             'impulse': impulse_signature_tuple,
             'surfaces': surfaces_signature_with_active,  # Enthält active_surface_id, highlight_ids und has_spl_data
         }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
+from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     _points_in_polygon_batch_uv,
@@ -30,12 +31,14 @@ class SoundFieldCalculator(ModuleBase):
         # 🎯 GRID-CALCULATOR: Separate Instanz für Grid-Erstellung
         self._grid_calculator = SurfaceGridCalculator(settings)
    
+    @measure_time("SoundFieldCalculator.calculate_soundfield_pressure")
     def calculate_soundfield_pressure(self):
-        (
-            self.calculation_spl["sound_field_p"],
-            self.calculation_spl["sound_field_x"],
-            self.calculation_spl["sound_field_y"],
-        ) = self.calculate_sound_field()
+        with perf_section("SoundFieldCalculator.calculate_sound_field"):
+            (
+                self.calculation_spl["sound_field_p"],
+                self.calculation_spl["sound_field_x"],
+                self.calculation_spl["sound_field_y"],
+            ) = self.calculate_sound_field()
         # Phase-Daten sind nach jeder SPL-Neuberechnung veraltet
         if isinstance(self.calculation_spl, dict):
             self.calculation_spl.pop("sound_field_phase", None)

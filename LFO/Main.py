@@ -14,7 +14,12 @@ from PyQt5.QtCore import Qt
 import matplotlib as mpl
 mpl.set_loglevel('WARNING')  # Reduziert matplotlib Debug-Ausgaben
 
-from Module_LFO.Modules_Init.Logging import configure_logging, CrashReporter
+from Module_LFO.Modules_Init.Logging import (
+    configure_logging,
+    CrashReporter,
+    perf_section,
+    measure_time,
+)
 from Module_LFO.Modules_Init.Progress import ProgressManager, ProgressCancelled
 
 from Module_LFO.Modules_Ui.UiSourceManagement import Sources
@@ -56,6 +61,9 @@ from Module_LFO.Modules_Window.WindowSnapshotWidget import SnapshotWidget
 
 "Funktionalität"
 "Image Source noch nicht fertig"
+
+
+logger = logging.getLogger("lfo.main")
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -150,6 +158,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---- PLOT METHODEN ----
 
+    @measure_time("Main.plot_spl")
     def plot_spl(self, update_axes: bool = True, reset_camera: bool = False):
         """Zeichnet den SPL-Plot (Sound Pressure Level)."""
         if not self.container.calculation_spl.get("show_in_plot", True):
@@ -165,21 +174,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 speaker_array_id = array_ids[0]
                 self._last_selected_speaker_array_id = speaker_array_id
             else:
-                self.draw_plots.show_empclearty_spl()
+                # Keine Speaker-Arrays vorhanden → alle Plots leer zeichnen
+                self.draw_plots.show_empty_spl()
                 if update_axes:
                     self.draw_plots.show_empty_axes()
                     self.draw_plots.show_empty_polar()
                 return
         self.draw_plots.plot_spl(self.settings, speaker_array_id, update_axes=update_axes, reset_camera=reset_camera)
 
+    @measure_time("Main.plot_xaxis")
     def plot_xaxis(self):
         """Zeichnet den X-Achsen-Plot."""
         self.draw_plots.plot_xaxis()
 
+    @measure_time("Main.plot_yaxis")
     def plot_yaxis(self):
         """Zeichnet den Y-Achsen-Plot."""
         self.draw_plots.plot_yaxis()
 
+    @measure_time("Main.plot_polar_pattern")
     def plot_polar_pattern(self):
         """Zeichnet das Polar-Pattern."""
         polar_data = self.container.get_polar_data()
@@ -188,6 +201,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.draw_plots.plot_polar_pattern()
 
+    @measure_time("Main.plot_beamsteering")
     def plot_beamsteering(self, speaker_array_id: int):
         """
         Zeichnet den Beamsteering-Plot für ein Speaker-Array.
@@ -198,6 +212,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, 'sources_instance'):
             self.sources_instance.update_beamsteering_plot(speaker_array_id)
 
+    @measure_time("Main.plot_windowing")
     def plot_windowing(self, speaker_array_id: int):
         """
         Zeichnet den Windowing-Plot für ein Speaker-Array.
@@ -436,166 +451,184 @@ class MainWindow(QtWidgets.QMainWindow):
         if update_plot:
             self.plot_windowing(speaker_array_id)
 
+    @measure_time("Main.update_speaker_array_calculations")
     def update_speaker_array_calculations(self, skip_fem_recalc: bool = False):
         """
         Aktualisiert die Berechnungen für das ausgewählte Lautsprecherarray.
         """
-        if not hasattr(self, 'sources_instance'):
-            return
+        start_time = time.perf_counter()
+        context_info: dict[str, object] = {}
+        try:
+            if not hasattr(self, 'sources_instance'):
+                return
 
-        speaker_array_id = self.get_selected_speaker_array_id()
-        speakerspecs_instance = self.sources_instance.get_speakerspecs_instance(speaker_array_id)
-        
-        if speakerspecs_instance:
-            speaker_array = self.settings.get_speaker_array(speaker_array_id)
-            if speaker_array:
-                snapshot_engine = getattr(self, "snapshot_engine", None)
-                if snapshot_engine:
-                    # Backups im Snapshot-Widget verwerfen
-                    snapshot_engine._current_spl_backup = None
-                    snapshot_engine._current_polar_backup = None
-                    snapshot_engine._current_axes_backup = None
-                    snapshot_engine._current_impulse_backup = None
+            speaker_array_id = self.get_selected_speaker_array_id()
+            context_info["speaker_array_id"] = speaker_array_id
+            speakerspecs_instance = self.sources_instance.get_speakerspecs_instance(speaker_array_id)
 
-                    # Container-Daten für aktuelle Simulation zurücksetzen
-                    if hasattr(self.container, "calculation_axes"):
-                        self.container.calculation_axes["aktuelle_simulation"] = {"show_in_plot": True}
+            if speakerspecs_instance:
+                speaker_array = self.settings.get_speaker_array(speaker_array_id)
+                if speaker_array:
+                    snapshot_engine = getattr(self, "snapshot_engine", None)
+                    if snapshot_engine:
+                        # Backups im Snapshot-Widget verwerfen
+                        snapshot_engine._current_spl_backup = None
+                        snapshot_engine._current_polar_backup = None
+                        snapshot_engine._current_axes_backup = None
+                        snapshot_engine._current_impulse_backup = None
 
-                    if hasattr(self.container, "calculation_impulse"):
-                        self.container.calculation_impulse["aktuelle_simulation"] = {}
+                        # Container-Daten für aktuelle Simulation zurücksetzen
+                        if hasattr(self.container, "calculation_axes"):
+                            self.container.calculation_axes["aktuelle_simulation"] = {"show_in_plot": True}
 
-                    if hasattr(self.container, "calculation_spl"):
-                        try:
-                            self.container.calculation_spl.clear()
-                        except AttributeError:
-                            self.container.calculation_spl = {}
+                        if hasattr(self.container, "calculation_impulse"):
+                            self.container.calculation_impulse["aktuelle_simulation"] = {}
 
-                    if hasattr(self.container, "calculation_polar"):
-                        try:
-                            self.container.calculation_polar.clear()
-                        except AttributeError:
-                            self.container.calculation_polar = {}
+                        if hasattr(self.container, "calculation_spl"):
+                            try:
+                                self.container.calculation_spl.clear()
+                            except AttributeError:
+                                self.container.calculation_spl = {}
 
-                    snapshot_engine.selected_snapshot_key = "aktuelle_simulation"
-                    # Prüfe ob snapshot_tree_widget existiert und noch gültig ist
-                    if hasattr(snapshot_engine, '_is_widget_valid') and snapshot_engine._is_widget_valid():
-                        try:
-                            blocker = QtCore.QSignalBlocker(snapshot_engine.snapshot_tree_widget)
+                        if hasattr(self.container, "calculation_polar"):
+                            try:
+                                self.container.calculation_polar.clear()
+                            except AttributeError:
+                                self.container.calculation_polar = {}
+
+                        snapshot_engine.selected_snapshot_key = "aktuelle_simulation"
+                        # Prüfe ob snapshot_tree_widget existiert und noch gültig ist
+                        if hasattr(snapshot_engine, '_is_widget_valid') and snapshot_engine._is_widget_valid():
+                            try:
+                                blocker = QtCore.QSignalBlocker(snapshot_engine.snapshot_tree_widget)
+                                snapshot_engine.update_snapshot_widgets()
+                                del blocker
+                            except RuntimeError:
+                                # Widget wurde während der Verwendung gelöscht
+                                print("[Main] snapshot_tree_widget wurde während Update gelöscht")
+                        elif snapshot_engine.snapshot_tree_widget:
+                            # Widget existiert, aber ist nicht mehr gültig - update_snapshot_widgets() wird es selbst prüfen
                             snapshot_engine.update_snapshot_widgets()
-                            del blocker
-                        except RuntimeError:
-                            # Widget wurde während der Verwendung gelöscht
-                            print("[Main] snapshot_tree_widget wurde während Update gelöscht")
-                    elif snapshot_engine.snapshot_tree_widget:
-                        # Widget existiert, aber ist nicht mehr gültig - update_snapshot_widgets() wird es selbst prüfen
-                        snapshot_engine.update_snapshot_widgets()
-                skip_fem_recalc = skip_fem_recalc or self._skip_fem_recalc_once
-                self._skip_fem_recalc_once = False
-                if self._fem_frequency_dirty:
-                    skip_fem_recalc = False
+                    skip_fem_recalc = skip_fem_recalc or self._skip_fem_recalc_once
+                    self._skip_fem_recalc_once = False
+                    if self._fem_frequency_dirty:
+                        skip_fem_recalc = False
 
-                update_soundfield = getattr(self.settings, "update_pressure_soundfield", True)
-                update_axisplot = getattr(self.settings, "update_pressure_axisplot", True)
-                update_polarplot = getattr(self.settings, "update_pressure_polarplot", True)
-                update_impulse = getattr(self.settings, "update_pressure_impulse", True)
+                    update_soundfield = getattr(self.settings, "update_pressure_soundfield", True)
+                    update_axisplot = getattr(self.settings, "update_pressure_axisplot", True)
+                    update_polarplot = getattr(self.settings, "update_pressure_polarplot", True)
+                    update_impulse = getattr(self.settings, "update_pressure_impulse", True)
 
-                is_fem_mode = bool(getattr(self.settings, "spl_plot_fem", False))
-                skipped_fem_run = False
-                if skip_fem_recalc and is_fem_mode:
-                    update_soundfield = False
-                    skipped_fem_run = True
+                    is_fem_mode = bool(getattr(self.settings, "spl_plot_fem", False))
+                    skipped_fem_run = False
+                    if skip_fem_recalc and is_fem_mode:
+                        update_soundfield = False
+                        skipped_fem_run = True
 
-                def _clear_axes():
-                    self._set_axes_show_flag(False)
-                    self.draw_plots.show_empty_axes()
+                    def _clear_axes():
+                        self._set_axes_show_flag(False)
+                        self.draw_plots.show_empty_axes()
 
-                def _clear_polar():
-                    self._set_polar_show_flag(False)
-                    self.draw_plots.show_empty_polar()
+                    def _clear_polar():
+                        self._set_polar_show_flag(False)
+                        self.draw_plots.show_empty_polar()
 
-                def _clear_spl():
-                    self._set_spl_show_flag(False)
-                    self.draw_plots.show_empty_spl()
+                    def _clear_spl():
+                        self._set_spl_show_flag(False)
+                        self.draw_plots.show_empty_spl()
 
-                run_spl = not getattr(self.settings, "spl_plot_fem", False)
-                run_xaxis = not getattr(self.settings, "xaxis_plot_fem", False)
-                run_yaxis = not getattr(self.settings, "yaxis_plot_fem", False)
+                    run_spl = not getattr(self.settings, "spl_plot_fem", False)
+                    run_xaxis = not getattr(self.settings, "xaxis_plot_fem", False)
+                    run_yaxis = not getattr(self.settings, "yaxis_plot_fem", False)
 
-                # Plots werden aktualisiert, wenn SPL, Polar oder Impulse berechnet werden
-                should_update_plots = update_soundfield or update_polarplot or update_impulse
-                
-                tasks = [
-                    ("Updating speaker positions", lambda: self.speaker_position_calculator(speaker_array)),
-                    ("Calculating beam steering", lambda up=should_update_plots: self.beamsteering_calculator(speaker_array, speaker_array_id, update_plot=up)),
-                    ("Calculating windowing", lambda up=should_update_plots: self.windowing_calculator(speaker_array_id, update_plot=up)),
-                ]
+                    # Plots werden aktualisiert, wenn SPL, Polar oder Impulse berechnet werden
+                    should_update_plots = update_soundfield or update_polarplot or update_impulse
 
-                if update_axisplot:
-                    tasks.append(("Calculating axes", lambda: self.calculate_axes(update_plot=True)))
-                else:
-                    tasks.append(("Clearing axis plots", _clear_axes))
+                    tasks = [
+                        ("Updating speaker positions", lambda: self.speaker_position_calculator(speaker_array)),
+                        ("Calculating beam steering", lambda up=should_update_plots: self.beamsteering_calculator(speaker_array, speaker_array_id, update_plot=up)),
+                        ("Calculating windowing", lambda up=should_update_plots: self.windowing_calculator(speaker_array_id, update_plot=up)),
+                    ]
 
-                if update_polarplot:
-                    tasks.append(("Calculating polar pattern", lambda: self.calculate_polar(update_plot=True)))
-                else:
-                    tasks.append(("Clearing polar plot", _clear_polar))
-
-                fem_calculated = False
-
-                # Automatische Berechnung: Prüfe Plot-Modus
-                plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
-                
-                if update_soundfield:
-                    # Automatische Berechnung basierend auf aktivem Plot-Modus
-                    if plot_mode == "SPL plot" and is_fem_mode:
-                        # "SPL plot" + FEM: Nur FEM-Analyse
-                        tasks.append(("Calculating FEM", lambda: self.calculate_spl(
-                            show_progress=True,
-                            update_plot=True,
-                            update_axisplots=False,
-                            update_polarplots=False,
-                        )))
-                        fem_calculated = True
-                    elif plot_mode == "SPL over time":
-                        # "SPL over time": Nur FDTD-Analyse (unabhängig von FEM-Modus)
-                        tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
-                            show_progress=True,
-                            update_plot=True,
-                        )))
+                    if update_axisplot:
+                        tasks.append(("Calculating axes", lambda: self.calculate_axes(update_plot=True)))
                     else:
-                        # Normale SPL-Berechnung (ohne FEM)
-                        tasks.append(("Calculating SPL", lambda: self.calculate_spl(
-                            show_progress=True,
-                            update_plot=True,
-                            update_axisplots=False,
-                            update_polarplots=False,
-                        )))
-                elif skipped_fem_run:
-                    pass
-                else:
-                    tasks.append(("Clearing SPL plot", _clear_spl))
+                        tasks.append(("Clearing axis plots", _clear_axes))
 
-                if hasattr(self, 'impulse_manager'):
-                    if update_impulse and getattr(self.settings, "impulse_points", []):
-                        tasks.append(("Calculating impulse", lambda: self.calculate_impulse(force=True, update_plot=True)))
-                    elif not update_impulse:
-                        tasks.append(("Clearing impulse plot", self.impulse_manager.show_empty_plot))
+                    if update_polarplot:
+                        tasks.append(("Calculating polar pattern", lambda: self.calculate_polar(update_plot=True)))
+                    else:
+                        tasks.append(("Clearing polar plot", _clear_polar))
 
-                try:
-                    self.run_tasks_with_progress("Updating array calculations", tasks)
-                except ProgressCancelled:
-                    return
+                    fem_calculated = False
 
-                if not update_axisplot:
-                    self.draw_plots.show_empty_axes()
-                if not update_polarplot:
-                    self.draw_plots.show_empty_polar()
-                if not update_soundfield and not skipped_fem_run:
-                    self.draw_plots.show_empty_spl()
+                    # Automatische Berechnung: Prüfe Plot-Modus
+                    plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
 
-                if fem_calculated:
-                    self._fem_frequency_dirty = False
+                    if update_soundfield:
+                        # Automatische Berechnung basierend auf aktivem Plot-Modus
+                        if plot_mode == "SPL plot" and is_fem_mode:
+                            # "SPL plot" + FEM: Nur FEM-Analyse
+                            tasks.append(("Calculating FEM", lambda: self.calculate_spl(
+                                show_progress=True,
+                                update_plot=True,
+                                update_axisplots=False,
+                                update_polarplots=False,
+                            )))
+                            fem_calculated = True
+                        elif plot_mode == "SPL over time":
+                            # "SPL over time": Nur FDTD-Analyse (unabhängig von FEM-Modus)
+                            tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
+                                show_progress=True,
+                                update_plot=True,
+                            )))
+                        else:
+                            # Normale SPL-Berechnung (ohne FEM)
+                            tasks.append(("Calculating SPL", lambda: self.calculate_spl(
+                                show_progress=True,
+                                update_plot=True,
+                                update_axisplots=False,
+                                update_polarplots=False,
+                            )))
+                    elif skipped_fem_run:
+                        pass
+                    else:
+                        tasks.append(("Clearing SPL plot", _clear_spl))
 
+                    if hasattr(self, 'impulse_manager'):
+                        if update_impulse and getattr(self.settings, "impulse_points", []):
+                            tasks.append(("Calculating impulse", lambda: self.calculate_impulse(force=True, update_plot=True)))
+                        elif not update_impulse:
+                            tasks.append(("Clearing impulse plot", self.impulse_manager.show_empty_plot))
+
+                    try:
+                        self.run_tasks_with_progress("Updating array calculations", tasks)
+                    except ProgressCancelled:
+                        return
+
+                    if not update_axisplot:
+                        self.draw_plots.show_empty_axes()
+                    if not update_polarplot:
+                        self.draw_plots.show_empty_polar()
+                    if not update_soundfield and not skipped_fem_run:
+                        self.draw_plots.show_empty_spl()
+
+                    if fem_calculated:
+                        self._fem_frequency_dirty = False
+        finally:
+            duration = time.perf_counter() - start_time
+            # Kurzes Logging für UI-Performance-Analyse (z.B. Klick im Sources-Widget)
+            try:
+                logger.info(
+                    "[Timing] update_speaker_array_calculations completed in %.3fs (context=%s)",
+                    duration,
+                    context_info,
+                )
+            except Exception:
+                # Logging darf niemals die Hauptlogik stören
+                pass
+
+    @measure_time("Main.calculate_spl")
     def calculate_spl(self, show_progress: bool = True, update_plot: bool = True, update_axisplots: bool = True, update_polarplots: bool = True):
         """
         Führt die SPL-Berechnung durch und aktualisiert optional den Plot.
@@ -790,6 +823,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if update_plot:
             self.plot_spl(update_axes=False)
 
+    @measure_time("Main.calculate_axes")
     def calculate_axes(self, include_x: bool = True, include_y: bool = True, update_plot: bool = True):
         """
         Berechnet die X- und Y-Achsen und aktualisiert optional die Plots.
@@ -833,6 +867,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if include_y:
                 self.plot_yaxis()
         
+    @measure_time("Main.calculate_polar")
     def calculate_polar(self, update_plot: bool = True):
         """
         Berechnet die Polardaten und aktualisiert optional den Plot.
@@ -848,6 +883,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if update_plot:
             self.plot_polar_pattern()
 
+    @measure_time("Main.calculate_impulse")
     def calculate_impulse(self, force: bool = False, update_plot: bool = True):
         """
         Berechnet Impulse-Response und aktualisiert optional den Plot.

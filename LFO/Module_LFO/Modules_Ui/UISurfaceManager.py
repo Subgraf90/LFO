@@ -274,7 +274,7 @@ class UISurfaceManager(ModuleBase):
             # Setze die SizePolicy
             self.surface_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             self.surface_tree_widget.setMinimumHeight(235)
-            self.surface_tree_widget.setFixedWidth(280)  # Breiter gemacht, damit alle Spalten sichtbar sind
+            self.surface_tree_widget.setFixedWidth(300)  # Gleiche Breite wie Sources UI für Konsistenz
             
             # Verbinde Signale mit Slots
             # Eigener Handler, der sowohl die UI-Tabs als auch die 3D-Overlays aktualisiert

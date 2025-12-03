@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import math
 import os
+import time
 
 import numpy as np
 
@@ -23,6 +24,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
 )
 
+DEBUG_SURFACE_GRID_TIMING = bool(int(os.environ.get("LFO_DEBUG_TIMING", "0")))
 
 @dataclass
 class SurfaceGridMesh:
@@ -108,6 +110,8 @@ class SurfaceGridCalculator(ModuleBase):
         if resolution is None:
             resolution = self.settings.resolution
         
+        t_start_total = time.perf_counter() if DEBUG_SURFACE_GRID_TIMING else 0.0
+        
         # ============================================================
         # SCHRITT 1: Bounding Box berechnen
         # ============================================================
@@ -128,22 +132,34 @@ class SurfaceGridCalculator(ModuleBase):
             min_y = -grid_length / 2
             max_y = grid_length / 2
         
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_bbox = time.perf_counter()
+        
         # ============================================================
         # SCHRITT 2: 1D-Koordinaten-Arrays erstellen
         # ============================================================
         sound_field_x = np.arange(min_x, max_x + resolution, resolution)
         sound_field_y = np.arange(min_y, max_y + resolution, resolution)
         
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_axes = time.perf_counter()
+        
         # ============================================================
         # SCHRITT 3: 2D-Meshgrid erstellen
         # ============================================================
         X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
+        
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_mesh = time.perf_counter()
         
         # ============================================================
         # SCHRITT 4: Resolution-Check (optional, gibt Warnung aus)
         # ============================================================
         if enabled_surfaces:
             is_adequate, warning = self._check_resolution_adequacy(enabled_surfaces, resolution)
+        
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_rescheck = time.perf_counter()
         
         # ============================================================
         # SCHRITT 5: Surface-Maske erstellen (ERWEITERT für Berechnung)
@@ -155,12 +171,18 @@ class SurfaceGridCalculator(ModuleBase):
             # Keine Surfaces → alle Punkte sind gültig
             surface_mask = np.ones_like(X_grid, dtype=bool)
         
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_mask = time.perf_counter()
+        
         # ============================================================
         # SCHRITT 6: Z-Koordinaten interpolieren
         # ============================================================
         Z_grid = np.zeros_like(X_grid, dtype=float)  # Standard: Z=0
         if enabled_surfaces:
             Z_grid = self._interpolate_z_coordinates(X_grid, Y_grid, enabled_surfaces, surface_mask)
+        
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_z = time.perf_counter()
         
         self._last_surface_meshes = self._build_surface_meshes(enabled_surfaces, resolution)
         # Horizontale/geneigte Flächen über reguläre Meshes
@@ -169,6 +191,21 @@ class SurfaceGridCalculator(ModuleBase):
         vertical_samples = self._build_vertical_surface_samples(enabled_surfaces, resolution)
         if vertical_samples:
             self._last_surface_samples.extend(vertical_samples)
+        
+        if DEBUG_SURFACE_GRID_TIMING:
+            t_samples = time.perf_counter()
+            total_ms = (t_samples - t_start_total) * 1000.0
+            print(
+                "[SurfaceGridCalculator] create_calculation_grid timings:\n"
+                f"  bounding_box     : {(t_bbox - t_start_total) * 1000.0:7.2f} ms\n"
+                f"  axes             : {(t_axes - t_bbox) * 1000.0:7.2f} ms\n"
+                f"  meshgrid         : {(t_mesh - t_axes) * 1000.0:7.2f} ms\n"
+                f"  resolution_check : {(t_rescheck - t_mesh) * 1000.0:7.2f} ms\n"
+                f"  surface_mask     : {(t_mask - t_rescheck) * 1000.0:7.2f} ms\n"
+                f"  z_interpolation  : {(t_z - t_mask) * 1000.0:7.2f} ms\n"
+                f"  meshes+samples   : {(t_samples - t_z) * 1000.0:7.2f} ms\n"
+                f"  TOTAL            : {total_ms:7.2f} ms"
+            )
         return sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask
 
     def get_surface_meshes(self) -> List[SurfaceGridMesh]:
