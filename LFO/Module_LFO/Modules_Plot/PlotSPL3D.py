@@ -2947,7 +2947,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._is_rendering = False
             if DEBUG_PLOT3D_TIMING:
                 t_end = time.perf_counter()
-                print(f"[PlotSPL3D] render() duration: {(t_end - t_start) * 1000.0:7.2f} ms")
 
     def _schedule_render(self):
         """Plant ein verzögertes Rendering (500ms), um mehrere schnelle Updates zu bündeln."""

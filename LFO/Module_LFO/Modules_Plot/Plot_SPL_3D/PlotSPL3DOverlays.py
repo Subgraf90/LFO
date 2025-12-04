@@ -63,25 +63,11 @@ class SPL3DOverlayRenderer:
         self._last_axis_state: Optional[tuple] = None
         self._last_impulse_state: Optional[tuple] = None
         self._last_surfaces_state: Optional[tuple] = None
-        # DEBUG: Objekt-ID für Debugging
-        import os
-        debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        if debug_enabled:
-            self._debug_object_id = id(self)
-            print(f"[DEBUG INIT] SPL3DOverlayRenderer erstellt: object_id={self._debug_object_id}")
+        # Interner Objekt-Identifier (wird aktuell nicht geloggt, aber für spätere Verwendung behalten)
+        self._debug_object_id = id(self)
 
 
     def clear(self) -> None:
-        # DEBUG: Vollständiges Overlay-Clear (z.B. durch initialize_empty_scene)
-        import os
-        debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        if debug_enabled:
-            print(
-                "[DEBUG OVERLAY CLEAR] overlay_helper.clear() aufgerufen: "
-                f"speaker_actor_cache={len(self._speaker_actor_cache)}, "
-                f"overlay_array_cache={len(getattr(self, '_overlay_array_cache', {}))}"
-            )
-
         for name in self.overlay_actor_names:
             try:
                 self.plotter.remove_actor(name)
@@ -134,11 +120,6 @@ class SPL3DOverlayRenderer:
             # Optional: Geometrie-Cache nur teilweise löschen statt komplett
             # Für jetzt: löschen wir den gesamten Geometrie-Cache bei Speaker-Änderungen
             # self._speaker_geometry_cache.clear()
-            # DEBUG: Zeige wenn clear_category aufgerufen wird
-            import os
-            debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-            if debug_enabled:
-                print(f"[DEBUG CLEAR_CATEGORY] clear_category('speakers') aufgerufen: _speaker_geometry_cache size vorher: {len(self._speaker_geometry_cache)}")
         elif category == 'axis':
             self._last_axis_state = None
         elif category == 'impulse':
@@ -1049,29 +1030,12 @@ class SPL3DOverlayRenderer:
     def draw_speakers(self, settings, container, cabinet_lookup: dict) -> None:
         with perf_section("PlotSPL3DOverlays.draw_speakers.setup"):
             speaker_arrays = getattr(settings, 'speaker_arrays', {})
-            import os
-            debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-
-            # Zusätzliche Debug-Ausgabe, um zu verstehen, warum speaker_arrays leer ist
-            if debug_enabled:
-                try:
-                    keys = list(speaker_arrays.keys()) if isinstance(speaker_arrays, dict) else []
-                except Exception:
-                    keys = []
-                print("[DEBUG SPEAKERS INPUT] draw_speakers: "
-                      f"type(settings)={type(settings)}, "
-                      f"hasattr(settings, 'speaker_arrays')={hasattr(settings, 'speaker_arrays')}, "
-                      f"type(speaker_arrays)={type(speaker_arrays)}, "
-                      f"len={len(speaker_arrays) if isinstance(speaker_arrays, dict) else 'n/a'}, "
-                      f"keys={keys[:5]}")
 
             # Wenn keine gültigen Arrays vorhanden sind, alle Speaker und den persistenten Array-Cache leeren
             if not isinstance(speaker_arrays, dict) or not speaker_arrays:
                 self.clear_category('speakers')
                 # Alle Arrays wurden effektiv gelöscht → persistenten Array-Cache komplett leeren
                 self._overlay_array_cache.clear()
-                if debug_enabled:
-                    print("[DEBUG OVERLAY CACHE] draw_speakers: speaker_arrays leer → overlay_array_cache komplett geleert")
                 return
 
             body_color = '#b0b0b0'
@@ -1096,10 +1060,6 @@ class SPL3DOverlayRenderer:
             # Rehydriere Actor- und Signatur-Cache aus persistentem Array-Cache,
             # damit unveränderte Speaker ohne Neuaufbau übernommen werden können.
             if hasattr(self, "_overlay_array_cache") and self._overlay_array_cache:
-                import os
-                debug_enabled_overlay = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                if debug_enabled_overlay:
-                    print(f"[DEBUG OVERLAY CACHE] Rehydrate start: entries={len(self._overlay_array_cache)}")
                 for (arr_id, sp_idx), entry in self._overlay_array_cache.items():
                     actor_entry = entry.get('actor_entry')
                     geom_sig = entry.get('geometry_param_signature')
@@ -1107,29 +1067,6 @@ class SPL3DOverlayRenderer:
                         old_cache[(arr_id, sp_idx, 0)] = actor_entry
                     if geom_sig is not None:
                         self._speaker_geometry_param_cache[(arr_id, sp_idx)] = geom_sig
-                if debug_enabled_overlay:
-                    # Zeige ein paar Beispiel-Keys
-                    sample_keys = list(self._overlay_array_cache.keys())[:6]
-                    print(f"[DEBUG OVERLAY CACHE] Rehydrate done. Sample keys: {sample_keys}")
-            
-            # DEBUG: Zeige Cache-Status (immer aktiviert für Debugging)
-            if debug_enabled:
-                current_object_id = id(self)
-                object_id_match = "✓" if hasattr(self, '_debug_object_id') and self._debug_object_id == current_object_id else "✗"
-                print(f"[DEBUG SPEAKER CACHE] object_id={current_object_id} {object_id_match}, old_cache size: {len(old_cache)}")
-                print(f"[DEBUG SPEAKER CACHE] _speaker_geometry_param_cache size: {len(self._speaker_geometry_param_cache)}")
-                print(f"[DEBUG SPEAKER CACHE] _speaker_geometry_cache size: {len(self._speaker_geometry_cache)}")
-                print(f"[DEBUG SPEAKER CACHE] _array_geometry_cache size: {len(self._array_geometry_cache)}, keys: {list(self._array_geometry_cache.keys())}")
-                print(f"[DEBUG SPEAKER CACHE] _stack_geometry_cache size: {len(self._stack_geometry_cache)}")
-                if len(old_cache) > 0:
-                    sample_keys = list(old_cache.keys())[:3]
-                    print(f"[DEBUG SPEAKER CACHE] Sample old_cache keys: {sample_keys}")
-                if len(self._speaker_geometry_param_cache) > 0:
-                    sample_keys = list(self._speaker_geometry_param_cache.keys())[:3]
-                    print(f"[DEBUG SPEAKER CACHE] Sample param_cache keys: {sample_keys}")
-                if len(self._speaker_geometry_cache) > 0:
-                    sample_keys = list(self._speaker_geometry_cache.keys())[:5]
-                    print(f"[DEBUG SPEAKER CACHE] Sample geometry_cache keys: {sample_keys}")
 
         # 🚀 OPTIMIERUNG: Sammle alle Speaker für inkrementelles Update und Parallelisierung
         # Arrays und einzelne Speaker werden nur neu gezeichnet, wenn sie erstellt oder geändert wurden
@@ -1145,12 +1082,6 @@ class SPL3DOverlayRenderer:
             
             configuration = getattr(speaker_array, 'configuration', '')
             config_lower = configuration.lower() if isinstance(configuration, str) else ''
-            
-            # DEBUG: Zeige Array-Konfiguration
-            import os
-            debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-            if debug_enabled and array_id in ('2', '3', '4'):  # Nur für Arrays 2, 3, 4
-                print(f"[DEBUG ARRAY CONFIG] Array {array_id}: config='{config_lower}'")
 
             # Hole Array-Positionen
             array_pos_x = getattr(speaker_array, 'array_position_x', 0.0)
@@ -1207,11 +1138,6 @@ class SPL3DOverlayRenderer:
                     speaker_array, array_id, array_pos_x, array_pos_y, array_pos_z, cabinet_lookup
                 )
                 cached_array_signature = self._array_signature_cache.get(array_id)
-                
-                import os
-                debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                if debug_enabled:
-                    print(f"[DEBUG ARRAY CACHE CHECK] Array {array_id}: config={config_lower}, cached_sig={cached_array_signature is not None}, current_sig={array_signature}")
                 
                 if cached_array_signature == array_signature:
                     # Array-Signatur stimmt überein - lade alle Speaker aus Array-Cache
@@ -1282,11 +1208,6 @@ class SPL3DOverlayRenderer:
                                               for idx, geoms in array_cached_geometries.items()},
                                 'array_pos': (array_pos_x, array_pos_y, array_pos_z)
                             }
-                            
-                            import os
-                            debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                            if debug_enabled:
-                                print(f"[DEBUG ARRAY CACHE] Array {array_id} (Flown) aus Cache geladen: {len(array_cached_geometries)} Speaker")
             
             # 🚀 OPTIMIERUNG: Stack-Level Cache für Stack Arrays
             stack_cached_geometries: dict[tuple, dict[int, List[Tuple[Any, Optional[int]]]]] = {}  # Cache für Stack-Gruppen: {stack_group_key: {sp_idx: geometries}}
@@ -1296,11 +1217,6 @@ class SPL3DOverlayRenderer:
                 # Identifiziere Stack-Gruppen basierend auf Cabinet-Daten
                 stack_groups = self._identify_stack_groups_from_cabinets(speaker_array, array_id, cabinet_lookup)
                 
-                import os
-                debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                if debug_enabled:
-                    print(f"[DEBUG STACK CACHE CHECK] Array {array_id}: {len(stack_groups)} Stack-Gruppen identifiziert")
-                
                 # Prüfe jede Stack-Gruppe
                 for stack_group_key, speaker_indices in stack_groups.items():
                     # Prüfe Stack-Signatur
@@ -1308,9 +1224,6 @@ class SPL3DOverlayRenderer:
                         speaker_array, array_id, stack_group_key, array_pos_x, array_pos_y, array_pos_z, cabinet_lookup
                     )
                     cached_stack_signature = self._stack_signature_cache.get((array_id, stack_group_key))
-                    
-                    if debug_enabled:
-                        print(f"[DEBUG STACK CACHE CHECK] Array {array_id}, Stack-Gruppe {stack_group_key}: cached_sig={cached_stack_signature is not None}, current_sig={stack_signature}")
                     
                     if cached_stack_signature == stack_signature:
                         # Stack-Signatur stimmt überein - lade alle Speaker dieser Stack-Gruppe aus Cache
@@ -1391,9 +1304,6 @@ class SPL3DOverlayRenderer:
                                                   for idx, geoms in stack_cached_geoms_for_group.items()},
                                     'stack_pos': (array_pos_x, array_pos_y, array_pos_z)
                                 }
-                                
-                                if debug_enabled:
-                                    print(f"[DEBUG STACK CACHE] Array {array_id}, Stack-Gruppe {stack_group_key} aus Cache geladen: {len(stack_cached_geoms_for_group)} Speaker")
             
             # 🚀 OPTIMIERUNG: Prüfe ob Array komplett übersprungen werden kann
             # (nur wenn old_cache nicht leer ist, d.h. nicht beim ersten Laden)
@@ -1444,18 +1354,6 @@ class SPL3DOverlayRenderer:
                     key = (array_id, int(idx), 0)  # Prüfe ersten Geometrie-Key
                     existing_actor = old_cache.get(key)
                     needs_rebuild = True
-                    
-                    # DEBUG: Zeige Details für ersten Speaker jedes Arrays
-                    import os
-                    debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                    if debug_enabled and idx == valid_indices[0]:
-                        print(f"[DEBUG SPEAKER] Array {array_id}, Speaker {idx}:")
-                        print(f"  existing_actor: {existing_actor is not None}")
-                        print(f"  cached_param_signature: {cached_param_signature}")
-                        print(f"  geometry_param_signature: {geometry_param_signature}")
-                        print(f"  signatures_match: {cached_param_signature == geometry_param_signature if cached_param_signature is not None else False}")
-                        if existing_actor:
-                            print(f"  existing_actor signature: {existing_actor.get('signature')}")
                     
                     # Prüfe ob Parameter-Signatur übereinstimmt
                     if cached_param_signature is not None and cached_param_signature == geometry_param_signature:
@@ -1554,11 +1452,6 @@ class SPL3DOverlayRenderer:
                         if task['geometry_param_signature'] is not None:
                             self._speaker_geometry_param_cache[task['geometry_param_key']] = task['geometry_param_signature']
                     array_can_be_skipped = True
-                    # Debug: Array wurde übersprungen
-                    import os
-                    debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                    if debug_enabled:
-                        print(f"[DEBUG] Array {array_id} übersprungen: alle {len(array_speaker_tasks)} Speaker unverändert (mit_cache={speakers_with_cache}, ohne_cache={speakers_without_cache})")
                 else:
                     # Array hat geänderte Speaker - füge alle Tasks hinzu
                     # 📌 Spezialfall Flown-Array:
@@ -1573,23 +1466,9 @@ class SPL3DOverlayRenderer:
                             for t in array_speaker_tasks:
                                 t['needs_rebuild'] = True
                                 t['force_full_rebuild'] = True
-                            # Debug-Ausgabe anpassen
-                            import os as _os2
-                            _dbg2 = _os2.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                            if _dbg2:
-                                print(f"[DEBUG] Array {array_id} (flown): Zwischenwinkel geändert → gesamtes Array wird neu berechnet ({len(array_speaker_tasks)} Speaker).")
 
                     speaker_tasks.extend(array_speaker_tasks)
                     total_speakers += len(array_speaker_tasks)
-                    # Debug: Array wird verarbeitet
-                    import os
-                    debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                    if debug_enabled:
-                        needs_rebuild_count = sum(1 for t in array_speaker_tasks if t['needs_rebuild'])
-                        print(f"[DEBUG] Array {array_id} wird verarbeitet: {needs_rebuild_count}/{len(array_speaker_tasks)} Speaker needs_rebuild=True (mit_cache={speakers_with_cache}, ohne_cache={speakers_without_cache}, missing={speakers_missing})")
-                        # Zeige Details für erste 3 Speaker
-                        for i, task in enumerate(array_speaker_tasks[:3]):
-                            print(f"  Speaker {task['idx']}: needs_rebuild={task['needs_rebuild']}, existing_actor={task['existing_actor'] is not None}, cached_sig={task['cached_param_signature'] is not None}")
             else:
                 # Beim ersten Laden (old_cache leer) - verarbeite alle Speaker
                 for idx in valid_indices:
@@ -1656,12 +1535,7 @@ class SPL3DOverlayRenderer:
         tasks_with_cache = []
         tasks_without_cache = []
         
-        # DEBUG: Zeige Task-Status
-        import os
-        debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        if debug_enabled:
-            skipped_count = sum(1 for t in speaker_tasks if not t['needs_rebuild'])
-            print(f"[DEBUG TASKS] Total speaker_tasks: {len(speaker_tasks)}, skipped (needs_rebuild=False): {skipped_count}")
+        skipped_count = sum(1 for t in speaker_tasks if not t['needs_rebuild'])
         
         for task in speaker_tasks:
             if not task['needs_rebuild']:
@@ -1685,21 +1559,6 @@ class SPL3DOverlayRenderer:
             signatures_match = (task['cached_param_signature'] is not None and 
                                task['cached_param_signature'] == task['geometry_param_signature'])
             
-            # DEBUG: Zeige Details für erste 3 Tasks
-            if debug_enabled and len(tasks_with_cache) + len(tasks_without_cache) < 3:
-                print(f"[DEBUG TASK] Array {task['array_id']}, Speaker {task['idx']}:")
-                print(f"  cached_param_signature: {task['cached_param_signature']}")
-                print(f"  geometry_param_signature: {task['geometry_param_signature']}")
-                print(f"  signatures_match: {signatures_match}")
-                print(f"  cache_key: {cache_key}")
-                print(f"  cached_data exists: {cached_data is not None}")
-                if cached_data:
-                    print(f"  cached_data has geoms: {bool(cached_data.get('geoms'))}")
-                    print(f"  cached_data has position: {bool(cached_data.get('position'))}")
-                # Zeige alle Cache-Keys
-                if len(self._speaker_geometry_cache) > 0:
-                    print(f"  Available cache_keys: {list(self._speaker_geometry_cache.keys())[:5]}")
-            
             if (signatures_match and 
                 cached_data and isinstance(cached_data, dict) and 
                 cached_data.get('geoms') and cached_data.get('position')):
@@ -1708,28 +1567,6 @@ class SPL3DOverlayRenderer:
             else:
                 # 🚀 OPTIMIERUNG 3: Muss neu berechnen (parallel)
                 tasks_without_cache.append(task)
-        
-        # DEBUG: Zeige finale Task-Verteilung
-        if debug_enabled:
-            print(f"[DEBUG TASKS] Final: tasks_with_cache={len(tasks_with_cache)}, tasks_without_cache={len(tasks_without_cache)}")
-            if len(tasks_without_cache) > 0:
-                # Zeige warum Tasks ohne Cache sind
-                no_cached_sig = sum(1 for t in tasks_without_cache if t['cached_param_signature'] is None)
-                sig_mismatch = sum(1 for t in tasks_without_cache if t['cached_param_signature'] is not None and t['cached_param_signature'] != t['geometry_param_signature'])
-                no_cached_data = sum(1 for t in tasks_without_cache if t['cached_param_signature'] is not None and t['cached_param_signature'] == t['geometry_param_signature'])
-                print(f"  Reasons: no_cached_sig={no_cached_sig}, sig_mismatch={sig_mismatch}, no_cached_data={no_cached_data}")
-        
-        # DEBUG: Zeige warum parallel_build aufgerufen wird
-        import os
-        debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        if debug_enabled and tasks_without_cache:
-            print(f"[DEBUG PARALLEL_BUILD] Wird aufgerufen mit {len(tasks_without_cache)} Tasks")
-            # Zeige Details für erste 3 Tasks
-            for i, task in enumerate(tasks_without_cache[:3]):
-                print(f"  Task {i}: Array {task['array_id']}, Speaker {task['idx']}")
-                print(f"    cached_param_sig: {task['cached_param_signature']}")
-                print(f"    geometry_param_sig: {task['geometry_param_signature']}")
-                print(f"    existing_actor: {task['existing_actor'] is not None}")
         
         # 🚀 OPTIMIERUNG 3: Parallelisiere build_geometries für Tasks ohne Cache
         if tasks_without_cache:
@@ -1778,26 +1615,11 @@ class SPL3DOverlayRenderer:
                                     first_key = next(iter(self._speaker_geometry_cache))
                                     del self._speaker_geometry_cache[first_key]
                                 self._speaker_geometry_param_cache[task['geometry_param_key']] = task['geometry_param_signature']
-                                # DEBUG: Zeige dass Signatur und Cache gespeichert wurden
-                                import os
-                                debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                                if debug_enabled:
-                                    if len(geometries_results) <= 3:
-                                        print(f"[DEBUG SAVE] Signatur gespeichert für Array {task['array_id']}, Speaker {task['idx']}: {task['geometry_param_signature']}")
-                                        print(f"[DEBUG SAVE] Geometrie-Cache gespeichert: cache_key={cache_key}, geom_count={len(geometries)}, cache_size={len(self._speaker_geometry_cache)}")
-                                    elif len(geometries_results) == len(tasks_without_cache):
-                                        # Zeige nur beim letzten Element
-                                        print(f"[DEBUG SAVE] Letzte Geometrie-Cache gespeichert: cache_size={len(self._speaker_geometry_cache)}, total_results={len(geometries_results)}")
                         except Exception as e:
                             import traceback
                             print(f"[ERROR] Parallel build_geometries failed for {task['array_id']}:{task['idx']}: {e}")
                             traceback.print_exc()
                     
-                    # DEBUG: Zeige Cache-Status nach parallel_build
-                    import os
-                    debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                    if debug_enabled and tasks_without_cache:
-                        print(f"[DEBUG AFTER BUILD] _speaker_geometry_cache size: {len(self._speaker_geometry_cache)}, geometries_results count: {len(geometries_results)}")
         
         # 🚀 OPTIMIERUNG 1: Verarbeite Tasks mit Cache (Position-Transformation)
         for task in tasks_with_cache:
@@ -1821,9 +1643,6 @@ class SPL3DOverlayRenderer:
         # Sammle alle Flown-Array-Geometrien
         flown_array_geometries: dict[str, dict[int, List[Tuple[Any, Optional[int]]]]] = {}
         flown_array_positions: dict[str, tuple] = {}
-        
-        import os
-        debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
         
         for task in speaker_tasks:
             array_id = task['array_id']
@@ -1850,14 +1669,6 @@ class SPL3DOverlayRenderer:
                 if geometries:
                     idx = task['idx']
                     flown_array_geometries[array_id][idx] = geometries
-                elif debug_enabled:
-                    print(f"[DEBUG ARRAY CACHE SAVE] Array {array_id}, Speaker {task['idx']}: Keine Geometrien gefunden (key={task['geometry_param_key']})")
-        
-        # Speichere alle Flown-Arrays im Array-Cache
-        if debug_enabled:
-            print(f"[DEBUG ARRAY CACHE SAVE] Gefundene Flown-Arrays: {list(flown_array_geometries.keys())}")
-            for arr_id, geoms_dict in flown_array_geometries.items():
-                print(f"[DEBUG ARRAY CACHE SAVE] Array {arr_id}: {len(geoms_dict)} Speaker mit Geometrien")
         
         for array_id, geometries_dict in flown_array_geometries.items():
             if geometries_dict:
@@ -1875,11 +1686,9 @@ class SPL3DOverlayRenderer:
                         speaker_array, array_id, array_pos[0], array_pos[1], array_pos[2], cabinet_lookup
                     )
                     self._array_signature_cache[array_id] = array_signature
-                    
-                    if debug_enabled:
-                        print(f"[DEBUG ARRAY CACHE] Array {array_id} (Flown) im Cache gespeichert: {len(geometries_dict)} Speaker, pos={array_pos}")
-            elif debug_enabled:
-                print(f"[DEBUG ARRAY CACHE SAVE] Array {array_id}: geometries_dict ist leer!")
+            elif False:
+                # Platzhalter, um leeren Zweig syntaktisch konsistent zu halten
+                pass
         
         # 🚀 OPTIMIERUNG: Speichere Stack-Gruppen im Stack-Cache nach Berechnung
         # Sammle alle Stack-Gruppen-Geometrien
@@ -1932,11 +1741,6 @@ class SPL3DOverlayRenderer:
                         speaker_array, array_id, stack_group_key, stack_pos[0], stack_pos[1], stack_pos[2], cabinet_lookup
                     )
                     self._stack_signature_cache[cache_key] = stack_signature
-                    
-                    import os
-                    debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-                    if debug_enabled:
-                        print(f"[DEBUG STACK CACHE] Array {array_id}, Stack-Gruppe {stack_group_key} im Cache gespeichert: {len(geometries_dict)} Speaker")
         
         # Verarbeite alle Speaker mit ihren Geometrien
         for task in speaker_tasks:
@@ -2191,14 +1995,6 @@ class SPL3DOverlayRenderer:
                     'geometry_param_signature': geom_sig,
                 }
             self._overlay_array_cache = new_array_cache
-            import os
-            debug_enabled_overlay = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-            if debug_enabled_overlay:
-                # Zähle Speaker pro Array zur Kontrolle
-                per_array: dict[str, int] = {}
-                for (arr_id, sp_idx) in self._overlay_array_cache.keys():
-                    per_array[arr_id] = per_array.get(arr_id, 0) + 1
-                print(f"[DEBUG OVERLAY CACHE] Saved overlay_array_cache: total_entries={len(self._overlay_array_cache)}, per_array={per_array}")
         
         with perf_section("PlotSPL3DOverlays.draw_speakers.update_highlights"):
             # Aktualisiere Edge-Color für hervorgehobene Lautsprecher
@@ -2211,11 +2007,7 @@ class SPL3DOverlayRenderer:
             except Exception:  # noqa: BLE001
                 pass
         
-        # DEBUG: Zeige Cache-Status am Ende von draw_speakers
-        import os
-        debug_enabled = os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        if debug_enabled:
-            print(f"[DEBUG END DRAW] _speaker_geometry_cache size: {len(self._speaker_geometry_cache)}, _speaker_geometry_param_cache size: {len(self._speaker_geometry_param_cache)}")
+        # Am Ende von draw_speakers keine zusätzlichen Debug-Ausgaben mehr
 
     def _get_speaker_info_from_actor(self, actor: Any, actor_name: str) -> Optional[Tuple[str, int]]:
         """Extrahiert Array-ID und Speaker-Index aus einem Speaker-Actor.

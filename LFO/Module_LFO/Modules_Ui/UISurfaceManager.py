@@ -64,7 +64,9 @@ class UISurfaceManager(ModuleBase):
                 
                 def eventFilter(self, obj, event):
                     if obj == self.dock_widget and event.type() == QEvent.Resize:
-                        print(f"[Surface UI] resizeEvent erkannt: neue Höhe = {self.dock_widget.height()}px")
+                        # Keine spezielle Behandlung mehr, Event normal weiterreichen
+                        return False
+                    # Für alle anderen Events ebenfalls False zurückgeben (Standard-Handling)
                     return False
             
             self._surface_resize_filter = SurfaceResizeFilter(self.surface_dockWidget)
@@ -367,10 +369,8 @@ class UISurfaceManager(ModuleBase):
         # Setze initiale Größe des DockWidgets NACH show() mit Timer, damit Qt's Layout fertig ist
         from PyQt5.QtCore import QTimer
         def apply_resize():
-            print(f"[Surface UI] resize() aufgerufen: {target_height}px (vorher: {self.surface_dockWidget.height()}px)")
             self.surface_dockWidget.setMaximumHeight(16777215)  # Entferne Max-Höhe wieder
             self.surface_dockWidget.resize(1200, target_height)
-            print(f"[Surface UI] resize() abgeschlossen: {self.surface_dockWidget.height()}px")
         
         QTimer.singleShot(100, apply_resize)  # 100ms Verzögerung, damit Qt's Layout fertig ist
     

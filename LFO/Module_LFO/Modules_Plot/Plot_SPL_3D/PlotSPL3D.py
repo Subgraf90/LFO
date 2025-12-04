@@ -2310,20 +2310,12 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Wenn Kamera nicht erhalten wird, Flag zurücksetzen, damit beim nächsten Plot mit Daten Zoom maximiert wird
             self._has_plotted_data = False
 
-        # DEBUG: Nachvollziehen, wann eine leere SPL-Szene initialisiert wird
-        import os as _os
-        _debug_enabled_scene = _os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
         # Sprecher-Arrays-Länge zur Laufzeit ermitteln
         try:
             _sa = getattr(self.settings, 'speaker_arrays', {})
             _sa_len = len(_sa) if isinstance(_sa, dict) else 0
         except Exception:
             _sa_len = 0
-        if _debug_enabled_scene:
-            print(
-                "[DEBUG INIT_EMPTY_SCENE] initialize_empty_spl_plot() aufgerufen: "
-                f"preserve_camera={preserve_camera}, speaker_arrays_len={_sa_len}"
-            )
 
         # Zwei Modi:
         # - Keine Speaker-Arrays → komplette Szene inkl. Overlays leeren (Startzustand)
@@ -2402,7 +2394,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         
         # Konfiguriere Plotter nur bei Bedarf (nicht die Kamera überschreiben)
         self._configure_plotter(configure_camera=not preserve_camera)
-        
+
         if camera_state is not None:
             self._restore_camera(camera_state)
         else:
@@ -2984,7 +2976,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._is_rendering = False
             if DEBUG_PLOT3D_TIMING:
                 t_end = time.perf_counter()
-                print(f"[PlotSPL3D] render() duration: {(t_end - t_start) * 1000.0:7.2f} ms")
 
     def _schedule_render(self):
         """Plant ein verzögertes Rendering (500ms), um mehrere schnelle Updates zu bündeln."""
@@ -5254,21 +5245,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
         speakers_signature: List[tuple] = []
-
-        # DEBUG: Zusätzliche Infos zu speaker_arrays, um leere Zustände zu verstehen
-        import os as _os
-        _debug_enabled_speakers = _os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
-        if _debug_enabled_speakers:
-            try:
-                _keys = list(speaker_arrays.keys()) if isinstance(speaker_arrays, dict) else []
-            except Exception:
-                _keys = []
-            print("[DEBUG SPEAKERS INPUT] _compute_overlay_signatures: "
-                  f"type(settings)={type(settings)}, "
-                  f"hasattr(settings, 'speaker_arrays')={hasattr(settings, 'speaker_arrays')}, "
-                  f"type(speaker_arrays)={type(speaker_arrays)}, "
-                  f"len={len(speaker_arrays) if isinstance(speaker_arrays, dict) else 'n/a'}, "
-                  f"keys={_keys[:5]}")
 
         if isinstance(speaker_arrays, dict):
             for name in sorted(speaker_arrays.keys()):

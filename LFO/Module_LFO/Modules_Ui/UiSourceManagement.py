@@ -487,10 +487,8 @@ class Sources(ModuleBase, QObject):
         # Setze initiale Größe des DockWidgets NACH show() mit Timer, damit Qt's Layout fertig ist
         from PyQt5.QtCore import QTimer
         def apply_resize():
-            print(f"[Source UI] resize() aufgerufen: {target_height}px (vorher: {self.sources_dockWidget.height()}px)")
             self.sources_dockWidget.setMaximumHeight(16777215)  # Entferne Max-Höhe wieder
             self.sources_dockWidget.resize(1200, target_height)
-            print(f"[Source UI] resize() abgeschlossen: {self.sources_dockWidget.height()}px")
         
         QTimer.singleShot(100, apply_resize)  # 100ms Verzögerung, damit Qt's Layout fertig ist
         
@@ -2446,8 +2444,8 @@ class Sources(ModuleBase, QObject):
         # Resize-Events für DockWidget erfassen
         if hasattr(self, 'sources_dockWidget') and self.sources_dockWidget and obj == self.sources_dockWidget:
             if event.type() == QEvent.Resize:
-                print(f"[Source UI] resizeEvent erkannt: neue Höhe = {self.sources_dockWidget.height()}px")
-            return False  # Weiterleiten an Standard-Handler
+                # Keine spezielle Behandlung mehr, Event normal weiterreichen
+                return False  # Weiterleiten an Standard-Handler
         
         # Prüfe, ob das Widget noch existiert, bevor darauf zugegriffen wird
         if not hasattr(self, 'sources_tree_widget') or self.sources_tree_widget is None:
