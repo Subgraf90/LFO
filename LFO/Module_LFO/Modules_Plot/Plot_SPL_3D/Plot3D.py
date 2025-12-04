@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Optional, Tuple, Any
 
 import numpy as np
@@ -17,17 +19,16 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Plot.Plot_SPL_3D.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
+from Module_LFO.Modules_Plot.Plot_SPL_3D.PlotSPL3DOverlays import SPL3DOverlayRenderer
+from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DSPL import SPL3DPlotRenderer, SPLTimeControlBar
 from Module_LFO.Modules_Plot.Plot_SPL_3D.ColorbarManager import ColorbarManager, PHASE_CMAP
 from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate\
     .SurfaceGeometryCalculator import (
     SurfaceDefinition,
     build_surface_mesh,
-    build_vertical_surface_mesh,
     prepare_plot_geometry,
     prepare_vertical_plot_geometry,
-    VerticalPlotGeometry,
     build_full_floor_mesh,
     clip_floor_with_surfaces,
     derive_surface_plane,
@@ -57,7 +58,7 @@ else:  # pragma: no cover
     _PYVISTA_IMPORT_ERROR = None
 
 
-class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
+class DrawSPLPlot3D(SPL3DPlotRenderer, ModuleBase, QtCore.QObject):
     """Erstellt einen interaktiven 3D-SPL-Plot auf Basis von PyVista."""
     # PHASE_CMAP wird jetzt aus ColorbarManager importiert
     PHASE_CMAP = PHASE_CMAP
@@ -206,6 +207,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         # Textur-Actors pro horizontaler Surface (Texture-Modus)
         # Struktur: {surface_id: {'actor': actor, 'metadata': {...}}}
         self._surface_texture_actors: dict[str, dict[str, Any]] = {}
+        # 🚀 TEXTUR-CACHE: Speichert Signaturen für Textur-Wiederverwendung
+        # Struktur: {surface_id: texture_signature}
+        self._surface_texture_cache: dict[str, str] = {}
         self._plot_geometry_cache = None  # Cache für Plot-Geometrie (plot_x, plot_y)
         # Zusätzliche SPL-Meshes für senkrechte Flächen (werden über calculation_spl gespeist)
         self._vertical_surface_meshes: dict[str, Any] = {}
@@ -2378,6 +2382,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                             pass
                 if hasattr(self, "_surface_texture_actors"):
                     self._surface_texture_actors.clear()
+                # 🚀 TEXTUR-CACHE: Auch Cache löschen
+                if hasattr(self, "_surface_texture_cache"):
+                    self._surface_texture_cache.clear()
 
                 # Vertikale SPL-Flächen entfernen
                 if hasattr(self, "_clear_vertical_spl_surfaces"):
@@ -2420,391 +2427,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         """Abwärtskompatibler Wrapper – bitte initialize_empty_spl_plot verwenden."""
         return self.initialize_empty_spl_plot(preserve_camera=preserve_camera)
 
-    @measure_time("PlotSPL3D.update_spl_plot")
-    def update_spl_plot(
-        self,
-        sound_field_x: Iterable[float],
-        sound_field_y: Iterable[float],
-        sound_field_pressure: Iterable[float],
-        colorization_mode: str = "Gradient",
-        ):
-        """Aktualisiert die SPL-Fläche."""
-        t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-
-        camera_state = self._camera_state or self._capture_camera()
-
-        # Wenn keine gültigen SPL-Daten vorliegen, belassen wir die bestehende Szene
-        # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
-        if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
-            return
-
-        x = np.asarray(sound_field_x, dtype=float)
-        y = np.asarray(sound_field_y, dtype=float)
-
-        try:
-            pressure = np.asarray(sound_field_pressure, dtype=float)
-        except Exception:  # noqa: BLE001
-            # Ungültige SPL-Daten → Szene nicht leeren, nur SPL-Update abbrechen
-            return
-
-        plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
-        phase_mode = plot_mode == 'Phase alignment'
-        time_mode = plot_mode == 'SPL over time'
-        self._phase_mode_active = phase_mode
-        self._time_mode_active = time_mode
-
-
-        if pressure.ndim != 2:
-            if pressure.size == (len(y) * len(x)):
-                try:
-                    pressure = pressure.reshape(len(y), len(x))
-                except Exception:  # noqa: BLE001
-                    return
-            else:
-                return
-
-        if pressure.shape != (len(y), len(x)):
-            return
-
-        # Aktualisiere ColorbarManager Modes
-        self.colorbar_manager.update_modes(phase_mode_active=phase_mode, time_mode_active=time_mode)
-        self.colorbar_manager.set_override(None)
-
-        if time_mode:
-            pressure = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
-            finite_mask = np.isfinite(pressure)
-            if not np.any(finite_mask):
-                return
-            # Verwende feste Colorbar-Parameter (keine dynamische Skalierung)
-            plot_values = pressure
-        elif phase_mode:
-            finite_mask = np.isfinite(pressure)
-            if not np.any(finite_mask):
-                return
-            phase_values = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
-            plot_values = phase_values
-        else:
-            pressure_2d = np.nan_to_num(np.abs(pressure), nan=0.0, posinf=0.0, neginf=0.0)
-            pressure_2d = np.clip(pressure_2d, 1e-12, None)
-            spl_db = self.functions.mag2db(pressure_2d)
-            if getattr(self.settings, "fem_debug_logging", True):
-                try:
-                    p_min = float(np.nanmin(pressure_2d))
-                    p_max = float(np.nanmax(pressure_2d))
-                    p_mean = float(np.nanmean(pressure_2d))
-                    spl_min = float(np.nanmin(spl_db))
-                    spl_max = float(np.nanmax(spl_db))
-                    spl_mean = float(np.nanmean(spl_db))
-                except Exception:
-                    pass
-                try:
-                    x_idx = int(np.argmin(np.abs(x - 0.0)))
-                    target_distances = (1.0, 2.0, 10.0, 20.0)
-                    for distance in target_distances:
-                        y_idx = int(np.argmin(np.abs(y - distance)))
-                        value = float(spl_db[y_idx, x_idx])
-                        actual_y = float(y[y_idx])
-                except Exception:
-                    pass
-  
-            
-            finite_mask = np.isfinite(spl_db)
-            if not np.any(finite_mask):
-                return
-            plot_values = spl_db
-        
-        if DEBUG_PLOT3D_TIMING:
-            t_after_spl = time.perf_counter()
-
-        colorbar_params = self.colorbar_manager.get_colorbar_params(phase_mode)
-        cbar_min = colorbar_params['min']
-        cbar_max = colorbar_params['max']
-        cbar_step = colorbar_params['step']
-        tick_step = colorbar_params['tick_step']
-        self.colorbar_manager.set_override(colorbar_params)
-
-        # 🎯 WICHTIG: Speichere ursprüngliche Berechnungs-Werte für PyVista sample-Modus VOR Clipping!
-        # Clipping ändert die Werte und sollte nur für Visualisierung erfolgen, nicht für Sampling
-        original_plot_values = plot_values.copy() if hasattr(plot_values, 'copy') else plot_values
-        
-        # 🎯 Cache original_plot_values für Debug-Vergleiche
-        self._cached_original_plot_values = original_plot_values
-        
-        # 🎯 Validierung: Stelle sicher, dass original_plot_values die korrekte Shape hat
-        if original_plot_values.shape != (len(y), len(x)):
-            raise ValueError(
-                f"original_plot_values Shape stimmt nicht überein: "
-                f"erhalten {original_plot_values.shape}, erwartet ({len(y)}, {len(x)})"
-            )
-
-        # Clipping nur für Visualisierung (nicht für Sampling)
-        if time_mode:
-            plot_values = np.clip(plot_values, cbar_min, cbar_max)
-        elif phase_mode:
-            plot_values = np.clip(plot_values, cbar_min, cbar_max)
-        else:
-            plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
-        
-        # 🎯 Gradient-Modus: Normales Upscaling (Performance-Optimierung)
-        # Bilineare Interpolation sorgt bereits für glatte Übergänge, daher kein zusätzliches Upscaling nötig
-        colorization_mode_used = colorization_mode
-        is_step_mode = colorization_mode_used == 'Color step' and cbar_step > 0
-        # Verwende normales Upscaling für beide Modi (Performance)
-        upscale_factor = self.UPSCALE_FACTOR
-        
-        try:
-            geometry = prepare_plot_geometry(
-                x,
-                y,
-                plot_values,
-                settings=self.settings,
-                container=self.container,
-                default_upscale=upscale_factor,
-            )
-        except RuntimeError as exc:
-            # Fehler bei der Geometrie-Erzeugung → keine Szene leeren, nur SPL-Update abbrechen
-            # Vertikale SPL-Flächen werden ebenfalls nicht angepasst.
-            return
-
-        if DEBUG_PLOT3D_TIMING:
-            t_after_geom = time.perf_counter()
-
-        plot_x = geometry.plot_x
-        plot_y = geometry.plot_y
-        plot_values = geometry.plot_values
-        z_coords = geometry.z_coords
-        
-        # 🎯 Cache Plot-Geometrie für Click-Handling
-        self._plot_geometry_cache = {
-            'plot_x': plot_x.copy() if hasattr(plot_x, 'copy') else plot_x,
-            'plot_y': plot_y.copy() if hasattr(plot_y, 'copy') else plot_y,
-            'source_x': geometry.source_x.copy() if hasattr(geometry.source_x, 'copy') else geometry.source_x,
-            'source_y': geometry.source_y.copy() if hasattr(geometry.source_y, 'copy') else geometry.source_y,
-        }
-        
-        # 🎯 is_step_mode wurde bereits oben definiert, verwende es hier
-        if is_step_mode:
-            scalars = self._quantize_to_steps(plot_values, cbar_step)
-        else:
-            scalars = plot_values
-        
-        mesh = build_surface_mesh(
-            plot_x,
-            plot_y,
-            scalars,
-            z_coords=z_coords,
-            surface_mask=geometry.surface_mask,
-            pv_module=pv,
-            settings=self.settings,
-            container=self.container,
-            source_x=geometry.source_x,
-            source_y=geometry.source_y,
-            source_scalars=None,
-        )
-        
-
-        if time_mode:
-            cmap_object = 'RdBu_r'
-        elif phase_mode:
-            cmap_object = self.PHASE_CMAP
-        else:
-            cmap_object = 'jet'
-
-        # ------------------------------------------------------------------
-        # Horizontale SPL-Surfaces - nur Texture-Modus
-        # ------------------------------------------------------------------
-        # Kombiniertes Mesh für Click-Handling behalten
-        if mesh is not None and mesh.n_points > 0:
-            self.surface_mesh = mesh.copy(deep=True)
-
-        # Entferne existierende Mesh-Actors für horizontale Surfaces
-        base_actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
-        if base_actor is not None:
-            try:
-                self.plotter.remove_actor(base_actor)
-            except Exception:
-                pass
-        for sid, actor in list(self._surface_actors.items()):
-            try:
-                self.plotter.remove_actor(actor)
-            except Exception:
-                pass
-            self._surface_actors.pop(sid, None)
-        
-        # 🎯 Entferne graue Fläche für enabled Surfaces aus dem leeren Plot (falls vorhanden)
-        # Dies muss VOR dem Zeichnen der neuen SPL-Daten passieren
-        if hasattr(self, 'overlay_helper'):
-            try:
-                empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
-                if empty_plot_actor is not None:
-                    self.plotter.remove_actor('surface_enabled_empty_plot_batch')
-                    if hasattr(self.overlay_helper, 'overlay_actor_names'):
-                        if 'surface_enabled_empty_plot_batch' in self.overlay_helper.overlay_actor_names:
-                            self.overlay_helper.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
-                    if hasattr(self.overlay_helper, '_category_actors'):
-                        if 'surfaces' in self.overlay_helper._category_actors:
-                            if 'surface_enabled_empty_plot_batch' in self.overlay_helper._category_actors['surfaces']:
-                                self.overlay_helper._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
-            except Exception:  # noqa: BLE001
-                pass
-
-        # Zeichne alle aktiven Surfaces als Texturflächen
-        self._render_surfaces_textured(
-            geometry,
-            original_plot_values,
-            cbar_min,
-            cbar_max,
-            cmap_object,
-            colorization_mode_used,
-            cbar_step,
-        )
-        
-        if DEBUG_PLOT3D_TIMING:
-            t_after_textures = time.perf_counter()
-        
-        # 🎯 WICHTIG: Setze Signatur zurück, damit draw_surfaces nach update_overlays aufgerufen wird
-        # (um die graue Fläche zu entfernen, wenn SPL-Daten vorhanden sind)
-        if hasattr(self, '_last_overlay_signatures') and 'surfaces' in self._last_overlay_signatures:
-            # Setze auf None, damit die Signatur als geändert erkannt wird
-            self._last_overlay_signatures['surfaces'] = None
-
-        # ------------------------------------------------------------
-        # 🎯 SPL-Teppich (Floor) nur anzeigen, wenn KEINE Surfaces aktiv sind
-        # ------------------------------------------------------------
-        surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
-        has_enabled_surfaces = False
-        if isinstance(surface_definitions, dict) and len(surface_definitions) > 0:
-            for surface_id, surface_def in surface_definitions.items():
-                try:
-                    # Kompatibel zu SurfaceDefinition-Objekten und Dicts
-                    enabled = bool(getattr(surface_def, "enabled", False)) if hasattr(
-                        surface_def, "enabled"
-                    ) else bool(surface_def.get("enabled", False))
-                    hidden = bool(getattr(surface_def, "hidden", False)) if hasattr(
-                        surface_def, "hidden"
-                    ) else bool(surface_def.get("hidden", False))
-                    points = (
-                        getattr(surface_def, "points", []) if hasattr(surface_def, "points") else surface_def.get("points", [])
-                    ) or []
-                    if enabled and not hidden and len(points) >= 3:
-                        has_enabled_surfaces = True
-                        break
-                except Exception:  # noqa: BLE001
-                    # Bei inkonsistenten Oberflächen-Konfigurationen Floor lieber anzeigen
-                    continue
-
-        if not has_enabled_surfaces:
-            # Erstelle vollständigen Floor-Mesh (ohne Surface-Maskierung oder Clipping)
-            floor_mesh = build_full_floor_mesh(
-                plot_x,
-                plot_y,
-                scalars,
-                z_coords=z_coords,
-                pv_module=pv,
-            )
-
-            # Plotte (oder update) den Floor nur, wenn keine Surfaces aktiv sind
-            floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
-            if floor_actor is None:
-                self.plotter.add_mesh(
-                    floor_mesh,
-                    name=self.FLOOR_NAME,
-                    scalars="plot_scalars",
-                    cmap=cmap_object,
-                    clim=(cbar_min, cbar_max),
-                    # 🎯 Gradient: smooth rendering, Color step: harte Stufen
-                    smooth_shading=not is_step_mode,
-                    show_scalar_bar=False,
-                    reset_camera=False,
-                    interpolate_before_map=not is_step_mode,
-                )
-            else:
-                if not hasattr(self, "floor_mesh"):
-                    self.floor_mesh = floor_mesh.copy(deep=True)
-                else:
-                    self.floor_mesh.deep_copy(floor_mesh)
-                mapper = floor_actor.mapper
-                if mapper is not None:
-                    mapper.array_name = "plot_scalars"
-                    mapper.scalar_range = (cbar_min, cbar_max)
-                    mapper.lookup_table = self.plotter._cmap_to_lut(cmap_object)
-                    # 🎯 Gradient: smooth rendering, Color step: harte Stufen
-                    mapper.interpolate_before_map = not is_step_mode
-        else:
-            # Wenn Surfaces aktiv sind, Floor ausblenden (falls vorher gezeichnet)
-            floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
-            if floor_actor is not None:
-                try:
-                    self.plotter.remove_actor(floor_actor)
-                except Exception:  # noqa: BLE001
-                    pass
-
-        # Aktualisiere Colorbar über ColorbarManager
-        self.colorbar_manager.render_colorbar(
-            colorization_mode_used,
-            force=False,
-            tick_step=tick_step,
-            phase_mode_active=phase_mode,
-            time_mode_active=time_mode,
-        )
-        self.cbar = self.colorbar_manager.cbar  # Synchronisiere cbar-Referenz
-
-        # ------------------------------------------------------------
-        # Vertikale Flächen: separate SPL-Flächen rendern
-        # ------------------------------------------------------------
-        # Merke den aktuell verwendeten Colorization-Mode, damit
-        # _update_vertical_spl_surfaces identisch reagieren kann.
-        self._last_colorization_mode = colorization_mode_used
-        self._update_vertical_spl_surfaces()
-
-        if DEBUG_PLOT3D_TIMING:
-            t_after_vertical = time.perf_counter()
-
-        self.has_data = True
-        if time_mode and self.surface_mesh is not None:
-            # Prüfe ob Upscaling aktiv ist - wenn ja, deaktiviere schnellen Update-Pfad
-            # da Resampling zu Verzerrungen führen kann
-            source_shape = tuple(pressure.shape)
-            cache_entry = {
-                'source_shape': source_shape,
-                'source_x': geometry.source_x.copy(),
-                'source_y': geometry.source_y.copy(),
-                'target_x': geometry.plot_x.copy(),
-                'target_y': geometry.plot_y.copy(),
-                'needs_resample': geometry.requires_resample,
-                'has_upscaling': geometry.was_upscaled,
-                'colorbar_range': (cbar_min, cbar_max),
-                'colorization_mode': colorization_mode_used,
-                'color_step': cbar_step,
-                'grid_shape': geometry.grid_shape,
-                'expected_points': self.surface_mesh.n_points,
-            }
-            self._time_mode_surface_cache = cache_entry
-        else:
-            self._time_mode_surface_cache = None
-
-        if camera_state is not None:
-            self._restore_camera(camera_state)
-        # Nur beim ersten Plot mit Daten den Zoom maximieren
-        # Bei späteren Updates bleibt der Zoom erhalten (wird durch preserve_camera=True sichergestellt)
-        if not self._has_plotted_data:
-            self._maximize_camera_view(add_padding=True)
-            self._has_plotted_data = True
-        self.render()
-        self._save_camera_state()
-        self.colorbar_manager.set_override(None)
-
-        if DEBUG_PLOT3D_TIMING:
-            t_end = time.perf_counter()
-            print(
-                "[PlotSPL3D] update_spl_plot timings:\n"
-                f"  SPL transform   : {(t_after_spl - t_start_total) * 1000.0:7.2f} ms\n"
-                f"  geometry+mask   : {(t_after_geom - t_after_spl) * 1000.0:7.2f} ms\n"
-                f"  textures/floor  : {(t_after_textures - t_after_geom) * 1000.0:7.2f} ms\n"
-                f"  vertical surfaces: {(t_after_vertical - t_after_textures) * 1000.0:7.2f} ms\n"
-                f"  camera/render   : {(t_end - t_after_vertical) * 1000.0:7.2f} ms\n"
-                f"  TOTAL           : {(t_end - t_start_total) * 1000.0:7.2f} ms"
-            )
+    # update_spl_plot ist jetzt in SPL3DPlotRenderer (Mixin)
         
     def update_time_frame_values(
         self,
@@ -2990,189 +2613,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._pending_render = False
             self.render()
 
-    def _get_vertical_color_limits(self) -> tuple[float, float]:
-        """
-        Liefert die Farbskalen-Grenzen (min, max) für vertikale SPL-Flächen.
-        Bevorzugt aktuelle Override-Range aus der Colorbar, sonst Settings-Range.
-        """
-        params = self.colorbar_manager.get_colorbar_params(self._phase_mode_active)
-        try:
-            cmin = float(params.get("min", 0.0))
-            cmax = float(params.get("max", 0.0))
-            return cmin, cmax
-        except Exception:
-            pass
-        try:
-            rng = self.settings.colorbar_range
-            return float(rng["min"]), float(rng["max"])
-        except Exception:
-            return 0.0, 120.0
-
-    # ------------------------------------------------------------------
-    # Vertikale SPL-Flächen (senkrechte Surfaces)
-    # ------------------------------------------------------------------
-    def _clear_vertical_spl_surfaces(self) -> None:
-        """Entfernt alle zusätzlichen SPL-Meshes für senkrechte Flächen."""
-        if not hasattr(self, "plotter") or self.plotter is None:
-            self._vertical_surface_meshes.clear()
-            return
-        for name, actor in list(self._vertical_surface_meshes.items()):
-            try:
-                # Actor kann entweder direkt der Actor oder nur der Name sein
-                if isinstance(name, str):
-                    self.plotter.remove_actor(name)
-                elif actor is not None:
-                    # Falls der Key kein String ist, versuche den Actor direkt zu entfernen
-                    try:
-                        self.plotter.remove_actor(actor)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        self._vertical_surface_meshes.clear()
-
-    def _update_vertical_spl_surfaces(self) -> None:
-        """
-        Zeichnet / aktualisiert SPL-Flächen für senkrechte Surfaces auf Basis von
-        calculation_spl['surface_samples'] und calculation_spl['surface_fields'].
-        
-        Hinweis:
-        - Für horizontale Flächen verwenden wir ausschließlich den Texture-Pfad.
-        - Für senkrechte / stark geneigte Flächen rendern wir hier explizite Meshes
-          (vertical_spl_<surface_id>), damit sie im 3D-Plot separat anwählbar sind.
-        """
-        container = self.container
-        if container is None or not hasattr(container, "calculation_spl"):
-            self._clear_vertical_spl_surfaces()
-            return
-
-        calc_spl = getattr(container, "calculation_spl", {}) or {}
-        sample_payloads = calc_spl.get("surface_samples")
-        if not isinstance(sample_payloads, list):
-            self._clear_vertical_spl_surfaces()
-            return
-
-        # Aktueller Surface-Status (enabled/hidden) aus den Settings
-        surface_definitions = getattr(self.settings, "surface_definitions", {})
-        if not isinstance(surface_definitions, dict):
-            surface_definitions = {}
-
-        # Vertikale Surfaces analog zu prepare_plot_geometry behandeln:
-        # lokales (u,v)-Raster + strukturiertes Mesh über build_vertical_surface_mesh.
-        new_vertical_meshes: dict[str, Any] = {}
-
-        # Aktuellen Colorization-Mode verwenden (wie für die Hauptfläche).
-        colorization_mode = getattr(self, "_last_colorization_mode", None)
-        if colorization_mode not in {"Color step", "Gradient"}:
-            colorization_mode = getattr(self.settings, "colorization_mode", "Gradient")
-        try:
-            cbar_range = getattr(self.settings, "colorbar_range", {})
-            cbar_step = float(cbar_range.get("step", 0.0))
-        except Exception:
-            cbar_step = 0.0
-        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
-        for payload in sample_payloads:
-            # Nur Payloads verarbeiten, die explizit als "vertical" markiert sind.
-            kind = payload.get("kind", "planar")
-            if kind != "vertical":
-                continue
-
-            surface_id = payload.get("surface_id")
-            if surface_id is None:
-                continue
-
-            # Nur Surfaces zeichnen, die aktuell enabled und nicht hidden sind
-            surf_def = surface_definitions.get(surface_id)
-            if surf_def is None:
-                continue
-            if hasattr(surf_def, "to_dict"):
-                surf_data = surf_def.to_dict()
-            elif isinstance(surf_def, dict):
-                surf_data = surf_def
-            else:
-                surf_data = {
-                    "enabled": getattr(surf_def, "enabled", False),
-                    "hidden": getattr(surf_def, "hidden", False),
-                    "points": getattr(surf_def, "points", []),
-                }
-            if not surf_data.get("enabled", False) or surf_data.get("hidden", False):
-                continue
-
-            # Lokale vertikale Plot-Geometrie aufbauen (u,v-Grid, SPL-Werte, Maske)
-            try:
-                geom: VerticalPlotGeometry | None = prepare_vertical_plot_geometry(
-                    surface_id,
-                    self.settings,
-                    container,
-                    default_upscale=self.UPSCALE_FACTOR,
-                )
-            except Exception:
-                geom = None
-
-            if geom is None:
-                continue
-
-            # Strukturiertes Mesh in Weltkoordinaten erstellen
-            try:
-                grid = build_vertical_surface_mesh(geom, pv_module=pv)
-            except Exception:
-                continue
-
-            # Color step: Werte in diskrete Stufen quantisieren, analog zur Hauptfläche.
-            if is_step_mode and "plot_scalars" in grid.array_names:
-                try:
-                    vals = np.asarray(grid["plot_scalars"], dtype=float)
-                    grid["plot_scalars"] = self._quantize_to_steps(vals, cbar_step)
-                except Exception:
-                    pass
-
-            actor_name = f"vertical_spl_{surface_id}"
-            # Entferne ggf. alten Actor
-            try:
-                if actor_name in self.plotter.renderer.actors:
-                    self.plotter.remove_actor(actor_name)
-            except Exception:
-                pass
-
-            # Farbschema und CLim an das Haupt-SPL anlehnen
-            cbar_min, cbar_max = self._get_vertical_color_limits()
-            try:
-                actor = self.plotter.add_mesh(
-                    grid,
-                    name=actor_name,
-                    scalars="plot_scalars",
-                    cmap="jet",
-                    clim=(cbar_min, cbar_max),
-                    # Gradient: weiche Darstellung, Color step: harte Stufen.
-                    smooth_shading=not is_step_mode,
-                    show_scalar_bar=False,
-                    reset_camera=False,
-                    interpolate_before_map=not is_step_mode,
-                )
-                # Stelle sicher, dass senkrechte Flächen pickable sind
-                if actor and hasattr(actor, 'SetPickable'):
-                    actor.SetPickable(True)
-                # Im Color-Step-Modus explizit flache Interpolation erzwingen,
-                # damit die Stufen wie bei der horizontalen Fläche erscheinen.
-                if is_step_mode and hasattr(actor, "prop") and actor.prop is not None:
-                    try:
-                        actor.prop.interpolation = "flat"
-                    except Exception:  # noqa: BLE001
-                        pass
-                new_vertical_meshes[actor_name] = actor
-            except Exception:
-                continue
-
-        # Alte Actors entfernen, die nicht mehr gebraucht werden
-        for old_name in list(self._vertical_surface_meshes.keys()):
-            if old_name not in new_vertical_meshes:
-                try:
-                    if old_name in self.plotter.renderer.actors:
-                        self.plotter.remove_actor(old_name)
-                except Exception:
-                    pass
-
-        self._vertical_surface_meshes = new_vertical_meshes
+    # Vertikale SPL-Flächen sind jetzt in SPL3DPlotRenderer (Plot3DSPL.py)
 
     # ------------------------------------------------------------------
     # Kamera-Zustand
@@ -3916,1070 +3357,775 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             float(y[-1]),
         )
 
-    def _update_surface_scalars(self, flat_scalars: np.ndarray) -> bool:
-        if self.surface_mesh is None:
-            return False
-
-        if flat_scalars.size == self.surface_mesh.n_points:
-            self.surface_mesh.point_data['plot_scalars'] = flat_scalars
-            if hasattr(self.surface_mesh, "modified"):
-                self.surface_mesh.modified()
-            return True
-
-        if flat_scalars.size == self.surface_mesh.n_cells:
-            self.surface_mesh.cell_data['plot_scalars'] = flat_scalars
-            if hasattr(self.surface_mesh, "modified"):
-                self.surface_mesh.modified()
-            return True
-
-        return False
-
     # ------------------------------------------------------------------
     # Bilineare Interpolation und Textur-Rendering für horizontale Surfaces
     # ------------------------------------------------------------------
-    @staticmethod
-    def _bilinear_interpolate_grid(
-        source_x: np.ndarray,
-        source_y: np.ndarray,
-        values: np.ndarray,
-        xq: np.ndarray,
-        yq: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Bilineare Interpolation auf einem regulären Grid.
-        Interpoliert zwischen den 4 umgebenden Grid-Punkten für glatte Farbübergänge.
-        Ideal für Gradient-Modus.
+    # Hinweis: _bilinear_interpolate_grid und _nearest_interpolate_grid sind jetzt in SPL3DPlotRenderer (Mixin)
+    # Die Methoden werden durch Vererbung vom Mixin bereitgestellt.
 
-        source_x: 1D-Array der X-Koordinaten (nx)
-        source_y: 1D-Array der Y-Koordinaten (ny)
-        values  : 2D-Array (ny, nx) mit SPL-Werten
-        xq, yq  : 1D-Arrays mit Abfragepunkten
-        """
-        source_x = np.asarray(source_x, dtype=float).reshape(-1)
-        source_y = np.asarray(source_y, dtype=float).reshape(-1)
-        vals = np.asarray(values, dtype=float)
-        xq = np.asarray(xq, dtype=float).reshape(-1)
-        yq = np.asarray(yq, dtype=float).reshape(-1)
-
-        ny, nx = vals.shape
-        if ny != len(source_y) or nx != len(source_x):
-            raise ValueError(
-                f"_bilinear_interpolate_grid: Shape mismatch values={vals.shape}, "
-                f"expected=({len(source_y)}, {len(source_x)})"
-            )
-
-        # Randbehandlung: Punkte außerhalb des Grids werden auf den Rand geclippt
-        x_min, x_max = source_x[0], source_x[-1]
-        y_min, y_max = source_y[0], source_y[-1]
-        xq_clip = np.clip(xq, x_min, x_max)
-        yq_clip = np.clip(yq, y_min, y_max)
-
-        # Finde Indizes für bilineare Interpolation
-        # Für jeden Abfragepunkt finden wir die 4 umgebenden Grid-Punkte
-        idx_x = np.searchsorted(source_x, xq_clip, side="right") - 1
-        idx_y = np.searchsorted(source_y, yq_clip, side="right") - 1
-        
-        # Clamp auf gültigen Bereich
-        idx_x = np.clip(idx_x, 0, nx - 2)  # -2 weil wir idx_x+1 brauchen
-        idx_y = np.clip(idx_y, 0, ny - 2)  # -2 weil wir idx_y+1 brauchen
-        
-        # Hole die 4 umgebenden Punkte
-        x0 = source_x[idx_x]
-        x1 = source_x[idx_x + 1]
-        y0 = source_y[idx_y]
-        y1 = source_y[idx_y + 1]
-        
-        # Werte an den 4 Ecken
-        f00 = vals[idx_y, idx_x]
-        f10 = vals[idx_y, idx_x + 1]
-        f01 = vals[idx_y + 1, idx_x]
-        f11 = vals[idx_y + 1, idx_x + 1]
-        
-        # Berechne Interpolationsgewichte
-        dx = x1 - x0
-        dy = y1 - y0
-        # Vermeide Division durch Null
-        dx = np.where(dx > 1e-10, dx, 1.0)
-        dy = np.where(dy > 1e-10, dy, 1.0)
-        
-        wx = (xq_clip - x0) / dx
-        wy = (yq_clip - y0) / dy
-        
-        # Bilineare Interpolation: f(x,y) = (1-wx)(1-wy)*f00 + wx(1-wy)*f10 + (1-wx)wy*f01 + wx*wy*f11
-        result = (
-            (1 - wx) * (1 - wy) * f00 +
-            wx * (1 - wy) * f10 +
-            (1 - wx) * wy * f01 +
-            wx * wy * f11
-        )
-        
-        return result
-
-    @staticmethod
-    def _nearest_interpolate_grid(
-        source_x: np.ndarray,
-        source_y: np.ndarray,
-        values: np.ndarray,
-        xq: np.ndarray,
-        yq: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Nearest-Neighbor Interpolation auf einem regulären Grid.
-        Jeder Abfragepunkt erhält exakt den Wert des nächstgelegenen Grid-Punkts.
-        Behält die Randbehandlung (Clipping) bei.
-        Ideal für Color step-Modus (harte Stufen).
-
-        source_x: 1D-Array der X-Koordinaten (nx)
-        source_y: 1D-Array der Y-Koordinaten (ny)
-        values  : 2D-Array (ny, nx) mit SPL-Werten
-        xq, yq  : 1D-Arrays mit Abfragepunkten
-        """
-        source_x = np.asarray(source_x, dtype=float).reshape(-1)
-        source_y = np.asarray(source_y, dtype=float).reshape(-1)
-        vals = np.asarray(values, dtype=float)
-        xq = np.asarray(xq, dtype=float).reshape(-1)
-        yq = np.asarray(yq, dtype=float).reshape(-1)
-
-        ny, nx = vals.shape
-        if ny != len(source_y) or nx != len(source_x):
-            raise ValueError(
-                f"_nearest_interpolate_grid: Shape mismatch values={vals.shape}, "
-                f"expected=({len(source_y)}, {len(source_x)})"
-            )
-
-        # 🎯 Randbehandlung: Punkte außerhalb des Grids werden auf den Rand geclippt
-        x_min, x_max = source_x[0], source_x[-1]
-        y_min, y_max = source_y[0], source_y[-1]
-        xq_clip = np.clip(xq, x_min, x_max)
-        yq_clip = np.clip(yq, y_min, y_max)
-
-        # Finde nächstgelegenen Index für X
-        idx_x = np.searchsorted(source_x, xq_clip, side="left")
-        idx_x = np.clip(idx_x, 0, nx - 1)
-        # Korrektur: wirklich nächsten Nachbarn wählen (links/rechts vergleichen)
-        left_x = idx_x - 1
-        right_x = idx_x
-        left_x = np.clip(left_x, 0, nx - 1)
-        dist_left_x = np.abs(xq_clip - source_x[left_x])
-        dist_right_x = np.abs(xq_clip - source_x[right_x])
-        use_left_x = dist_left_x < dist_right_x
-        idx_x[use_left_x] = left_x[use_left_x]
-
-        # Finde nächstgelegenen Index für Y
-        idx_y = np.searchsorted(source_y, yq_clip, side="left")
-        idx_y = np.clip(idx_y, 0, ny - 1)
-        # Korrektur: wirklich nächsten Nachbarn wählen (oben/unten vergleichen)
-        left_y = idx_y - 1
-        right_y = idx_y
-        left_y = np.clip(left_y, 0, ny - 1)
-        dist_left_y = np.abs(yq_clip - source_y[left_y])
-        dist_right_y = np.abs(yq_clip - source_y[right_y])
-        use_left_y = dist_left_y < dist_right_y
-        idx_y[use_left_y] = left_y[use_left_y]
-
-        # Weise jedem Abfragepunkt den Wert des nächstgelegenen Grid-Punkts zu
-        result = vals[idx_y, idx_x]
-        return result
-
-    def _render_surfaces_textured(
+    def _process_single_surface_texture(
         self,
-        geometry,
-        original_plot_values: np.ndarray,
+        surface_id: str,
+        points: list[dict[str, float]],
+        surface_obj: Any,
+        source_x: np.ndarray,
+        source_y: np.ndarray,
+        values: np.ndarray,
         cbar_min: float,
         cbar_max: float,
-        cmap_object: str | Any,
+        base_cmap: Any,
+        norm: Any,
+        is_step_mode: bool,
         colorization_mode: str,
         cbar_step: float,
-    ) -> None:
+        tex_res_global: float,
+        effective_upscale_factor: int,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Renderpfad für horizontale Surfaces als 2D-Texturen.
-
-        - Pro Surface wird ein lokales 2D-Bild in Welt-X/Y berechnet.
-        - SPL-Werte stammen aus original_plot_values (coarse Grid) via bilinearer Interpolation.
-        - Die Textur wird auf ein flaches StructuredGrid in derselben XY-Position gelegt.
+        Verarbeitet eine einzelne Surface und erstellt Textur + Grid.
+        Diese Methode kann parallel aufgerufen werden.
+        
+        Returns:
+            Dict mit 'surface_id', 'grid', 'texture', 'metadata', 'texture_signature', etc.
+            oder None bei Fehler/Skip
         """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            return
-
         try:
             import pyvista as pv  # type: ignore
         except Exception:
-            return
-
-        # Optionales Feintiming für diesen Pfad
-        t_textures_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-
-        # Quelle: Berechnungsraster
-        source_x = np.asarray(getattr(geometry, "source_x", []), dtype=float)
-        source_y = np.asarray(getattr(geometry, "source_y", []), dtype=float)
-        values = np.asarray(original_plot_values, dtype=float)
-        if values.shape != (len(source_y), len(source_x)):
-            return
-
-        # Bestimme ob Step-Modus aktiv ist (vor der Verwendung definieren)
-        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
-
-        # Auflösung der Textur in Metern (XY)
-        # Standard-Basiswert aus den Settings (z.B. 0.03m)
-        # 🎯 Gradient-Modus: etwas feinere Auflösung als im Color-Step-Modus
-        base_tex_res = float(
-            getattr(self.settings, "spl_surface_texture_resolution", 0.03) or 0.03
-        )
-        if is_step_mode:
-            # Color step: Normale Auflösung (harte Stufen benötigen keine hohe Auflösung)
-            tex_res_global = base_tex_res
-        else:
-            # Gradient: 2x feinere Auflösung (Performance-Kompromiss)
-            # Bilineare Interpolation sorgt bereits für glatte Übergänge
-            # (0.01m = 1cm pro Pixel statt 20mm = 2x mehr Pixel)
-            tex_res_global = base_tex_res * 0.5
-
-        # Colormap vorbereiten
-        if isinstance(cmap_object, str):
-            base_cmap = cm.get_cmap(cmap_object)
-        else:
-            base_cmap = cmap_object
-        norm = Normalize(vmin=cbar_min, vmax=cbar_max)
-
-        # Aktive Surfaces ermitteln
-        surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
-        enabled_surfaces: list[tuple[str, list[dict[str, float]], Any]] = []
-        if isinstance(surface_definitions, dict):
-            for surface_id, surface_def in surface_definitions.items():
-                if isinstance(surface_def, SurfaceDefinition):
-                    enabled = bool(getattr(surface_def, "enabled", False))
-                    hidden = bool(getattr(surface_def, "hidden", False))
-                    points = getattr(surface_def, "points", []) or []
-                    surface_obj = surface_def
-                else:
-                    enabled = bool(surface_def.get("enabled", False))
-                    hidden = bool(surface_def.get("hidden", False))
-                    points = surface_def.get("points", []) or []
-                    surface_obj = surface_def
-                if enabled and not hidden and len(points) >= 3:
-                    enabled_surfaces.append((str(surface_id), points, surface_obj))
+            return None
         
-
-        # Nicht mehr benötigte Textur-Actors entfernen
-        active_ids = {sid for sid, _, _ in enabled_surfaces}
-        for sid, texture_data in list(self._surface_texture_actors.items()):
-            if sid not in active_ids:
-                try:
-                    actor = texture_data.get('actor') if isinstance(texture_data, dict) else texture_data
-                    if actor is not None:
-                        self.plotter.remove_actor(actor)
-                except Exception:
-                    pass
-                self._surface_texture_actors.pop(sid, None)
-
-        if not enabled_surfaces:
-            return
-
-        # Versuche, aus der Plot-Geometrie einen effektiven Upscaling-Faktor zu rekonstruieren.
-        # Hintergrund: Für achsparallele Rechtecke können wir die Textur grober machen,
-        #              wenn das Plot-Raster bereits hochskaliert ist.
-        effective_upscale_factor: int = 4
         try:
-            plot_x = np.asarray(getattr(geometry, "plot_x", []), dtype=float)
-            plot_y = np.asarray(getattr(geometry, "plot_y", []), dtype=float)
-            if plot_x.size > 1 and plot_y.size > 1 and source_x.size > 1 and source_y.size > 1:
-                # Nutze das Verhältnis der Stützstellen als Approximation
-                ratio_x = (float(plot_x.size) - 1.0) / (float(source_x.size) - 1.0)
-                ratio_y = (float(plot_y.size) - 1.0) / (float(source_y.size) - 1.0)
-                approx = max(ratio_x, ratio_y)
-                if approx > 1.2:
-                    # Runde auf ganzzahligen Faktor und begrenze auf sinnvollen Bereich
-                    effective_upscale_factor = int(round(approx))
-                    if effective_upscale_factor < 1:
-                        effective_upscale_factor = 1
-                    if effective_upscale_factor > 8:
-                        effective_upscale_factor = 8
-        except Exception:
-            effective_upscale_factor = 1
+            t_surface_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+            t_geom_done = t_surface_start
+            
+            poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+            poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+            poly_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
+            if poly_x.size == 0 or poly_y.size == 0:
+                return None
 
-        if DEBUG_PLOT3D_TIMING:
-            print(
-                "[PlotSPL3D] _render_surfaces_textured config: "
-                f"base_tex_res={base_tex_res:.4f} m, "
-                f"tex_res_global={tex_res_global:.4f} m, "
-                f"effective_upscale_factor={effective_upscale_factor}"
-            )
-
-        axis_aligned_count = 0
-        for surface_id, points, surface_obj in enabled_surfaces:
-            try:
-                t_surface_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-                t_geom_done = t_surface_start
-                poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
-                poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
-                poly_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
-                if poly_x.size == 0 or poly_y.size == 0:
-                    continue
-
-                xmin, xmax = float(poly_x.min()), float(poly_x.max())
-                ymin, ymax = float(poly_y.min()), float(poly_y.max())
+            xmin, xmax = float(poly_x.min()), float(poly_x.max())
+            ymin, ymax = float(poly_y.min()), float(poly_y.max())
+            
+            # 🎯 Berechne Planmodell für geneigte Flächen
+            dict_points = [
+                {"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "z": float(p.get("z", 0.0))}
+                for p in points
+            ]
+            plane_model, _ = derive_surface_plane(dict_points)
+            
+            # 🎯 Prüfe ob Fläche senkrecht ist
+            is_vertical = False
+            orientation = None
+            wall_axis = None
+            wall_value = None
+            
+            if plane_model is None:
+                x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
+                y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
+                z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
+                eps_line = 1e-6
+                has_height = z_span > 1e-3
                 
-                # 🎯 Berechne Planmodell für geneigte Flächen
-                # Konvertiere Punkte in Dict-Format für derive_surface_plane
-                dict_points = [
-                    {"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "z": float(p.get("z", 0.0))}
-                    for p in points
-                ]
-                plane_model, _ = derive_surface_plane(dict_points)
+                if y_span < eps_line and x_span >= eps_line and has_height:
+                    is_vertical = True
+                    orientation = "xz"
+                    wall_axis = "y"
+                    wall_value = float(np.mean(poly_y))
+                elif x_span < eps_line and y_span >= eps_line and has_height:
+                    is_vertical = True
+                    orientation = "yz"
+                    wall_axis = "x"
+                    wall_value = float(np.mean(poly_x))
                 
-                # 🎯 Prüfe ob Fläche senkrecht ist (nicht planar)
-                # Senkrechte Flächen benötigen spezielle Behandlung mit (u,v)-Koordinaten
-                is_vertical = False
-                orientation = None
-                wall_axis = None
-                wall_value = None
-                
-                if plane_model is None:
-                    # Prüfe ob es eine senkrechte Fläche ist
-                    x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
-                    y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
-                    z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
-                    
-                    # Senkrechte Fläche: XY-Projektion ist fast eine Linie, aber signifikante Z-Höhe
-                    eps_line = 1e-6
-                    has_height = z_span > 1e-3
-                    
-                    if y_span < eps_line and x_span >= eps_line and has_height:
-                        # X-Z-Wand: y ≈ const (Fläche verläuft in X-Z-Richtung)
-                        is_vertical = True
-                        orientation = "xz"
-                        wall_axis = "y"
-                        wall_value = float(np.mean(poly_y))
-                    elif x_span < eps_line and y_span >= eps_line and has_height:
-                        # Y-Z-Wand: x ≈ const (Fläche verläuft in Y-Z-Richtung)
-                        is_vertical = True
-                        orientation = "yz"
-                        wall_axis = "x"
-                        wall_value = float(np.mean(poly_x))
-                    
-                    if not is_vertical:
-                        # Fallback: Wenn kein Planmodell gefunden wurde, verwende konstante Höhe (Mittelwert)
-                        plane_model = {
-                            "mode": "constant",
-                            "base": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
-                            "slope": 0.0,
-                            "intercept": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
-                        }
-
-                # 🎯 SPEZIELLER PFAD FÜR SENKRECHTE FLÄCHEN
-                if is_vertical:
-                    # Senkrechte Flächen verwenden (u,v)-Koordinaten statt (x,y)
-                    # u = x oder y (je nach Orientierung), v = z
-                    if orientation == "xz":
-                        # X-Z-Wand: u = x, v = z, y = const
-                        poly_u = poly_x
-                        poly_v = poly_z
-                        umin, umax = xmin, xmax
-                        vmin, vmax = float(poly_z.min()), float(poly_z.max())
-                    else:  # orientation == "yz"
-                        # Y-Z-Wand: u = y, v = z, x = const
-                        poly_u = poly_y
-                        poly_v = poly_z
-                        umin, umax = ymin, ymax
-                        vmin, vmax = float(poly_z.min()), float(poly_z.max())
-                    
-                    # Erstelle (u,v)-Grid für senkrechte Fläche
-                    margin = tex_res_global * 0.5
-                    u_start = umin - margin
-                    u_end = umax + margin
-                    v_start = vmin - margin
-                    v_end = vmax + margin
-                    
-                    num_u = int(np.ceil((u_end - u_start) / tex_res_global)) + 1
-                    num_v = int(np.ceil((v_end - v_start) / tex_res_global)) + 1
-                    
-                    us = np.linspace(u_start, u_end, num_u, dtype=float)
-                    vs = np.linspace(v_start, v_end, num_v, dtype=float)
-                    if us.size < 2 or vs.size < 2:
-                        continue
-                    
-                    U, V = np.meshgrid(us, vs, indexing="xy")
-                    points_uv = np.column_stack((U.ravel(), V.ravel()))
-                    
-                    # Maske im Polygon (u,v-Ebene)
-                    poly_path_uv = Path(np.column_stack((poly_u, poly_v)))
-                    inside_uv = poly_path_uv.contains_points(points_uv)
-                    inside_uv = inside_uv.reshape(U.shape)
-                    
-                    if not np.any(inside_uv):
-                        continue
-                    
-                    if DEBUG_PLOT3D_TIMING:
-                        t_geom_done = time.perf_counter()
-
-                    # 🎯 Hole SPL-Werte aus vertikalen Samples
-                    # Verwende prepare_vertical_plot_geometry für SPL-Werte
-                    try:
-                        geom_vertical = prepare_vertical_plot_geometry(
-                            surface_id,
-                            self.settings,
-                            self.container,
-                            default_upscale=1,  # Kein Upscaling, da wir bereits feines Grid haben
-                        )
-                    except Exception:
-                        geom_vertical = None
-                    
-                    if geom_vertical is None:
-                        continue
-                    
-                    # Interpoliere SPL-Werte auf (u,v)-Grid
-                    # geom_vertical enthält plot_u, plot_v, plot_values
-                    plot_u_geom = np.asarray(geom_vertical.plot_u, dtype=float)
-                    plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
-                    plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
-                    
-                    # 🎯 Gradient: Bilineare Interpolation für glatte Farbübergänge
-                    # Color step: Nearest-Neighbor für harte Stufen
-                    if is_step_mode:
-                        spl_flat_uv = self._nearest_interpolate_grid(
-                            plot_u_geom,
-                            plot_v_geom,
-                            plot_values_geom,
-                            U.ravel(),
-                            V.ravel(),
-                        )
-                    else:
-                        spl_flat_uv = self._bilinear_interpolate_grid(
-                            plot_u_geom,
-                            plot_v_geom,
-                            plot_values_geom,
-                            U.ravel(),
-                            V.ravel(),
-                        )
-                    spl_img_uv = spl_flat_uv.reshape(U.shape)
-                    
-                    # Werte clippen
-                    spl_clipped_uv = np.clip(spl_img_uv, cbar_min, cbar_max)
-                    if is_step_mode:
-                        spl_clipped_uv = self._quantize_to_steps(spl_clipped_uv, cbar_step)
-                    
-                    # In Farbe umsetzen
-                    rgba_uv = base_cmap(norm(spl_clipped_uv))
-                    
-                    # Alpha-Maske
-                    alpha_mask_uv = inside_uv & np.isfinite(spl_clipped_uv)
-                    rgba_uv[..., 3] = np.where(alpha_mask_uv, 1.0, 0.0)
-                    
-                    # Nach uint8 wandeln
-                    img_rgba_uv = (np.clip(rgba_uv, 0.0, 1.0) * 255).astype(np.uint8)
-
-                    if DEBUG_PLOT3D_TIMING:
-                        t_color_done = time.perf_counter()
-                    
-                    # 🎯 Erstelle 3D-Grid für senkrechte Fläche
-                    if orientation == "xz":
-                        # X-Z-Wand: X = U, Y = wall_value, Z = V
-                        X_3d = U
-                        Y_3d = np.full_like(U, wall_value)
-                        Z_3d = V
-                    else:  # orientation == "yz"
-                        # Y-Z-Wand: X = wall_value, Y = U, Z = V
-                        X_3d = np.full_like(U, wall_value)
-                        Y_3d = U
-                        Z_3d = V
-                    
-                    grid = pv.StructuredGrid(X_3d, Y_3d, Z_3d)
-                    
-                    # Textur-Koordinaten für senkrechte Fläche
-                    try:
-                        grid.texture_map_to_plane(inplace=True)
-                        t_coords = grid.point_data.get("TCoords")
-                    except Exception:
-                        t_coords = None
-                    
-                    # Manuelle Textur-Koordinaten-Berechnung für senkrechte Fläche
-                    bounds = grid.bounds
-                    if bounds is not None and len(bounds) >= 6:
-                        if orientation == "xz":
-                            u_min, u_max = bounds[0], bounds[1]  # X-Bounds
-                            v_min, v_max = bounds[4], bounds[5]  # Z-Bounds
-                        else:  # yz
-                            u_min, u_max = bounds[2], bounds[3]  # Y-Bounds
-                            v_min, v_max = bounds[4], bounds[5]  # Z-Bounds
-                        
-                        u_span = u_max - u_min
-                        v_span = v_max - v_min
-                        
-                        if u_span > 1e-10 and v_span > 1e-10:
-                            if orientation == "xz":
-                                u_coords = (X_3d - u_min) / u_span
-                            else:  # yz
-                                u_coords = (Y_3d - u_min) / u_span
-                            v_coords_raw = (Z_3d - v_min) / v_span
-                            
-                            u_coords = np.clip(u_coords, 0.0, 1.0)
-                            v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
-                            v_coords = 1.0 - v_coords_raw  # PyVista-Konvention: v=0 oben
-                            
-                            # Achsen-Invertierung (wie bei planaren Flächen)
-                            invert_x = False
-                            invert_y = True
-                            swap_axes = False
-                            
-                            if isinstance(surface_obj, SurfaceDefinition):
-                                if hasattr(surface_obj, "invert_texture_x"):
-                                    invert_x = bool(getattr(surface_obj, "invert_texture_x"))
-                                if hasattr(surface_obj, "invert_texture_y"):
-                                    invert_y = bool(getattr(surface_obj, "invert_texture_y"))
-                                if hasattr(surface_obj, "swap_texture_axes"):
-                                    swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
-                            elif isinstance(surface_obj, dict):
-                                if "invert_texture_x" in surface_obj:
-                                    invert_x = bool(surface_obj["invert_texture_x"])
-                                if "invert_texture_y" in surface_obj:
-                                    invert_y = bool(surface_obj["invert_texture_y"])
-                                if "swap_texture_axes" in surface_obj:
-                                    swap_axes = bool(surface_obj["swap_texture_axes"])
-                            
-                            img_rgba_final = img_rgba_uv.copy()
-                            if invert_x:
-                                img_rgba_final = np.fliplr(img_rgba_final)
-                                u_coords = 1.0 - u_coords
-                            if invert_y:
-                                img_rgba_final = np.flipud(img_rgba_final)
-                                v_coords = 1.0 - v_coords
-                            if swap_axes:
-                                img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
-                                u_coords, v_coords = v_coords.copy(), u_coords.copy()
-                            
-                            t_coords = np.column_stack((u_coords.ravel(), v_coords.ravel()))
-                            grid.point_data["TCoords"] = t_coords
-                            img_rgba_uv = img_rgba_final
-                        else:
-                            # Fallback: Erstelle einfache Textur-Koordinaten
-                            if t_coords is None:
-                                ny_uv, nx_uv = U.shape
-                                u_coords_fallback = np.linspace(0, 1, nx_uv)
-                                v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)  # PyVista: v=0 oben
-                                U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
-                                t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
-                            grid.point_data["TCoords"] = t_coords
-                    else:
-                        # Fallback wenn bounds nicht verfügbar
-                        if t_coords is None:
-                            ny_uv, nx_uv = U.shape
-                            u_coords_fallback = np.linspace(0, 1, nx_uv)
-                            v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
-                            U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
-                            t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
-                        grid.point_data["TCoords"] = t_coords
-                    
-                    # Erstelle Textur
-                    tex = pv.Texture(img_rgba_uv)
-                    # 🎯 Gradient: smooth rendering, Color step: harte Stufen
-                    tex.interpolate = not is_step_mode
-                    
-                    actor_name = f"{self.SURFACE_NAME}_tex_{surface_id}"
-                    old_texture_data = self._surface_texture_actors.get(surface_id)
-                    if old_texture_data is not None:
-                        old_actor = old_texture_data.get('actor') if isinstance(old_texture_data, dict) else old_texture_data
-                        if old_actor is not None:
-                            try:
-                                self.plotter.remove_actor(old_actor)
-                            except Exception:
-                                pass
-                    
-                    actor = self.plotter.add_mesh(
-                        grid,
-                        name=actor_name,
-                        texture=tex,
-                        show_scalar_bar=False,
-                        reset_camera=False,
-                    )
-                    # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
-                    if hasattr(actor, 'SetPickable'):
-                        actor.SetPickable(False)
-                    
-                    # 🎯 WICHTIG: Setze _surface_texture_actors auch auf self.plotter,
-                    # damit SPL3DOverlayRenderer darauf zugreifen kann
-                    if not hasattr(self.plotter, '_surface_texture_actors'):
-                        self.plotter._surface_texture_actors = {}
-                    self.plotter._surface_texture_actors[surface_id] = {
-                        'actor': actor,
-                        'surface_id': surface_id,
-                    }
-                    
-                    # Speichere Metadaten
-                    metadata = {
-                        'actor': actor,
-                        'grid': grid,
-                        'texture': tex,
-                        'grid_bounds': tuple(bounds) if bounds is not None else None,
-                        'orientation': orientation,
-                        'wall_axis': wall_axis,
-                        'wall_value': wall_value,
-                        'surface_id': surface_id,
-                        'is_vertical': True,
-                    }
-                    self._surface_texture_actors[surface_id] = metadata
-                    
-                    # 🎯 WICHTIG: Setze _surface_texture_actors auch auf self.plotter,
-                    # damit SPL3DOverlayRenderer darauf zugreifen kann
-                    if not hasattr(self.plotter, '_surface_texture_actors'):
-                        self.plotter._surface_texture_actors = {}
-                    self.plotter._surface_texture_actors[surface_id] = {
-                        'actor': actor,
-                        'surface_id': surface_id,
+                if not is_vertical:
+                    plane_model = {
+                        "mode": "constant",
+                        "base": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
+                        "slope": 0.0,
+                        "intercept": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
                     }
 
-                    if DEBUG_PLOT3D_TIMING:
-                        t_surface_end = time.perf_counter()
-                        print(
-                            f"[PlotSPL3D] surface {surface_id} (vertical): "
-                            f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
-                            f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
-                            f"actor={(t_surface_end - t_color_done) * 1000.0:7.2f} ms"
-                        )
-
-                    continue  # Überspringe normalen planaren Pfad
-                
-                # 🎯 NORMALER PFAD FÜR PLANARE FLÄCHEN (horizontal oder geneigt)
-                # Für jede Surface kann die Textur-Auflösung separat gewählt werden.
-                # Basis ist der globale tex_res_global; für achsparallele Rechtecke
-                # kann die Auflösung gröber gewählt werden (Performance-Optimierung).
-
-                tex_res_surface = tex_res_global
-
-                # Heuristik: Erkenne axis-aligned Rechtecke in der XY-Projektion.
-                # Auch Polygone mit zusätzlichen Stützpunkten entlang der Kanten (mehr als 4 Punkte)
-                # werden als Rechteck erkannt, solange alle Punkte auf dem Rand des
-                # achsparallelen Bounding-Rects liegen.
-                is_axis_aligned_rectangle = False
-                try:
-                    if poly_x.size >= 4 and poly_y.size >= 4:
-                        # Entferne ggf. den letzten Punkt, falls identisch mit dem ersten (geschlossene Polylinie)
-                        px = poly_x
-                        py = poly_y
-                        if (
-                            poly_x.size >= 2
-                            and abs(poly_x[0] - poly_x[-1]) < 1e-6
-                            and abs(poly_y[0] - poly_y[-1]) < 1e-6
-                        ):
-                            px = poly_x[:-1]
-                            py = poly_y[:-1]
-                        if px.size >= 4:
-                            # Bounding-Box des Polygons
-                            xmin_rect = float(px.min())
-                            xmax_rect = float(px.max())
-                            ymin_rect = float(py.min())
-                            ymax_rect = float(py.max())
-                            span_x = xmax_rect - xmin_rect
-                            span_y = ymax_rect - ymin_rect
-                            tol = 1e-3
-
-                            if span_x > tol and span_y > tol:
-                                # Jeder Punkt muss auf einer der vier Rechteckkanten liegen
-                                on_left = np.isclose(px, xmin_rect, atol=tol)
-                                on_right = np.isclose(px, xmax_rect, atol=tol)
-                                on_bottom = np.isclose(py, ymin_rect, atol=tol)
-                                on_top = np.isclose(py, ymax_rect, atol=tol)
-
-                                on_edge = on_left | on_right | on_bottom | on_top
-                                if np.all(on_edge):
-                                    # Stelle sicher, dass jede Kante mindestens einen Punkt hat
-                                    has_left = bool(np.any(on_left))
-                                    has_right = bool(np.any(on_right))
-                                    has_bottom = bool(np.any(on_bottom))
-                                    has_top = bool(np.any(on_top))
-
-                                    # und dass die vier Ecken existieren (innerhalb Toleranz)
-                                    has_tl = bool(np.any(on_left & on_top))
-                                    has_tr = bool(np.any(on_right & on_top))
-                                    has_bl = bool(np.any(on_left & on_bottom))
-                                    has_br = bool(np.any(on_right & on_bottom))
-
-                                    if has_left and has_right and has_bottom and has_top and has_tl and has_tr and has_bl and has_br:
-                                        is_axis_aligned_rectangle = True
-                except Exception:
-                    is_axis_aligned_rectangle = False
-
-                if is_axis_aligned_rectangle and effective_upscale_factor > 1:
-                    axis_aligned_count += 1
-                    # Für "ideale" Rechtecke kann die Textur grober sein, da keine schrägen Kanten
-                    # in XY auftreten. Nutze den rekonstruierten Upscaling-Faktor als Multiplikator.
-                    tex_res_surface = tex_res_global * float(effective_upscale_factor)
-
-                # 🎯 FIX: Reduzierter Margin für schärfere Kanten
-                # Reduziere Margin von 2.0 auf 0.5 für weniger Punkte außerhalb des Polygons
-                # Dies reduziert die "Zacken" am Rand, da weniger Zellen außerhalb gerendert werden
-                margin = tex_res_surface * 0.5  # Nur halber Pixel-Abstand als Margin (vorher: 2.0)
-
-                # Erstelle Grid mit reduziertem Margin (für minimale Interpolation an Rändern)
-                x_start = xmin - margin
-                x_end = xmax + margin
-                y_start = ymin - margin
-                y_end = ymax + margin
-
-                # Berechne Anzahl Punkte (inklusive Endpunkte)
-                num_x = int(np.ceil((x_end - x_start) / tex_res_surface)) + 1
-                num_y = int(np.ceil((y_end - y_start) / tex_res_surface)) + 1
-
-                # Erstelle Grid mit reduziertem Margin
-                xs = np.linspace(x_start, x_end, num_x, dtype=float)
-                ys = np.linspace(y_start, y_end, num_y, dtype=float)
-                if xs.size < 2 or ys.size < 2:
-                    continue
-
-                # Erstelle meshgrid mit indexing="xy" für korrekte Zuordnung
-                # Bei indexing="xy": X[j, i] = xs[i], Y[j, i] = ys[j]
-                # Shape ist (len(ys), len(xs)) = (ny, nx)
-                X, Y = np.meshgrid(xs, ys, indexing="xy")
-                points_2d = np.column_stack((X.ravel(), Y.ravel()))
-
-                # Maske im Polygon
-                poly_path = Path(np.column_stack((poly_x, poly_y)))
-                inside = poly_path.contains_points(points_2d)
-                inside = inside.reshape(X.shape)
-
-                if not np.any(inside):
-                    continue
-
-                # 🎯 Randoptimierung: Nur Randpunkte der Maske entlang der Surface-Kante "einrasten"
-                ny_tex, nx_tex = inside.shape
-                edge_mask = np.zeros_like(inside, dtype=bool)
-                # Finde alle Punkte, die mindestens einen Nachbarn außerhalb haben
-                for jj in range(ny_tex):
-                    for ii in range(nx_tex):
-                        if not inside[jj, ii]:
-                            continue
-                        for dj in (-1, 0, 1):
-                            for di in (-1, 0, 1):
-                                if dj == 0 and di == 0:
-                                    continue
-                                nj = jj + dj
-                                ni = ii + di
-                                if nj < 0 or nj >= ny_tex or ni < 0 or ni >= nx_tex or not inside[nj, ni]:
-                                    edge_mask[jj, ii] = True
-                                    break
-                            if edge_mask[jj, ii]:
-                                break
-
-                if np.any(edge_mask):
-                    # Pro Randpunkt: auf nächstgelegenen Punkt der Surface-Polylinie projizieren
-                    edge_indices = np.argwhere(edge_mask)
-                    for (jj, ii) in edge_indices:
-                        x_old = float(X[jj, ii])
-                        y_old = float(Y[jj, ii])
-                        x_new, y_new = self._project_point_to_polyline(x_old, y_old, poly_x, poly_y)
-                        X[jj, ii] = x_new
-                        Y[jj, ii] = y_new
-
-                if DEBUG_PLOT3D_TIMING:
-                    t_geom_done = time.perf_counter()
-
-                # 🎯 Gradient: Bilineare Interpolation für glatte Farbübergänge
-                # Color step: Nearest-Neighbor für harte Stufen
-                if is_step_mode:
-                    spl_flat = self._nearest_interpolate_grid(
-                        source_x,
-                        source_y,
-                        values,
-                        X.ravel(),
-                        Y.ravel(),
-                    )
-                else:
-                    spl_flat = self._bilinear_interpolate_grid(
-                        source_x,
-                        source_y,
-                        values,
-                        X.ravel(),
-                        Y.ravel(),
-                    )
-                spl_img = spl_flat.reshape(X.shape)
-
-                # Werte clippen
-                spl_clipped = np.clip(spl_img, cbar_min, cbar_max)
-                # Optional in Stufen quantisieren (Color step)
-                if is_step_mode:
-                    spl_clipped = self._quantize_to_steps(spl_clipped, cbar_step)
-
-                # In Farbe umsetzen
-                rgba = base_cmap(norm(spl_clipped))  # float [0,1], shape (H,W,4)
-
-                if DEBUG_PLOT3D_TIMING:
-                    t_color_done = time.perf_counter()
-
-                # 🎯 Verbesserte Alpha-Maske: Schärfere Kanten durch strikte Polygon-Prüfung
-                # Nur Pixel, die definitiv im Polygon liegen, sind sichtbar
-                alpha_mask = inside & np.isfinite(spl_clipped)
-                rgba[..., 3] = np.where(alpha_mask, 1.0, 0.0)
-
-                # Nach uint8 wandeln
-                img_rgba = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
-
-                # 🎯 Berechne Z-Koordinaten basierend auf Planmodell für geneigte Flächen
-                mode = plane_model.get("mode", "constant")
-                if mode == "constant":
-                    # Konstante Höhe
-                    Z = np.full_like(X, float(plane_model.get("base", 0.0)))
-                elif mode == "x":
-                    # Lineare Steigung entlang X-Achse: Z = slope * X + intercept
-                    slope = float(plane_model.get("slope", 0.0))
-                    intercept = float(plane_model.get("intercept", 0.0))
-                    Z = slope * X + intercept
-                elif mode == "y":
-                    # Lineare Steigung entlang Y-Achse: Z = slope * Y + intercept
-                    slope = float(plane_model.get("slope", 0.0))
-                    intercept = float(plane_model.get("intercept", 0.0))
-                    Z = slope * Y + intercept
-                else:  # mode == "xy" (allgemeine Ebene)
-                    # Allgemeine Ebene: Z = slope_x * X + slope_y * Y + intercept
-                    slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
-                    slope_y = float(plane_model.get("slope_y", 0.0))
-                    intercept = float(plane_model.get("intercept", 0.0))
-                    Z = slope_x * X + slope_y * Y + intercept
-                
-                # Erstelle Grid mit korrekten Z-Koordinaten (für horizontale und geneigte Flächen)
-                grid = pv.StructuredGrid(X, Y, Z)
-
-                # Verwende PyVista's texture_map_to_plane() für automatische Textur-Koordinaten
-                # Dies stellt sicher, dass PyVista die Textur-Koordinaten erkennt
-                try:
-                    grid.texture_map_to_plane(inplace=True)
-                    # Hole die generierten Textur-Koordinaten
-                    t_coords = grid.point_data.get("TCoords")
-                except Exception:
-                    t_coords = None
-
-                # Texture-Koordinaten manuell anpassen (basierend auf Welt-Koordinaten für korrekte Orientierung)
-                bounds = None
-                try:
-                    bounds = grid.bounds  # (xmin, xmax, ymin, ymax, zmin, zmax)
-                    xmin_grid, xmax_grid = bounds[0], bounds[1]
-                    ymin_grid, ymax_grid = bounds[2], bounds[3]
-                    
-                    # 🎯 KORREKTE Textur-Koordinaten-Berechnung:
-                    # Das Bild img_rgba hat Shape (H, W, 4) wo:
-                    #   H = len(ys) = Anzahl Y-Punkte (von ymin nach ymax)
-                    #   W = len(xs) = Anzahl X-Punkte (von xmin nach xmax)
-                    # 
-                    # Im Bild-Array: img_rgba[j, i, :] entspricht:
-                    #   i = Index in xs (0 = xmin, W-1 = xmax)
-                    #   j = Index in ys (0 = ymin, H-1 = ymax)
-                    #
-                    # Textur-Koordinaten (u, v):
-                    #   u = X-Position im Bild (0 = links/xmin, 1 = rechts/xmax)
-                    #   v = Y-Position im Bild (0 = unten/ymin, 1 = oben/ymax)
-                    # 
-                    # WICHTIG: In Bild-Arrays ist j=0 oben und j=H-1 unten (invertiert zu v)
-                    # Aber bei meshgrid mit indexing="xy": Y[j, i] = ys[j], X[j, i] = xs[i]
-                    #   j=0 entspricht ymin (unten), j=H-1 entspricht ymax (oben)
-                    #   i=0 entspricht xmin (links), i=W-1 entspricht xmax (rechts)
-                    #
-                    # Für Textur-Koordinaten müssen wir:
-                    #   u = (X - xmin) / (xmax - xmin)  -> 0 (xmin/links) bis 1 (xmax/rechts)
-                    #   v = (Y - ymin) / (ymax - ymin)  -> 0 (ymin/unten) bis 1 (ymax/oben)
-                    #
-                    # Das Bild wurde erstellt mit: spl_img[j, i] = spl_flat[j*W + i]
-                    #   wobei X[j, i] = xs[i] und Y[j, i] = ys[j]
-                    # Also: img_rgba[j, i] entspricht Welt-Koordinate (xs[i], ys[j])
-                    #
-                    # Textur-Koordinate für Punkt (X[j,i], Y[j,i]) sollte sein:
-                    #   u = (i) / (W-1) = (xs[i] - xmin) / (xmax - xmin)  (bei gleichmäßiger Verteilung)
-                    #   v = (j) / (H-1) = (ys[j] - ymin) / (ymax - ymin)  (bei gleichmäßiger Verteilung)
-                    
-                    # Berechne Textur-Koordinaten direkt aus Welt-Koordinaten
-                    x_span = xmax_grid - xmin_grid
-                    y_span = ymax_grid - ymin_grid
-                    
-                    if x_span > 1e-10 and y_span > 1e-10:
-                        # Überschreibe die automatisch generierten Textur-Koordinaten mit manuell berechneten
-                        # für exakte Zuordnung zwischen Welt-Koordinaten und Bild-Pixeln
-                        # Normalisiere Welt-Koordinaten auf [0, 1]
-                        # u: 0 = xmin (links), 1 = xmax (rechts)
-                        # v: 0 = ymin (unten), 1 = ymax (oben)
-                        u_coords = (X - xmin_grid) / x_span
-                        v_coords_raw = (Y - ymin_grid) / y_span
-                        
-                        # Stelle sicher, dass u und v im Bereich [0, 1] sind (aufgrund numerischer Ungenauigkeiten)
-                        u_coords = np.clip(u_coords, 0.0, 1.0)
-                        v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
-                        
-                        # 🎯 WICHTIG: Spiegle v-Koordinate für PyVista-Konvention
-                        # PyVista erwartet: v=0 oben, v=1 unten (Standard-Textur-Koordinaten)
-                        # Wir haben: v_raw=0 unten (ymin), v_raw=1 oben (ymax)
-                        # Also: v = 1 - v_raw
-                        v_coords = 1.0 - v_coords_raw
-                        
-                        # 🎯 ACHSEN-INVERTIERUNG: Konfigurierbar pro Surface
-                        # Prüfe, ob X- und/oder Y-Achsen invertiert werden sollen
-                        # Defaults (werden verwendet, wenn Attribute nicht gesetzt sind)
-                        invert_x = False
-                        invert_y = True
-                        swap_axes = False 
-                        
-                        if isinstance(surface_obj, SurfaceDefinition):
-                            # Nur überschreiben, wenn Attribut existiert
-                            if hasattr(surface_obj, "invert_texture_x"):
-                                invert_x = bool(getattr(surface_obj, "invert_texture_x"))
-                            if hasattr(surface_obj, "invert_texture_y"):
-                                invert_y = bool(getattr(surface_obj, "invert_texture_y"))
-                            if hasattr(surface_obj, "swap_texture_axes"):
-                                swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
-                        elif isinstance(surface_obj, dict):
-                            # Nur überschreiben, wenn Key existiert
-                            if "invert_texture_x" in surface_obj:
-                                invert_x = bool(surface_obj["invert_texture_x"])
-                            if "invert_texture_y" in surface_obj:
-                                invert_y = bool(surface_obj["invert_texture_y"])
-                            if "swap_texture_axes" in surface_obj:
-                                swap_axes = bool(surface_obj["swap_texture_axes"])
-                        
-                        # Debug-Ausgabe (immer anzeigen, damit wir sehen, was passiert)
-                        pass
-                        
-                        # 🎯 Wende Bild-Spiegelung an (wenn nötig), BEVOR wir die Textur erstellen
-                        # Wenn wir das Bild spiegeln, müssen wir die Texturkoordinaten NICHT zusätzlich invertieren
-                        img_rgba_final = img_rgba.copy()
-                        if invert_x:
-                            # Spiegle das Bild horizontal (links <-> rechts)
-                            img_rgba_final = np.fliplr(img_rgba_final)
-                            # Invertiere U-Koordinaten, damit sie zum gespiegelten Bild passen
-                            u_coords = 1.0 - u_coords
-                        if invert_y:
-                            # Spiegle das Bild vertikal (oben <-> unten)
-                            img_rgba_final = np.flipud(img_rgba_final)
-                            # Invertiere V-Koordinaten, damit sie zum gespiegelten Bild passen
-                            v_coords = 1.0 - v_coords
-                        if swap_axes:
-                            # Transponiere das Bild (X <-> Y)
-                            img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
-                            # Vertausche U und V Koordinaten
-                            u_coords, v_coords = v_coords.copy(), u_coords.copy()
-                        
-                        # Textur-Koordinaten als (N, 2) Array: [u, v]
-                        # u = X-Koordinate, v = Y-Koordinate
-                        t_coords = np.column_stack((u_coords.ravel(), v_coords.ravel()))
-                        grid.point_data["TCoords"] = t_coords
-                        
-                        # Verwende das gespiegelte Bild
-                        img_rgba = img_rgba_final
-                    else:
-                        # Fallback für degenerierte Fälle
-                        if t_coords is None:
-                            ny, nx = X.shape
-                            u_coords = np.linspace(0, 1, nx)
-                            v_coords_raw = np.linspace(0, 1, ny)
-                            # Spiegle v für PyVista-Konvention (v=0 oben, v=1 unten)
-                            v_coords = 1.0 - v_coords_raw
-                            U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
-                            t_coords = np.column_stack((U.ravel(), V.ravel()))
-                        grid.point_data["TCoords"] = t_coords
-                    
-                except Exception:
-                    continue
-
-                # Prüfe ob bounds und t_coords gesetzt wurden
-                if bounds is None:
-                    bounds = grid.bounds
-                if t_coords is None:
-                    # Fallback: Hole TCoords vom Grid falls verfügbar
-                    t_coords = grid.point_data.get("TCoords")
-                
-                # Validiere Textur-Koordinaten vor dem Rendern
-                if "TCoords" not in grid.point_data:
-                    continue
-                
-                # Prüfe ob TCoords die richtige Shape haben
-                tcoords_data = grid.point_data["TCoords"]
-                if tcoords_data is None or tcoords_data.shape[0] != grid.n_points:
-                    continue
-
-                tex = pv.Texture(img_rgba)
-                # 🎯 Gradient: smooth rendering, Color step: harte Stufen
-                tex.interpolate = not is_step_mode
-
-                actor_name = f"{self.SURFACE_NAME}_tex_{surface_id}"
-                # Alten Actor ggf. entfernen
-                old_actor = None
-                old_texture_data = self._surface_texture_actors.get(surface_id)
-                if old_texture_data is not None:
-                    old_actor = old_texture_data.get('actor') if isinstance(old_texture_data, dict) else old_texture_data
-                if old_actor is not None:
-                    try:
-                        self.plotter.remove_actor(old_actor)
-                    except Exception:
-                        pass
-
-                actor = self.plotter.add_mesh(
-                    grid,
-                    name=actor_name,
-                    texture=tex,
-                    show_scalar_bar=False,
-                    reset_camera=False,
+            # 🚀 TEXTUR-CACHE: Prüfe ob Textur wiederverwendet werden kann
+            # (Cache-Prüfung erfolgt im Hauptthread, hier nur Berechnung)
+            
+            # Für senkrechte Flächen: spezieller Pfad
+            if is_vertical:
+                return self._process_vertical_surface_texture(
+                    surface_id=surface_id,
+                    points=points,
+                    surface_obj=surface_obj,
+                    poly_x=poly_x,
+                    poly_y=poly_y,
+                    poly_z=poly_z,
+                    xmin=xmin,
+                    xmax=xmax,
+                    ymin=ymin,
+                    ymax=ymax,
+                    orientation=orientation,
+                    wall_axis=wall_axis,
+                    wall_value=wall_value,
+                    tex_res_global=tex_res_global,
+                    cbar_min=cbar_min,
+                    cbar_max=cbar_max,
+                    base_cmap=base_cmap,
+                    norm=norm,
+                    is_step_mode=is_step_mode,
+                    cbar_step=cbar_step,
+                    t_surface_start=t_surface_start,
                 )
-                # Markiere Surface-Actor als nicht-pickable, damit Achsenlinien gepickt werden können
-                if hasattr(actor, 'SetPickable'):
-                    actor.SetPickable(False)
-                
-                # 🎯 Speichere Metadaten zusammen mit dem Actor
-                # Diese können für Click-Handling, Koordinaten-Transformation, etc. verwendet werden
-                metadata = {
-                    'actor': actor,
-                    'grid': grid,
-                    'texture': tex,
-                    'grid_bounds': tuple(bounds) if bounds is not None else None,  # (xmin, xmax, ymin, ymax, zmin, zmax)
-                    'world_coords_x': xs.copy(),  # 1D-Array der X-Koordinaten in Metern
-                    'world_coords_y': ys.copy(),  # 1D-Array der Y-Koordinaten in Metern
-                    'world_coords_grid_x': X.copy(),  # 2D-Meshgrid der X-Koordinaten
-                    'world_coords_grid_y': Y.copy(),  # 2D-Meshgrid der Y-Koordinaten
-                    'texture_resolution': tex_res_surface,  # Auflösung der Textur in Metern
-                    'texture_size': (ys.size, xs.size),  # (H, W) in Pixeln
-                    'image_shape': img_rgba.shape,  # (H, W, 4)
-                    'polygon_bounds': {
-                        'xmin': xmin,
-                        'xmax': xmax,
-                        'ymin': ymin,
-                        'ymax': ymax,
-                    },
-                    'polygon_points': points,  # Original Polygon-Punkte
-                    't_coords': t_coords.copy() if t_coords is not None else None,  # Textur-Koordinaten
-                    'surface_id': surface_id,
-                    'is_axis_aligned_rectangle': is_axis_aligned_rectangle,
-                    'tex_res_surface': tex_res_surface,
-                    'effective_upscale_factor': effective_upscale_factor,
-                }
-                
-                self._surface_texture_actors[surface_id] = metadata
-                
-                # 🎯 WICHTIG: Setze _surface_texture_actors auch auf self.plotter,
-                # damit SPL3DOverlayRenderer darauf zugreifen kann
-                if not hasattr(self.plotter, '_surface_texture_actors'):
-                    self.plotter._surface_texture_actors = {}
-                self.plotter._surface_texture_actors[surface_id] = {
-                    'actor': actor,
-                    'surface_id': surface_id,
-                }
-
-                if DEBUG_PLOT3D_TIMING:
-                    t_surface_end = time.perf_counter()
-                    ny_tex, nx_tex = inside.shape
-                    num_inside = int(np.count_nonzero(inside))
-                    print(
-                        f"[PlotSPL3D] surface {surface_id} (planar): "
-                        f"axis_aligned_rect={is_axis_aligned_rectangle}, "
-                        f"tex_res_surface={tex_res_surface:.4f} m, "
-                        f"upscale_factor={effective_upscale_factor}, "
-                        f"grid={nx_tex}x{ny_tex}, inside={num_inside} "
-                        f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
-                        f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
-                        f"actor={(t_surface_end - t_color_done) * 1000.0:7.2f} ms"
-                    )
-            except Exception:
-                continue
-
-        if DEBUG_PLOT3D_TIMING:
-            t_textures_end = time.perf_counter()
-            print(
-                f"[PlotSPL3D] _render_surfaces_textured TOTAL: "
-                f"{(t_textures_end - t_textures_start) * 1000.0:7.2f} ms, "
-                f"axis_aligned_surfaces={axis_aligned_count}"
+            
+            # 🎯 NORMALER PFAD FÜR PLANARE FLÄCHEN
+            return self._process_planar_surface_texture(
+                surface_id=surface_id,
+                points=points,
+                surface_obj=surface_obj,
+                poly_x=poly_x,
+                poly_y=poly_y,
+                poly_z=poly_z,
+                xmin=xmin,
+                xmax=xmax,
+                ymin=ymin,
+                ymax=ymax,
+                plane_model=plane_model,
+                source_x=source_x,
+                source_y=source_y,
+                values=values,
+                tex_res_global=tex_res_global,
+                effective_upscale_factor=effective_upscale_factor,
+                cbar_min=cbar_min,
+                cbar_max=cbar_max,
+                base_cmap=base_cmap,
+                norm=norm,
+                is_step_mode=is_step_mode,
+                cbar_step=cbar_step,
+                t_surface_start=t_surface_start,
             )
+        except Exception as e:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[PlotSPL3D] Error processing surface {surface_id}: {e}")
+            return None
+
+    def _process_vertical_surface_texture(
+        self,
+        surface_id: str,
+        points: list[dict[str, float]],
+        surface_obj: Any,
+        poly_x: np.ndarray,
+        poly_y: np.ndarray,
+        poly_z: np.ndarray,
+        xmin: float,
+        xmax: float,
+        ymin: float,
+        ymax: float,
+        orientation: str,
+        wall_axis: str,
+        wall_value: float,
+        tex_res_global: float,
+        cbar_min: float,
+        cbar_max: float,
+        base_cmap: Any,
+        norm: Any,
+        is_step_mode: bool,
+        cbar_step: float,
+        t_surface_start: float,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Verarbeitet eine senkrechte Surface und erstellt Textur + Grid.
+        Diese Methode kann parallel aufgerufen werden.
+        """
+        try:
+            import pyvista as pv  # type: ignore
+        except Exception:
+            return None
+        
+        try:
+            # Senkrechte Flächen verwenden (u,v)-Koordinaten
+            if orientation == "xz":
+                poly_u = poly_x
+                poly_v = poly_z
+                umin, umax = xmin, xmax
+                vmin, vmax = float(poly_z.min()), float(poly_z.max())
+            else:  # orientation == "yz"
+                poly_u = poly_y
+                poly_v = poly_z
+                umin, umax = ymin, ymax
+                vmin, vmax = float(poly_z.min()), float(poly_z.max())
+            
+            # Erstelle (u,v)-Grid
+            margin = tex_res_global * 0.5
+            u_start = umin - margin
+            u_end = umax + margin
+            v_start = vmin - margin
+            v_end = vmax + margin
+            
+            num_u = int(np.ceil((u_end - u_start) / tex_res_global)) + 1
+            num_v = int(np.ceil((v_end - v_start) / tex_res_global)) + 1
+            
+            us = np.linspace(u_start, u_end, num_u, dtype=float)
+            vs = np.linspace(v_start, v_end, num_v, dtype=float)
+            if us.size < 2 or vs.size < 2:
+                return None
+            
+            U, V = np.meshgrid(us, vs, indexing="xy")
+            points_uv = np.column_stack((U.ravel(), V.ravel()))
+            
+            # Maske im Polygon
+            poly_path_uv = Path(np.column_stack((poly_u, poly_v)))
+            inside_uv = poly_path_uv.contains_points(points_uv)
+            inside_uv = inside_uv.reshape(U.shape)
+            
+            if not np.any(inside_uv):
+                return None
+            
+            t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+            
+            # Hole SPL-Werte aus vertikalen Samples
+            try:
+                geom_vertical = prepare_vertical_plot_geometry(
+                    surface_id,
+                    self.settings,
+                    self.container,
+                    default_upscale=1,
+                )
+            except Exception:
+                return None
+            
+            if geom_vertical is None:
+                return None
+            
+            plot_u_geom = np.asarray(geom_vertical.plot_u, dtype=float)
+            plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
+            plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
+            
+            # Berechne Signatur
+            texture_signature = self._calculate_texture_signature(
+                surface_id=surface_id,
+                points=points,
+                source_x=plot_u_geom,
+                source_y=plot_v_geom,
+                values=plot_values_geom,
+                cbar_min=cbar_min,
+                cbar_max=cbar_max,
+                cmap_object=base_cmap,
+                colorization_mode="Color step" if is_step_mode else "Gradient",
+                cbar_step=cbar_step,
+                tex_res_surface=tex_res_global,
+                plane_model=None,
+            )
+            
+            # Interpoliere SPL-Werte
+            if is_step_mode:
+                spl_flat_uv = self._nearest_interpolate_grid(
+                    plot_u_geom,
+                    plot_v_geom,
+                    plot_values_geom,
+                    U.ravel(),
+                    V.ravel(),
+                )
+            else:
+                spl_flat_uv = self._bilinear_interpolate_grid(
+                    plot_u_geom,
+                    plot_v_geom,
+                    plot_values_geom,
+                    U.ravel(),
+                    V.ravel(),
+                )
+            spl_img_uv = spl_flat_uv.reshape(U.shape)
+            
+            # Werte clippen
+            spl_clipped_uv = np.clip(spl_img_uv, cbar_min, cbar_max)
+            if is_step_mode:
+                spl_clipped_uv = self._quantize_to_steps(spl_clipped_uv, cbar_step)
+            
+            # In Farbe umsetzen
+            rgba_uv = base_cmap(norm(spl_clipped_uv))
+            alpha_mask_uv = inside_uv & np.isfinite(spl_clipped_uv)
+            rgba_uv[..., 3] = np.where(alpha_mask_uv, 1.0, 0.0)
+            img_rgba_uv = (np.clip(rgba_uv, 0.0, 1.0) * 255).astype(np.uint8)
+            
+            t_color_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+            
+            # Erstelle 3D-Grid
+            if orientation == "xz":
+                X_3d = U
+                Y_3d = np.full_like(U, wall_value)
+                Z_3d = V
+            else:  # orientation == "yz"
+                X_3d = np.full_like(U, wall_value)
+                Y_3d = U
+                Z_3d = V
+            
+            grid = pv.StructuredGrid(X_3d, Y_3d, Z_3d)
+            
+            # Textur-Koordinaten
+            try:
+                grid.texture_map_to_plane(inplace=True)
+                t_coords = grid.point_data.get("TCoords")
+            except Exception:
+                t_coords = None
+            
+            # Manuelle Textur-Koordinaten-Berechnung
+            bounds = grid.bounds
+            if bounds is not None and len(bounds) >= 6:
+                if orientation == "xz":
+                    u_min, u_max = bounds[0], bounds[1]
+                    v_min, v_max = bounds[4], bounds[5]
+                else:  # yz
+                    u_min, u_max = bounds[2], bounds[3]
+                    v_min, v_max = bounds[4], bounds[5]
+                
+                u_span = u_max - u_min
+                v_span = v_max - v_min
+                
+                if u_span > 1e-10 and v_span > 1e-10:
+                    if orientation == "xz":
+                        u_coords = (X_3d - u_min) / u_span
+                    else:  # yz
+                        u_coords = (Y_3d - u_min) / u_span
+                    v_coords_raw = (Z_3d - v_min) / v_span
+                    
+                    u_coords = np.clip(u_coords, 0.0, 1.0)
+                    v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
+                    v_coords = 1.0 - v_coords_raw
+                    
+                    # Achsen-Invertierung
+                    invert_x = False
+                    invert_y = True
+                    swap_axes = False
+                    
+                    if isinstance(surface_obj, SurfaceDefinition):
+                        if hasattr(surface_obj, "invert_texture_x"):
+                            invert_x = bool(getattr(surface_obj, "invert_texture_x"))
+                        if hasattr(surface_obj, "invert_texture_y"):
+                            invert_y = bool(getattr(surface_obj, "invert_texture_y"))
+                        if hasattr(surface_obj, "swap_texture_axes"):
+                            swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
+                    elif isinstance(surface_obj, dict):
+                        if "invert_texture_x" in surface_obj:
+                            invert_x = bool(surface_obj["invert_texture_x"])
+                        if "invert_texture_y" in surface_obj:
+                            invert_y = bool(surface_obj["invert_texture_y"])
+                        if "swap_texture_axes" in surface_obj:
+                            swap_axes = bool(surface_obj["swap_texture_axes"])
+                    
+                    img_rgba_final = img_rgba_uv.copy()
+                    if invert_x:
+                        img_rgba_final = np.fliplr(img_rgba_final)
+                        u_coords = 1.0 - u_coords
+                    if invert_y:
+                        img_rgba_final = np.flipud(img_rgba_final)
+                        v_coords = 1.0 - v_coords
+                    if swap_axes:
+                        img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
+                        u_coords, v_coords = v_coords.copy(), u_coords.copy()
+                    
+                    t_coords = np.column_stack((u_coords.ravel(), v_coords.ravel()))
+                    grid.point_data["TCoords"] = t_coords
+                    img_rgba_uv = img_rgba_final
+                else:
+                    if t_coords is None:
+                        ny_uv, nx_uv = U.shape
+                        u_coords_fallback = np.linspace(0, 1, nx_uv)
+                        v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
+                        U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
+                        t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
+                    grid.point_data["TCoords"] = t_coords
+            else:
+                if t_coords is None:
+                    ny_uv, nx_uv = U.shape
+                    u_coords_fallback = np.linspace(0, 1, nx_uv)
+                    v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
+                    U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
+                    t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
+                grid.point_data["TCoords"] = t_coords
+            
+            # Erstelle Textur
+            tex = pv.Texture(img_rgba_uv)
+            tex.interpolate = not is_step_mode
+            
+            # Metadaten
+            metadata = {
+                'grid': grid,
+                'texture': tex,
+                'grid_bounds': tuple(bounds) if bounds is not None else None,
+                'orientation': orientation,
+                'wall_axis': wall_axis,
+                'wall_value': wall_value,
+                'surface_id': surface_id,
+                'is_vertical': True,
+            }
+            
+            if DEBUG_PLOT3D_TIMING:
+                t_surface_end = time.perf_counter()
+                print(
+                    f"[PlotSPL3D] surface {surface_id} (vertical, parallel): "
+                    f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
+                    f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
+                    f"total={(t_surface_end - t_surface_start) * 1000.0:7.2f} ms"
+                )
+            
+            return {
+                'surface_id': surface_id,
+                'grid': grid,
+                'texture': tex,
+                'metadata': metadata,
+                'texture_signature': texture_signature,
+            }
+        except Exception as e:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[PlotSPL3D] Error in _process_vertical_surface_texture for {surface_id}: {e}")
+            return None
+
+    def _process_planar_surface_texture(
+        self,
+        surface_id: str,
+        points: list[dict[str, float]],
+        surface_obj: Any,
+        poly_x: np.ndarray,
+        poly_y: np.ndarray,
+        poly_z: np.ndarray,
+        xmin: float,
+        xmax: float,
+        ymin: float,
+        ymax: float,
+        plane_model: dict,
+        source_x: np.ndarray,
+        source_y: np.ndarray,
+        values: np.ndarray,
+        tex_res_global: float,
+        effective_upscale_factor: int,
+        cbar_min: float,
+        cbar_max: float,
+        base_cmap: Any,
+        norm: Any,
+        is_step_mode: bool,
+        cbar_step: float,
+        t_surface_start: float,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Verarbeitet eine planare Surface und erstellt Textur + Grid.
+        Diese Methode kann parallel aufgerufen werden.
+        """
+        try:
+            import pyvista as pv  # type: ignore
+        except Exception:
+            return None
+        
+        try:
+            tex_res_surface = tex_res_global
+            
+            # Heuristik: Erkenne axis-aligned Rechtecke
+            is_axis_aligned_rectangle = False
+            try:
+                if poly_x.size >= 4 and poly_y.size >= 4:
+                    px = poly_x
+                    py = poly_y
+                    if (
+                        poly_x.size >= 2
+                        and abs(poly_x[0] - poly_x[-1]) < 1e-6
+                        and abs(poly_y[0] - poly_y[-1]) < 1e-6
+                    ):
+                        px = poly_x[:-1]
+                        py = poly_y[:-1]
+                    if px.size >= 4:
+                        xmin_rect = float(px.min())
+                        xmax_rect = float(px.max())
+                        ymin_rect = float(py.min())
+                        ymax_rect = float(py.max())
+                        span_x = xmax_rect - xmin_rect
+                        span_y = ymax_rect - ymin_rect
+                        tol = 1e-3
+                        
+                        if span_x > tol and span_y > tol:
+                            on_left = np.isclose(px, xmin_rect, atol=tol)
+                            on_right = np.isclose(px, xmax_rect, atol=tol)
+                            on_bottom = np.isclose(py, ymin_rect, atol=tol)
+                            on_top = np.isclose(py, ymax_rect, atol=tol)
+                            on_edge = on_left | on_right | on_bottom | on_top
+                            if np.all(on_edge):
+                                has_left = bool(np.any(on_left))
+                                has_right = bool(np.any(on_right))
+                                has_bottom = bool(np.any(on_bottom))
+                                has_top = bool(np.any(on_top))
+                                has_tl = bool(np.any(on_left & on_top))
+                                has_tr = bool(np.any(on_right & on_top))
+                                has_bl = bool(np.any(on_left & on_bottom))
+                                has_br = bool(np.any(on_right & on_bottom))
+                                
+                                if has_left and has_right and has_bottom and has_top and has_tl and has_tr and has_bl and has_br:
+                                    is_axis_aligned_rectangle = True
+            except Exception:
+                is_axis_aligned_rectangle = False
+            
+            if is_axis_aligned_rectangle and effective_upscale_factor > 1:
+                tex_res_surface = tex_res_global * float(effective_upscale_factor)
+            
+            # Berechne Signatur
+            texture_signature = self._calculate_texture_signature(
+                surface_id=surface_id,
+                points=points,
+                source_x=source_x,
+                source_y=source_y,
+                values=values,
+                cbar_min=cbar_min,
+                cbar_max=cbar_max,
+                cmap_object=base_cmap,
+                colorization_mode="Color step" if is_step_mode else "Gradient",
+                cbar_step=cbar_step,
+                tex_res_surface=tex_res_surface,
+                plane_model=plane_model,
+            )
+            
+            # Erstelle Grid
+            margin = tex_res_surface * 0.5
+            x_start = xmin - margin
+            x_end = xmax + margin
+            y_start = ymin - margin
+            y_end = ymax + margin
+            
+            num_x = int(np.ceil((x_end - x_start) / tex_res_surface)) + 1
+            num_y = int(np.ceil((y_end - y_start) / tex_res_surface)) + 1
+            
+            xs = np.linspace(x_start, x_end, num_x, dtype=float)
+            ys = np.linspace(y_start, y_end, num_y, dtype=float)
+            if xs.size < 2 or ys.size < 2:
+                return None
+            
+            X, Y = np.meshgrid(xs, ys, indexing="xy")
+            points_2d = np.column_stack((X.ravel(), Y.ravel()))
+            
+            # Maske im Polygon
+            poly_path = Path(np.column_stack((poly_x, poly_y)))
+            inside = poly_path.contains_points(points_2d)
+            inside = inside.reshape(X.shape)
+            
+            if not np.any(inside):
+                return None
+            
+            # Randoptimierung
+            ny_tex, nx_tex = inside.shape
+            edge_mask = np.zeros_like(inside, dtype=bool)
+            for jj in range(ny_tex):
+                for ii in range(nx_tex):
+                    if not inside[jj, ii]:
+                        continue
+                    for dj in (-1, 0, 1):
+                        for di in (-1, 0, 1):
+                            if dj == 0 and di == 0:
+                                continue
+                            nj = jj + dj
+                            ni = ii + di
+                            if nj < 0 or nj >= ny_tex or ni < 0 or ni >= nx_tex or not inside[nj, ni]:
+                                edge_mask[jj, ii] = True
+                                break
+                        if edge_mask[jj, ii]:
+                            break
+            
+            if np.any(edge_mask):
+                edge_indices = np.argwhere(edge_mask)
+                for (jj, ii) in edge_indices:
+                    x_old = float(X[jj, ii])
+                    y_old = float(Y[jj, ii])
+                    x_new, y_new = self._project_point_to_polyline(x_old, y_old, poly_x, poly_y)
+                    X[jj, ii] = x_new
+                    Y[jj, ii] = y_new
+            
+            t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+            
+            # Interpoliere SPL-Werte
+            if is_step_mode:
+                spl_flat = self._nearest_interpolate_grid(
+                    source_x,
+                    source_y,
+                    values,
+                    X.ravel(),
+                    Y.ravel(),
+                )
+            else:
+                spl_flat = self._bilinear_interpolate_grid(
+                    source_x,
+                    source_y,
+                    values,
+                    X.ravel(),
+                    Y.ravel(),
+                )
+            spl_img = spl_flat.reshape(X.shape)
+            
+            # Werte clippen
+            spl_clipped = np.clip(spl_img, cbar_min, cbar_max)
+            if is_step_mode:
+                spl_clipped = self._quantize_to_steps(spl_clipped, cbar_step)
+            
+            # In Farbe umsetzen
+            rgba = base_cmap(norm(spl_clipped))
+            alpha_mask = inside & np.isfinite(spl_clipped)
+            rgba[..., 3] = np.where(alpha_mask, 1.0, 0.0)
+            img_rgba = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
+            
+            t_color_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+            
+            # Berechne Z-Koordinaten
+            mode = plane_model.get("mode", "constant")
+            if mode == "constant":
+                Z = np.full_like(X, float(plane_model.get("base", 0.0)))
+            elif mode == "x":
+                slope = float(plane_model.get("slope", 0.0))
+                intercept = float(plane_model.get("intercept", 0.0))
+                Z = slope * X + intercept
+            elif mode == "y":
+                slope = float(plane_model.get("slope", 0.0))
+                intercept = float(plane_model.get("intercept", 0.0))
+                Z = slope * Y + intercept
+            else:  # mode == "xy"
+                slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
+                slope_y = float(plane_model.get("slope_y", 0.0))
+                intercept = float(plane_model.get("intercept", 0.0))
+                Z = slope_x * X + slope_y * Y + intercept
+            
+            grid = pv.StructuredGrid(X, Y, Z)
+            
+            # Textur-Koordinaten
+            try:
+                grid.texture_map_to_plane(inplace=True)
+                t_coords = grid.point_data.get("TCoords")
+            except Exception:
+                t_coords = None
+            
+            # Manuelle Textur-Koordinaten-Berechnung
+            bounds = grid.bounds
+            if bounds is not None:
+                xmin_grid, xmax_grid = bounds[0], bounds[1]
+                ymin_grid, ymax_grid = bounds[2], bounds[3]
+                x_span = xmax_grid - xmin_grid
+                y_span = ymax_grid - ymin_grid
+                
+                if x_span > 1e-10 and y_span > 1e-10:
+                    u_coords = (X - xmin_grid) / x_span
+                    v_coords_raw = (Y - ymin_grid) / y_span
+                    u_coords = np.clip(u_coords, 0.0, 1.0)
+                    v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
+                    
+                    v_coords = 1.0 - v_coords_raw
+                    
+                    # Achsen-Invertierung
+                    invert_x = False
+                    invert_y = True
+                    swap_axes = False
+                    
+                    if isinstance(surface_obj, SurfaceDefinition):
+                        if hasattr(surface_obj, "invert_texture_x"):
+                            invert_x = bool(getattr(surface_obj, "invert_texture_x"))
+                        if hasattr(surface_obj, "invert_texture_y"):
+                            invert_y = bool(getattr(surface_obj, "invert_texture_y"))
+                        if hasattr(surface_obj, "swap_texture_axes"):
+                            swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
+                    elif isinstance(surface_obj, dict):
+                        if "invert_texture_x" in surface_obj:
+                            invert_x = bool(surface_obj["invert_texture_x"])
+                        if "invert_texture_y" in surface_obj:
+                            invert_y = bool(surface_obj["invert_texture_y"])
+                        if "swap_texture_axes" in surface_obj:
+                            swap_axes = bool(surface_obj["swap_texture_axes"])
+                    
+                    img_rgba_final = img_rgba.copy()
+                    if invert_x:
+                        img_rgba_final = np.fliplr(img_rgba_final)
+                        u_coords = 1.0 - u_coords
+                    if invert_y:
+                        img_rgba_final = np.flipud(img_rgba_final)
+                        v_coords = 1.0 - v_coords
+                    if swap_axes:
+                        img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
+                        u_coords, v_coords = v_coords.copy(), u_coords.copy()
+                    
+                    t_coords = np.column_stack((u_coords.ravel(), v_coords.ravel()))
+                    grid.point_data["TCoords"] = t_coords
+                    img_rgba = img_rgba_final
+                else:
+                    if t_coords is None:
+                        ny, nx = X.shape
+                        u_coords = np.linspace(0, 1, nx)
+                        v_coords_raw = np.linspace(0, 1, ny)
+                        v_coords = 1.0 - v_coords_raw
+                        U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
+                        t_coords = np.column_stack((U.ravel(), V.ravel()))
+                    grid.point_data["TCoords"] = t_coords
+            else:
+                if t_coords is None:
+                    ny, nx = X.shape
+                    u_coords = np.linspace(0, 1, nx)
+                    v_coords_raw = np.linspace(0, 1, ny)
+                    v_coords = 1.0 - v_coords_raw
+                    U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
+                    t_coords = np.column_stack((U.ravel(), V.ravel()))
+                grid.point_data["TCoords"] = t_coords
+            
+            # Validiere Textur-Koordinaten
+            if "TCoords" not in grid.point_data:
+                return None
+            tcoords_data = grid.point_data["TCoords"]
+            if tcoords_data is None or tcoords_data.shape[0] != grid.n_points:
+                return None
+            
+            # Erstelle Textur
+            tex = pv.Texture(img_rgba)
+            tex.interpolate = not is_step_mode
+            
+            # Metadaten
+            metadata = {
+                'grid': grid,
+                'texture': tex,
+                'grid_bounds': tuple(bounds) if bounds is not None else None,
+                'world_coords_x': xs.copy(),
+                'world_coords_y': ys.copy(),
+                'world_coords_grid_x': X.copy(),
+                'world_coords_grid_y': Y.copy(),
+                'texture_resolution': tex_res_surface,
+                'texture_size': (ys.size, xs.size),
+                'image_shape': img_rgba.shape,
+                'polygon_bounds': {
+                    'xmin': xmin,
+                    'xmax': xmax,
+                    'ymin': ymin,
+                    'ymax': ymax,
+                },
+                'polygon_points': points,
+                't_coords': t_coords.copy() if t_coords is not None else None,
+                'surface_id': surface_id,
+                'is_axis_aligned_rectangle': is_axis_aligned_rectangle,
+                'tex_res_surface': tex_res_surface,
+                'effective_upscale_factor': effective_upscale_factor,
+                'is_vertical': False,
+            }
+            
+            if DEBUG_PLOT3D_TIMING:
+                t_surface_end = time.perf_counter()
+                ny_tex, nx_tex = inside.shape
+                num_inside = int(np.count_nonzero(inside))
+                print(
+                    f"[PlotSPL3D] surface {surface_id} (planar, parallel): "
+                    f"axis_aligned_rect={is_axis_aligned_rectangle}, "
+                    f"tex_res_surface={tex_res_surface:.4f} m, "
+                    f"grid={nx_tex}x{ny_tex}, inside={num_inside} "
+                    f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
+                    f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
+                    f"total={(t_surface_end - t_surface_start) * 1000.0:7.2f} ms"
+                )
+            
+            return {
+                'surface_id': surface_id,
+                'grid': grid,
+                'texture': tex,
+                'metadata': metadata,
+                'texture_signature': texture_signature,
+            }
+        except Exception as e:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[PlotSPL3D] Error in _process_planar_surface_texture for {surface_id}: {e}")
+            return None
+
+    # _render_surfaces_textured ist jetzt in SPL3DPlotRenderer (Mixin)
 
     def _remove_actor(self, name: str):
         try:
@@ -4987,166 +4133,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         except KeyError:
             pass
 
-    @staticmethod
-    def _project_point_to_polyline(x: float, y: float, poly_x: np.ndarray, poly_y: np.ndarray) -> tuple[float, float]:
-        """
-        Projiziert einen Punkt (x, y) auf die nächstgelegene Kante der Polylinie.
-        Wird genutzt, um Rand-Texturpunkte näher an die Surface-Kante zu ziehen.
-        """
-        if poly_x.size < 2 or poly_y.size < 2:
-            return float(x), float(y)
-
-        px = float(x)
-        py = float(y)
-        best_x = px
-        best_y = py
-        best_d2 = float("inf")
-
-        n = poly_x.size
-        for i in range(n):
-            x1 = float(poly_x[i])
-            y1 = float(poly_y[i])
-            j = (i + 1) % n
-            x2 = float(poly_x[j])
-            y2 = float(poly_y[j])
-            vx = x2 - x1
-            vy = y2 - y1
-            seg_len2 = vx * vx + vy * vy
-            if seg_len2 < 1e-12:
-                continue
-            t = ((px - x1) * vx + (py - y1) * vy) / seg_len2
-            if t <= 0.0:
-                proj_x = x1
-                proj_y = y1
-            elif t >= 1.0:
-                proj_x = x2
-                proj_y = y2
-            else:
-                proj_x = x1 + t * vx
-                proj_y = y1 + t * vy
-            dx = proj_x - px
-            dy = proj_y - py
-            d2 = dx * dx + dy * dy
-            if d2 < best_d2:
-                best_d2 = d2
-                best_x = proj_x
-                best_y = proj_y
-
-        return float(best_x), float(best_y)
-
-    def get_texture_metadata(self, surface_id: str) -> Optional[dict[str, Any]]:
-        """
-        Gibt die Metadaten einer Texture-Surface zurück.
-        
-        Args:
-            surface_id: ID der Surface
-            
-        Returns:
-            Dict mit Metadaten oder None, falls Surface nicht gefunden wurde.
-            Metadaten enthalten:
-            - 'actor': PyVista Actor
-            - 'grid': StructuredGrid mit Weltkoordinaten
-            - 'texture': PyVista Texture-Objekt
-            - 'grid_bounds': (xmin, xmax, ymin, ymax, zmin, zmax)
-            - 'world_coords_x': 1D-Array der X-Koordinaten in Metern
-            - 'world_coords_y': 1D-Array der Y-Koordinaten in Metern
-            - 'world_coords_grid_x': 2D-Meshgrid der X-Koordinaten
-            - 'world_coords_grid_y': 2D-Meshgrid der Y-Koordinaten
-            - 'texture_resolution': Auflösung in Metern
-            - 'texture_size': (H, W) in Pixeln
-            - 'image_shape': (H, W, 4) Shape des Bildes
-            - 'polygon_bounds': Dict mit xmin, xmax, ymin, ymax
-            - 'polygon_points': Original Polygon-Punkte
-            - 't_coords': Textur-Koordinaten (n_points, 2)
-            - 'surface_id': Surface-ID
-        """
-        texture_data = self._surface_texture_actors.get(surface_id)
-        if texture_data is None:
-            return None
-        if isinstance(texture_data, dict) and 'metadata' in texture_data:
-            return texture_data['metadata']
-        if isinstance(texture_data, dict) and 'actor' in texture_data:
-            # Neue Struktur: Dict mit Metadaten
-            return texture_data
-        # Alte Struktur: Nur Actor (für Rückwärtskompatibilität)
-        return None
-
-    def get_texture_world_coords(self, surface_id: str, texture_u: float, texture_v: float) -> Optional[tuple[float, float, float]]:
-        """
-        Konvertiert Textur-Koordinaten (u, v) zu Weltkoordinaten (x, y, z).
-        
-        Args:
-            surface_id: ID der Surface
-            texture_u: U-Koordinate [0, 1] (horizontal)
-            texture_v: V-Koordinate [0, 1] (vertikal)
-            
-        Returns:
-            (x, y, z) Weltkoordinaten in Metern oder None bei Fehler
-        """
-        metadata = self.get_texture_metadata(surface_id)
-        if metadata is None:
-            return None
-        
-        try:
-            bounds = metadata.get('grid_bounds')
-            if bounds is None or len(bounds) < 6:
-                return None
-            
-            xmin, xmax = bounds[0], bounds[1]
-            ymin, ymax = bounds[2], bounds[3]
-            zmin, zmax = bounds[4], bounds[5]
-            
-            # Konvertiere normalisierte Textur-Koordinaten zu Weltkoordinaten
-            x = xmin + texture_u * (xmax - xmin)
-            y = ymin + texture_v * (ymax - ymin)
-            z = zmin  # Für horizontale Surfaces ist Z konstant
-            
-            return (x, y, z)
-        except Exception:
-            return None
-
-    def get_world_coords_to_texture_coords(self, surface_id: str, world_x: float, world_y: float) -> Optional[tuple[float, float]]:
-        """
-        Konvertiert Weltkoordinaten (x, y) zu Textur-Koordinaten (u, v).
-        
-        Args:
-            surface_id: ID der Surface
-            world_x: X-Koordinate in Metern
-            world_y: Y-Koordinate in Metern
-            
-        Returns:
-            (u, v) Textur-Koordinaten [0, 1] oder None bei Fehler
-        """
-        metadata = self.get_texture_metadata(surface_id)
-        if metadata is None:
-            return None
-        
-        try:
-            bounds = metadata.get('grid_bounds')
-            if bounds is None or len(bounds) < 6:
-                return None
-            
-            xmin, xmax = bounds[0], bounds[1]
-            ymin, ymax = bounds[2], bounds[3]
-            
-            # Konvertiere Weltkoordinaten zu normalisierten Textur-Koordinaten
-            if xmax > xmin:
-                u = (world_x - xmin) / (xmax - xmin)
-            else:
-                u = 0.0
-            
-            if ymax > ymin:
-                v = (world_y - ymin) / (ymax - ymin)
-            else:
-                v = 0.0
-            
-            # Clippe auf [0, 1]
-            u = max(0.0, min(1.0, u))
-            v = max(0.0, min(1.0, v))
-            
-            return (u, v)
-        except Exception:
-            return None
+    # Texture-Metadaten-Methoden sind jetzt in SPL3DPlotRenderer (Mixin)
+    # get_texture_metadata, get_texture_world_coords, get_world_coords_to_texture_coords
 
     # ------------------------------------------------------------------
     # Debug-Funktionen entfernt - nur Texture-Rendering

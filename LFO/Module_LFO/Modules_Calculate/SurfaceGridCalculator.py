@@ -18,6 +18,7 @@ import time
 import numpy as np
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
+from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     evaluate_surface_plane,
@@ -84,6 +85,7 @@ class SurfaceGridCalculator(ModuleBase):
         self._last_surface_meshes: List[SurfaceGridMesh] = []
         self._last_surface_samples: List[SurfaceSamplingPoints] = []
     
+    @measure_time("SurfaceGridCalculator.create_calculation_grid")
     def create_calculation_grid(
         self,
         enabled_surfaces: List[Tuple[str, Dict]],
@@ -845,78 +847,158 @@ def _interpolate_z_coordinates_impl(
     if not normalized_surfaces:
         return Z_grid
     
-    # Interpoliere Z-Koordinaten für alle gültigen Punkte
-    # 🎯 X/Y-Positionen bleiben fest, nur Z wird interpoliert
+    # 🚀 OPTIMIERT: Vektorisierte Z-Interpolation für alle Punkte gleichzeitig
+    # Statt einzelner Punkt-Prüfungen verwenden wir Batch-Operationen
+    
+    # Importiere vektorisierte Funktionen
+    from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+        _evaluate_plane_on_grid,
+        evaluate_surface_plane,
+    )
+    
+    # Erstelle Maske für alle Punkte im Grid
+    mask_flat = surface_mask.flatten()
+    masked_indices = np.where(mask_flat)[0]
+    
+    if len(masked_indices) == 0:
+        return Z_grid
+    
+    # Extrahiere X/Y-Koordinaten für alle maskierten Punkte
     x_flat = x_coords.flatten()
     y_flat = y_coords.flatten()
-    mask_flat = surface_mask.flatten()
     
-    # Punkte innerhalb der (erweiterten) Surface-Maske:
-    masked_indices = np.where(mask_flat)[0]
-    points_with_z = 0
-    points_without_z = 0
-    edge_points = []
+    # 🚀 SCHRITT 1: Berechne für jede Surface die Polygon-Maske vektorisiert
+    # Speichere Z-Werte pro Surface (für Überlappungen später mitteln)
+    z_contributions = []  # Liste von (mask, z_values) Tupeln
+    z_counts = np.zeros(len(masked_indices), dtype=float)
     
-    # Erste Runde: Interpoliere Z für Punkte innerhalb der Polygone
-    for idx in masked_indices:
-        x_point = x_flat[idx]  # X fest
-        y_point = y_flat[idx]  # Y fest
+    for points, model, surface_name in normalized_surfaces:
+        # Vektorisierte Polygon-Prüfung für ALLE Punkte gleichzeitig
+        # Erstelle temporäres 2D-Grid nur für maskierte Punkte
+        X_temp = x_coords.copy()
+        Y_temp = y_coords.copy()
         
-        z_values = []
-        surface_names = []
-        for points, model, surface_name in normalized_surfaces:
-            if self._point_in_polygon(x_point, y_point, points):
-                z_val = evaluate_surface_plane(model, x_point, y_point)
-                z_values.append(z_val)
-                surface_names.append(surface_name)
+        # Berechne Polygon-Maske für das gesamte Grid
+        polygon_mask = self._points_in_polygon_batch(X_temp, Y_temp, points)
         
-        if z_values:
-            iy, ix = np.unravel_index(idx, x_coords.shape)
-            z_final = float(np.mean(z_values))
-            Z_grid[iy, ix] = z_final
-            points_with_z += 1
-        else:
-            points_without_z += 1
-    
-    # Zweite Runde: Fülle Z-Werte für Punkte in der ERWEITERTEN Maske (außerhalb der
-    # eigentlichen Polygone). Statt eines lokalen Nachbarschafts-Mittels (führt zu
-    # Treppen/Stufen) verwenden wir hier eine saubere planare Fortsetzung der
-    # jeweiligen Surface-Ebene(n).
-    #
-    # Wichtig:
-    # - Wir betrachten nur Punkte innerhalb der erweiterten Maske.
-    # - Bereits gesetzte Z-Werte (aus Runde 1) werden nicht überschrieben.
-    for idx in masked_indices:
-        iy, ix = np.unravel_index(idx, x_coords.shape)
-        if Z_grid[iy, ix] != 0.0:  # Bereits interpoliert
+        # Extrahiere nur die maskierten Punkte
+        polygon_mask_flat = polygon_mask.flatten()
+        polygon_mask_masked = polygon_mask_flat[masked_indices]
+        
+        if not np.any(polygon_mask_masked):
             continue
         
-        x_point = x_flat[idx]
-        y_point = y_flat[idx]
-
-        # Nutze die planaren Modelle aller relevanten Surfaces und setze Z als
-        # Mittelwert dieser Ebenen (saubere lineare Fortsetzung über den Rand).
-        z_values = []
-        for points, model, surface_name in normalized_surfaces:
-            # Grober Bounding-Box-Check, um nur nahe Flächen zu berücksichtigen
-            xs = [p["x"] for p in points]
-            ys = [p["y"] for p in points]
-            if (
-                x_point < min(xs) - 1e-6
-                or x_point > max(xs) + 1e-6
-                or y_point < min(ys) - 1e-6
-                or y_point > max(ys) + 1e-6
-            ):
-                continue
-            z_val = evaluate_surface_plane(model, x_point, y_point)
-            z_values.append(z_val)
-
-        if z_values:
-            Z_grid[iy, ix] = float(np.mean(z_values))
-            points_with_z += 1
-            points_without_z -= 1
+        # 🚀 Vektorisierte Z-Berechnung für alle Punkte innerhalb des Polygons
+        # Verwende _evaluate_plane_on_grid für das gesamte Grid
+        Z_surface = _evaluate_plane_on_grid(model, X_temp, Y_temp)
+        Z_surface_flat = Z_surface.flatten()
+        Z_surface_masked = Z_surface_flat[masked_indices]
+        
+        # Speichere Beitrag dieser Surface
+        z_contributions.append((polygon_mask_masked, Z_surface_masked))
     
-        return Z_grid
+    # 🚀 SCHRITT 2: Kombiniere Z-Werte von allen Surfaces (Mittelwert bei Überlappungen)
+    Z_sum = np.zeros(len(masked_indices), dtype=float)
+    
+    for polygon_mask_masked, Z_surface_masked in z_contributions:
+        # Addiere Z-Werte nur für Punkte innerhalb dieses Polygons
+        Z_sum[polygon_mask_masked] += Z_surface_masked[polygon_mask_masked]
+        z_counts[polygon_mask_masked] += 1.0
+    
+    # Berechne Mittelwerte (verhindere Division durch Null)
+    valid_mask = z_counts > 0.0
+    Z_final = np.zeros(len(masked_indices), dtype=float)
+    Z_final[valid_mask] = Z_sum[valid_mask] / z_counts[valid_mask]
+    
+    # 🚀 SCHRITT 3: Fülle Z-Werte für Punkte in der ERWEITERTEN Maske (außerhalb der Polygone)
+    # Diese Punkte bekommen Z-Werte aus planaren Fortsetzungen der Surface-Ebenen
+    edge_mask = ~valid_mask  # Punkte ohne Z-Wert aus Schritt 1
+    
+    if np.any(edge_mask):
+        edge_indices = masked_indices[edge_mask]
+        x_edge = x_flat[edge_indices]
+        y_edge = y_flat[edge_indices]
+        
+        # 🚀 Vektorisierte Edge-Behandlung: Berechne Z für alle Edge-Punkte gleichzeitig
+        # Erstelle temporäres Grid nur für Edge-Punkte
+        X_edge = x_edge.reshape(-1, 1)
+        Y_edge = y_edge.reshape(-1, 1)
+        
+        # Für jede Surface: Prüfe Bounding-Box und berechne Z-Werte vektorisiert
+        edge_z_contributions = []
+        edge_z_counts = np.zeros(len(edge_indices), dtype=float)
+        
+        for points, model, surface_name in normalized_surfaces:
+            # Bounding-Box-Check vektorisiert
+            xs = np.array([p["x"] for p in points], dtype=float)
+            ys = np.array([p["y"] for p in points], dtype=float)
+            x_min, x_max = xs.min() - 1e-6, xs.max() + 1e-6
+            y_min, y_max = ys.min() - 1e-6, ys.max() + 1e-6
+            
+            # Vektorisierte Bounding-Box-Prüfung
+            in_bbox = (
+                (x_edge >= x_min) & (x_edge <= x_max) &
+                (y_edge >= y_min) & (y_edge <= y_max)
+            )
+            
+            if not np.any(in_bbox):
+                continue
+            
+            # 🚀 Vektorisierte Z-Berechnung: Verwende evaluate_surface_plane direkt
+            # Da wir nur einzelne Punkte haben, können wir die Funktion vektorisiert aufrufen
+            # durch Broadcasting der Model-Parameter
+            mode = model.get("mode")
+            if mode == "constant":
+                base = float(model.get("base", 0.0))
+                Z_edge_surface = np.full(len(edge_indices), base, dtype=float)
+            elif mode == "x":
+                slope = float(model.get("slope", 0.0))
+                intercept = float(model.get("intercept", 0.0))
+                Z_edge_surface = slope * x_edge + intercept
+            elif mode == "y":
+                slope = float(model.get("slope", 0.0))
+                intercept = float(model.get("intercept", 0.0))
+                Z_edge_surface = slope * y_edge + intercept
+            elif mode == "xy":
+                slope_x = float(model.get("slope_x", model.get("slope", 0.0)))
+                slope_y = float(model.get("slope_y", 0.0))
+                intercept = float(model.get("intercept", 0.0))
+                Z_edge_surface = slope_x * x_edge + slope_y * y_edge + intercept
+            else:
+                base = float(model.get("base", 0.0))
+                Z_edge_surface = np.full(len(edge_indices), base, dtype=float)
+            
+            # Speichere nur für Punkte innerhalb der Bounding-Box
+            edge_z_contributions.append((in_bbox, Z_edge_surface))
+        
+        # Kombiniere Z-Werte für Edge-Punkte
+        edge_Z_sum = np.zeros(len(edge_indices), dtype=float)
+        for in_bbox, Z_edge_surface_flat in edge_z_contributions:
+            edge_Z_sum[in_bbox] += Z_edge_surface_flat[in_bbox]
+            edge_z_counts[in_bbox] += 1.0
+        
+        # Berechne Mittelwerte
+        edge_valid = edge_z_counts > 0.0
+        if np.any(edge_valid):
+            edge_Z_final = np.zeros(len(edge_indices), dtype=float)
+            edge_Z_final[edge_valid] = edge_Z_sum[edge_valid] / edge_z_counts[edge_valid]
+            
+            # Schreibe Edge-Z-Werte zurück
+            for i, idx in enumerate(edge_indices):
+                if edge_z_counts[i] > 0.0:
+                    iy, ix = np.unravel_index(idx, x_coords.shape)
+                    Z_grid[iy, ix] = edge_Z_final[i]
+                    # Aktualisiere auch Z_final für konsistente Indizierung
+                    orig_idx = np.where(masked_indices == idx)[0][0]
+                    Z_final[orig_idx] = edge_Z_final[i]
+    
+    # 🚀 SCHRITT 4: Schreibe Z-Werte zurück ins Grid
+    for i, idx in enumerate(masked_indices):
+        if z_counts[i] > 0.0:  # Nur wenn Z-Wert berechnet wurde
+            iy, ix = np.unravel_index(idx, x_coords.shape)
+            Z_grid[iy, ix] = Z_final[i]
+    
+    return Z_grid
 
 def _point_in_polygon_core(
     x: float,

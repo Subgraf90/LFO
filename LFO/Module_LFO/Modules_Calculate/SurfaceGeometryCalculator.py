@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from Module_LFO.Modules_Init.Logging import measure_time, perf_section
+
 DEBUG_SURFACE_GEOMETRY = bool(int(os.environ.get("LFO_DEBUG_SURFACE_GEOMETRY", "1")))
 DEBUG_GEOMETRY_TIMING = bool(int(os.environ.get("LFO_DEBUG_TIMING", "0")))
 
@@ -492,6 +494,7 @@ def generate_surface_geometry(
     return xm, ym, z_arr
 
 
+@measure_time("SurfaceGeometry.build_surface_mesh")
 def build_surface_mesh(
     x: np.ndarray,
     y: np.ndarray,
@@ -620,6 +623,7 @@ def build_surface_mesh(
     return mesh
 
 
+@measure_time("SurfaceGeometry.build_full_floor_mesh")
 def build_full_floor_mesh(
     x: np.ndarray,
     y: np.ndarray,
@@ -689,6 +693,7 @@ def build_full_floor_mesh(
     return mesh
 
 
+@measure_time("SurfaceGeometry.build_surface_clipping_mesh")
 def build_surface_clipping_mesh(
     surface_id: str,
     points: List[Dict[str, float]],
@@ -791,6 +796,7 @@ def build_surface_clipping_mesh(
     return mesh
 
 
+@measure_time("SurfaceGeometry.clip_floor_with_surfaces")
 def clip_floor_with_surfaces(
     floor_mesh: Any,
     surface_definitions: Dict[str, Any],
@@ -994,6 +1000,7 @@ def clip_floor_with_surfaces(
     return clipped_mesh
 
 
+@measure_time("SurfaceGeometry.build_vertical_surface_mesh")
 def build_vertical_surface_mesh(
     geom: VerticalPlotGeometry,
     *,
@@ -1221,6 +1228,7 @@ def prepare_plot_geometry(
     )
 
 
+@measure_time("SurfaceGeometry.prepare_vertical_plot_geometry")
 def prepare_vertical_plot_geometry(
     surface_id: str,
     settings,

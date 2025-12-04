@@ -203,3 +203,74 @@ for ip_coord in integration_points:
 - Für höchste Genauigkeit sollten Panel-Flächen als Facet-Tags im Mesh existieren
 - Dann kann dolfinx automatisch die korrekte Integration durchführen
 
+## Was bedeutet "Erfordert Integration Points oder Facet-Tags"?
+
+### Integration Points (Stützstellen)
+
+**Was sind Integration Points?**
+- Integration Points sind spezielle Punkte auf der Facet-Oberfläche, an denen die numerische Integration durchgeführt wird
+- Sie werden durch Quadratur-Formeln bestimmt (z.B. Gauß-Quadratur)
+- Jeder Integration Point hat:
+  - Eine **Koordinate** `x_j` auf der Facet-Oberfläche
+  - Ein **Gewicht** `w_j` (Quadratur-Gewicht)
+  - Eine **Jakobische Determinante** `|J_j|` (Flächenelement)
+
+**Warum werden sie benötigt?**
+- Für die exakte numerische Integration müssen wir das Integral `∫_S f(x) ds` als Summe über Integration Points approximieren
+- Ohne Integration Points können wir die Testfunktions-Werte `φ_i(x)` nicht korrekt an den richtigen Stellen auf der Facet-Oberfläche auswerten
+- Die aktuelle Approximation verwendet nur DOF-Koordinaten, die nicht notwendigerweise optimale Stützstellen für die Integration sind
+
+**Beispiel:**
+- Ein Dreiecks-Facet hat typischerweise 1-3 Integration Points (je nach Quadratur-Grad)
+- Bei Gauß-Quadratur Grad 2: 3 Integration Points im Inneren des Dreiecks
+- An jedem dieser Punkte werden die Testfunktionen `φ_i` ausgewertet und mit den entsprechenden Gewichtungen multipliziert
+
+### Facet-Tags (Facetten-Markierungen)
+
+**Was sind Facet-Tags?**
+- Facet-Tags sind numerische Markierungen/Labels, die bestimmten Facets (Oberflächen-Elementen) im Mesh zugeordnet werden
+- Sie identifizieren, welche Facets zu einer bestimmten Oberfläche gehören (z.B. Panel-Fläche, Randbedingung, etc.)
+- In dolfinx werden sie als `MeshTags` gespeichert, die Facet-Indizes mit Tag-Werten verknüpfen
+
+**Warum werden sie benötigt?**
+- Mit Facet-Tags kann dolfinx automatisch erkennen, welche Facets zur Panel-Fläche gehören
+- dolfinx kann dann automatisch die korrekte Integration über diese Facets durchführen
+- Ohne Facet-Tags müssen wir manuell die Facets finden (z.B. über KD-Tree-Suche), was komplexer und fehleranfälliger ist
+
+**Beispiel:**
+```python
+# Facet-Tags im Mesh:
+# Facet 42 → Tag 1 (Panel-Fläche)
+# Facet 43 → Tag 1 (Panel-Fläche)
+# Facet 44 → Tag 2 (andere Oberfläche)
+# Facet 45 → Tag 1 (Panel-Fläche)
+
+# Mit Facet-Tags:
+panel_facets = mesh.facets_with_tag(1)  # Findet automatisch Facets 42, 43, 45
+ds_panel = ufl.Measure("ds", domain=mesh, subdomain_data=facet_tags, tag=1)
+# dolfinx weiß jetzt genau, welche Facets integriert werden müssen
+```
+
+**Ohne Facet-Tags:**
+- Wir müssen manuell die Facets finden, die zur Panel-Fläche gehören
+- Dies erfordert geometrische Suche (z.B. KD-Tree) basierend auf DOF-Koordinaten
+- Fehleranfälliger und weniger effizient
+
+### Zusammenfassung
+
+**Integration Points:**
+- ✅ Erforderlich für die korrekte numerische Integration
+- ✅ Ermöglichen die Auswertung von Testfunktionen an optimalen Stützstellen
+- ❌ Müssen manuell berechnet werden, wenn keine Facet-Tags vorhanden sind
+
+**Facet-Tags:**
+- ✅ Ermöglichen automatische Identifikation von Panel-Facets durch dolfinx
+- ✅ Erlauben die Verwendung von UFL-Formen für automatische Integration
+- ❌ Müssen beim Mesh-Erstellung oder -Import vorhanden sein
+
+**Warum ist das ein Nachteil?**
+- Beide Methoden erfordern zusätzliche Vorbereitung:
+  - **Integration Points**: Manuelle Berechnung der Quadratur-Punkte und Gewichtungen
+  - **Facet-Tags**: Mesh muss bereits mit Tags versehen sein oder Tags müssen nachträglich hinzugefügt werden
+- Die aktuelle Approximation umgeht diese Komplexität, indem sie einfach die Fläche gleichmäßig auf DOFs verteilt
+

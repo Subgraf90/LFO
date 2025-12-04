@@ -12,7 +12,7 @@ from Module_LFO.Modules_Calculate.SoundFieldCalculator_PhaseDiff import SoundFie
 from Module_LFO.Modules_Calculate.SoundFieldCalculator_FDTD import SoundFieldCalculatorFDTD
 
 try:
-    from Module_LFO.Modules_Plot.Plot_SPL_3D.PlotSPL3D import DrawSPLPlot3D
+    from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3D import DrawSPLPlot3D
 except ImportError:  # PyVista optional
     DrawSPLPlot3D = None
 from Module_LFO.Modules_Plot.PlotSPLXaxis import DrawSPLPlot_Xaxis

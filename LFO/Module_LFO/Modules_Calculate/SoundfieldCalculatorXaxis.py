@@ -1,5 +1,6 @@
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
+from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
 
 "SoundfieldCalculatorXaxis berechnet die SPL-Werte in Abhängigkeit der Breite des Schallfeldes"
@@ -262,6 +263,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         
         return interpolated_coords, interpolated_z_coords
     
+    @measure_time("SoundFieldCalculatorXaxis.calculateXAxis")
     def calculateXAxis(self):
         resolution = 0.1  # 10cm Auflösung
         position_y = self.settings.position_y_axis
@@ -502,6 +504,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         # Verwende die gleiche Interpolationslogik für beide Datentypen
         return self._interpolate_angle_data(magnitude, phase, vertical_angles, azimuth, elevation)
 
+    @measure_time("SoundFieldCalculatorXaxis.calculate_sound_field_at_points_xz")
     def calculate_sound_field_at_points_xz(self, x_coords, y_const, z_coords):
         """
         Berechnet SPL-Werte für spezifische Punkte (X- und Z-Koordinaten bei konstanter Y-Position).
@@ -644,6 +647,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         sound_field_p = abs(sound_field_p)
         return sound_field_p
     
+    @measure_time("SoundFieldCalculatorXaxis.calculate_sound_field_row")
     def calculate_sound_field_row(self, row_index):
         """
         🚀 VEKTORISIERT: Berechnet SPL-Werte entlang der X-Achse (Breite)

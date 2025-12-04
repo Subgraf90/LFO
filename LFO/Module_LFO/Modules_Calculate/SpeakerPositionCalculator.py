@@ -1,3 +1,6 @@
+from Module_LFO.Modules_Init.Logging import measure_time, perf_section
+
+
 class SpeakerPositionCalculator:
     """
     Klasse zur Berechnung von Lautsprecherpositionen und Nullpunkten.
@@ -85,6 +88,7 @@ class SpeakerPositionCalculator:
         return front_height, back_height, angle_point
 
 
+    @measure_time("SpeakerPositionCalculator.calculate_stack_center")
     def calculate_stack_center(self, speaker_array):
 
         """
@@ -254,6 +258,7 @@ class SpeakerPositionCalculator:
                 speaker_array.source_position_calc_z[i] = speaker_array.source_position_z_stack[i]
                         
 
+    @measure_time("SpeakerPositionCalculator.calculate_flown_z_center")
     def calculate_flown_z_center(self, speaker_array):
         """
         Berechnet den Z-Nullpunkt in der Mitte der Lautsprecherhöhe für Flown-Systeme.
