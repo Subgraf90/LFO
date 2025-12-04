@@ -225,6 +225,9 @@ class Sources(ModuleBase, QObject):
         if not hasattr(self, 'sources_dockWidget') or self.sources_dockWidget is None:
             self.sources_dockWidget = QDockWidget("Sources", self.main_window)
             
+            # Event-Filter für resize-Events hinzufügen
+            self.sources_dockWidget.installEventFilter(self)
+            
             # Prüfe, ob Surface-DockWidget bereits existiert und tabbifiziere es
             surface_dock = None
             if hasattr(self.main_window, 'surface_manager') and self.main_window.surface_manager:
@@ -373,9 +376,10 @@ class Sources(ModuleBase, QObject):
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             
             # Spaltenbreiten konfigurieren - kompakte Darstellung (angepasst für kleinere Checkboxen)
+            self.sources_tree_widget.setColumnWidth(0, 160)  # Name - 10% schlanker (von 180px auf 160px)
             self.sources_tree_widget.setColumnWidth(1, 25)   # Mute - kleiner für 18x18 Checkboxen
             self.sources_tree_widget.setColumnWidth(2, 25)   # Hide - kleiner für 18x18 Checkboxen
-            self.sources_tree_widget.setColumnWidth(3, 20)   # Farb-Quadrat
+            self.sources_tree_widget.setColumnWidth(3, 25)   # Farb-Quadrat (gleich wie Surface UI Spalte 3)
             header.setStretchLastSection(False)  # Letzte Spalte nicht strecken
             header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)  # Name kann angepasst werden
             header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)    # Mute bleibt fix
@@ -400,20 +404,12 @@ class Sources(ModuleBase, QObject):
             
             # Setze die SizePolicy, damit das TreeWidget vertikal expandiert
             self.sources_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-            self.sources_tree_widget.setMinimumHeight(235)  # Setze eine Mindesthöhe
-            self.sources_tree_widget.setFixedWidth(300)  # Breiter gemacht für bessere Lesbarkeit
+            self.sources_tree_widget.setMinimumHeight(100)  # Reduziert für kompakte UI (140px DockWidget - 24px Buttons - ~15px Margins)
+            self.sources_tree_widget.setFixedWidth(270)  # 10% schlanker (von 300px auf 270px)
             
-            # Verbinde Signale mit Slots
-            self.sources_tree_widget.itemSelectionChanged.connect(self.show_sources_tab)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.display_selected_speakerspecs)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_sources_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_source_length_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_array_position_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_beamsteering_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_windowing_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_gain_delay_input_fields)
-            self.sources_tree_widget.itemSelectionChanged.connect(self.update_beamsteering_windowing_plots)
-            self.sources_tree_widget.itemSelectionChanged.connect(self._handle_sources_tree_selection_changed)
+            # OPTIMIERUNG: Nur EIN Signal verbinden - zentraler Handler koordiniert alle Updates
+            # Dies verhindert 9x redundante Ausführung bei jeder Auswahländerung
+            self.sources_tree_widget.itemSelectionChanged.connect(self._on_selection_changed)
             self.sources_tree_widget.itemChanged.connect(self.on_speakerspecs_item_text_changed)
             
             # Installiere Event-Filter für MousePressEvent, um Klicks auf leeres Feld zu erkennen
@@ -429,9 +425,9 @@ class Sources(ModuleBase, QObject):
             buttons_layout.setSpacing(5)
             buttons_layout.setAlignment(Qt.AlignLeft)
             self.pushbutton_add_stack = QPushButton("Stack")
-            self.pushbutton_add_stack.setFixedWidth(100)  # Setze feste Breite für Stack-Button
+            self.pushbutton_add_stack.setFixedWidth(120)  # Gleiche Breite wie Surface UI Buttons
             self.pushbutton_add_flown = QPushButton("Flown")
-            self.pushbutton_add_flown.setFixedWidth(100)  # Setze feste Breite für Flown-Button
+            self.pushbutton_add_flown.setFixedWidth(120)  # Gleiche Breite wie Surface UI Buttons
             self.pushbutton_add_flown.setEnabled(True)  # Aktiviere den Flown-Button
             # Buttons: Schriftgröße und Höhe
             btn_font = QtGui.QFont()
@@ -480,7 +476,23 @@ class Sources(ModuleBase, QObject):
             self.sources_tree_widget.blockSignals(False)
             
         self.sources_tree_widget.clearSelection()
+        
+        # Setze Mindesthöhe des DockWidgets, damit Qt's Layout-System die Größe respektiert
+        target_height = 140
+        self.sources_dockWidget.setMinimumHeight(target_height)
+        self.sources_dockWidget.setMaximumHeight(target_height)  # Temporär fixieren, damit Qt nicht überschreibt
+        
         self.sources_dockWidget.show()
+        
+        # Setze initiale Größe des DockWidgets NACH show() mit Timer, damit Qt's Layout fertig ist
+        from PyQt5.QtCore import QTimer
+        def apply_resize():
+            print(f"[Source UI] resize() aufgerufen: {target_height}px (vorher: {self.sources_dockWidget.height()}px)")
+            self.sources_dockWidget.setMaximumHeight(16777215)  # Entferne Max-Höhe wieder
+            self.sources_dockWidget.resize(1200, target_height)
+            print(f"[Source UI] resize() abgeschlossen: {self.sources_dockWidget.height()}px")
+        
+        QTimer.singleShot(100, apply_resize)  # 100ms Verzögerung, damit Qt's Layout fertig ist
         
 
     def refresh_active_selection(self):
@@ -1024,9 +1036,22 @@ class Sources(ModuleBase, QObject):
         left_widget.setLayout(left_layout)
 
         # Rechte Seite für den Plot
-        self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
-        # Kein setFixedHeight - lässt Plot sich anpassen
-        self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # OPTIMIERUNG: Plot nur erstellen, wenn er noch nicht existiert
+        if self.windowing_plot is None:
+            self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
+            # Kein setFixedHeight - lässt Plot sich anpassen
+            self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        else:
+            # Plot existiert bereits - prüfe ob er noch gültig ist
+            try:
+                # Prüfe ob das Objekt noch gültig ist, indem wir auf ein Attribut zugreifen
+                _ = self.windowing_plot.parent()
+                # Objekt ist gültig - setze Parent auf neuen Tab
+                self.windowing_plot.setParent(windowing_tab)
+            except RuntimeError:
+                # Objekt wurde gelöscht - erstelle neuen Plot
+                self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
+                self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Setze feste Breite für linke Seite (konsistent mit Speaker Setup)
         left_widget.setFixedWidth(250)
@@ -1123,9 +1148,22 @@ class Sources(ModuleBase, QObject):
         left_layout.addStretch(1)  # Fügt Abstand am unteren Ende hinzu
 
         # Rechte Seite für den Plot
-        self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
-        # Kein setFixedHeight - lässt Plot sich anpassen
-        self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # OPTIMIERUNG: Plot nur erstellen, wenn er noch nicht existiert
+        if self.beamsteering_plot is None:
+            self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
+            # Kein setFixedHeight - lässt Plot sich anpassen
+            self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        else:
+            # Plot existiert bereits - prüfe ob er noch gültig ist
+            try:
+                # Prüfe ob das Objekt noch gültig ist, indem wir auf ein Attribut zugreifen
+                _ = self.beamsteering_plot.parent()
+                # Objekt ist gültig - setze Parent auf neuen Tab
+                self.beamsteering_plot.setParent(beamsteering_tab)
+            except RuntimeError:
+                # Objekt wurde gelöscht - erstelle neuen Plot
+                self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
+                self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Setze feste Breite für linke Seite (konsistent mit Speaker Setup)
         left_widget.setFixedWidth(250)
@@ -2274,6 +2312,30 @@ class Sources(ModuleBase, QObject):
         # Passe Spaltenbreite an den Inhalt an
         self.adjust_column_width_to_content()
     
+    def _on_selection_changed(self):
+        """
+        Zentraler Handler für alle Auswahländerungen im Sources-TreeWidget.
+        OPTIMIERUNG: Ersetzt 9 separate Signal-Verbindungen durch einen koordinierten Handler.
+        Verhindert redundante Ausführungen und Signal-Loops.
+        """
+        # Blockiere Signale während Updates, um Signal-Loops zu vermeiden
+        if not hasattr(self, 'sources_tree_widget') or self.sources_tree_widget is None:
+            return
+        
+        self.sources_tree_widget.blockSignals(True)
+        try:
+            # 1. Zeige Tabs und aktualisiere Eingabefelder
+            # show_sources_tab() ruft bereits viele update_*_input_fields() Methoden intern auf
+            self.show_sources_tab()
+            
+            # 2. Aktualisiere Beamsteering/Windowing Plots (wird nicht in show_sources_tab() aufgerufen)
+            self.update_beamsteering_windowing_plots()
+            
+            # 3. Aktualisiere Highlight-IDs für 3D-Plot (rote Umrandung)
+            self._handle_sources_tree_selection_changed()
+        finally:
+            self.sources_tree_widget.blockSignals(False)
+    
     def _handle_sources_tree_selection_changed(self):
         """Reagiert auf Auswahländerungen im Sources-Tree:
         - Setzt active_speaker_array_highlight_ids (Liste) für den 3D-Plot
@@ -2378,14 +2440,21 @@ class Sources(ModuleBase, QObject):
                         traceback.print_exc()
     
     def eventFilter(self, obj, event):
-        """Event-Filter für TreeWidget, um Klicks auf leeres Feld zu erkennen."""
+        """Event-Filter für TreeWidget und DockWidget, um Klicks auf leeres Feld und resize-Events zu erkennen."""
+        from PyQt5.QtCore import QEvent
+        
+        # Resize-Events für DockWidget erfassen
+        if hasattr(self, 'sources_dockWidget') and self.sources_dockWidget and obj == self.sources_dockWidget:
+            if event.type() == QEvent.Resize:
+                print(f"[Source UI] resizeEvent erkannt: neue Höhe = {self.sources_dockWidget.height()}px")
+            return False  # Weiterleiten an Standard-Handler
+        
         # Prüfe, ob das Widget noch existiert, bevor darauf zugegriffen wird
         if not hasattr(self, 'sources_tree_widget') or self.sources_tree_widget is None:
             return super().eventFilter(obj, event)
         
         try:
             if obj == self.sources_tree_widget.viewport():
-                from PyQt5.QtCore import QEvent
                 if event.type() == QEvent.MouseButtonPress:
                     # Prüfe ob auf ein Item geklickt wurde
                     item = self.sources_tree_widget.itemAt(event.pos())
@@ -2403,17 +2472,81 @@ class Sources(ModuleBase, QObject):
         
         return super().eventFilter(obj, event)
 
+    def _tab_exists(self, tab_name):
+        """
+        Prüft, ob ein Tab mit dem angegebenen Namen bereits existiert.
+        
+        Args:
+            tab_name: Der Name des Tabs (wie er in addTab verwendet wird)
+            
+        Returns:
+            bool: True wenn Tab existiert, False sonst
+        """
+        if not hasattr(self, 'tab_widget') or self.tab_widget is None:
+            return False
+        for i in range(self.tab_widget.count()):
+            if self.tab_widget.tabText(i) == tab_name:
+                return True
+        return False
+    
+    def _get_tab_widget_by_name(self, tab_name):
+        """
+        Gibt das Widget eines Tabs zurück, wenn es existiert.
+        
+        Args:
+            tab_name: Der Name des Tabs
+            
+        Returns:
+            QWidget oder None: Das Tab-Widget, falls gefunden
+        """
+        if not hasattr(self, 'tab_widget') or self.tab_widget is None:
+            return None
+        for i in range(self.tab_widget.count()):
+            if self.tab_widget.tabText(i) == tab_name:
+                return self.tab_widget.widget(i)
+        return None
+    
+    def _extract_plot_from_tab(self, tab_widget, plot_class):
+        """
+        Extrahiert einen Plot aus einem existierenden Tab-Widget.
+        
+        Args:
+            tab_widget: Das Tab-Widget
+            plot_class: Die Klasse des Plots (BeamsteeringPlot oder WindowingPlot)
+            
+        Returns:
+            Plot-Instanz oder None: Der Plot, falls gefunden
+        """
+        if tab_widget is None:
+            return None
+        
+        # Durchsuche alle Widgets im Tab nach dem Plot
+        def find_plot(widget):
+            if isinstance(widget, plot_class):
+                return widget
+            if hasattr(widget, 'layout'):
+                layout = widget.layout()
+                if layout:
+                    for i in range(layout.count()):
+                        item = layout.itemAt(i)
+                        if item:
+                            widget_item = item.widget()
+                            if widget_item:
+                                result = find_plot(widget_item)
+                                if result:
+                                    return result
+            return None
+        
+        return find_plot(tab_widget)
+    
     # @measure_time
     def show_sources_tab(self):
         """
         Zeigt die entsprechenden Tabs basierend auf dem ausgewählten Array-Typ an.
         Wird aufgerufen, wenn ein Array im TreeWidget ausgewählt wird.
+        OPTIMIERUNG: Tabs werden nur erstellt, wenn sie noch nicht existieren.
         """
-        if hasattr(self, 'tab_widget') and self.tab_widget is not None:
-            # Entferne alle Tabs
-            while self.tab_widget.count() > 0:
-                self.tab_widget.removeTab(0)
-        else:
+        if not hasattr(self, 'tab_widget') or self.tab_widget is None:
             # Erstelle das TabWidget, falls es noch nicht existiert
             self.tab_widget = QTabWidget()
             self.tab_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -2455,21 +2588,52 @@ class Sources(ModuleBase, QObject):
             configuration = speaker_array.configuration.lower()
             # print(f"Lautsprecherarray-Typ: {configuration.upper()} (ID: {speaker_array_id}, Name: {speaker_array.name})")
             
+            # OPTIMIERUNG: Tabs nur erstellen, wenn sie noch nicht existieren
             # Erstelle nur die relevanten Tabs basierend auf der Konfiguration
             if configuration == "stack":
                 # Für Stack-Arrays alle Tabs erstellen und aktivieren
-                self.create_speaker_tab_stack()
-                self.create_beamsteering_tab()
-                self.create_windowing_tab()
+                if not self._tab_exists("Speaker Setup"):
+                    self.create_speaker_tab_stack()
+                if not self._tab_exists("Beamsteering"):
+                    self.create_beamsteering_tab()
+                else:
+                    # Tab existiert bereits - extrahiere Plot falls vorhanden
+                    beamsteering_tab = self._get_tab_widget_by_name("Beamsteering")
+                    if beamsteering_tab and self.beamsteering_plot is None:
+                        from Module_LFO.Modules_Plot.PlotBeamsteering import BeamsteeringPlot
+                        self.beamsteering_plot = self._extract_plot_from_tab(beamsteering_tab, BeamsteeringPlot)
+                if not self._tab_exists("Windowing"):
+                    self.create_windowing_tab()
+                else:
+                    # Tab existiert bereits - extrahiere Plot falls vorhanden
+                    windowing_tab = self._get_tab_widget_by_name("Windowing")
+                    if windowing_tab and self.windowing_plot is None:
+                        from Module_LFO.Modules_Plot.PlotWindowing import WindowingPlot
+                        self.windowing_plot = self._extract_plot_from_tab(windowing_tab, WindowingPlot)
                 
                 # Alle Tabs aktivieren
                 for i in range(self.tab_widget.count()):
                     self.tab_widget.setTabEnabled(i, True)
             else:
                 # Für Flown-Arrays alle Tabs erstellen
-                self.create_speaker_tab_flown()
-                self.create_beamsteering_tab()
-                self.create_windowing_tab()
+                if not self._tab_exists("Speaker Setup"):
+                    self.create_speaker_tab_flown()
+                if not self._tab_exists("Beamsteering"):
+                    self.create_beamsteering_tab()
+                else:
+                    # Tab existiert bereits - extrahiere Plot falls vorhanden
+                    beamsteering_tab = self._get_tab_widget_by_name("Beamsteering")
+                    if beamsteering_tab and self.beamsteering_plot is None:
+                        from Module_LFO.Modules_Plot.PlotBeamsteering import BeamsteeringPlot
+                        self.beamsteering_plot = self._extract_plot_from_tab(beamsteering_tab, BeamsteeringPlot)
+                if not self._tab_exists("Windowing"):
+                    self.create_windowing_tab()
+                else:
+                    # Tab existiert bereits - extrahiere Plot falls vorhanden
+                    windowing_tab = self._get_tab_widget_by_name("Windowing")
+                    if windowing_tab and self.windowing_plot is None:
+                        from Module_LFO.Modules_Plot.PlotWindowing import WindowingPlot
+                        self.windowing_plot = self._extract_plot_from_tab(windowing_tab, WindowingPlot)
                 
                 # Für Flown-Arrays nur den Speaker Setup Tab anzeigen
                 if self.tab_widget.count() > 1:
@@ -2482,9 +2646,24 @@ class Sources(ModuleBase, QObject):
             print(f"Lautsprecherarray ohne Konfiguration (ID: {speaker_array_id}, Name: {speaker_array.name})")
             # Fallback für Arrays ohne Konfiguration (alte Arrays)
             # Erstelle alle Tabs
-            self.create_speaker_tab_stack()
-            self.create_beamsteering_tab()
-            self.create_windowing_tab()
+            if not self._tab_exists("Speaker Setup"):
+                self.create_speaker_tab_stack()
+            if not self._tab_exists("Beamsteering"):
+                self.create_beamsteering_tab()
+            else:
+                # Tab existiert bereits - extrahiere Plot falls vorhanden
+                beamsteering_tab = self._get_tab_widget_by_name("Beamsteering")
+                if beamsteering_tab and self.beamsteering_plot is None:
+                    from Module_LFO.Modules_Plot.PlotBeamsteering import BeamsteeringPlot
+                    self.beamsteering_plot = self._extract_plot_from_tab(beamsteering_tab, BeamsteeringPlot)
+            if not self._tab_exists("Windowing"):
+                self.create_windowing_tab()
+            else:
+                # Tab existiert bereits - extrahiere Plot falls vorhanden
+                windowing_tab = self._get_tab_widget_by_name("Windowing")
+                if windowing_tab and self.windowing_plot is None:
+                    from Module_LFO.Modules_Plot.PlotWindowing import WindowingPlot
+                    self.windowing_plot = self._extract_plot_from_tab(windowing_tab, WindowingPlot)
             
             # Standardmäßig alle Tabs aktivieren
             for i in range(self.tab_widget.count()):
@@ -5037,43 +5216,14 @@ class Sources(ModuleBase, QObject):
                         self.ensure_source_checkboxes(child)
     
     def adjust_column_width_to_content(self):
-        """
-        Passt die Breite der ersten Spalte (Source Name) an den längsten Namen an.
-        Berücksichtigt sowohl Top-Level-Items als auch Child-Items (in Gruppen).
-        """
+        """Setzt die Spaltenbreiten auf feste Werte (gleich wie Surface UI)"""
         if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
             return
-        
-        font_metrics = self.sources_tree_widget.fontMetrics()
-        max_width = 0
-        
-        # Durchlaufe alle Top-Level-Items
-        for i in range(self.sources_tree_widget.topLevelItemCount()):
-            item = self.sources_tree_widget.topLevelItem(i)
-            if item:
-                # Berechne Textbreite für dieses Item
-                text = item.text(0)
-                # Berücksichtige Indentation für Child-Items
-                indent = 0
-                if item.parent():
-                    indent = self.sources_tree_widget.indentation()
-                # Verwende boundingRect für Textbreitenberechnung
-                text_width = font_metrics.boundingRect(text).width() + indent + 20  # 20px Padding
-                max_width = max(max_width, text_width)
-                
-                # Durchlaufe alle Child-Items (in Gruppen)
-                for j in range(item.childCount()):
-                    child = item.child(j)
-                    if child:
-                        child_text = child.text(0)
-                        # Child-Items haben zusätzliche Indentation
-                        child_indent = self.sources_tree_widget.indentation() * 2  # Indentation für Parent + Child
-                        child_text_width = font_metrics.boundingRect(child_text).width() + child_indent + 20
-                        max_width = max(max_width, child_text_width)
-        
-        # Setze die Spaltenbreite (mindestens 100px, maximal keine Begrenzung)
-        if max_width > 0:
-            self.sources_tree_widget.setColumnWidth(0, max(max_width, 100))
+        # Gleiche Spaltenbreiten wie in Surface UI
+        self.sources_tree_widget.setColumnWidth(0, 180)  # Name
+        self.sources_tree_widget.setColumnWidth(1, 25)   # Mute
+        self.sources_tree_widget.setColumnWidth(2, 25)   # Hide
+        self.sources_tree_widget.setColumnWidth(3, 25)   # Color
 
     def _apply_group_item_style(self, item):
         """Setzt gemeinsame Formatierung für Gruppen-Items."""

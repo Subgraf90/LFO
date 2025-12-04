@@ -12,7 +12,7 @@ from Module_LFO.Modules_Calculate.SoundFieldCalculator_PhaseDiff import SoundFie
 from Module_LFO.Modules_Calculate.SoundFieldCalculator_FDTD import SoundFieldCalculatorFDTD
 
 try:
-    from Module_LFO.Modules_Plot.PlotSPL3D import DrawSPLPlot3D
+    from Module_LFO.Modules_Plot.Plot_SPL_3D.PlotSPL3D import DrawSPLPlot3D
 except ImportError:  # PyVista optional
     DrawSPLPlot3D = None
 from Module_LFO.Modules_Plot.PlotSPLXaxis import DrawSPLPlot_Xaxis
@@ -581,12 +581,20 @@ class DrawPlotsMainwindow(ModuleBase):
                     has_active_speaker = True
         
         # Trigger Berechnung oder Plot-Update
+        # 🚀 OPTIMIERUNG: Flag setzen, um zu verhindern, dass update_overlays() doppelt aufgerufen wird
+        plot_spl_called = False
         if has_active_speaker and hasattr(self.main_window, 'update_speaker_array_calculations'):
             # Neuberechnung mit aktiver Quelle
+            # update_speaker_array_calculations() ruft intern plot_spl() auf (über calculate_spl()),
+            # was wiederum update_overlays() aufruft, daher ist der Aufruf am Ende redundant
             self.main_window.update_speaker_array_calculations()
+            plot_spl_called = True  # plot_spl() wird intern aufgerufen
         elif hasattr(self.main_window, 'plot_spl'):
             # Nur Plot-Update (wenn bereits Daten vorhanden)
+            # plot_spl() ruft bereits update_overlays() intern auf,
+            # daher müssen wir es am Ende NICHT erneut aufrufen
             self.main_window.plot_spl(update_axes=False)
+            plot_spl_called = True
         else:
             # Keine Source vorhanden, aber Surfaces existieren → zeige leeren Plot mit Surfaces
             # Stelle sicher, dass der Plotter initialisiert ist
@@ -600,9 +608,9 @@ class DrawPlotsMainwindow(ModuleBase):
         # - enabled + nicht-hidden → Normale Linien (SPL Plot)
         # - disabled + nicht-hidden → Gestrichelte Linien (Empty Plot)
         # - hidden → Nicht geplottet
-        # WICHTIG: update_overlays() IMMER aufrufen, auch wenn keine Source existiert,
-        # damit Surfaces auch ohne Source gezeichnet werden
-        if self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
+        # 🚀 OPTIMIERUNG: update_overlays() nur aufrufen, wenn plot_spl() NICHT aufgerufen wurde,
+        # da plot_spl() bereits update_overlays() intern aufruft (verhindert doppelte Aufrufe)
+        if not plot_spl_called and self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
             self.draw_spl_plotter.update_overlays(self.settings, self.container)
 
     def plot_spl(self, settings, speaker_array_id, update_axes=True, reset_camera=False):

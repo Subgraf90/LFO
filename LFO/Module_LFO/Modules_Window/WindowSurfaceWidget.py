@@ -348,7 +348,7 @@ class SurfaceDockWidget(QDockWidget):
         main_layout.addWidget(self.splitter, 1)
 
         self.setWidget(content)
-        self.resize(520, 600)
+        self.resize(520, 400)
 
         # Signalverbindungen
         self.surface_tree.itemSelectionChanged.connect(self._handle_surface_selection_changed)

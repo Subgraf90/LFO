@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QSizePolicy, QGridLayout, QLabel, QLineEdit, 
     QMenu, QAbstractItemView, QGroupBox, QScrollArea, QColorDialog
 )
-from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtCore import Qt, QPoint, QObject, QEvent
 from PyQt5.QtGui import QDoubleValidator, QColor
 from PyQt5 import QtWidgets, QtGui
 
@@ -55,6 +55,20 @@ class UISurfaceManager(ModuleBase):
         
         if not hasattr(self, 'surface_dockWidget') or self.surface_dockWidget is None:
             self.surface_dockWidget = QDockWidget("Surfaces", self.main_window)
+            
+            # Event-Filter für resize-Events hinzufügen
+            class SurfaceResizeFilter(QObject):
+                def __init__(self, dock_widget):
+                    super().__init__()
+                    self.dock_widget = dock_widget
+                
+                def eventFilter(self, obj, event):
+                    if obj == self.dock_widget and event.type() == QEvent.Resize:
+                        print(f"[Surface UI] resizeEvent erkannt: neue Höhe = {self.dock_widget.height()}px")
+                    return False
+            
+            self._surface_resize_filter = SurfaceResizeFilter(self.surface_dockWidget)
+            self.surface_dockWidget.installEventFilter(self._surface_resize_filter)
             
             # Prüfe, ob Sources-DockWidget bereits existiert und tabbifiziere es
             sources_dock = None
@@ -245,7 +259,7 @@ class UISurfaceManager(ModuleBase):
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             
             # Spaltenbreiten konfigurieren
-            self.surface_tree_widget.setColumnWidth(0, 180)  # Surface Name - Mindestbreite
+            self.surface_tree_widget.setColumnWidth(0, 160)  # Surface Name - 10% schlanker (von 180px auf 160px)
             self.surface_tree_widget.setColumnWidth(1, 25)   # Enable (schmaler)
             self.surface_tree_widget.setColumnWidth(2, 25)   # Hide (schmaler)
             self.surface_tree_widget.setColumnWidth(3, 25)   # XY (schmaler)
@@ -273,8 +287,8 @@ class UISurfaceManager(ModuleBase):
             
             # Setze die SizePolicy
             self.surface_tree_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-            self.surface_tree_widget.setMinimumHeight(235)
-            self.surface_tree_widget.setFixedWidth(300)  # Gleiche Breite wie Sources UI für Konsistenz
+            self.surface_tree_widget.setMinimumHeight(100)  # Reduziert für kompakte UI (140px DockWidget - 24px Buttons - ~15px Margins)
+            self.surface_tree_widget.setFixedWidth(270)  # 10% schlanker (von 300px auf 270px), gleiche Breite wie Sources UI
             
             # Verbinde Signale mit Slots
             # Eigener Handler, der sowohl die UI-Tabs als auch die 3D-Overlays aktualisiert
@@ -342,7 +356,23 @@ class UISurfaceManager(ModuleBase):
             self.surface_tree_widget.blockSignals(False)
             
         self.surface_tree_widget.clearSelection()
+        
+        # Setze Mindesthöhe des DockWidgets, damit Qt's Layout-System die Größe respektiert
+        target_height = 140
+        self.surface_dockWidget.setMinimumHeight(target_height)
+        self.surface_dockWidget.setMaximumHeight(target_height)  # Temporär fixieren, damit Qt nicht überschreibt
+        
         self.surface_dockWidget.show()
+        
+        # Setze initiale Größe des DockWidgets NACH show() mit Timer, damit Qt's Layout fertig ist
+        from PyQt5.QtCore import QTimer
+        def apply_resize():
+            print(f"[Surface UI] resize() aufgerufen: {target_height}px (vorher: {self.surface_dockWidget.height()}px)")
+            self.surface_dockWidget.setMaximumHeight(16777215)  # Entferne Max-Höhe wieder
+            self.surface_dockWidget.resize(1200, target_height)
+            print(f"[Surface UI] resize() abgeschlossen: {self.surface_dockWidget.height()}px")
+        
+        QTimer.singleShot(100, apply_resize)  # 100ms Verzögerung, damit Qt's Layout fertig ist
     
     def close_surface_dock_widget(self):
         """Schließt das SurfaceDockWidget"""
@@ -956,9 +986,14 @@ class UISurfaceManager(ModuleBase):
             _ensure_item(self.surface_tree_widget.topLevelItem(i))
     
     def adjust_column_width_to_content(self):
-        """Passt Spaltenbreiten an den Inhalt an"""
-        # TODO: Implementiere Anpassung
-        pass
+        """Setzt die Spaltenbreiten auf feste Werte (gleich wie Source UI)"""
+        if not hasattr(self, 'surface_tree_widget') or not self.surface_tree_widget:
+            return
+        # Gleiche Spaltenbreiten wie in Source UI
+        self.surface_tree_widget.setColumnWidth(0, 160)  # Surface Name - 10% schlanker (von 180px auf 160px)
+        self.surface_tree_widget.setColumnWidth(1, 25)   # Enable
+        self.surface_tree_widget.setColumnWidth(2, 25)   # Hide
+        self.surface_tree_widget.setColumnWidth(3, 25)   # XY
     
     # ---- Surface Management -----------------------------------------
     
@@ -1149,12 +1184,10 @@ class UISurfaceManager(ModuleBase):
             if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
                 self.main_window.draw_plots.update_plots_for_surface_state()
             elif hasattr(self.main_window, 'update_speaker_array_calculations'):
-                # Fallback: Nur Berechnungen aktualisieren (Overlays werden dann nicht aktualisiert)
+                # Fallback: Berechnungen aktualisieren
+                # 🚀 OPTIMIERUNG: update_speaker_array_calculations() ruft intern plot_spl() auf,
+                # was wiederum update_overlays() aufruft, daher ist der redundante Aufruf entfernt
                 self.main_window.update_speaker_array_calculations()
-                # Stelle sicher, dass Overlays auch aktualisiert werden
-                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
-                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
-                        self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
     def _get_surface(self, surface_id):
         """Holt ein Surface aus den Settings"""
@@ -1193,12 +1226,10 @@ class UISurfaceManager(ModuleBase):
             if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
                 self.main_window.draw_plots.update_plots_for_surface_state()
             elif hasattr(self.main_window, 'update_speaker_array_calculations'):
-                # Fallback: Nur Berechnungen aktualisieren
+                # Fallback: Berechnungen aktualisieren
+                # 🚀 OPTIMIERUNG: update_speaker_array_calculations() ruft intern plot_spl() auf,
+                # was wiederum update_overlays() aufruft, daher ist der redundante Aufruf entfernt
                 self.main_window.update_speaker_array_calculations()
-                # Stelle sicher, dass Overlays auch aktualisiert werden
-                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
-                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
-                        self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
     def on_surface_xy_changed(self, surface_id, state):
         """Wird aufgerufen, wenn sich der XY-Status eines Surfaces ändert"""
@@ -1266,12 +1297,10 @@ class UISurfaceManager(ModuleBase):
         if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
             self.main_window.draw_plots.update_plots_for_surface_state()
         elif hasattr(self.main_window, 'update_speaker_array_calculations'):
-            # Fallback: Nur Berechnungen aktualisieren
+            # Fallback: Berechnungen aktualisieren
+            # 🚀 OPTIMIERUNG: update_speaker_array_calculations() ruft intern plot_spl() auf,
+            # was wiederum update_overlays() aufruft, daher ist der redundante Aufruf entfernt
             self.main_window.update_speaker_array_calculations()
-            # Stelle sicher, dass Overlays auch aktualisiert werden
-            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
-                if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
-                    self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
     
     def on_group_xy_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der XY-Status einer Gruppe ändert"""

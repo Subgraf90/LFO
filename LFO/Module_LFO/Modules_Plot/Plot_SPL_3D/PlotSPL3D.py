@@ -17,7 +17,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Plot.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
+from Module_LFO.Modules_Plot.Plot_SPL_3D.PlotSPL3DOverlays import SPL3DOverlayRenderer, SPLTimeControlBar
+from Module_LFO.Modules_Plot.Plot_SPL_3D.ColorbarManager import ColorbarManager, PHASE_CMAP
 from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate\
     .SurfaceGeometryCalculator import (
@@ -58,17 +59,8 @@ else:  # pragma: no cover
 
 class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     """Erstellt einen interaktiven 3D-SPL-Plot auf Basis von PyVista."""
-    PHASE_CMAP = LinearSegmentedColormap.from_list(
-        "phase_wheel",
-        [
-            (0.0, "#2ecc71"),          # 0°
-            (38 / 180.0, "#8bd852"),   # 38°
-            (90 / 180.0, "#f4e34d"),   # 90°
-            (120 / 180.0, "#f7b731"),  # 120°
-            (150 / 180.0, "#eb8334"),  # 150°
-            (1.0, "#d64545"),          # 180°
-        ],
-    )
+    # PHASE_CMAP wird jetzt aus ColorbarManager importiert
+    PHASE_CMAP = PHASE_CMAP
 
     SURFACE_NAME = "spl_surface"
     FLOOR_NAME = "spl_floor"
@@ -173,13 +165,19 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._last_press_pos: Optional[QtCore.QPoint] = None  # Position des letzten Press (nicht mehr für Doppelklick verwendet)
         # 🎯 DOPPELKLICK DEAKTIVIERT - _double_click_handled wird nicht mehr verwendet (nur noch auf Colorbar)
         self._double_click_handled = False
-        # Variablen für Colorbar-Doppelklick-Erkennung
-        self._last_colorbar_click_time: Optional[float] = None
-        self._last_colorbar_click_pos: Optional[tuple[int, int]] = None
         self._camera_state: Optional[dict[str, object]] = None
         self._skip_next_render_restore = False
         self._phase_mode_active = False
-        self._colorbar_override: dict | None = None
+        
+        # ColorbarManager initialisieren
+        self.colorbar_manager = ColorbarManager(
+            colorbar_ax=colorbar_ax,
+            settings=settings,
+            phase_mode_active=False,
+            time_mode_active=False,
+        )
+        # Doppelklick-Callback für ColorbarManager
+        self.colorbar_manager.on_double_click = self._handle_double_click_auto_range
         self._has_plotted_data = False  # Flag: ob bereits ein Plot mit Daten durchgeführt wurde
         # Flag: ob der initiale Zoom auf das Default-Surface bereits gesetzt wurde
         self._did_initial_overlay_zoom = False
@@ -199,7 +197,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         self.overlay_helper = SPL3DOverlayRenderer(self.plotter, pv)
 
-        self.cbar = None
+        # cbar wird jetzt über colorbar_manager verwaltet
+        self.cbar = None  # Wird von colorbar_manager gesetzt
         self.has_data = False
         self.surface_mesh = None  # type: pv.DataSet | None
         # Einzelne Actors pro horizontaler Surface (SPL-Flächen, Mesh-Modus)
@@ -214,11 +213,6 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         self._time_slider_callback = None
         self._time_mode_active = False
         self._time_mode_surface_cache: dict | None = None
-
-        # Colorbar-Caching: merkt sich den ScalarMappable sowie den Modus,
-        # damit wir bei Area-Updates keine neue Colorbar erzeugen müssen.
-        self._colorbar_mappable = None
-        self._colorbar_mode: Optional[tuple[str, tuple[float, ...] | None]] = None
 
         # Overlay-Differenzial: Signaturen pro Kategorie (Achsen, Wände, etc.),
         # um gezielt neu zu zeichnen und Renderzeit zu sparen.
@@ -2150,41 +2144,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             import traceback
             traceback.print_exc()
     
-    def _on_colorbar_double_click(self, event):
-        """Handler für Doppelklick auf Colorbar.
-        
-        Matplotlib erkennt Doppelklicks über die Zeit zwischen zwei button_press_event Events.
-        Wir müssen die Zeit und Position zwischen zwei Klicks messen.
-        """
-        # Prüfe ob es ein Linksklick auf Colorbar-Axes war
-        if event.button != 1 or event.inaxes != self.colorbar_ax:
-            return
-        
-        # Prüfe ob es ein Doppelklick ist (basierend auf letztem Klick)
-        current_time = time.time()
-        last_time = getattr(self, '_last_colorbar_click_time', None)
-        last_pos = getattr(self, '_last_colorbar_click_pos', None)
-
-        # Nur auswerten, wenn Zeit und Position bereits gültig gesetzt wurden
-        if last_time is not None and last_pos is not None:
-            time_diff = current_time - last_time
-            pos_diff = (
-                abs(event.x - last_pos[0]) < 10 and
-                abs(event.y - last_pos[1]) < 10
-            )
-            
-            # Doppelklick wenn innerhalb von 500ms und ähnlicher Position (10 Pixel Toleranz)
-            if time_diff < 0.5 and pos_diff:
-                # Rufe automatische Range-Anpassung auf
-                self._handle_double_click_auto_range()
-                # Reset für nächsten Klick
-                self._last_colorbar_click_time = None
-                self._last_colorbar_click_pos = None
-                return
-        
-        # Speichere Zeit und Position für nächsten Klick
-        self._last_colorbar_click_time = current_time
-        self._last_colorbar_click_pos = (event.x, event.y)
+    # Doppelklick-Handler wird jetzt vom ColorbarManager verwaltet
     
     def _select_surface_in_treewidget(self, surface_id: str) -> None:
         """Wählt eine Surface im TreeWidget aus und öffnet die zugehörige Gruppe."""
@@ -2341,8 +2301,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
     # ------------------------------------------------------------------
     # Öffentliche API
     # ------------------------------------------------------------------
-    def initialize_empty_scene(self, preserve_camera: bool = True):
-        """Zeigt eine leere Szene und bewahrt optional die Kameraposition."""
+    def initialize_empty_spl_plot(self, preserve_camera: bool = True):
+        """Initialisiert nur den SPL-Plot (Fläche/Floor), Lautsprecher-/Overlays bleiben erhalten."""
         if preserve_camera:
             camera_state = self._camera_state or self._capture_camera()
         else:
@@ -2350,34 +2310,99 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             # Wenn Kamera nicht erhalten wird, Flag zurücksetzen, damit beim nächsten Plot mit Daten Zoom maximiert wird
             self._has_plotted_data = False
 
-        self.plotter.clear()
-        self.overlay_helper.clear()
-        self.has_data = False
-        self.surface_mesh = None
-        self._last_overlay_signatures = {}
-        # 🎯 Setze auch _last_surfaces_state zurück, damit Surfaces nach initialize_empty_scene() neu gezeichnet werden
-        if hasattr(self.overlay_helper, '_last_surfaces_state'):
-            self.overlay_helper._last_surfaces_state = None
-        # Cache zurücksetzen
-        if hasattr(self, '_surface_signature_cache'):
-            self._surface_signature_cache.clear()
+        # DEBUG: Nachvollziehen, wann eine leere SPL-Szene initialisiert wird
+        import os as _os
+        _debug_enabled_scene = _os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
+        # Sprecher-Arrays-Länge zur Laufzeit ermitteln
+        try:
+            _sa = getattr(self.settings, 'speaker_arrays', {})
+            _sa_len = len(_sa) if isinstance(_sa, dict) else 0
+        except Exception:
+            _sa_len = 0
+        if _debug_enabled_scene:
+            print(
+                "[DEBUG INIT_EMPTY_SCENE] initialize_empty_spl_plot() aufgerufen: "
+                f"preserve_camera={preserve_camera}, speaker_arrays_len={_sa_len}"
+            )
+
+        # Zwei Modi:
+        # - Keine Speaker-Arrays → komplette Szene inkl. Overlays leeren (Startzustand)
+        # - Speaker-Arrays vorhanden → nur SPL-bezogene Actor löschen, Lautsprecher/Overlays behalten
+        if _sa_len == 0:
+            # Ursprüngliches Verhalten: komplette Szene leeren
+            if hasattr(self, "plotter") and self.plotter is not None:
+                self.plotter.clear()
+            if hasattr(self, "overlay_helper") and self.overlay_helper is not None:
+                self.overlay_helper.clear()
+            self.has_data = False
+            self.surface_mesh = None
+            self._last_overlay_signatures = {}
+            # 🎯 Setze auch _last_surfaces_state zurück, damit Surfaces nach initialize_empty_scene() neu gezeichnet werden
+            if hasattr(self.overlay_helper, '_last_surfaces_state'):
+                self.overlay_helper._last_surfaces_state = None
+            # Cache zurücksetzen
+            if hasattr(self, '_surface_signature_cache'):
+                self._surface_signature_cache.clear()
+        else:
+            # Nur SPL-bezogene Actor entfernen, Lautsprecher/Overlays unangetastet lassen
+            if hasattr(self, "plotter") and self.plotter is not None:
+                try:
+                    renderer = self.plotter.renderer
+                except Exception:
+                    renderer = None
+                if renderer is not None:
+                    # Haupt-SPL-Surface (Mesh)
+                    base_actor = renderer.actors.get(self.SURFACE_NAME)
+                    if base_actor is not None:
+                        try:
+                            self.plotter.remove_actor(base_actor)
+                        except Exception:
+                            pass
+                    # Floor-Actor
+                    floor_actor = renderer.actors.get(self.FLOOR_NAME)
+                    if floor_actor is not None:
+                        try:
+                            self.plotter.remove_actor(floor_actor)
+                        except Exception:
+                            pass
+                # Horizontale Surface-Mesh-Actors
+                for sid, actor in list(getattr(self, "_surface_actors", {}).items()):
+                    try:
+                        self.plotter.remove_actor(actor)
+                    except Exception:
+                        pass
+                    self._surface_actors.pop(sid, None)
+                # Texture-Actors für horizontale Surfaces
+                for tex_data in list(getattr(self, "_surface_texture_actors", {}).values()):
+                    actor = None
+                    if isinstance(tex_data, dict):
+                        actor = tex_data.get("actor")
+                    elif tex_data is not None:
+                        actor = tex_data
+                    if actor is not None:
+                        try:
+                            self.plotter.remove_actor(actor)
+                        except Exception:
+                            pass
+                if hasattr(self, "_surface_texture_actors"):
+                    self._surface_texture_actors.clear()
+
+                # Vertikale SPL-Flächen entfernen
+                if hasattr(self, "_clear_vertical_spl_surfaces"):
+                    try:
+                        self._clear_vertical_spl_surfaces()
+                    except Exception:
+                        pass
+
+            # SPL-interne Zustände zurücksetzen
+            self.has_data = False
+            self.surface_mesh = None
+            if hasattr(self, '_surface_signature_cache'):
+                self._surface_signature_cache.clear()
         
         # Konfiguriere Plotter nur bei Bedarf (nicht die Kamera überschreiben)
         self._configure_plotter(configure_camera=not preserve_camera)
         
-        # Stelle sicher, dass beim Neuaufbau der Szene alle Overlays
-        # (insbesondere Lautsprecher) und der zugehörige Cache sauber
-        # neu aufgebaut werden, damit Picking zuverlässig funktioniert.
-        try:
-            if hasattr(self, 'overlay_helper') and self.settings is not None:
-                current_container = getattr(self, 'container', None)
-                self.update_overlays(self.settings, current_container)
-        except Exception:
-            # Overlay-Neuaufbau ist nicht kritisch für den leeren Plot;
-            # Fehler hier sollen den Plot nicht komplett verhindern.
-            pass
-        # scene_frame wurde entfernt - nicht mehr benötigt
-
         if camera_state is not None:
             self._restore_camera(camera_state)
         else:
@@ -2386,13 +2411,22 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             if camera_state is not None:
                 self._restore_camera(camera_state)
 
-        self._initialize_empty_colorbar()
+        # Initialisiere leere Colorbar über ColorbarManager
+        colorization_mode = getattr(self.settings, 'colorization_mode', 'Gradient')
+        if colorization_mode not in {'Color step', 'Gradient'}:
+            colorization_mode = 'Color step'
+        self.colorbar_manager.render_colorbar(colorization_mode, force=True)
+        self.cbar = self.colorbar_manager.cbar  # Synchronisiere cbar-Referenz
         self._skip_next_render_restore = True
         self.render()
         self._skip_next_render_restore = False
         self._save_camera_state()
         if self.time_control is not None:
             self.time_control.hide()
+
+    def initialize_empty_scene(self, preserve_camera: bool = True):
+        """Abwärtskompatibler Wrapper – bitte initialize_empty_spl_plot verwenden."""
+        return self.initialize_empty_spl_plot(preserve_camera=preserve_camera)
 
     @measure_time("PlotSPL3D.update_spl_plot")
     def update_spl_plot(
@@ -2407,8 +2441,9 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         camera_state = self._camera_state or self._capture_camera()
 
+        # Wenn keine gültigen SPL-Daten vorliegen, belassen wir die bestehende Szene
+        # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
         if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
-            self.initialize_empty_scene(preserve_camera=True)
             return
 
         x = np.asarray(sound_field_x, dtype=float)
@@ -2417,7 +2452,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         try:
             pressure = np.asarray(sound_field_pressure, dtype=float)
         except Exception:  # noqa: BLE001
-            self.initialize_empty_scene(preserve_camera=True)
+            # Ungültige SPL-Daten → Szene nicht leeren, nur SPL-Update abbrechen
             return
 
         plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
@@ -2432,30 +2467,27 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 try:
                     pressure = pressure.reshape(len(y), len(x))
                 except Exception:  # noqa: BLE001
-                    self.initialize_empty_scene(preserve_camera=True)
                     return
             else:
-                self.initialize_empty_scene(preserve_camera=True)
                 return
 
         if pressure.shape != (len(y), len(x)):
-            self.initialize_empty_scene(preserve_camera=True)
             return
 
-        self._colorbar_override = None
+        # Aktualisiere ColorbarManager Modes
+        self.colorbar_manager.update_modes(phase_mode_active=phase_mode, time_mode_active=time_mode)
+        self.colorbar_manager.set_override(None)
 
         if time_mode:
             pressure = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
-                self.initialize_empty_scene(preserve_camera=True)
                 return
             # Verwende feste Colorbar-Parameter (keine dynamische Skalierung)
             plot_values = pressure
         elif phase_mode:
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
-                self.initialize_empty_scene(preserve_camera=True)
                 return
             phase_values = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
             plot_values = phase_values
@@ -2486,19 +2518,18 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             
             finite_mask = np.isfinite(spl_db)
             if not np.any(finite_mask):
-                self.initialize_empty_scene(preserve_camera=True)
                 return
             plot_values = spl_db
         
         if DEBUG_PLOT3D_TIMING:
             t_after_spl = time.perf_counter()
 
-        colorbar_params = self._get_colorbar_params(phase_mode)
+        colorbar_params = self.colorbar_manager.get_colorbar_params(phase_mode)
         cbar_min = colorbar_params['min']
         cbar_max = colorbar_params['max']
         cbar_step = colorbar_params['step']
         tick_step = colorbar_params['tick_step']
-        self._colorbar_override = colorbar_params
+        self.colorbar_manager.set_override(colorbar_params)
 
         # 🎯 WICHTIG: Speichere ursprüngliche Berechnungs-Werte für PyVista sample-Modus VOR Clipping!
         # Clipping ändert die Werte und sollte nur für Visualisierung erfolgen, nicht für Sampling
@@ -2539,10 +2570,8 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 default_upscale=upscale_factor,
             )
         except RuntimeError as exc:
-            pass
-            self.initialize_empty_scene(preserve_camera=True)
-            # Auch vertikale SPL-Flächen entfernen, da keine gültige Geometrie vorliegt
-            self._clear_vertical_spl_surfaces()
+            # Fehler bei der Geometrie-Erzeugung → keine Szene leeren, nur SPL-Update abbrechen
+            # Vertikale SPL-Flächen werden ebenfalls nicht angepasst.
             return
 
         if DEBUG_PLOT3D_TIMING:
@@ -2718,7 +2747,15 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
                 except Exception:  # noqa: BLE001
                     pass
 
-        self._update_colorbar(colorization_mode_used, tick_step=tick_step)
+        # Aktualisiere Colorbar über ColorbarManager
+        self.colorbar_manager.render_colorbar(
+            colorization_mode_used,
+            force=False,
+            tick_step=tick_step,
+            phase_mode_active=phase_mode,
+            time_mode_active=time_mode,
+        )
+        self.cbar = self.colorbar_manager.cbar  # Synchronisiere cbar-Referenz
 
         # ------------------------------------------------------------
         # Vertikale Flächen: separate SPL-Flächen rendern
@@ -2763,7 +2800,7 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
             self._has_plotted_data = True
         self.render()
         self._save_camera_state()
-        self._colorbar_override = None
+        self.colorbar_manager.set_override(None)
 
         if DEBUG_PLOT3D_TIMING:
             t_end = time.perf_counter()
@@ -2967,13 +3004,13 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
         Liefert die Farbskalen-Grenzen (min, max) für vertikale SPL-Flächen.
         Bevorzugt aktuelle Override-Range aus der Colorbar, sonst Settings-Range.
         """
-        if self._colorbar_override:
-            try:
-                cmin = float(self._colorbar_override.get("min", 0.0))
-                cmax = float(self._colorbar_override.get("max", 0.0))
-                return cmin, cmax
-            except Exception:
-                pass
+        params = self.colorbar_manager.get_colorbar_params(self._phase_mode_active)
+        try:
+            cmin = float(params.get("min", 0.0))
+            cmax = float(params.get("max", 0.0))
+            return cmin, cmax
+        except Exception:
+            pass
         try:
             rng = self.settings.colorbar_range
             return float(rng["min"]), float(rng["max"])
@@ -5217,6 +5254,22 @@ class DrawSPLPlot3D(ModuleBase, QtCore.QObject):
 
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
         speakers_signature: List[tuple] = []
+
+        # DEBUG: Zusätzliche Infos zu speaker_arrays, um leere Zustände zu verstehen
+        import os as _os
+        _debug_enabled_speakers = _os.getenv('LFO_DEBUG_SPEAKER_CACHE', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
+        if _debug_enabled_speakers:
+            try:
+                _keys = list(speaker_arrays.keys()) if isinstance(speaker_arrays, dict) else []
+            except Exception:
+                _keys = []
+            print("[DEBUG SPEAKERS INPUT] _compute_overlay_signatures: "
+                  f"type(settings)={type(settings)}, "
+                  f"hasattr(settings, 'speaker_arrays')={hasattr(settings, 'speaker_arrays')}, "
+                  f"type(speaker_arrays)={type(speaker_arrays)}, "
+                  f"len={len(speaker_arrays) if isinstance(speaker_arrays, dict) else 'n/a'}, "
+                  f"keys={_keys[:5]}")
+
         if isinstance(speaker_arrays, dict):
             for name in sorted(speaker_arrays.keys()):
                 array = speaker_arrays[name]
