@@ -446,6 +446,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             # 🎯 Setze auch _last_surfaces_state zurück, damit Surfaces nach initialize_empty_scene() neu gezeichnet werden
             if hasattr(self, "overlay_surfaces") and self.overlay_surfaces is not None:
                 self.overlay_surfaces._last_surfaces_state = None
+            # 🎯 Setze auch _last_axis_state zurück, damit Achsen nach initialize_empty_scene() neu gezeichnet werden
+            if hasattr(self, "overlay_axis") and self.overlay_axis is not None:
+                self.overlay_axis._last_axis_state = None
             # Cache zurücksetzen
             if hasattr(self, '_surface_signature_cache'):
                 self._surface_signature_cache.clear()
@@ -579,7 +582,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     key for key, value in signatures.items() 
                     if key != 'speakers_highlights' and value != previous.get(key)
                 }
-        
         # 🚀 OPTIMIERUNG: Prüfe ob sich nur Highlights geändert haben
         highlight_changed = False
         if previous:
@@ -587,6 +589,26 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             curr_highlights = signatures.get('speakers_highlights')
             if prev_highlights != curr_highlights:
                 highlight_changed = True
+        
+        # 🐛 Falls die Axis-Actors fehlen (z. B. nach File-Reload/Plotter-Clear),
+        # erzwinge ein Redraw der Achsen, auch wenn die Signatur unverändert ist.
+        try:
+            renderer = self.plotter.renderer if hasattr(self.plotter, "renderer") else None
+            axis_names = []
+            if hasattr(self, "overlay_axis") and hasattr(self.overlay_axis, "_category_actors"):
+                axis_names = self.overlay_axis._category_actors.get('axis', []) or []
+            axis_missing = False
+            if renderer is not None and axis_names:
+                # Wenn keiner der gespeicherten Axis-Actor im Renderer liegt, neu zeichnen
+                axis_missing = not any(name in renderer.actors for name in axis_names)
+            elif renderer is not None and not axis_names:
+                # Kein bekannter Axis-Actor -> ebenfalls neu zeichnen
+                axis_missing = True
+            if axis_missing:
+                categories_to_refresh.add('axis')
+        except Exception:
+            # Fällt zurück auf normales Verhalten
+            pass
         
         # Wenn sich nur Highlights geändert haben und Speaker bereits gezeichnet sind, nur Highlights updaten
         if highlight_changed and 'speakers' not in categories_to_refresh and hasattr(self.overlay_speakers, '_speaker_actor_cache') and self.overlay_speakers._speaker_actor_cache:
@@ -605,7 +627,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             return
         
         # Debug-Flag wird nicht mehr benötigt (war nur für Koordinator)
-        
         if 'axis' in categories_to_refresh:
             with perf_section("PlotSPL3D.update_overlays.draw_axis"):
                 self.overlay_axis.draw_axis_lines(settings, selected_axis=self._axis_selected)

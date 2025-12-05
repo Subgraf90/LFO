@@ -24,12 +24,16 @@ class SPL3DOverlayBase:
         """Initialisiert die Basisklasse mit Plotter und PyVista-Modul."""
         self.plotter = plotter
         self.pv = pv_module
+        # Präfix pro Overlay-Modul, um Actor-Namens-Kollisionen zu vermeiden
+        # (z. B. 'axis_', 'surf_', 'imp_', 'spk_')
+        self._overlay_prefix: str = ""
         self.overlay_actor_names: List[str] = []
         self.overlay_counter = 0
         self._category_actors: dict[str, List[str]] = {}
         # Kleiner Z-Offset für alle planaren Overlays (Surfaces, Axis-Linien),
         # damit Umrandungen leicht ÜBER dem SPL-Plot liegen und nicht verdeckt werden.
-        self._planar_z_offset = 0.0
+        # Etwas größer gewählt, damit Umrandungen klar über Texturen liegen.
+        self._planar_z_offset = 0.005
         # Z-Offset speziell für Achsenlinien (höher als Surfaces, damit sie beim Picking bevorzugt werden)
         self._axis_z_offset = 0.01  # 1cm über Surface
         
@@ -82,7 +86,8 @@ class SPL3DOverlayBase:
         render_lines_as_tubes: Optional[bool] = None,
     ) -> str:
         """Fügt ein Mesh als Overlay hinzu und gibt den Actor-Namen zurück."""
-        name = f"overlay_{self.overlay_counter}"
+        prefix = f"{self._overlay_prefix}" if self._overlay_prefix else ""
+        name = f"{prefix}overlay_{self.overlay_counter}"
         self.overlay_counter += 1
         kwargs = {
             'name': name,

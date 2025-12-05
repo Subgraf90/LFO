@@ -1125,6 +1125,7 @@ class UISurfaceManager(ModuleBase):
                     if isinstance(surface_id_data, str) and surface_id_data in surface_store:
                         highlight_ids = [surface_id_data]
                         setattr(self.settings, "active_surface_id", surface_id_data)
+                        print(f"[DEBUG SURFACE CLICK] Surface item clicked: {surface_id_data}")
                 elif item_type == "group":
                     group_id_data = item.data(0, Qt.UserRole)
                     if isinstance(group_id_data, dict):
@@ -1133,9 +1134,11 @@ class UISurfaceManager(ModuleBase):
                         group_id = group_id_data
                     if group_id:
                         highlight_ids = self._collect_all_surfaces_from_group(group_id, surface_store)
+                        print(f"[DEBUG SURFACE CLICK] Group item clicked: {group_id}, surfaces: {highlight_ids}")
                     setattr(self.settings, "active_surface_id", None)
                 
                 setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
+                print(f"[DEBUG SURFACE CLICK] Set active_surface_highlight_ids = {highlight_ids}")
                 
                 # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
                 # für rote Umrandung der ausgewählten Fläche
@@ -1148,10 +1151,18 @@ class UISurfaceManager(ModuleBase):
                     draw_spl = main_window.draw_plots.draw_spl_plotter
                     if hasattr(draw_spl, "update_overlays"):
                         try:
+                            print(f"[DEBUG SURFACE CLICK] Calling update_overlays...")
                             draw_spl.update_overlays(self.settings, self.container)
-                        except Exception:
+                            print(f"[DEBUG SURFACE CLICK] update_overlays returned")
+                        except Exception as e:
                             # Fehler hier sollen die restliche UI nicht blockieren
-                            pass
+                            print(f"[DEBUG SURFACE CLICK] ERROR in update_overlays: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"[DEBUG SURFACE CLICK] draw_spl has no update_overlays method")
+                else:
+                    print(f"[DEBUG SURFACE CLICK] Cannot access draw_spl (main_window={main_window is not None})")
             except Exception:
                 # Fehler hier sollen die Auswahl nicht blockieren
                 pass

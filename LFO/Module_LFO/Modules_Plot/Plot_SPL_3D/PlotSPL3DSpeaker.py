@@ -34,6 +34,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
     def __init__(self, plotter: Any, pv_module: Any):
         """Initialisiert das Speaker Overlay."""
         super().__init__(plotter, pv_module)
+        self._overlay_prefix = "spk_"
         
         # Speaker-spezifische Caches
         self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
 
 try:
     import pyvista as pv
@@ -154,6 +155,38 @@ class SPL3DHelpers:
         else:
             max_surface_dim = 0.0
         
+        # 🎯 ACHSEN-SIGNATUR: Achspositionen + aktive Surface-Geometrien,
+        # damit verschobene/editiert Surfaces die Achsen neu zeichnen.
+        surface_points_signature: List[tuple] = []
+        try:
+            overlay_for_signature = None
+            if hasattr(self, 'overlay_axis'):
+                overlay_for_signature = self.overlay_axis
+            elif hasattr(self, 'overlay_surfaces'):
+                overlay_for_signature = self.overlay_surfaces
+            if overlay_for_signature and hasattr(overlay_for_signature, '_get_active_xy_surfaces'):
+                active_surfaces = overlay_for_signature._get_active_xy_surfaces(settings)
+                for surface_id, surface in active_surfaces:
+                    if isinstance(surface, SurfaceDefinition):
+                        points = surface.points
+                    else:
+                        points = surface.get('points', [])
+                    points_tuple: List[tuple] = []
+                    for point in points:
+                        try:
+                            x = float(point.get('x', 0.0))
+                            y = float(point.get('y', 0.0))
+                            z = float(point.get('z', 0.0)) if point.get('z') is not None else 0.0
+                            points_tuple.append((round(x, 6), round(y, 6), round(z, 6)))
+                        except Exception:
+                            continue
+                    surface_points_signature.append((str(surface_id), tuple(points_tuple)))
+                surface_points_signature.sort(key=lambda x: x[0])
+        except Exception:
+            # Bei Fehler: Verwende leere Signatur (bedeutet, dass Achsen bei jedem Update neu gezeichnet werden)
+            # Dies stellt sicher, dass beim Laden die Achsen immer neu gezeichnet werden, auch wenn die Signatur-Berechnung fehlschlägt
+            surface_points_signature = []  # Leere Signatur = immer neu zeichnen
+
         axis_signature = (
             float(getattr(settings, 'position_x_axis', 0.0)),
             float(getattr(settings, 'position_y_axis', 0.0)),
@@ -162,6 +195,7 @@ class SPL3DHelpers:
             float(getattr(settings, 'axis_3d_transparency', 10.0)),
             float(max_surface_dim),  # Maximale Surface-Dimension für Achsenflächen-Größe
             getattr(self, '_axis_selected', None),  # Highlight-Status in Signatur aufnehmen
+            tuple(surface_points_signature),  # Aktive Surface-Geometrien
         )
 
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
@@ -340,12 +374,16 @@ class SPL3DHelpers:
         # has_speaker_arrays beeinflusst nur die Darstellung (gestrichelt vs. durchgezogen),
         # nicht ob Surfaces gezeichnet werden.
         # Die Signatur besteht aus den Surface-Definitionen, active_surface_id und active_surface_highlight_ids.
+        # 🎯 WICHTIG: active_ids_set muss sowohl active_surface_id als auch active_surface_highlight_ids enthalten
+        # (wie in draw_surfaces), damit die Signaturen übereinstimmen!
         active_surface_id = getattr(settings, 'active_surface_id', None)
         highlight_ids = getattr(settings, 'active_surface_highlight_ids', None)
+        active_ids_set = set()
         if isinstance(highlight_ids, (list, tuple, set)):
-            highlight_ids_tuple = tuple(sorted(str(sid) for sid in highlight_ids))
-        else:
-            highlight_ids_tuple = tuple()
+            active_ids_set = {str(sid) for sid in highlight_ids}
+        if active_surface_id is not None:
+            active_ids_set.add(str(active_surface_id))
+        highlight_ids_tuple = tuple(sorted(active_ids_set))
         
         # 🎯 Prüfe ob SPL-Daten vorhanden sind (für Signatur, damit draw_surfaces nach update_spl_plot aufgerufen wird)
         has_spl_data_for_signature = False

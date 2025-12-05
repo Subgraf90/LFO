@@ -482,8 +482,8 @@ class DrawPlotsMainwindow(ModuleBase):
             # Aktualisiere Overlays (ohne graue Flächen für enabled Surfaces)
             plotter.update_overlays(self.settings, self.container)
             # Erstelle graue Flächen für enabled Surfaces (nur im leeren Plot)
-            if hasattr(plotter, 'overlay_helper'):
-                plotter.overlay_helper.draw_surfaces(self.settings, self.container, create_empty_plot_surfaces=True)
+            if hasattr(plotter, 'overlay_surfaces'):
+                plotter.overlay_surfaces.draw_surfaces(self.settings, self.container, create_empty_plot_surfaces=True)
             self.colorbar_canvas.draw()
             # Prüfe ob "SPL over time" aktiv ist
             plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')

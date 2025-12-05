@@ -24,6 +24,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
     def __init__(self, plotter: Any, pv_module: Any):
         """Initialisiert das Surfaces Overlay."""
         super().__init__(plotter, pv_module)
+        self._overlay_prefix = "surf_"
         self._last_surfaces_state: Optional[tuple] = None
     
     def clear_category(self, category: str) -> None:
@@ -98,21 +99,64 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     has_speaker_arrays_for_signature = True
                     break
         
-        signature_tuple = (tuple(surfaces_signature), tuple(sorted(active_ids_set)))
+        # 🎯 WICHTIG: Signatur-Struktur muss mit _compute_overlay_signatures übereinstimmen!
+        # Struktur: (surfaces_signature_tuple, active_surface_id, highlight_ids_tuple, has_spl_data_for_signature)
+        active_surface_id = getattr(settings, 'active_surface_id', None)
+        highlight_ids_tuple = tuple(sorted(active_ids_set))
+        
+        # Prüfe ob SPL-Daten vorhanden sind (für Signatur-Konsistenz)
+        has_spl_data_for_signature = False
+        try:
+            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
+                spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
+                texture_actor_names = [name for name in self.plotter.renderer.actors.keys() if name.startswith('spl_surface_tex_')]
+                has_texture_actors = len(texture_actor_names) > 0
+                if spl_surface_actor is not None or spl_floor_actor is not None or has_texture_actors:
+                    has_spl_data_for_signature = True
+        except Exception:
+            pass
+        
+        signature_tuple = (tuple(surfaces_signature), active_surface_id, highlight_ids_tuple, has_spl_data_for_signature)
+        
+        print(f"[DEBUG draw_surfaces] active_ids_set = {sorted(active_ids_set)}")
+        print(f"[DEBUG draw_surfaces] highlight_ids_tuple = {highlight_ids_tuple}")
         
         signature_changed = True
         if self._last_surfaces_state is not None and not create_empty_plot_surfaces:
-            if len(self._last_surfaces_state) == 2:
-                last_signature_tuple, last_ids = self._last_surfaces_state
-                last_ids_set = set(last_ids) if isinstance(last_ids, (list, tuple, set)) else set()
-                if (last_signature_tuple == tuple(surfaces_signature) and 
-                    last_ids_set == active_ids_set):
+            # Prüfe ob Signatur-Struktur übereinstimmt (4-Tupel wie in _compute_overlay_signatures)
+            if len(self._last_surfaces_state) == 4:
+                last_surfaces_tuple, last_active_id, last_highlight_ids, last_has_spl = self._last_surfaces_state
+                last_ids_set = set(str(sid) for sid in last_highlight_ids) if isinstance(last_highlight_ids, (list, tuple, set)) else set()
+                # Prüfe ob sich Surface-Definitionen ODER Highlight-IDs geändert haben
+                surfaces_changed = (last_surfaces_tuple != tuple(surfaces_signature))
+                highlights_changed = (last_ids_set != active_ids_set)
+                active_id_changed = (last_active_id != active_surface_id)
+                spl_data_changed = (last_has_spl != has_spl_data_for_signature)
+                print(f"[DEBUG draw_surfaces] Signature comparison:")
+                print(f"  last_ids_set: {sorted(last_ids_set)}")
+                print(f"  active_ids_set: {sorted(active_ids_set)}")
+                print(f"  surfaces_changed: {surfaces_changed}")
+                print(f"  highlights_changed: {highlights_changed}")
+                print(f"  active_id_changed: {active_id_changed}")
+                print(f"  spl_data_changed: {spl_data_changed}")
+                if not surfaces_changed and not highlights_changed and not active_id_changed and not spl_data_changed:
                     signature_changed = False
+                    print(f"[DEBUG draw_surfaces] SIGNATURE UNCHANGED - SKIPPING REDRAW")
+            elif len(self._last_surfaces_state) == 2:
+                # Alte Signatur-Struktur (2-Tupel) - behandle als geändert
+                print(f"[DEBUG draw_surfaces] OLD SIGNATURE FORMAT - FORCING REDRAW")
             elif self._last_surfaces_state == signature_tuple:
                 signature_changed = False
+                print(f"[DEBUG draw_surfaces] SIGNATURE UNCHANGED (exact match) - SKIPPING REDRAW")
         
+        # 🎯 WICHTIG: Auch wenn sich nur die Highlight-IDs geändert haben, müssen wir neu zeichnen
+        # (damit disabled Surfaces rot umrandet werden, wenn sie angeklickt werden)
         if not signature_changed and not create_empty_plot_surfaces:
+            print(f"[DEBUG draw_surfaces] RETURNING EARLY - no redraw needed")
             return
+        
+        print(f"[DEBUG draw_surfaces] PROCEEDING WITH REDRAW - signature_changed={signature_changed}")
         
         t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self.clear_category('surfaces')
@@ -173,6 +217,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 disabled_count += 1
             
             is_active = (str(surface_id) in active_ids_set)
+            if is_active:
+                print(f"[DEBUG draw_surfaces] Surface {surface_id} is ACTIVE (enabled={enabled}, hidden={hidden})")
             
             try:
                 point_coords = []
@@ -252,6 +298,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         
         # Zeichne aktive ENABLED Surfaces als Batch
         if active_enabled_points_list:
+            print(f"[DEBUG draw_surfaces] Drawing {len(active_enabled_points_list)} active ENABLED surfaces with RED border")
             try:
                 all_active_enabled_points = np.vstack(active_enabled_points_list)
                 active_enabled_lines_array = []
@@ -278,13 +325,19 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     opacity=1.0,
                     category='surfaces',
                     show_vertices=False,
-                    render_lines_as_tubes=False,
+                    render_lines_as_tubes=True,
                 )
-            except Exception:
-                pass
+                print(f"[DEBUG draw_surfaces] Successfully added RED border for active ENABLED surfaces")
+            except Exception as e:
+                print(f"[DEBUG draw_surfaces] ERROR drawing active ENABLED surfaces: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"[DEBUG draw_surfaces] No active ENABLED surfaces to draw (active_enabled_points_list is empty)")
         
         # Zeichne aktive DISABLED Surfaces als Batch
         if active_disabled_points_list:
+            print(f"[DEBUG draw_surfaces] Drawing {len(active_disabled_points_list)} active DISABLED surfaces with RED border")
             try:
                 all_active_disabled_points = np.vstack(active_disabled_points_list)
                 active_disabled_lines_array = []
@@ -311,10 +364,15 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     opacity=1.0,
                     category='surfaces',
                     show_vertices=False,
-                    render_lines_as_tubes=False,
+                    render_lines_as_tubes=True,
                 )
-            except Exception:
-                pass
+                print(f"[DEBUG draw_surfaces] Successfully added RED border for active DISABLED surfaces")
+            except Exception as e:
+                print(f"[DEBUG draw_surfaces] ERROR drawing active DISABLED surfaces: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"[DEBUG draw_surfaces] No active DISABLED surfaces to draw (active_disabled_points_list is empty)")
         
         # Zeichne Fläche für enabled Surfaces NUR wenn create_empty_plot_surfaces=True
         if create_empty_plot_surfaces:

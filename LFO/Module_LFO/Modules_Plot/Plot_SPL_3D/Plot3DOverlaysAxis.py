@@ -25,6 +25,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
     def __init__(self, plotter: Any, pv_module: Any):
         """Initialisiert das Axis Overlay."""
         super().__init__(plotter, pv_module)
+        self._overlay_prefix = "axis_"
         self._last_axis_state: Optional[tuple] = None
     
     def clear_category(self, category: str) -> None:
@@ -81,8 +82,18 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             tuple(surface_points_signature),
         )
         existing_names = self._category_actors.get('axis', [])
-        if self._last_axis_state == state and existing_names:
-            return
+        # 🎯 WICHTIG: Beim Laden (_last_axis_state ist None) immer neu zeichnen
+        # Prüfe auch, ob Actors fehlen (z. B. nach File-Reload)
+        if self._last_axis_state is not None and self._last_axis_state == state and existing_names:
+            # Zusätzliche Prüfung: Wenn Actors fehlen, trotzdem neu zeichnen
+            if hasattr(self, 'plotter') and hasattr(self.plotter, 'renderer'):
+                renderer = self.plotter.renderer
+                if renderer and existing_names:
+                    # Prüfe ob alle Actors noch im Renderer existieren
+                    actors_exist = all(name in renderer.actors for name in existing_names)
+                    if actors_exist:
+                        return
+        # Wenn wir hier ankommen, müssen wir neu zeichnen (State geändert, _last_axis_state ist None, oder Actors fehlen)
 
         t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         # Linien und evtl. Achsenflächen leeren

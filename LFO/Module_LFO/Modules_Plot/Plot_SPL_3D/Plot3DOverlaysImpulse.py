@@ -18,6 +18,7 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
     def __init__(self, plotter: Any, pv_module: Any):
         """Initialisiert das Impulse-Overlay."""
         super().__init__(plotter, pv_module)
+        self._overlay_prefix = "imp_"
         self._last_impulse_state: Optional[tuple] = None
 
     def clear_category(self, category: str) -> None:

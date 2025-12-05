@@ -764,10 +764,9 @@ class SPL3DInteractionHandler:
                     return (None, None, None)
 
                 picker = vtkCellPicker()
-                # Erhöhte Toleranz, damit Lautsprecher-Gehäuse auch bei größerem Zoom
-                # bzw. kleinen Screen‑Projektionen zuverlässiger getroffen werden.
-                # Vorher: 0.02 – jetzt 0.08 für robusteres Picking.
-                picker.SetTolerance(0.08)
+                # Toleranz reduziert, um Flächen hinter dem Speaker weniger oft zu treffen.
+                # Vorher: 0.08 – jetzt 0.03 (präziseres Picking).
+                picker.SetTolerance(0.03)
                 picker.PickFromListOn()
 
                 actor_name_to_obj: dict[str, object] = {}
