@@ -167,6 +167,87 @@ class SoundFieldCalculator(ModuleBase):
         resolution = self.settings.resolution
         nx_points = len(sound_field_x)
         ny_points = len(sound_field_y)
+        
+        # 🐛 DEBUG: Prüfe Z-Koordinaten für schräge Flächen
+        if DEBUG_SOUNDFIELD and enabled_surfaces:
+            # Importiere Funktionen außerhalb der Schleife
+            from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+                derive_surface_plane,
+                evaluate_surface_plane,
+            )
+            from matplotlib.path import Path
+            
+            print(f"[SoundFieldCalculator] Grid-Erstellung:")
+            print(f"  Grid shape: X_grid={X_grid.shape}, Y_grid={Y_grid.shape}, Z_grid={Z_grid.shape}")
+            print(f"  X range: [{X_grid.min():.2f}, {X_grid.max():.2f}]")
+            print(f"  Y range: [{Y_grid.min():.2f}, {Y_grid.max():.2f}]")
+            print(f"  Z range: [{Z_grid.min():.2f}, {Z_grid.max():.2f}]")
+            print(f"  Active points: {active_points} / {total_points}")
+            
+            # Prüfe Z-Koordinaten für schräge Flächen
+            for surface_id, surface_def in enabled_surfaces:
+                points = surface_def.get("points", [])
+                if len(points) < 3:
+                    continue
+                
+                # Prüfe ob Fläche schräg ist
+                model, _ = derive_surface_plane(points)
+                if model is None:
+                    continue
+                
+                mode = model.get("mode", "constant")
+                if mode == "constant":
+                    continue
+                
+                # Finde Grid-Punkte auf dieser Fläche
+                poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+                poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+                poly_path = Path(np.column_stack((poly_x, poly_y)))
+                points_2d = np.column_stack((X_grid.ravel(), Y_grid.ravel()))
+                inside = poly_path.contains_points(points_2d)
+                inside = inside.reshape(X_grid.shape)
+                
+                # Prüfe Z-Koordinaten
+                points_with_z = np.sum((inside) & (np.abs(Z_grid) > 1e-6))
+                points_in_surface = np.sum(inside)
+                
+                print(f"  [DEBUG Z-Grid] {surface_id} (mode={mode}):")
+                print(f"    Points in surface: {points_in_surface}, Points with Z≠0: {points_with_z}")
+                
+                if np.any(inside):
+                    # Prüfe Z-Koordinaten an Ecken
+                    corners = [
+                        (0, 0, "oben-links"),
+                        (0, X_grid.shape[1]-1, "oben-rechts"),
+                        (X_grid.shape[0]-1, 0, "unten-links"),
+                        (X_grid.shape[0]-1, X_grid.shape[1]-1, "unten-rechts"),
+                    ]
+                    for jj, ii, name in corners:
+                        if inside[jj, ii]:
+                            x_val = X_grid[jj, ii]
+                            y_val = Y_grid[jj, ii]
+                            z_val = Z_grid[jj, ii]
+                            
+                            # Berechne erwarteten Z-Wert aus Plane-Model
+                            z_expected = evaluate_surface_plane(model, x_val, y_val)
+                            
+                            print(f"    Corner {name} [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
+                    
+                    # Prüfe auch einige Punkte innerhalb der Fläche
+                    inside_indices = np.where(inside)
+                    if len(inside_indices[0]) > 0:
+                        # Wähle einige zufällige Punkte
+                        sample_indices = np.random.choice(len(inside_indices[0]), min(5, len(inside_indices[0])), replace=False)
+                        for idx in sample_indices:
+                            jj = inside_indices[0][idx]
+                            ii = inside_indices[1][idx]
+                            x_val = X_grid[jj, ii]
+                            y_val = Y_grid[jj, ii]
+                            z_val = Z_grid[jj, ii]
+                            z_expected = evaluate_surface_plane(model, x_val, y_val)
+                            print(f"    Sample [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
+                else:
+                    print(f"    ⚠️  Keine Grid-Punkte innerhalb der Surface gefunden!")
         surface_meshes = self._grid_calculator.get_surface_meshes()
         surface_samples = self._grid_calculator.get_surface_sampling_points()
         # Sichtbarkeits-Occluder aus aktuellen Surface-Definitionen ableiten

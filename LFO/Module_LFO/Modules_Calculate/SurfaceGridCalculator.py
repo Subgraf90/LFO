@@ -770,9 +770,16 @@ def _interpolate_z_coordinates_impl(
     🎯 FESTE GEOMETRIE: X/Y-Positionen werden immer fest eingehalten, auch wenn Z variiert.
     Wenn eine Surface Z-Abweichungen hat, werden diese normalisiert (einzelne Abweichung → 4.0).
     """
+    # 🐛 DEBUG: Funktion wurde aufgerufen (immer aktiv für Z-Grid-Debugging)
+    print(f"[DEBUG Z-Interpolation] Funktion aufgerufen:")
+    print(f"  Grid shape: {x_coords.shape}")
+    print(f"  Anzahl Surfaces: {len(surfaces)}")
+    print(f"  Surface-Maske coverage: {np.count_nonzero(surface_mask) / surface_mask.size * 100:.1f}%")
+    
     Z_grid = np.zeros_like(x_coords, dtype=float)
     
     if not surfaces:
+        print(f"[DEBUG Z-Interpolation] ⚠️  Keine Surfaces übergeben - Z-Grid bleibt 0")
         return Z_grid
     
     # 🎯 Normalisiere Z-Koordinaten für alle Surfaces
@@ -818,13 +825,24 @@ def _interpolate_z_coordinates_impl(
         # Versuche zuerst immer ein normales planeres Modell zu finden
         # (konstant / X-Steigung / Y-Steigung / allgemeine Ebene).
         model, error = derive_surface_plane(points)
+        
+        # 🐛 DEBUG: Prüfe Plane-Model-Erstellung (immer aktiv für Z-Grid-Debugging)
+        print(f"[DEBUG Z-Interpolation] Surface {name}:")
+        print(f"  Points: {len(points)}")
+        print(f"  X span: {x_span:.3f}, Y span: {y_span:.3f}, Z span: {z_span:.3f}")
+        if model is not None:
+            mode = model.get("mode", "unknown")
+            print(f"  ✅ Plane model found: mode={mode}, model={model}")
+            normalized_surfaces.append(
+                (points, model, surface_def.get("name", surface_id))
+            )
+        else:
+            print(f"  ❌ No plane model found: error={error}")
+            print(f"  Points Z-values: {[p['z'] for p in points]}")
 
         # Wenn ein Plan-Modell existiert, ist die Fläche NICHT senkrecht
         # (Steigung < 180°) → normale Berechnung.
         if model is not None:
-            normalized_surfaces.append(
-                (points, model, surface_def.get("name", surface_id))
-            )
             continue
 
         # Kein gültiges Planmodell → kann z.B. eine echte senkrechte Wand sein.
@@ -845,7 +863,14 @@ def _interpolate_z_coordinates_impl(
         continue
     
     if not normalized_surfaces:
+        print(f"[DEBUG Z-Interpolation] ⚠️  Keine normalisierten Surfaces gefunden")
         return Z_grid
+    
+    # 🐛 DEBUG: Prüfe normalisierte Surfaces (immer aktiv für Z-Grid-Debugging)
+    print(f"[DEBUG Z-Interpolation] Gefundene normalisierte Surfaces: {len(normalized_surfaces)}")
+    for points, model, surface_name in normalized_surfaces:
+        mode = model.get("mode", "unknown")
+        print(f"  - {surface_name}: mode={mode}, model={model}")
     
     # 🚀 OPTIMIERT: Vektorisierte Z-Interpolation für alle Punkte gleichzeitig
     # Statt einzelner Punkt-Prüfungen verwenden wir Batch-Operationen
@@ -860,7 +885,13 @@ def _interpolate_z_coordinates_impl(
     mask_flat = surface_mask.flatten()
     masked_indices = np.where(mask_flat)[0]
     
+    # 🐛 DEBUG: Surface-Maske (immer aktiv für Z-Grid-Debugging)
+    print(f"[DEBUG Z-Interpolation] Surface-Maske: {len(masked_indices)} / {len(mask_flat)} Punkte maskiert")
+    print(f"  Grid shape: {x_coords.shape}, total points: {x_coords.size}")
+    print(f"  Surface-Maske coverage: {len(masked_indices) / len(mask_flat) * 100:.1f}%")
+    
     if len(masked_indices) == 0:
+        print(f"[DEBUG Z-Interpolation] ⚠️  Keine maskierten Punkte gefunden - Z-Grid bleibt 0")
         return Z_grid
     
     # Extrahiere X/Y-Koordinaten für alle maskierten Punkte
@@ -894,6 +925,27 @@ def _interpolate_z_coordinates_impl(
         Z_surface_flat = Z_surface.flatten()
         Z_surface_masked = Z_surface_flat[masked_indices]
         
+        # 🐛 DEBUG: Prüfe Z-Berechnung (immer aktiv für Z-Grid-Debugging)
+        points_in_polygon = np.sum(polygon_mask_masked)
+        if points_in_polygon > 0:
+            z_min = np.min(Z_surface_masked[polygon_mask_masked])
+            z_max = np.max(Z_surface_masked[polygon_mask_masked])
+            z_mean = np.mean(Z_surface_masked[polygon_mask_masked])
+            # Prüfe auch einige Beispielpunkte
+            sample_indices = np.where(polygon_mask_masked)[0][:3] if np.any(polygon_mask_masked) else []
+            print(f"[DEBUG Z-Interpolation] Surface {surface_name}: {points_in_polygon} Punkte im Polygon, Z range: [{z_min:.2f}, {z_max:.2f}], mean: {z_mean:.2f}")
+            if len(sample_indices) > 0:
+                for sample_idx in sample_indices:
+                    orig_idx = masked_indices[sample_idx]
+                    iy, ix = np.unravel_index(orig_idx, x_coords.shape)
+                    x_val = x_coords[iy, ix]
+                    y_val = y_coords[iy, ix]
+                    z_val = Z_surface_masked[sample_idx]
+                    # Berechne erwarteten Z-Wert
+                    from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import evaluate_surface_plane
+                    z_expected = evaluate_surface_plane(model, x_val, y_val)
+                    print(f"  Sample [jj={iy},ii={ix}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
+
         # Speichere Beitrag dieser Surface
         z_contributions.append((polygon_mask_masked, Z_surface_masked))
     
@@ -993,10 +1045,32 @@ def _interpolate_z_coordinates_impl(
                     Z_final[orig_idx] = edge_Z_final[i]
     
     # 🚀 SCHRITT 4: Schreibe Z-Werte zurück ins Grid
+    points_with_z = 0
     for i, idx in enumerate(masked_indices):
         if z_counts[i] > 0.0:  # Nur wenn Z-Wert berechnet wurde
             iy, ix = np.unravel_index(idx, x_coords.shape)
             Z_grid[iy, ix] = Z_final[i]
+            points_with_z += 1
+    
+    # 🐛 DEBUG: Prüfe Ergebnis (immer aktiv für Z-Grid-Debugging)
+    print(f"[DEBUG Z-Interpolation] Ergebnis:")
+    print(f"  Punkte mit Z-Wert: {points_with_z} / {len(masked_indices)}")
+    print(f"  Z-Grid range: [{Z_grid.min():.2f}, {Z_grid.max():.2f}]")
+    print(f"  Z-Grid non-zero: {np.count_nonzero(Z_grid)} / {Z_grid.size}")
+    # Prüfe Ecken des Grids
+    ny, nx = Z_grid.shape
+    corners = [
+        (0, 0, "oben-links"),
+        (0, nx-1, "oben-rechts"),
+        (ny-1, 0, "unten-links"),
+        (ny-1, nx-1, "unten-rechts"),
+    ]
+    for jj, ii, name in corners:
+        x_val = x_coords[jj, ii]
+        y_val = y_coords[jj, ii]
+        z_val = Z_grid[jj, ii]
+        in_mask = surface_mask[jj, ii]
+        print(f"    Corner {name} [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, in_mask={in_mask}")
     
     return Z_grid
 

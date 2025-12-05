@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from Module_LFO.Modules_Init.Logging import perf_section
+from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DOverlaysBase import SPL3DOverlayBase
 
 
-class SPL3DSpeakerMixin:
+class SPL3DSpeakerMixin(SPL3DOverlayBase):
     """
     Mixin-Klasse, die alle Lautsprecher-Zeichenroutinen und zugehörige
     Geometrie-/Cache-Logik für den SPL-3D-Plot kapselt.
@@ -29,6 +30,46 @@ class SPL3DSpeakerMixin:
     - `_add_overlay_mesh(...)`
     - `_remove_actor(name: str)`
     """
+    
+    def __init__(self, plotter: Any, pv_module: Any):
+        """Initialisiert das Speaker Overlay."""
+        super().__init__(plotter, pv_module)
+        
+        # Speaker-spezifische Caches
+        self._speaker_actor_cache: dict[tuple[str, int, int | str], dict[str, Any]] = {}
+        self._speaker_geometry_cache: dict[str, List[Tuple[Any, Optional[int]]]] = {}
+        self._speaker_geometry_param_cache: dict[tuple[str, int], tuple] = {}
+        self._overlay_array_cache: dict[tuple[str, int], dict[str, Any]] = {}
+        self._geometry_cache_max_size = 100
+        self._array_geometry_cache: dict[str, dict[str, Any]] = {}
+        self._array_signature_cache: dict[str, tuple] = {}
+        self._stack_geometry_cache: dict[tuple[str, tuple], dict[str, Any]] = {}
+        self._stack_signature_cache: dict[tuple[str, tuple], tuple] = {}
+        self._box_template_cache: dict[tuple[float, float, float], Any] = {}
+        self._box_face_cache: dict[tuple[float, float, float], Tuple[Optional[int], Optional[int]]] = {}
+    
+    def clear_category(self, category: str) -> None:
+        """Überschreibt clear_category, um Speaker-spezifische Caches zu behandeln."""
+        super().clear_category(category)
+        if category == 'speakers':
+            keys_to_remove = [key for key, info in self._speaker_actor_cache.items() if info.get('actor') in self._category_actors.get('speakers', [])]
+            for key in keys_to_remove:
+                self._speaker_actor_cache.pop(key, None)
+    
+    def clear(self) -> None:
+        """Löscht alle Overlay-Actors und Speaker-Caches."""
+        super().clear()
+        # Speaker-spezifische Caches löschen
+        self._speaker_actor_cache.clear()
+        self._speaker_geometry_cache.clear()
+        self._speaker_geometry_param_cache.clear()
+        self._array_geometry_cache.clear()
+        self._array_signature_cache.clear()
+        self._stack_geometry_cache.clear()
+        self._stack_signature_cache.clear()
+        # Box-Template-Cache behalten (Performance-Optimierung)
+        # self._box_template_cache.clear()
+        # self._box_face_cache.clear()
 
     # ------------------------------------------------------------------
     # Öffentliche API zum Zeichnen der Lautsprecher

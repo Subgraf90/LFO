@@ -26,6 +26,11 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     VerticalPlotGeometry,
 )
 from Module_LFO.Modules_Init.Logging import measure_time
+from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DHelpers import (
+    has_valid_data,
+    compute_surface_signature,
+    quantize_to_steps,
+)
 
 DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
 
@@ -55,34 +60,11 @@ class SPL3DPlotRenderer:
     - `FLOOR_NAME` (str)
     """
     
-    # Statische Hilfsmethoden
-    @staticmethod
-    def _has_valid_data(x, y, pressure) -> bool:
-        if x is None or y is None or pressure is None:
-            return False
-        try:
-            return len(x) > 0 and len(y) > 0 and len(pressure) > 0
-        except TypeError:
-            return False
-
-    @staticmethod
-    def _compute_surface_signature(x: np.ndarray, y: np.ndarray) -> tuple:
-        if x.size == 0 or y.size == 0:
-            return (0, 0, 0.0, 0.0, 0.0, 0.0)
-        return (
-            int(x.size),
-            float(x[0]),
-            float(x[-1]),
-            int(y.size),
-            float(y[0]),
-            float(y[-1]),
-        )
-
-    @staticmethod
-    def _quantize_to_steps(values: np.ndarray, step: float) -> np.ndarray:
-        if step <= 0:
-            return values
-        return np.round(values / step) * step
+    # Statische Hilfsmethoden sind jetzt in Plot3DHelpers.py
+    # Verwende Module-Level-Funktionen statt statischer Methoden
+    _has_valid_data = staticmethod(has_valid_data)
+    _compute_surface_signature = staticmethod(compute_surface_signature)
+    _quantize_to_steps = staticmethod(quantize_to_steps)
 
     @staticmethod
     def _fallback_cmap_to_lut(_self, cmap, n_colors: int | None = None, flip: bool = False):
@@ -227,6 +209,110 @@ class SPL3DPlotRenderer:
 
         # Weise jedem Abfragepunkt den Wert des nächstgelegenen Grid-Punkts zu
         result = vals[idx_y, idx_x]
+        return result
+
+    @staticmethod
+    def _interpolate_grid_3d(
+        source_x: np.ndarray,
+        source_y: np.ndarray,
+        source_z: np.ndarray,
+        values: np.ndarray,
+        xq: np.ndarray,
+        yq: np.ndarray,
+        zq: np.ndarray,
+        method: str = "linear",
+    ) -> np.ndarray:
+        """
+        3D-Interpolation auf einem regulären Grid unter Verwendung von scipy.interpolate.griddata.
+        
+        Args:
+            source_x: 1D-Array der X-Koordinaten des Source-Grids
+            source_y: 1D-Array der Y-Koordinaten des Source-Grids
+            source_z: 2D-Array der Z-Koordinaten des Source-Grids (Shape: len(source_y) x len(source_x))
+            values: 2D-Array der SPL-Werte (Shape: len(source_y) x len(source_x))
+            xq: 1D-Array der X-Abfragepunkte
+            yq: 1D-Array der Y-Abfragepunkte
+            zq: 1D-Array der Z-Abfragepunkte
+            method: Interpolationsmethode ('linear' oder 'nearest')
+            
+        Returns:
+            1D-Array der interpolierten Werte
+        """
+        try:
+            from scipy.interpolate import griddata
+        except ImportError:
+            # Fallback: 2D-Interpolation wenn scipy nicht verfügbar
+            if method == "nearest":
+                return SPL3DPlotRenderer._nearest_interpolate_grid(source_x, source_y, values, xq, yq)
+            else:
+                return SPL3DPlotRenderer._bilinear_interpolate_grid(source_x, source_y, values, xq, yq)
+        
+        source_x = np.asarray(source_x, dtype=float).reshape(-1)
+        source_y = np.asarray(source_y, dtype=float).reshape(-1)
+        source_z = np.asarray(source_z, dtype=float)
+        vals = np.asarray(values, dtype=float)
+        xq = np.asarray(xq, dtype=float).reshape(-1)
+        yq = np.asarray(yq, dtype=float).reshape(-1)
+        zq = np.asarray(zq, dtype=float).reshape(-1)
+        
+        ny, nx = vals.shape
+        if ny != len(source_y) or nx != len(source_x):
+            raise ValueError(
+                f"_interpolate_grid_3d: Shape mismatch values={vals.shape}, "
+                f"expected=({len(source_y)}, {len(source_x)})"
+            )
+        if source_z.shape != (ny, nx):
+            raise ValueError(
+                f"_interpolate_grid_3d: Shape mismatch source_z={source_z.shape}, "
+                f"expected=({ny}, {nx})"
+            )
+        
+        # Erstelle 3D-Punkte für Source-Grid
+        X_source, Y_source = np.meshgrid(source_x, source_y, indexing="xy")
+        points_3d = np.column_stack((
+            X_source.ravel(),
+            Y_source.ravel(),
+            source_z.ravel()
+        ))
+        values_flat = vals.ravel()
+        
+        # Entferne NaN-Werte
+        valid_mask = np.isfinite(values_flat) & np.isfinite(points_3d).all(axis=1)
+        if not np.any(valid_mask):
+            # Fallback: 2D-Interpolation
+            if method == "nearest":
+                return SPL3DPlotRenderer._nearest_interpolate_grid(source_x, source_y, values, xq, yq)
+            else:
+                return SPL3DPlotRenderer._bilinear_interpolate_grid(source_x, source_y, values, xq, yq)
+        
+        points_3d_clean = points_3d[valid_mask]
+        values_clean = values_flat[valid_mask]
+        
+        # Erstelle Abfragepunkte
+        query_points = np.column_stack((xq, yq, zq))
+        
+        # 3D-Interpolation
+        result = griddata(
+            points_3d_clean,
+            values_clean,
+            query_points,
+            method=method,
+            fill_value=np.nan
+        )
+        
+        # Fallback für NaN-Werte: 2D-Interpolation
+        nan_mask = np.isnan(result)
+        if np.any(nan_mask):
+            if method == "nearest":
+                fallback = SPL3DPlotRenderer._nearest_interpolate_grid(
+                    source_x, source_y, values, xq[nan_mask], yq[nan_mask]
+                )
+            else:
+                fallback = SPL3DPlotRenderer._bilinear_interpolate_grid(
+                    source_x, source_y, values, xq[nan_mask], yq[nan_mask]
+                )
+            result[nan_mask] = fallback
+        
         return result
 
     def _calculate_texture_signature(
@@ -1001,18 +1087,18 @@ class SPL3DPlotRenderer:
         
         # 🎯 Entferne graue Fläche für enabled Surfaces aus dem leeren Plot (falls vorhanden)
         # Dies muss VOR dem Zeichnen der neuen SPL-Daten passieren
-        if hasattr(self, 'overlay_helper'):
+        if hasattr(self, 'overlay_surfaces'):
             try:
                 empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
                 if empty_plot_actor is not None:
                     self.plotter.remove_actor('surface_enabled_empty_plot_batch')
-                    if hasattr(self.overlay_helper, 'overlay_actor_names'):
-                        if 'surface_enabled_empty_plot_batch' in self.overlay_helper.overlay_actor_names:
-                            self.overlay_helper.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
-                    if hasattr(self.overlay_helper, '_category_actors'):
-                        if 'surfaces' in self.overlay_helper._category_actors:
-                            if 'surface_enabled_empty_plot_batch' in self.overlay_helper._category_actors['surfaces']:
-                                self.overlay_helper._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+                    if hasattr(self.overlay_surfaces, 'overlay_actor_names'):
+                        if 'surface_enabled_empty_plot_batch' in self.overlay_surfaces.overlay_actor_names:
+                            self.overlay_surfaces.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+                    if hasattr(self.overlay_surfaces, '_category_actors'):
+                        if 'surfaces' in self.overlay_surfaces._category_actors:
+                            if 'surface_enabled_empty_plot_batch' in self.overlay_surfaces._category_actors['surfaces']:
+                                self.overlay_surfaces._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1255,15 +1341,29 @@ class SPL3DPlotRenderer:
         except Exception:
             cbar_step = 0.0
         is_step_mode = colorization_mode == "Color step" and cbar_step > 0
+        # 🐛 DEBUG: Prüfe alle Payloads
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Vertical] Found {len(sample_payloads)} surface sample payloads")
+            for i, payload in enumerate(sample_payloads):
+                kind = payload.get("kind", "planar")
+                surface_id = payload.get("surface_id", "unknown")
+                print(f"  Payload {i}: surface_id={surface_id}, kind={kind}")
+        
         for payload in sample_payloads:
             # Nur Payloads verarbeiten, die explizit als "vertical" markiert sind.
             kind = payload.get("kind", "planar")
             if kind != "vertical":
+                if DEBUG_PLOT3D_TIMING:
+                    surface_id_debug = payload.get("surface_id", "unknown")
+                    print(f"[DEBUG Vertical] Skipping {surface_id_debug}: kind={kind} (not 'vertical')")
                 continue
 
             surface_id = payload.get("surface_id")
             if surface_id is None:
                 continue
+            
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Vertical] Processing vertical surface: {surface_id}")
 
             # Nur Surfaces zeichnen, die aktuell enabled und nicht hidden sind
             surf_def = surface_definitions.get(surface_id)
