@@ -1039,6 +1039,15 @@ class UiSettings(QtWidgets.QWidget):
                 self.position_plot_length.setStyleSheet("")
                 if self.settings.position_x_axis != value:
                     self.settings.position_x_axis = value
+                    # Aktualisiere Overlays (Achsen neu zeichnen)
+                    try:
+                        draw_plots = getattr(self.main_window, "draw_plots", None)
+                        if draw_plots and hasattr(draw_plots, "draw_spl_plotter"):
+                            plotter = draw_plots.draw_spl_plotter
+                            if hasattr(plotter, "update_overlays"):
+                                plotter.update_overlays(self.settings, self.main_window.container)
+                    except Exception as e:
+                        print(f"[UiSettings] Fehler beim Aktualisieren der Achsenposition: {e}")
                     self.main_window.update_speaker_array_calculations()
         except ValueError:
             self.position_plot_length.setStyleSheet("background-color: #FFE4E1;")
@@ -1067,6 +1076,15 @@ class UiSettings(QtWidgets.QWidget):
                 self.position_plot_width.setStyleSheet("")
                 if self.settings.position_y_axis != value:
                     self.settings.position_y_axis = value
+                    # Aktualisiere Overlays (Achsen neu zeichnen)
+                    try:
+                        draw_plots = getattr(self.main_window, "draw_plots", None)
+                        if draw_plots and hasattr(draw_plots, "draw_spl_plotter"):
+                            plotter = draw_plots.draw_spl_plotter
+                            if hasattr(plotter, "update_overlays"):
+                                plotter.update_overlays(self.settings, self.main_window.container)
+                    except Exception as e:
+                        print(f"[UiSettings] Fehler beim Aktualisieren der Achsenposition: {e}")
                     self.main_window.update_speaker_array_calculations()
         except ValueError:
             self.position_plot_width.setStyleSheet("background-color: #FFE4E1;")

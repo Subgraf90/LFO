@@ -60,6 +60,21 @@ class Sources(ModuleBase, QObject):
         # Initialisiere speaker_tab_layout als leeres Layout
         self.speaker_tab_layout = QHBoxLayout()
 
+    # ---- Helper methods for updates ----------------------------------
+    
+    def is_autocalc_active(self):
+        """Prüft, ob automatische Berechnung aktiv ist."""
+        return getattr(self.settings, "update_pressure_soundfield", True)
+    
+    def update_speaker_overlays(self):
+        """Aktualisiert nur die Lautsprecher-Overlays im Plot, ohne Neuberechnung."""
+        if (hasattr(self.main_window, 'draw_plots') and 
+            hasattr(self.main_window.draw_plots, 'draw_spl_plotter') and
+            hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays')):
+            self.main_window.draw_plots.draw_spl_plotter.update_overlays(
+                self.settings, self.container
+            )
+
     # ---- Debug helpers ----------------------------------------------
 
     def _debug_layout_snapshot(self, reason: str) -> None:
@@ -1184,9 +1199,27 @@ class Sources(ModuleBase, QObject):
         else:
             instance['state'] = False
 
-        # self.main_window.update_speaker_array_calculations()
-        self.update_input_fields(instance)
-        self.main_window.update_speaker_array_calculations()
+        # Speichere den Zustand auch im SpeakerArray für Persistenz
+        speaker_array_id = instance.get('id')
+        if speaker_array_id:
+            speaker_array = self.settings.get_speaker_array(speaker_array_id)
+            if speaker_array:
+                speaker_array.symmetric = instance['state']
+
+        # Nur neu berechnen, wenn sich tatsächlich Werte geändert haben
+        if instance['state']:
+            # Prüfe, ob sich Werte durch Symmetrie geändert haben
+            has_changes = self.apply_symmetric_values(instance)
+            if has_changes:
+                # Nur wenn sich Werte geändert haben, UI aktualisieren und neu berechnen
+                self.update_input_fields(instance)
+                self.main_window.update_speaker_array_calculations()
+            else:
+                # Wenn bereits alles symmetrisch ist, nur UI aktualisieren (keine Neuberechnung)
+                self.update_input_fields(instance)
+        else:
+            # Wenn Symmetrie deaktiviert wird, nur UI aktualisieren (keine Neuberechnung nötig)
+            self.update_input_fields(instance)
 
 
     # @measure_time
@@ -1341,59 +1374,90 @@ class Sources(ModuleBase, QObject):
         """
         Wendet symmetrische Werte auf alle relevanten Felder an.
         Berücksichtigt spezielle Symmetrieregeln für verschiedene Werttypen.
+        
+        Returns:
+            bool: True, wenn sich Werte geändert haben, False wenn bereits alles symmetrisch ist
         """
         try:
             
             speaker_array_id = instance['id']
             speaker_array = self.settings.get_speaker_array(speaker_array_id)
             if not speaker_array:
-                return
+                return False
+            
+            # Prüfe, ob bereits alles symmetrisch ist
+            has_changes = False
+            num_sources = speaker_array.number_of_sources
+            half = num_sources // 2
             
             # Y-Position: Gleicher Wert
-            for i in range(len(speaker_array.source_position_y) // 2):
+            for i in range(half):
                 aktuelles_element = speaker_array.source_position_y[i]
-                speaker_array.source_position_y[len(speaker_array.source_position_y) - i - 1] = aktuelles_element
+                symmetric_index = num_sources - i - 1
+                if speaker_array.source_position_y[symmetric_index] != aktuelles_element:
+                    has_changes = True
+                    speaker_array.source_position_y[symmetric_index] = aktuelles_element
 
             # X-Position: Invertierter Wert (negativ)
-            for i in range(len(speaker_array.source_position_x) // 2):
+            for i in range(half):
                 aktuelles_element = speaker_array.source_position_x[i]
-                speaker_array.source_position_x[len(speaker_array.source_position_x) - i - 1] = -aktuelles_element
+                symmetric_index = num_sources - i - 1
+                expected_value = -aktuelles_element
+                if abs(speaker_array.source_position_x[symmetric_index] - expected_value) > 1e-6:
+                    has_changes = True
+                    speaker_array.source_position_x[symmetric_index] = expected_value
 
             # Z-Position: Gleicher Wert
-            if hasattr(speaker_array, 'source_position_z') and speaker_array.source_position_z_stack is not None:
-                for i in range(len(speaker_array.source_position_z_stack) // 2):
+            if hasattr(speaker_array, 'source_position_z_stack') and speaker_array.source_position_z_stack is not None:
+                for i in range(half):
                     aktuelles_element = speaker_array.source_position_z_stack[i]
-                    speaker_array.source_position_z_stack[len(speaker_array.source_position_z_stack) - i - 1] = aktuelles_element
+                    symmetric_index = num_sources - i - 1
+                    if speaker_array.source_position_z_stack[symmetric_index] != aktuelles_element:
+                        has_changes = True
+                        speaker_array.source_position_z_stack[symmetric_index] = aktuelles_element
 
             # Azimuth: Invertierter Wert
-            for i in range(len(speaker_array.source_azimuth) // 2):
+            for i in range(half):
                 aktuelles_element = speaker_array.source_azimuth[i]
-                speaker_array.source_azimuth[len(speaker_array.source_azimuth) - i - 1] = -aktuelles_element
+                symmetric_index = num_sources - i - 1
+                expected_value = -aktuelles_element
+                if abs(speaker_array.source_azimuth[symmetric_index] - expected_value) > 1e-6:
+                    has_changes = True
+                    speaker_array.source_azimuth[symmetric_index] = expected_value
 
             # Delay: Gleicher Wert
             if hasattr(speaker_array, 'source_time') and speaker_array.source_time is not None:
-                for i in range(len(speaker_array.source_time) // 2):
+                for i in range(half):
                     aktuelles_element = speaker_array.source_time[i]
-                    speaker_array.source_time[len(speaker_array.source_time) - i - 1] = aktuelles_element
+                    symmetric_index = num_sources - i - 1
+                    if speaker_array.source_time[symmetric_index] != aktuelles_element:
+                        has_changes = True
+                        speaker_array.source_time[symmetric_index] = aktuelles_element
 
             # Level: Gleicher Wert
-            for i in range(len(speaker_array.source_level) // 2):
+            for i in range(half):
                 aktuelles_element = speaker_array.source_level[i]
-                speaker_array.source_level[len(speaker_array.source_level) - i - 1] = aktuelles_element
+                symmetric_index = num_sources - i - 1
+                if speaker_array.source_level[symmetric_index] != aktuelles_element:
+                    has_changes = True
+                    speaker_array.source_level[symmetric_index] = aktuelles_element
                 
             # Polar Pattern: L/R-Tausch
             if hasattr(speaker_array, 'source_polar_pattern') and speaker_array.source_polar_pattern is not None:
-                for i in range(len(speaker_array.source_polar_pattern) // 2):
+                for i in range(half):
                     aktuelles_element = speaker_array.source_polar_pattern[i]
                     symmetric_element = aktuelles_element
                     
                     # L/R-Tausch
-                    if 'L' in aktuelles_element:
-                        symmetric_element = aktuelles_element.replace('L', 'R')
-                    elif 'R' in aktuelles_element:
-                        symmetric_element = aktuelles_element.replace('R', 'L')
-                        
-                    speaker_array.source_polar_pattern[len(speaker_array.source_polar_pattern) - i - 1] = symmetric_element
+                    if 'L' in str(aktuelles_element):
+                        symmetric_element = str(aktuelles_element).replace('L', 'R')
+                    elif 'R' in str(aktuelles_element):
+                        symmetric_element = str(aktuelles_element).replace('R', 'L')
+                    
+                    symmetric_index = num_sources - i - 1
+                    if str(speaker_array.source_polar_pattern[symmetric_index]) != symmetric_element:
+                        has_changes = True
+                        speaker_array.source_polar_pattern[symmetric_index] = symmetric_element
             
             # Aktualisiere die Eingabefelder
             gridLayout_sources = instance['gridLayout_sources']
@@ -1511,8 +1575,9 @@ class Sources(ModuleBase, QObject):
             print(f"Fehler in apply_symmetric_values: {e}")
             import traceback
             traceback.print_exc()
+            return False
 
-        # self.main_window.update_speaker_array_calculations()  
+        return has_changes  
 
 
     def update_widgets(self, instance):
@@ -3454,8 +3519,15 @@ class Sources(ModuleBase, QObject):
                                 mute_checkbox = self.sources_tree_widget.itemWidget(item, 1)
                                 if mute_checkbox:
                                     mute_checkbox.blockSignals(True)
-                                    mute_checkbox.setChecked(mute_value)
+                                    # Verwende setCheckState für tristate-Checkboxen
+                                    mute_checkbox.setCheckState(Qt.Checked if mute_value else Qt.Unchecked)
                                     mute_checkbox.blockSignals(False)
+                                
+                                # Aktualisiere Gruppen-Checkbox-Zustand (falls Array in Gruppe)
+                                parent = item.parent()
+                                while parent:
+                                    self._update_group_checkbox_state(parent, 1)
+                                    parent = parent.parent()
                 except RuntimeError:
                     # Item wurde gelöscht, überspringe
                     continue
@@ -3464,6 +3536,21 @@ class Sources(ModuleBase, QObject):
             speaker_array = self.settings.get_speaker_array(array_id)
             if speaker_array:
                 speaker_array.mute = mute_value
+            
+            # Aktualisiere Gruppen-Checkbox-Zustand (falls Array in Gruppe)
+            item = None
+            for i in range(self.sources_tree_widget.topLevelItemCount()):
+                top_item = self.sources_tree_widget.topLevelItem(i)
+                found = self._find_item_by_array_id(top_item, array_id)
+                if found:
+                    item = found
+                    break
+            
+            if item:
+                parent = item.parent()
+                while parent:
+                    self._update_group_checkbox_state(parent, 1)
+                    parent = parent.parent()
         
         # Berechnen des beamsteerings, windowing, und Impulse
         self.main_window.update_speaker_array_calculations()  
@@ -3490,8 +3577,15 @@ class Sources(ModuleBase, QObject):
                                 hide_checkbox = self.sources_tree_widget.itemWidget(item, 2)
                                 if hide_checkbox:
                                     hide_checkbox.blockSignals(True)
-                                    hide_checkbox.setChecked(hide_value)
+                                    # Verwende setCheckState für tristate-Checkboxen
+                                    hide_checkbox.setCheckState(Qt.Checked if hide_value else Qt.Unchecked)
                                     hide_checkbox.blockSignals(False)
+                                
+                                # Aktualisiere Gruppen-Checkbox-Zustand (falls Array in Gruppe)
+                                parent = item.parent()
+                                while parent:
+                                    self._update_group_checkbox_state(parent, 2)
+                                    parent = parent.parent()
                 except RuntimeError:
                     # Item wurde gelöscht, überspringe
                     continue
@@ -3500,6 +3594,21 @@ class Sources(ModuleBase, QObject):
             speaker_array = self.settings.get_speaker_array(array_id)
             if speaker_array:
                 speaker_array.hide = hide_value
+            
+            # Aktualisiere Gruppen-Checkbox-Zustand (falls Array in Gruppe)
+            item = None
+            for i in range(self.sources_tree_widget.topLevelItemCount()):
+                top_item = self.sources_tree_widget.topLevelItem(i)
+                found = self._find_item_by_array_id(top_item, array_id)
+                if found:
+                    item = found
+                    break
+            
+            if item:
+                parent = item.parent()
+                while parent:
+                    self._update_group_checkbox_state(parent, 2)
+                    parent = parent.parent()
         
         # Berechnen des beamsteerings, windowing, und Impulse
         self.main_window.update_speaker_array_calculations()  
@@ -3631,10 +3740,21 @@ class Sources(ModuleBase, QObject):
                     new_array.name = f"copy of {original_array.name}"
                     
                     # Erstelle neues TreeWidget Item
-                    new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
+                    new_array_item = QTreeWidgetItem([new_array.name])
                     new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
                     new_array_item.setData(0, Qt.UserRole, new_array_id)
                     new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+                    
+                    # Füge Item direkt unter dem Original-Item ein
+                    parent = item.parent()
+                    if parent:
+                        # Item ist in einer Gruppe - füge direkt nach dem Original ein
+                        parent_index = parent.indexOfChild(item)
+                        parent.insertChild(parent_index + 1, new_array_item)
+                    else:
+                        # Top-Level-Item - füge direkt nach dem Original ein
+                        top_level_index = self.sources_tree_widget.indexOfTopLevelItem(item)
+                        self.sources_tree_widget.insertTopLevelItem(top_level_index + 1, new_array_item)
                     
                     # Erstelle Checkboxen
                     mute_checkbox = self.create_checkbox(new_array.mute)
@@ -3696,8 +3816,12 @@ class Sources(ModuleBase, QObject):
         if hasattr(speaker_array, 'configuration') and speaker_array.configuration.lower() != "stack":
             self.update_angle_combobox(speaker_array_id, source_index)
         
-        # Aktualisiere die Berechnungen
-        self.main_window.update_speaker_array_calculations()
+        # Aktualisiere Lautsprecher-Overlays (immer)
+        self.update_speaker_overlays()
+        
+        # Neu berechnen nur wenn autocalc aktiv
+        if self.is_autocalc_active():
+            self.main_window.update_speaker_array_calculations()
 
     def on_speakerspecs_item_text_changed(self, item, column):
         try:
@@ -3958,8 +4082,13 @@ class Sources(ModuleBase, QObject):
             self.array_length_edit.setText(f"{source_length:.2f}")
             self.array_length_edit.blockSignals(False)
             
-            # Aktualisiere die Berechnungen nur einmal am Ende
-            self.main_window.update_speaker_array_calculations()
+            # Aktualisiere Lautsprecher-Overlays (immer)
+            self.update_speaker_overlays()
+            
+            # Neu berechnen nur wenn autocalc aktiv
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.update_delay_input_fields(speaker_array_id)
             
             # Setze den formatierten Wert zurück in das Eingabefeld
@@ -4007,8 +4136,13 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
 
-            # Aktualisiere die Berechnungen nur einmal am Ende
-            self.main_window.update_speaker_array_calculations()
+            # Aktualisiere Lautsprecher-Overlays (immer)
+            self.update_speaker_overlays()
+            
+            # Neu berechnen nur wenn autocalc aktiv
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.update_delay_input_fields(speaker_array_id)
             
             # Setze den formatierten Wert zurück in das Eingabefeld
@@ -4065,8 +4199,13 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Aktualisiere die Berechnungen nur einmal am Ende
-            self.main_window.update_speaker_array_calculations()
+            # Aktualisiere Lautsprecher-Overlays (immer)
+            self.update_speaker_overlays()
+            
+            # Neu berechnen nur wenn autocalc aktiv
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.update_delay_input_fields(speaker_array_id)
 
             # Setze den formatierten Wert zurück in das Eingabefeld
@@ -4092,7 +4231,13 @@ class Sources(ModuleBase, QObject):
                 speaker_array.source_azimuth[source_index] = value
 
                 self.update_input_fields(self.get_speakerspecs_instance(speaker_array_id))
-                self.main_window.update_speaker_array_calculations()
+                
+                # Aktualisiere Lautsprecher-Overlays (immer)
+                self.update_speaker_overlays()
+                
+                # Neu berechnen nur wenn autocalc aktiv
+                if self.is_autocalc_active():
+                    self.main_window.update_speaker_array_calculations()
 
             # Setze den gerundeten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.1f}")
@@ -4131,8 +4276,9 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Aktualisiere die Berechnungen nur einmal am Ende
-            self.main_window.update_speaker_array_calculations()
+            # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
             # Setze den formatierten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.2f}")
@@ -4180,8 +4326,9 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Aktualisiere die Berechnungen nur einmal am Ende
-            self.main_window.update_speaker_array_calculations()
+            # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
             # Setze den formatierten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.2f}")
@@ -4224,8 +4371,9 @@ class Sources(ModuleBase, QObject):
                 speaker_array.delay = value
                 self.settings.update_speaker_array_delay(selected_speaker_array_id, value)
                 
-                # Aktualisiere die Berechnungen nur einmal am Ende
-                self.main_window.update_speaker_array_calculations()
+                # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
+                if self.is_autocalc_active():
+                    self.main_window.update_speaker_array_calculations()
                 
             except ValueError:
                 pass
@@ -4444,7 +4592,8 @@ class Sources(ModuleBase, QObject):
                         return  # Keine Änderung, nichts tun
                     
                     self.settings.update_source_length(speaker_array_id, value)
-                    self.main_window.update_speaker_array_calculations()
+                    # Keine Neuberechnung, da Lautsprecherpositionen erst mit autoplay geändert werden
+                    # self.main_window.update_speaker_array_calculations()
                         
                     self.update_delay_input_fields(speaker_array_id)
 
@@ -4486,8 +4635,12 @@ class Sources(ModuleBase, QObject):
                 if array_id in self.main_window.calculation_handler._speaker_position_hashes:
                     del self.main_window.calculation_handler._speaker_position_hashes[array_id]
             
-            # Aktualisiere Berechnungen
-            self.main_window.update_speaker_array_calculations()
+            # Aktualisiere Lautsprecher-Overlays (immer)
+            self.update_speaker_overlays()
+            
+            # Neu berechnen nur wenn autocalc aktiv
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
         except ValueError:
             if hasattr(self, 'main_window'):
@@ -4532,8 +4685,12 @@ class Sources(ModuleBase, QObject):
                 if array_id in self.main_window.calculation_handler._speaker_position_hashes:
                     del self.main_window.calculation_handler._speaker_position_hashes[array_id]
             
-            # Aktualisiere Berechnungen
-            self.main_window.update_speaker_array_calculations()
+            # Aktualisiere Lautsprecher-Overlays (immer)
+            self.update_speaker_overlays()
+            
+            # Neu berechnen nur wenn autocalc aktiv
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
         except ValueError:
             if hasattr(self, 'main_window'):
@@ -4578,8 +4735,12 @@ class Sources(ModuleBase, QObject):
                 if array_id in self.main_window.calculation_handler._speaker_position_hashes:
                     del self.main_window.calculation_handler._speaker_position_hashes[array_id]
             
-            # Aktualisiere Berechnungen
-            self.main_window.update_speaker_array_calculations()
+            # Aktualisiere Lautsprecher-Overlays (immer)
+            self.update_speaker_overlays()
+            
+            # Neu berechnen nur wenn autocalc aktiv
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
         except ValueError:
             if hasattr(self, 'main_window'):
@@ -4603,7 +4764,11 @@ class Sources(ModuleBase, QObject):
                     
                     speaker_array.gain = value
                     self.settings.update_speaker_array_gain(selected_speaker_array_id, value)
-                    self.main_window.update_speaker_array_calculations()
+                    
+                    # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
+                    if self.is_autocalc_active():
+                        self.main_window.update_speaker_array_calculations()
+                    
                     speakerspecs_instance = self.get_speakerspecs_instance(selected_speaker_array_id)
                     if speakerspecs_instance:
                         self.update_input_fields(speakerspecs_instance)
@@ -4637,8 +4802,9 @@ class Sources(ModuleBase, QObject):
                     if hasattr(speaker_array, 'source_polarity'):
                         speaker_array.source_polarity[:] = polarity_inverted
                     
-                    # Aktualisiere die Berechnungen
-                    self.main_window.update_speaker_array_calculations()
+                    # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
+                    if self.is_autocalc_active():
+                        self.main_window.update_speaker_array_calculations()
                     
         except Exception as e:
             print(f"Fehler in on_Polarity_changed: {e}")
@@ -5224,17 +5390,20 @@ class Sources(ModuleBase, QObject):
 
 
 
-    def create_checkbox(self, checked=False):
+    def create_checkbox(self, checked=False, tristate=False):
         """
         Erstellt eine Checkbox mit kleinerer Größe.
         
         Args:
             checked: Initialer Checked-Zustand
+            tristate: Wenn True, aktiviert Tristate-Modus (für teilweise aktivierte Gruppen)
             
         Returns:
             QCheckBox: Die erstellte Checkbox
         """
         checkbox = QCheckBox()
+        if tristate:
+            checkbox.setTristate(True)
         checkbox.setChecked(checked)
         # Kleinere Checkboxen: 18x18 Pixel
         checkbox.setFixedSize(18, 18)
@@ -5258,20 +5427,32 @@ class Sources(ModuleBase, QObject):
         
         # Erstelle Checkboxen, falls sie nicht existieren
         if not mute_checkbox:
-            mute_checkbox = self.create_checkbox(False)
+            mute_checkbox = self.create_checkbox(False, tristate=True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 1)
             mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
             self.sources_tree_widget.setItemWidget(item, 1, mute_checkbox)
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             mute_checkbox.setFixedSize(18, 18)
+            if not mute_checkbox.isTristate():
+                mute_checkbox.setTristate(True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 1)
         
         if not hide_checkbox:
-            hide_checkbox = self.create_checkbox(False)
+            hide_checkbox = self.create_checkbox(False, tristate=True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 2)
             hide_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_hide_changed(g_item, state))
             self.sources_tree_widget.setItemWidget(item, 2, hide_checkbox)
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             hide_checkbox.setFixedSize(18, 18)
+            if not hide_checkbox.isTristate():
+                hide_checkbox.setTristate(True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 2)
     
     def ensure_source_checkboxes(self, item):
         """
@@ -5317,6 +5498,96 @@ class Sources(ModuleBase, QObject):
         speaker_array = self.settings.get_speaker_array(array_id)
         self._update_color_indicator(item, speaker_array)
     
+    def _find_item_by_array_id(self, parent_item, array_id):
+        """
+        Findet ein TreeWidgetItem anhand seiner array_id (rekursiv durchsucht den Tree).
+        
+        Args:
+            parent_item: Das Parent-Item, ab dem gesucht werden soll (kann Top-Level Item sein)
+            array_id: Die ID des gesuchten Arrays (aus Qt.UserRole)
+            
+        Returns:
+            QTreeWidgetItem oder None, falls nicht gefunden
+        """
+        if not parent_item:
+            return None
+        
+        try:
+            # Prüfe das aktuelle Item
+            if parent_item.data(0, Qt.UserRole) == array_id:
+                return parent_item
+            
+            # Suche rekursiv in Children
+            for i in range(parent_item.childCount()):
+                child = parent_item.child(i)
+                if child:
+                    result = self._find_item_by_array_id(child, array_id)
+                    if result:
+                        return result
+        except RuntimeError:
+            # Item wurde gelöscht, überspringe
+            return None
+        
+        return None
+    
+    def _update_group_checkbox_state(self, group_item, column):
+        """
+        Aktualisiert den Zustand einer Gruppen-Checkbox basierend auf den Child-Items.
+        Setzt PartiallyChecked (Klammer), wenn einige Child-Items checked und andere unchecked sind.
+        Rekursiv für Untergruppen.
+        
+        Args:
+            group_item: Das Gruppen-Item
+            column: Die Spalte (1=Mute, 2=Hide)
+        """
+        if not group_item:
+            return
+        
+        checkbox = self.sources_tree_widget.itemWidget(group_item, column)
+        if not checkbox:
+            return
+        
+        # Sammle alle Child-Checkboxen (rekursiv für Untergruppen)
+        checked_count = 0
+        unchecked_count = 0
+        total_count = 0
+        
+        def count_child_checkboxes(item):
+            nonlocal checked_count, unchecked_count, total_count
+            for i in range(item.childCount()):
+                child = item.child(i)
+                child_type = child.data(0, Qt.UserRole + 1)
+                child_checkbox = self.sources_tree_widget.itemWidget(child, column)
+                
+                if child_checkbox:
+                    total_count += 1
+                    if child_checkbox.isChecked():
+                        checked_count += 1
+                    else:
+                        unchecked_count += 1
+                
+                # Rekursiv für Untergruppen
+                if child_type == "group":
+                    count_child_checkboxes(child)
+        
+        count_child_checkboxes(group_item)
+        
+        # Setze Checkbox-Zustand basierend auf Child-Items
+        checkbox.blockSignals(True)
+        if total_count == 0:
+            # Keine Child-Items: Zustand bleibt unverändert
+            pass
+        elif checked_count == total_count:
+            # Alle Child-Items sind checked
+            checkbox.setCheckState(Qt.Checked)
+        elif unchecked_count == total_count:
+            # Alle Child-Items sind unchecked
+            checkbox.setCheckState(Qt.Unchecked)
+        else:
+            # Gemischter Zustand: PartiallyChecked (Klammer)
+            checkbox.setCheckState(Qt.PartiallyChecked)
+        checkbox.blockSignals(False)
+    
     def validate_all_checkboxes(self):
         """
         Überprüft alle Items im TreeWidget und stellt sicher, dass Checkboxen vorhanden sind.
@@ -5340,6 +5611,35 @@ class Sources(ModuleBase, QObject):
                     child = item.child(j)
                     if child:
                         self.ensure_source_checkboxes(child)
+    
+    def _update_all_group_checkbox_states(self):
+        """
+        Aktualisiert alle Gruppen-Checkbox-Zustände basierend auf den Child-Items.
+        Wird nach dem Laden von Dateien aufgerufen, um sicherzustellen, dass die Zustände korrekt sind.
+        """
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return
+        
+        def _update_group_states_recursive(item):
+            """Rekursiv alle Gruppen-Checkbox-Zustände aktualisieren"""
+            if not item:
+                return
+            
+            item_type = item.data(0, Qt.UserRole + 1)
+            
+            # Wenn es eine Gruppe ist, aktualisiere ihre Checkbox-Zustände
+            if item_type == "group":
+                # Aktualisiere alle Spalten (1=Mute, 2=Hide)
+                for column in [1, 2]:
+                    self._update_group_checkbox_state(item, column)
+            
+            # Rekursiv für alle Childs
+            for idx in range(item.childCount()):
+                _update_group_states_recursive(item.child(idx))
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            _update_group_states_recursive(self.sources_tree_widget.topLevelItem(i))
     
     def adjust_column_width_to_content(self):
         """Setzt die Spaltenbreiten auf feste Werte (gleich wie Surface UI)"""
@@ -5530,8 +5830,8 @@ class Sources(ModuleBase, QObject):
                 
                 duplicated_array_ids.append(new_array_id)
                 
-                # Erstelle neues TreeWidget Item
-                new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
+                # Erstelle neues TreeWidget Item (OHNE Parent, damit es später als Child hinzugefügt werden kann)
+                new_array_item = QTreeWidgetItem([new_array.name])
                 new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
                 new_array_item.setData(0, Qt.UserRole, new_array_id)
                 new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
@@ -5554,12 +5854,9 @@ class Sources(ModuleBase, QObject):
                 duplicated_items.append(new_array_item)
             
             # Erstelle neue Gruppe
-            group_count = sum(1 for i in range(self.sources_tree_widget.topLevelItemCount()) 
-                             if self.sources_tree_widget.topLevelItem(i) and 
-                             self.sources_tree_widget.topLevelItem(i).data(0, Qt.UserRole + 1) == "group")
             new_group_name = f"copy of {group_name}"
             
-            new_group_item = QTreeWidgetItem(self.sources_tree_widget, [new_group_name])
+            new_group_item = QTreeWidgetItem([new_group_name])
             new_group_item.setFlags(new_group_item.flags() | Qt.ItemIsEditable)
             new_group_item.setData(0, Qt.UserRole + 1, "group")
             new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
@@ -5576,11 +5873,22 @@ class Sources(ModuleBase, QObject):
             self.sources_tree_widget.setItemWidget(new_group_item, 1, new_mute_checkbox)
             self.sources_tree_widget.setItemWidget(new_group_item, 2, new_hide_checkbox)
             
-            # Füge alle duplizierten Items zur neuen Gruppe hinzu
+            # Füge alle duplizierten Items zur neuen Gruppe hinzu (BEVOR die Gruppe eingefügt wird)
             for array_item in duplicated_items:
                 new_group_item.addChild(array_item)
                 # Stelle sicher, dass Checkboxen existieren
                 self.ensure_source_checkboxes(array_item)
+            
+            # Füge die neue Gruppe direkt unterhalb der Original-Gruppe ein
+            parent = group_item.parent()
+            if parent:
+                # Gruppe ist in einer anderen Gruppe - füge direkt nach dem Original ein
+                parent_index = parent.indexOfChild(group_item)
+                parent.insertChild(parent_index + 1, new_group_item)
+            else:
+                # Top-Level-Gruppe - füge direkt nach dem Original ein
+                top_level_index = self.sources_tree_widget.indexOfTopLevelItem(group_item)
+                self.sources_tree_widget.insertTopLevelItem(top_level_index + 1, new_group_item)
             
             new_group_item.setExpanded(True)
             
@@ -5596,6 +5904,58 @@ class Sources(ModuleBase, QObject):
         finally:
             # Signale wieder aktivieren
             self.sources_tree_widget.blockSignals(False)
+    
+    def _update_group_child_checkboxes(self, group_item, column, checked, skip_calculations=False, skip_state_update=False):
+        """
+        Aktualisiert rekursiv die Checkboxen aller Child-Arrays/-Gruppen einer Gruppe.
+        Aktualisiert auch die tatsächlichen Array-Daten.
+        
+        Args:
+            group_item: Das Gruppen-Item
+            column: Die Spalte (1=Mute, 2=Hide)
+            checked: Der neue Checkbox-Zustand
+            skip_calculations: Wenn True, werden keine Berechnungen ausgelöst (für Gruppen-Updates)
+            skip_state_update: Wenn True, wird _update_group_checkbox_state nicht aufgerufen (für Gruppen-Updates)
+        """
+        if not group_item:
+            return
+        
+        for i in range(group_item.childCount()):
+            child = group_item.child(i)
+            child_type = child.data(0, Qt.UserRole + 1)
+            checkbox = self.sources_tree_widget.itemWidget(child, column)
+            
+            if child_type == "array":
+                # Array: Aktualisiere Checkbox und Array-Daten
+                array_id = child.data(0, Qt.UserRole)
+                if array_id is not None and checkbox:
+                    checkbox.blockSignals(True)
+                    # Verwende setCheckState für tristate-Checkboxen
+                    checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                    checkbox.blockSignals(False)
+                    
+                    # Aktualisiere Array-Daten
+                    speaker_array = self.settings.get_speaker_array(array_id)
+                    if speaker_array:
+                        if column == 1:  # Mute
+                            speaker_array.mute = checked
+                        elif column == 2:  # Hide
+                            speaker_array.hide = checked
+            elif child_type == "group":
+                # Gruppe: Aktualisiere Checkbox und rekursiv alle Childs
+                if checkbox:
+                    checkbox.blockSignals(True)
+                    # Verwende setCheckState für tristate-Checkboxen
+                    checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                    checkbox.blockSignals(False)
+                
+                # Rekursiv für Untergruppen
+                self._update_group_child_checkboxes(child, column, checked, skip_calculations=skip_calculations, skip_state_update=skip_state_update)
+        
+        # Aktualisiere Gruppen-Checkbox-Zustand nach Änderung der Child-Items
+        # Überspringe, wenn skip_state_update=True (wird bereits explizit gesetzt)
+        if not skip_state_update:
+            self._update_group_checkbox_state(group_item, column)
     
     def on_group_mute_changed(self, group_item, state):
         """Handler für Mute-Checkbox von Gruppen - setzt Mute für alle Childs. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
@@ -5624,30 +5984,29 @@ class Sources(ModuleBase, QObject):
         
         # Wende Mute auf alle Gruppen und deren Childs an
         for group in groups_to_update:
-            # Setze Mute für alle Child-Arrays
-            for i in range(group.childCount()):
-                child = group.child(i)
-                array_id = child.data(0, Qt.UserRole)
-                if array_id is not None:
-                    speaker_array = self.settings.get_speaker_array(array_id)
-                    if speaker_array:
-                        speaker_array.mute = mute_value
-                        
-                        # Aktualisiere auch die Checkbox im Child
-                        child_mute_checkbox = self.sources_tree_widget.itemWidget(child, 1)
-                        if child_mute_checkbox:
-                            child_mute_checkbox.blockSignals(True)
-                            child_mute_checkbox.setChecked(mute_value)
-                            child_mute_checkbox.blockSignals(False)
+            # Setze Gruppen-Checkbox explizit auf den neuen Zustand
+            group_checkbox = self.sources_tree_widget.itemWidget(group, 1)
+            if group_checkbox:
+                group_checkbox.blockSignals(True)
+                # Verwende setCheckState für tristate-Checkboxen
+                group_checkbox.setCheckState(Qt.Checked if mute_value else Qt.Unchecked)
+                group_checkbox.blockSignals(False)
             
-            # Aktualisiere auch die Gruppen-Checkbox
-            group_mute_checkbox = self.sources_tree_widget.itemWidget(group, 1)
-            if group_mute_checkbox:
-                group_mute_checkbox.blockSignals(True)
-                group_mute_checkbox.setChecked(mute_value)
-                group_mute_checkbox.blockSignals(False)
+            # Aktualisiere alle Child-Checkboxen und Array-Daten (ohne Berechnungen, bis alle Zustände gespeichert sind)
+            # skip_state_update=True: Überspringe _update_group_checkbox_state, da wir die Checkbox bereits explizit gesetzt haben
+            self._update_group_child_checkboxes(group, 1, mute_value, skip_calculations=True, skip_state_update=True)
+            
+            # Aktualisiere Gruppen-Checkbox-Zustand explizit NACH allen Child-Updates
+            # (um sicherzustellen, dass der Zustand korrekt ist, auch wenn alle Childs aktualisiert wurden)
+            self._update_group_checkbox_state(group, 1)
+            
+            # Aktualisiere Parent-Gruppen rekursiv
+            parent = group.parent()
+            while parent:
+                self._update_group_checkbox_state(parent, 1)
+                parent = parent.parent()
         
-        # Aktualisiere Berechnungen
+        # 🎯 WICHTIG: Aktualisiere Berechnungen erst NACH allen Zustandsänderungen
         self.main_window.update_speaker_array_calculations()
     
     def on_group_hide_changed(self, group_item, state):
@@ -5677,34 +6036,40 @@ class Sources(ModuleBase, QObject):
         
         # Wende Hide auf alle Gruppen und deren Childs an
         for group in groups_to_update:
-            # Setze Hide für alle Child-Arrays
-            for i in range(group.childCount()):
-                child = group.child(i)
-                array_id = child.data(0, Qt.UserRole)
-                if array_id is not None:
-                    speaker_array = self.settings.get_speaker_array(array_id)
-                    if speaker_array:
-                        speaker_array.hide = hide_value
-                        
-                        # Aktualisiere auch die Checkbox im Child
-                        child_hide_checkbox = self.sources_tree_widget.itemWidget(child, 2)
-                        if child_hide_checkbox:
-                            child_hide_checkbox.blockSignals(True)
-                            child_hide_checkbox.setChecked(hide_value)
-                            child_hide_checkbox.blockSignals(False)
+            # Setze Gruppen-Checkbox explizit auf den neuen Zustand
+            group_checkbox = self.sources_tree_widget.itemWidget(group, 2)
+            if group_checkbox:
+                group_checkbox.blockSignals(True)
+                # Verwende setCheckState für tristate-Checkboxen
+                group_checkbox.setCheckState(Qt.Checked if hide_value else Qt.Unchecked)
+                group_checkbox.blockSignals(False)
             
-            # Aktualisiere auch die Gruppen-Checkbox
-            group_hide_checkbox = self.sources_tree_widget.itemWidget(group, 2)
-            if group_hide_checkbox:
-                group_hide_checkbox.blockSignals(True)
-                group_hide_checkbox.setChecked(hide_value)
-                group_hide_checkbox.blockSignals(False)
+            # Aktualisiere alle Child-Checkboxen und Array-Daten (ohne Berechnungen, bis alle Zustände gespeichert sind)
+            # skip_state_update=True: Überspringe _update_group_checkbox_state, da wir die Checkbox bereits explizit gesetzt haben
+            self._update_group_child_checkboxes(group, 2, hide_value, skip_calculations=True, skip_state_update=True)
+            
+            # Aktualisiere Gruppen-Checkbox-Zustand explizit NACH allen Child-Updates
+            # (um sicherzustellen, dass der Zustand korrekt ist, auch wenn alle Childs aktualisiert wurden)
+            self._update_group_checkbox_state(group, 2)
+            
+            # Aktualisiere Parent-Gruppen rekursiv
+            parent = group.parent()
+            while parent:
+                self._update_group_checkbox_state(parent, 2)
+                parent = parent.parent()
         
-        # Aktualisiere Berechnungen
+        # 🎯 WICHTIG: Aktualisiere Berechnungen erst NACH allen Zustandsänderungen
         self.main_window.update_speaker_array_calculations()
 
-    def change_array_color(self, item):
-        """Ändert die Farbe des ausgewählten Arrays"""
+    def change_array_color(self, item, update_calculations=True):
+        """
+        Ändert die Farbe des ausgewählten Arrays
+        
+        Args:
+            item: Das TreeWidgetItem für das Array
+            update_calculations: Wenn True, wird eine vollständige Neuberechnung ausgelöst.
+                                Wenn False, wird nur der Impulse-Plot aktualisiert.
+        """
         if item:
             array_id = item.data(0, Qt.UserRole)
             speaker_array = self.settings.get_speaker_array(array_id)
@@ -5716,7 +6081,13 @@ class Sources(ModuleBase, QObject):
                 self._update_color_indicator(item, speaker_array)
                 
                 # Aktualisiere die Anzeige
-                self.main_window.update_speaker_array_calculations()
+                if update_calculations:
+                    # Vollständige Neuberechnung
+                    self.main_window.update_speaker_array_calculations()
+                else:
+                    # Nur Impulse-Plot aktualisieren (keine Neuberechnung)
+                    if hasattr(self.main_window, 'impulse_manager'):
+                        self.main_window.impulse_manager.update_plot_impulse()
     
     def _handle_multiple_duplicate(self, selected_items):
         """Dupliziert mehrere ausgewählte Items. Berechnungen werden erst am Ende ausgeführt."""
@@ -5827,15 +6198,26 @@ class Sources(ModuleBase, QObject):
         self.adjust_column_width_to_content()
     
     def _handle_multiple_change_color(self, selected_items):
-        """Ändert die Farbe mehrerer ausgewählter Arrays"""
+        """
+        Ändert die Farbe mehrerer ausgewählter Arrays.
+        Löst keine Neuberechnung aus, aktualisiert nur die Impulse-Plot-Linien.
+        """
         if not selected_items:
             return
         
         # Nur Arrays, keine Gruppen
         arrays = [item for item in selected_items if item.data(0, Qt.UserRole + 1) != "group"]
         
+        if not arrays:
+            return
+        
+        # Ändere Farbe für alle Arrays (ohne Neuberechnung)
         for item in arrays:
-            self.change_array_color(item)
+            self.change_array_color(item, update_calculations=False)
+        
+        # Aktualisiere Impulse-Plot einmal am Ende (für alle geänderten Arrays)
+        if hasattr(self.main_window, 'impulse_manager'):
+            self.main_window.impulse_manager.update_plot_impulse()
 
     def update_delay_fields_state(self, speaker_array_id, is_manual):
         """
@@ -6286,6 +6668,9 @@ class Sources(ModuleBase, QObject):
             
             # Validiere alle Checkboxen nach dem Laden
             self.validate_all_checkboxes()
+            
+            # Aktualisiere alle Gruppen-Checkbox-Zustände basierend auf den Childs
+            self._update_all_group_checkbox_states()
             
             # Stelle den Expand-Zustand wieder her
             self._restore_expand_state(expand_state)

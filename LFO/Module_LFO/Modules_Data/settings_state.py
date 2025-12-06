@@ -43,6 +43,7 @@ class SpeakerArray:
         self.source_polarity = np.array([False], dtype=bool)  # False = normal, True = inverted
         self.virtual_source_position_x = np.array([0.0])
         self.virtual_source_position_y = np.array([0.0])
+        self.symmetric = False  # Symmetrie-Modus für Stack-Arrays
         self.arc_angle = 60
         self.arc_shape = "Manual"
         self.arc_scale_factor = 0.32

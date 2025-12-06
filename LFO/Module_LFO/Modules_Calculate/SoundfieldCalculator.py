@@ -256,21 +256,85 @@ class SoundFieldCalculator(ModuleBase):
             total_points = grid.X_grid.size
             active_points = np.count_nonzero(grid.surface_mask)
             extended_points = total_points - active_points
-            print(f"[DEBUG Berechnung] Berechne Surface '{surface_id}'...")
+            
+            # 🎯 DEBUG: Prüfe ob vertikale Fläche
+            is_vertical = grid.geometry.orientation == "vertical"
+            orientation_info = f" (VERTIKAL)" if is_vertical else ""
+            
+            print(f"[DEBUG Berechnung] Berechne Surface '{surface_id}'{orientation_info}...")
             print(f"  └─ Grid-Shape: {grid.X_grid.shape}")
             print(f"  └─ Total Punkte: {total_points}, Active (in Surface): {active_points}, Extended (außerhalb): {extended_points}")
             
-            # Berechne Schallfeld für dieses Surface-Grid
-            sound_field_p_surface, array_fields_surface = self._calculate_sound_field_for_surface_grid(
-                grid,
-                phys_constants,
-                capture_arrays=capture_arrays
-            )
+            if is_vertical:
+                # 🎯 DEBUG: Zusätzliche Info für vertikale Flächen
+                xs = grid.X_grid.flatten()
+                ys = grid.Y_grid.flatten()
+                zs = grid.Z_grid.flatten()
+                x_span = float(np.ptp(xs))
+                y_span = float(np.ptp(ys))
+                z_span = float(np.ptp(zs))
+                print(f"  └─ [VERTIKAL] Koordinaten-Spannen: X={x_span:.3f}, Y={y_span:.3f}, Z={z_span:.3f}")
+                print(f"  └─ [VERTIKAL] X-Range: [{xs.min():.3f}, {xs.max():.3f}]")
+                print(f"  └─ [VERTIKAL] Y-Range: [{ys.min():.3f}, {ys.max():.3f}]")
+                print(f"  └─ [VERTIKAL] Z-Range: [{zs.min():.3f}, {zs.max():.3f}]")
             
-            # 🎯 DEBUG: Prüfe ob alle Punkte berechnet wurden
-            if DEBUG_SOUNDFIELD:
+            # Berechne Schallfeld für dieses Surface-Grid
+            try:
+                sound_field_p_surface, array_fields_surface = self._calculate_sound_field_for_surface_grid(
+                    grid,
+                    phys_constants,
+                    capture_arrays=capture_arrays
+                )
+                
+                # 🎯 DEBUG: Prüfe ob alle Punkte berechnet wurden
                 spl_non_zero = np.count_nonzero(np.abs(sound_field_p_surface))
-                print(f"  └─ Berechnete SPL-Werte: {spl_non_zero}/{sound_field_p_surface.size} nicht-null")
+                spl_in_mask = np.count_nonzero(np.abs(sound_field_p_surface[grid.surface_mask]))
+                print(f"  └─ Berechnete SPL-Werte: {spl_non_zero}/{sound_field_p_surface.size} nicht-null (gesamt)")
+                print(f"  └─ Berechnete SPL-Werte in Maske: {spl_in_mask}/{active_points} nicht-null (in Surface)")
+                
+                if is_vertical:
+                    # 🎯 DEBUG: Zusätzliche Analyse für vertikale Flächen
+                    # Konvertiere komplexen Druck (Pa) zu SPL (dB re 20µPa)
+                    p_ref = 20e-6  # Referenzdruck: 20 µPa
+                    pressure_magnitude = np.abs(sound_field_p_surface)
+                    spl_values = 20 * np.log10(np.maximum(pressure_magnitude / p_ref, 1e-12))
+                    spl_in_mask_values = spl_values[grid.surface_mask]
+                    if len(spl_in_mask_values) > 0:
+                        spl_min = float(spl_in_mask_values.min())
+                        spl_max = float(spl_in_mask_values.max())
+                        spl_mean = float(spl_in_mask_values.mean())
+                        print(f"  └─ [VERTIKAL] SPL in Maske: min={spl_min:.2f} dB, max={spl_max:.2f} dB, mean={spl_mean:.2f} dB")
+                        # Zusätzlich: Druckwerte in Pascal
+                        pressure_in_mask = pressure_magnitude[grid.surface_mask]
+                        p_min = float(pressure_in_mask.min())
+                        p_max = float(pressure_in_mask.max())
+                        p_mean = float(pressure_in_mask.mean())
+                        print(f"  └─ [VERTIKAL] Druck in Maske: min={p_min:.6e} Pa, max={p_max:.6e} Pa, mean={p_mean:.6e} Pa")
+                    else:
+                        print(f"  └─ [VERTIKAL] ⚠️ Keine SPL-Werte in Maske!")
+                    
+                    # Prüfe auf NaN oder Inf
+                    has_nan = np.any(np.isnan(sound_field_p_surface))
+                    has_inf = np.any(np.isinf(sound_field_p_surface))
+                    if has_nan:
+                        nan_count = int(np.sum(np.isnan(sound_field_p_surface)))
+                        print(f"  └─ [VERTIKAL] ⚠️ FEHLER: {nan_count} NaN-Werte gefunden!")
+                    if has_inf:
+                        inf_count = int(np.sum(np.isinf(sound_field_p_surface)))
+                        print(f"  └─ [VERTIKAL] ⚠️ FEHLER: {inf_count} Inf-Werte gefunden!")
+                    if not has_nan and not has_inf:
+                        print(f"  └─ [VERTIKAL] ✅ Keine Fehler (NaN/Inf) gefunden")
+                
+            except Exception as e:
+                import traceback
+                print(f"  └─ ⚠️ FEHLER bei Berechnung von Surface '{surface_id}': {e}")
+                if is_vertical:
+                    print(f"  └─ [VERTIKAL] ⚠️ FEHLER bei vertikaler Fläche!")
+                print(f"  └─ Traceback:")
+                traceback.print_exc()
+                # Erstelle leeres Ergebnis bei Fehler
+                sound_field_p_surface = np.zeros((grid.X_grid.shape[0], grid.X_grid.shape[1]), dtype=complex)
+                array_fields_surface = {} if capture_arrays else None
             
             # Speichere Ergebnis pro Surface
             surface_results[surface_id] = {
@@ -418,6 +482,7 @@ class SoundFieldCalculator(ModuleBase):
                     'Z_grid': grid.Z_grid.tolist(),
                     'surface_mask': grid.surface_mask.astype(bool).tolist(),
                     'resolution': grid.resolution,
+                    'orientation': grid.geometry.orientation,  # 🎯 NEU: Speichere Orientierung für Plot
                 }
                 
                 # Speichere Berechnungsergebnisse pro Surface
@@ -559,10 +624,19 @@ class SoundFieldCalculator(ModuleBase):
         Z_grid = surface_grid.Z_grid
         surface_mask = surface_grid.surface_mask
         
+        # 🎯 DEBUG: Prüfe ob vertikale Fläche
+        is_vertical = surface_grid.geometry.orientation == "vertical"
+        surface_id = surface_grid.geometry.surface_id
+        
         # Initialisiere Schallfeld
         ny, nx = X_grid.shape
         sound_field_p = np.zeros((ny, nx), dtype=complex)
         array_fields = {} if capture_arrays else None
+        
+        if is_vertical:
+            print(f"  └─ [VERTIKAL Berechnung] Starte Berechnung für '{surface_id}'")
+            print(f"  └─ [VERTIKAL Berechnung] Grid-Punkte: {ny}×{nx} = {ny*nx} Punkte")
+            print(f"  └─ [VERTIKAL Berechnung] Aktive Punkte (in Maske): {np.count_nonzero(surface_mask)}")
         
         # Extrahiere physikalische Konstanten (bereits berechnet)
         speed_of_sound = phys_constants['speed_of_sound']
@@ -701,6 +775,14 @@ class SoundFieldCalculator(ModuleBase):
             
             if capture_arrays and array_wave is not None:
                 array_fields[array_key] = array_wave
+        
+        # 🎯 DEBUG: Zusammenfassung für vertikale Flächen
+        if is_vertical:
+            calculated_points = np.count_nonzero(np.abs(sound_field_p))
+            calculated_in_mask = np.count_nonzero(np.abs(sound_field_p[surface_mask]))
+            print(f"  └─ [VERTIKAL Berechnung] ✅ Berechnung abgeschlossen")
+            print(f"  └─ [VERTIKAL Berechnung] Berechnete Punkte: {calculated_points}/{sound_field_p.size} (gesamt)")
+            print(f"  └─ [VERTIKAL Berechnung] Berechnete Punkte in Maske: {calculated_in_mask}/{np.count_nonzero(surface_mask)} (in Surface)")
 
         return sound_field_p, array_fields
 
@@ -1071,16 +1153,18 @@ class SoundFieldCalculator(ModuleBase):
                     edge_z[i] = evaluate_surface_plane(plane_model, edge_x[i], edge_y[i])
             
             # Nearest Neighbor Interpolation der SPL-Werte
-            # Finde für jeden Randpunkt den nächsten Grid-Punkt innerhalb der Surface
+            # 🎯 ERWEITERT: Verwende ALLE Grid-Punkte (inkl. erweiterte Punkte außerhalb)
+            # für Nearest Neighbor Interpolation, da diese bereits korrekte SPL-Werte haben
             X_grid = grid.X_grid
             Y_grid = grid.Y_grid
             surface_mask = grid.surface_mask
             
-            # Extrahiere nur Grid-Punkte innerhalb der Surface
-            valid_mask = surface_mask
-            valid_x = X_grid[valid_mask]
-            valid_y = Y_grid[valid_mask]
-            valid_spl = spl_values[valid_mask]
+            # 🎯 ERWEITERTE MASKE: Verwende alle Grid-Punkte (auch außerhalb Surface)
+            # Diese haben bereits korrekte SPL-Werte durch erweiterte Maske in der Berechnung
+            extended_mask = np.ones_like(surface_mask, dtype=bool)  # Alle Punkte im Grid
+            valid_x = X_grid[extended_mask]
+            valid_y = Y_grid[extended_mask]
+            valid_spl = spl_values[extended_mask]
             
             if len(valid_x) == 0:
                 return None

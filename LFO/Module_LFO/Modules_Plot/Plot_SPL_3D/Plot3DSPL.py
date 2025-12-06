@@ -596,6 +596,8 @@ class SPL3DPlotRenderer:
         pv_module: Any,
         surface_id: Optional[str] = None,  # 🎯 NEU: Für Polygon-Prüfung
         settings: Optional[Any] = None,  # 🎯 NEU: Für Surface-Definition
+        vertical_orientation: Optional[str] = None,  # 🎯 NEU: "xz" oder "yz" für vertikale Flächen
+        wall_value: Optional[float] = None,  # 🎯 NEU: Konstanter Wert für konstante Achse
     ) -> Optional[Any]:
         """
         Integriert Randpunkte direkt in das Grid-Mesh.
@@ -664,16 +666,97 @@ class SPL3DPlotRenderer:
             valid_scalars = np.sum(np.isfinite(scalars_arr))
             print(f"[DEBUG Plot Mesh] Scalar-Werte: {valid_scalars}/{len(scalars_arr)} gültig, Bereich: {np.nanmin(scalars_arr):.2f} bis {np.nanmax(scalars_arr):.2f}")
             
-            # Trianguliere (2D-Projektion auf XY-Ebene, behält Z)
+            # 🎯 TRIANGULATION: Wähle richtige Projektionsebene
+            # Für vertikale Flächen: Triangulation in XZ oder YZ-Ebene
+            # Für horizontale Flächen: Triangulation in XY-Ebene (Standard)
             if len(combined_points) >= 3:
                 try:
-                    combined_mesh = combined_mesh.delaunay_2d(alpha=0.0, tol=0.0)
+                    if vertical_orientation == "xz":
+                        # X-Z-Wand: Triangulation in XZ-Ebene
+                        # Extrahiere X und Z Koordinaten
+                        x_coords = combined_points[:, 0]  # X
+                        z_coords = combined_points[:, 2]  # Z
+                        # PyVista's delaunay_2d arbeitet in XY-Ebene, also: (x, z) → (x, z, 0)
+                        points_2d_3d = np.column_stack([
+                            x_coords,  # x → x
+                            z_coords,  # z → y (für delaunay_2d)
+                            np.zeros(len(x_coords)),  # z = 0 (temporär)
+                        ])
+                        # Erstelle temporäres 3D-Mesh für Triangulation
+                        temp_mesh_2d = pv_module.PolyData(points_2d_3d)
+                        temp_mesh_2d["plot_scalars"] = combined_scalars
+                        temp_mesh_2d = temp_mesh_2d.delaunay_2d(alpha=0.0, tol=0.0)
+                        
+                        # Stelle 3D-Koordinaten wieder her: (x, z, 0) → (x, y=wall_value, z)
+                        if wall_value is not None:
+                            y_value = wall_value
+                        else:
+                            y_value = np.mean(combined_points[:, 1])
+                        
+                        # 🎯 WICHTIG: delaunay_2d transformiert Punkte, aber Z-Koordinaten bleiben erhalten
+                        # temp_mesh_2d.points hat Shape (n, 3) mit (x', z', 0) nach delaunay_2d
+                        # points[:, 0] = x' (transformiert), points[:, 1] = z' (transformiert, ist die Z-Koordinate)
+                        # Erstelle 3D-Punkte: (x, y, z) mit konstantem Y
+                        points_3d = np.column_stack([
+                            temp_mesh_2d.points[:, 0],  # x (aus delaunay_2d)
+                            np.full(len(temp_mesh_2d.points), y_value, dtype=float),  # y (konstant)
+                            temp_mesh_2d.points[:, 1],  # z (aus delaunay_2d, war y-Koordinate in delaunay_2d)
+                        ])
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG XZ-Triangulation] Wiederhergestellte Koordinaten:")
+                            print(f"  └─ X: min={points_3d[:, 0].min():.3f}, max={points_3d[:, 0].max():.3f}")
+                            print(f"  └─ Y: min={points_3d[:, 1].min():.3f}, max={points_3d[:, 1].max():.3f} (konstant: {y_value:.3f})")
+                            print(f"  └─ Z: min={points_3d[:, 2].min():.3f}, max={points_3d[:, 2].max():.3f}")
+                        combined_mesh = pv_module.PolyData(points_3d, temp_mesh_2d.faces)
+                        combined_mesh["plot_scalars"] = temp_mesh_2d["plot_scalars"]
+                    elif vertical_orientation == "yz":
+                        # Y-Z-Wand: Triangulation in YZ-Ebene
+                        # Extrahiere Y und Z Koordinaten
+                        y_coords = combined_points[:, 1]  # Y
+                        z_coords = combined_points[:, 2]  # Z
+                        # PyVista's delaunay_2d arbeitet in XY-Ebene, also: (y, z) → (y, z, 0)
+                        points_2d_3d = np.column_stack([
+                            y_coords,  # y → x (für delaunay_2d)
+                            z_coords,  # z → y (für delaunay_2d)
+                            np.zeros(len(y_coords)),  # z = 0 (temporär)
+                        ])
+                        # Erstelle temporäres 3D-Mesh für Triangulation
+                        temp_mesh_2d = pv_module.PolyData(points_2d_3d)
+                        temp_mesh_2d["plot_scalars"] = combined_scalars
+                        temp_mesh_2d = temp_mesh_2d.delaunay_2d(alpha=0.0, tol=0.0)
+                        
+                        # Stelle 3D-Koordinaten wieder her: (y, z, 0) → (x=wall_value, y, z)
+                        if wall_value is not None:
+                            x_value = wall_value
+                        else:
+                            x_value = np.mean(combined_points[:, 0])
+                        
+                        # 🎯 WICHTIG: delaunay_2d transformiert Punkte, aber Z-Koordinaten bleiben erhalten
+                        # temp_mesh_2d.points hat Shape (n, 3) mit (y', z', 0) nach delaunay_2d
+                        # points[:, 0] = y' (transformiert), points[:, 1] = z' (transformiert, ist die Z-Koordinate)
+                        # Erstelle 3D-Punkte: (x, y, z) mit konstantem X
+                        points_3d = np.column_stack([
+                            np.full(len(temp_mesh_2d.points), x_value, dtype=float),  # x (konstant)
+                            temp_mesh_2d.points[:, 0],  # y (aus delaunay_2d, war x-Koordinate in delaunay_2d)
+                            temp_mesh_2d.points[:, 1],  # z (aus delaunay_2d, war y-Koordinate in delaunay_2d)
+                        ])
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG YZ-Triangulation] Wiederhergestellte Koordinaten:")
+                            print(f"  └─ X: min={points_3d[:, 0].min():.3f}, max={points_3d[:, 0].max():.3f} (konstant: {x_value:.3f})")
+                            print(f"  └─ Y: min={points_3d[:, 1].min():.3f}, max={points_3d[:, 1].max():.3f}")
+                            print(f"  └─ Z: min={points_3d[:, 2].min():.3f}, max={points_3d[:, 2].max():.3f}")
+                        combined_mesh = pv_module.PolyData(points_3d, temp_mesh_2d.faces)
+                        combined_mesh["plot_scalars"] = temp_mesh_2d["plot_scalars"]
+                    else:
+                        # Horizontale Fläche: Standard-Triangulation in XY-Ebene
+                        combined_mesh = combined_mesh.delaunay_2d(alpha=0.0, tol=0.0)
+                    
                     print(f"[DEBUG Plot Mesh] ✅ Delaunay-Triangulation erfolgreich: {combined_mesh.n_points} Punkte, {combined_mesh.n_cells} Zellen")
                     
                     # 🎯 FILTERUNG: Entferne Dreiecke außerhalb der Surface
                     if surface_id is not None and settings is not None:
                         combined_mesh = self._filter_triangles_outside_surface(
-                            combined_mesh, surface_id, settings, pv_module
+                            combined_mesh, surface_id, settings, pv_module, vertical_orientation=vertical_orientation
                         )
                 except Exception as e:
                     print(f"[DEBUG Plot Mesh] ⚠️ Fehler bei Delaunay-Triangulation: {e}")
@@ -695,6 +778,7 @@ class SPL3DPlotRenderer:
         surface_id: str,
         settings: Any,
         pv_module: Any,
+        vertical_orientation: Optional[str] = None,  # 🎯 NEU: "xz" oder "yz" für vertikale Flächen
     ) -> Any:
         """
         Filtert Dreiecke außerhalb der Surface nach Delaunay-Triangulation.
@@ -734,56 +818,94 @@ class SPL3DPlotRenderer:
             # Berechne alle Zell-Schwerpunkte vektorisiert mit PyVista
             try:
                 cell_centers = mesh.cell_centers().points  # Shape: (n_cells, 3)
-                centroids_x = cell_centers[:, 0]
-                centroids_y = cell_centers[:, 1]
+                centroids_3d = cell_centers
             except Exception:
                 # Fallback: Manuelle Berechnung
                 points = mesh.points
-                centroids_x = np.zeros(n_cells, dtype=float)
-                centroids_y = np.zeros(n_cells, dtype=float)
+                centroids_3d = np.zeros((n_cells, 3), dtype=float)
                 for i in range(n_cells):
                     try:
                         cell = mesh.get_cell(i)
                         cell_indices = cell.point_ids
                         cell_points = points[cell_indices]
                         centroid = np.mean(cell_points, axis=0)
-                        centroids_x[i] = centroid[0]
-                        centroids_y[i] = centroid[1]
+                        centroids_3d[i] = centroid
                     except Exception:
-                        centroids_x[i] = np.nan
-                        centroids_y[i] = np.nan
+                        centroids_3d[i] = np.nan
             
-            # 🚀 VEKTORISIERTE POLYGON-PRÜFUNG: Prüfe alle Schwerpunkte gleichzeitig
+            # 🎯 PROJEKTION: Wähle richtige Projektionsebene für Polygon-Prüfung
             from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import _points_in_polygon_batch_plot
             
-            # Konvertiere Polygon-Punkte
-            px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
-            py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
-            poly_points_dict = [{"x": x, "y": y} for x, y in zip(px, py)]
+            if vertical_orientation == "xz":
+                # X-Z-Wand: Prüfe in XZ-Ebene
+                centroids_u = centroids_3d[:, 0]  # X
+                centroids_v = centroids_3d[:, 2]  # Z
+                # Polygon in XZ-Ebene
+                px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
+                pz = np.array([float(p.get("z", 0.0)) for p in polygon_points], dtype=float)
+                poly_points_dict = [{"x": x, "y": z} for x, z in zip(px, pz)]  # x=u, y=v
+            elif vertical_orientation == "yz":
+                # Y-Z-Wand: Prüfe in YZ-Ebene
+                centroids_u = centroids_3d[:, 1]  # Y
+                centroids_v = centroids_3d[:, 2]  # Z
+                # Polygon in YZ-Ebene
+                py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
+                pz = np.array([float(p.get("z", 0.0)) for p in polygon_points], dtype=float)
+                poly_points_dict = [{"x": y, "y": z} for y, z in zip(py, pz)]  # x=u, y=v
+            else:
+                # Horizontale Fläche: Prüfe in XY-Ebene (Standard)
+                centroids_u = centroids_3d[:, 0]  # X
+                centroids_v = centroids_3d[:, 1]  # Y
+                # Polygon in XY-Ebene
+                px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
+                py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
+                poly_points_dict = [{"x": x, "y": y} for x, y in zip(px, py)]
             
             # Prüfe alle Schwerpunkte gleichzeitig (als 2D-Array, Shape: (n_cells, 1))
             inside_mask = _points_in_polygon_batch_plot(
-                centroids_x.reshape(-1, 1),  # X-Koordinaten als 2D-Array
-                centroids_y.reshape(-1, 1),  # Y-Koordinaten als 2D-Array
+                centroids_u.reshape(-1, 1),  # U-Koordinaten als 2D-Array
+                centroids_v.reshape(-1, 1),  # V-Koordinaten als 2D-Array
                 poly_points_dict
             )
             
             if inside_mask is None:
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Filter] ⚠️ inside_mask ist None für '{surface_id}'")
                 return mesh
             
             # Filtere: Nur Zellen mit Schwerpunkt innerhalb des Polygons
             inside_mask_1d = inside_mask.flatten()
             
             # Entferne NaN-Punkte (Fehler bei Schwerpunkt-Berechnung)
-            valid_mask = np.isfinite(centroids_x) & np.isfinite(centroids_y)
+            valid_mask = np.isfinite(centroids_u) & np.isfinite(centroids_v)
             inside_mask_1d = inside_mask_1d & valid_mask
+            
+            # 🎯 DEBUG: Zeige Details zur Filterung
+            if DEBUG_PLOT3D_TIMING:
+                n_inside = int(np.sum(inside_mask_1d))
+                n_valid = int(np.sum(valid_mask))
+                n_invalid = n_cells - n_valid
+                print(f"[DEBUG Filter] Surface '{surface_id}' (Orientierung: {vertical_orientation}):")
+                print(f"  └─ Total Zellen: {n_cells}")
+                print(f"  └─ Gültige Zellen (kein NaN): {n_valid}/{n_cells} (ungültig: {n_invalid})")
+                print(f"  └─ Zellen innerhalb Polygon: {n_inside}/{n_cells} ({100*n_inside/n_cells:.1f}%)")
+                if len(poly_points_dict) > 0:
+                    poly_u = np.array([p.get('x', 0.0) for p in poly_points_dict], dtype=float)
+                    poly_v = np.array([p.get('y', 0.0) for p in poly_points_dict], dtype=float)
+                    print(f"  └─ Polygon: {len(poly_points_dict)} Punkte")
+                    print(f"  └─ Polygon U-Range: [{poly_u.min():.3f}, {poly_u.max():.3f}]")
+                    print(f"  └─ Polygon V-Range: [{poly_v.min():.3f}, {poly_v.max():.3f}]")
+                    print(f"  └─ Centroids U-Range: [{centroids_u.min():.3f}, {centroids_u.max():.3f}]")
+                    print(f"  └─ Centroids V-Range: [{centroids_v.min():.3f}, {centroids_v.max():.3f}]")
             
             cells_to_keep = np.where(inside_mask_1d)[0].tolist()
             
             # Filtere Mesh: Nur gültige Zellen behalten
             if len(cells_to_keep) < n_cells:
                 filtered_mesh = mesh.extract_cells(cells_to_keep)
-                print(f"[DEBUG Plot Mesh] Filterung (vektorisiert): {n_cells} → {len(cells_to_keep)} Zellen (entfernt: {n_cells - len(cells_to_keep)})")
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Plot Mesh] Filterung (vektorisiert): {n_cells} → {len(cells_to_keep)} Zellen (entfernt: {n_cells - len(cells_to_keep)})")
+                    print(f"  └─ Mesh-Punkte: {mesh.n_points} → {filtered_mesh.n_points} (+{filtered_mesh.n_points - mesh.n_points})")
                 return filtered_mesh
             
             return mesh
@@ -885,16 +1007,53 @@ class SPL3DPlotRenderer:
         else:
             self._surface_actors = {}
         
+        # Hole Surface-Definitionen für enabled/hidden-Prüfung
+        surface_definitions = getattr(self.settings, 'surface_definitions', {})
+        if not isinstance(surface_definitions, dict):
+            surface_definitions = {}
+        
         # Verarbeite jede Surface
         surfaces_processed = 0
         for surface_id in surface_grids_data.keys():
             if surface_id not in surface_results_data:
                 continue
             
+            # 🎯 PRÜFE ENABLED/HIDDEN: Überspringe disabled oder hidden Surfaces
+            # Nur prüfen, wenn Surface in Definitionen vorhanden ist
+            # Wenn nicht vorhanden, als enabled behandeln (Rückwärtskompatibilität)
+            surf_def = surface_definitions.get(surface_id)
+            if surf_def is not None:
+                # Direkter Zugriff auf Attribute (schneller als to_dict())
+                try:
+                    if isinstance(surf_def, dict):
+                        enabled = bool(surf_def.get('enabled', True))  # Default: enabled
+                        hidden = bool(surf_def.get('hidden', False))
+                    else:
+                        # SurfaceDefinition-Objekt
+                        enabled = bool(getattr(surf_def, 'enabled', True))  # Default: enabled
+                        hidden = bool(getattr(surf_def, 'hidden', False))
+                    
+                    if not enabled or hidden:
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Plot] Surface '{surface_id}': Überspringe (enabled={enabled}, hidden={hidden})")
+                        continue
+                except Exception:
+                    # Bei Fehler: Weiter mit Plotting (sicherer Fallback)
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Plot] Surface '{surface_id}': Fehler bei enabled/hidden-Prüfung, überspringe Prüfung")
+                    pass
+            
             try:
                 # Lade Grid-Daten
                 grid_data = surface_grids_data[surface_id]
                 result_data = surface_results_data[surface_id]
+                
+                # 🎯 PRÜFE ORIENTIERUNG: Überspringe vertikale Surfaces (werden separat behandelt)
+                orientation = grid_data.get('orientation', 'unknown')
+                if orientation == 'vertical':
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Plot] Surface '{surface_id}': Überspringe vertikale Surface (wird separat behandelt)")
+                    continue
                 
                 # Konvertiere zu numpy Arrays
                 X_grid = np.array(grid_data['X_grid'], dtype=float)
@@ -943,11 +1102,21 @@ class SPL3DPlotRenderer:
                     )
                     Z_fine = Z_fine.reshape(X_fine.shape)
                     
-                    # Interpoliere SPL-Werte
-                    spl_fine = self._bilinear_interpolate_grid(
-                        sound_field_x, sound_field_y, spl_values,
-                        X_fine.ravel(), Y_fine.ravel()
-                    )
+                    # 🎯 INTERPOLATION: Wähle Methode basierend auf Color-Modus
+                    # Color Step: Nearest Neighbor für harte Stufen
+                    # Gradient: Bilineare Interpolation für glatte Übergänge
+                    if is_step_mode:
+                        # Nearest Neighbor: Jeder Punkt erhält exakt den Wert des nächstgelegenen Grid-Punkts
+                        spl_fine = self._nearest_interpolate_grid(
+                            sound_field_x, sound_field_y, spl_values,
+                            X_fine.ravel(), Y_fine.ravel()
+                        )
+                    else:
+                        # Bilineare Interpolation: Glatte Übergänge zwischen Grid-Punkten
+                        spl_fine = self._bilinear_interpolate_grid(
+                            sound_field_x, sound_field_y, spl_values,
+                            X_fine.ravel(), Y_fine.ravel()
+                        )
                     spl_fine = spl_fine.reshape(X_fine.shape)
                     
                     # Interpoliere Surface-Maske (nearest neighbor für bool-Werte)
@@ -1087,6 +1256,9 @@ class SPL3DPlotRenderer:
                 if DEBUG_PLOT3D_TIMING:
                     print(f"[PlotSPL3D] Error processing surface {surface_id}: {e}")
                 continue
+        
+        # 🎯 VERTIKALE SURFACES: Behandle vertikale Surfaces separat
+        self._update_vertical_spl_surfaces_from_grids()
         
         # Aktualisiere Colorbar
         self.colorbar_manager.render_colorbar(
@@ -1680,6 +1852,622 @@ class SPL3DPlotRenderer:
                     except Exception:
                         pass
 
+        self._vertical_surface_meshes = new_vertical_meshes
+
+    def _update_vertical_spl_surfaces_from_grids(self) -> None:
+        """
+        🎯 NEU: Zeichnet vertikale Surfaces aus surface_grids und surface_results.
+        
+        Diese Funktion behandelt vertikale Surfaces, die in update_spl_plot() übersprungen wurden.
+        Sie konvertiert die Grid-Daten in das (u,v)-Koordinatensystem für vertikale Surfaces.
+        """
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Vertical Grids] Starte _update_vertical_spl_surfaces_from_grids()")
+        
+        container = getattr(self, "container", None)
+        if container is None or not hasattr(container, "calculation_spl"):
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Vertical Grids] Kein Container oder calculation_spl")
+            self._clear_vertical_spl_surfaces()
+            return
+
+        calc_spl = getattr(container, "calculation_spl", {}) or {}
+        surface_grids_data = calc_spl.get("surface_grids", {})
+        surface_results_data = calc_spl.get("surface_results", {})
+        
+        if not surface_grids_data or not surface_results_data:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Vertical Grids] Keine surface_grids_data oder surface_results_data")
+            self._clear_vertical_spl_surfaces()
+            return
+        
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Vertical Grids] Gefunden: {len(surface_grids_data)} Surfaces in surface_grids_data")
+
+        # Aktueller Surface-Status (enabled/hidden) aus den Settings
+        surface_definitions = getattr(self.settings, "surface_definitions", {})
+        if not isinstance(surface_definitions, dict):
+            surface_definitions = {}
+
+        # Aktuellen Colorization-Mode verwenden
+        colorization_mode = getattr(self, "_last_colorization_mode", None)
+        if colorization_mode not in {"Color step", "Gradient"}:
+            colorization_mode = getattr(self.settings, "colorization_mode", "Gradient")
+        try:
+            cbar_range = getattr(self.settings, "colorbar_range", {})
+            cbar_step = float(cbar_range.get("step", 0.0))
+        except Exception:
+            cbar_step = 0.0
+        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
+        
+        # Plot-Mode bestimmen
+        plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+        phase_mode = plot_mode == 'Phase alignment'
+        time_mode = plot_mode == 'SPL over time'
+        
+        # Colorbar-Parameter
+        cbar_min, cbar_max = self._get_vertical_color_limits()
+        
+        # Colormap
+        if time_mode:
+            cmap_object = 'RdBu_r'
+        elif phase_mode:
+            cmap_object = PHASE_CMAP
+        else:
+            cmap_object = 'jet'
+        
+        new_vertical_meshes: dict[str, Any] = {}
+        
+        # Finde alle vertikalen Surfaces
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Vertical Grids] Prüfe {len(surface_grids_data)} Surfaces auf vertikale Orientierung")
+        
+        for surface_id in surface_grids_data.keys():
+            if surface_id not in surface_results_data:
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Vertical Grids] Surface '{surface_id}': Nicht in surface_results_data")
+                continue
+            
+            grid_data = surface_grids_data[surface_id]
+            orientation = grid_data.get('orientation', 'unknown')
+            
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Vertical Grids] Surface '{surface_id}': orientation={orientation}")
+            
+            if orientation != 'vertical':
+                continue
+            
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Vertical Grids] ✅ Surface '{surface_id}' ist vertikal, verarbeite...")
+            
+            # Prüfe ob Surface enabled ist
+            surf_def = surface_definitions.get(surface_id)
+            if surf_def is None:
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Vertical Grids] Surface '{surface_id}': Nicht in surface_definitions")
+                continue
+            if hasattr(surf_def, "to_dict"):
+                surf_data = surf_def.to_dict()
+            elif isinstance(surf_def, dict):
+                surf_data = surf_def
+            else:
+                surf_data = {
+                    "enabled": getattr(surf_def, "enabled", False),
+                    "hidden": getattr(surf_def, "hidden", False),
+                    "points": getattr(surf_def, "points", []),
+                }
+            enabled = surf_data.get("enabled", False)
+            hidden = surf_data.get("hidden", False)
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Vertical Grids] Surface '{surface_id}': enabled={enabled}, hidden={hidden}")
+            if not enabled or hidden:
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Vertical Grids] Surface '{surface_id}': Überspringe (nicht enabled oder hidden)")
+                continue
+            
+            try:
+                # 🎯 IDENTISCH ZU HORIZONTALEN FLÄCHEN: Verwende Grid-Daten direkt
+                # Lade Grid-Daten (bereits in 3D-Koordinaten)
+                X_grid = np.array(grid_data['X_grid'], dtype=float)
+                Y_grid = np.array(grid_data['Y_grid'], dtype=float)
+                Z_grid = np.array(grid_data['Z_grid'], dtype=float)
+                sound_field_x = np.array(grid_data['sound_field_x'], dtype=float)
+                sound_field_y = np.array(grid_data['sound_field_y'], dtype=float)
+                surface_mask = np.array(grid_data['surface_mask'], dtype=bool)
+                
+                if DEBUG_PLOT3D_TIMING:
+                    active_points = int(np.sum(surface_mask))
+                    print(f"[DEBUG Vertical Grids] Surface '{surface_id}': Grid-Shape={X_grid.shape}, Active={active_points}/{X_grid.size}")
+                    
+                    if active_points == 0:
+                        print(f"[DEBUG Vertical Grids] ⚠️ Surface '{surface_id}': KEINE aktiven Punkte in surface_mask!")
+                        continue
+                
+                # Lade SPL-Werte
+                result_data = surface_results_data[surface_id]
+                sound_field_p_complex = np.array(result_data['sound_field_p'], dtype=complex)
+                
+                # Konvertiere zu SPL in dB (identisch zu horizontalen Flächen)
+                if time_mode:
+                    spl_values = np.real(sound_field_p_complex)
+                    spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                elif phase_mode:
+                    spl_values = np.angle(sound_field_p_complex)
+                    spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                else:
+                    pressure_magnitude = np.abs(sound_field_p_complex)
+                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                    spl_values = self.functions.mag2db(pressure_magnitude)
+                    spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                ny, nx = X_grid.shape
+                
+                # 🎯 BESTIMME ORIENTIERUNG: X-Z oder Y-Z für Koordinatentransformation
+                points = surf_data.get('points', [])
+                vertical_orientation = None
+                wall_value = None
+                if len(points) >= 3:
+                    xs = np.array([p.get('x', 0.0) for p in points], dtype=float)
+                    ys = np.array([p.get('y', 0.0) for p in points], dtype=float)
+                    zs = np.array([p.get('z', 0.0) for p in points], dtype=float)
+                    x_span = float(np.ptp(xs))
+                    y_span = float(np.ptp(ys))
+                    z_span = float(np.ptp(zs))
+                    
+                    eps_line = 1e-6
+                    if y_span < eps_line and x_span >= eps_line and z_span >= eps_line:
+                        # X-Z-Wand: y ≈ const
+                        vertical_orientation = "xz"
+                        wall_value = float(np.mean(ys))  # Konstanter Y-Wert
+                    elif x_span < eps_line and y_span >= eps_line and z_span >= eps_line:
+                        # Y-Z-Wand: x ≈ const
+                        vertical_orientation = "yz"
+                        wall_value = float(np.mean(xs))  # Konstanter X-Wert
+                    elif z_span > max(x_span, y_span) * 0.5:
+                        # Schräge vertikale Surface: Bestimme dominante Orientierung
+                        if x_span < y_span:
+                            vertical_orientation = "yz"
+                            wall_value = float(np.mean(xs))
+                        else:
+                            vertical_orientation = "xz"
+                            wall_value = float(np.mean(ys))
+                
+                # 🎯 DEBUG: Zeige Koordinaten-Informationen
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Vertical Plot] Surface '{surface_id}':")
+                    print(f"  └─ Orientierung: {vertical_orientation}")
+                    print(f"  └─ Wall-Value: {wall_value}")
+                    print(f"  └─ Grid-Shape: {X_grid.shape}")
+                    print(f"  └─ X_grid: min={X_grid.min():.2f}, max={X_grid.max():.2f}, span={X_grid.max()-X_grid.min():.2f}")
+                    print(f"  └─ Y_grid: min={Y_grid.min():.2f}, max={Y_grid.max():.2f}, span={Y_grid.max()-Y_grid.min():.2f}")
+                    print(f"  └─ Z_grid: min={Z_grid.min():.2f}, max={Z_grid.max():.2f}, span={Z_grid.max()-Z_grid.min():.2f}")
+                    print(f"  └─ sound_field_x: min={sound_field_x.min():.2f}, max={sound_field_x.max():.2f}, len={len(sound_field_x)}")
+                    print(f"  └─ sound_field_y: min={sound_field_y.min():.2f}, max={sound_field_y.max():.2f}, len={len(sound_field_y)}")
+                    if len(points) >= 3:
+                        print(f"  └─ Surface-Punkte: x_span={x_span:.6f}, y_span={y_span:.6f}, z_span={z_span:.6f}")
+                
+                # 🎯 KOORDINATENTRANSFORMATION: Für vertikale Flächen müssen wir die Koordinaten transformieren
+                # WICHTIG: sound_field_x und sound_field_y sind IMMER in XY-Ebene erstellt!
+                # Für vertikale Flächen müssen wir die tatsächlichen Koordinaten aus X_grid, Y_grid, Z_grid extrahieren
+                # build_surface_mesh erwartet (x, y) als 2D-Grid und z_coords als Höhe
+                # Für X-Z-Wand: (X, Z) → (x, y) für build_surface_mesh, Y konstant → z_coords
+                # Für Y-Z-Wand: (Y, Z) → (x, y) für build_surface_mesh, X konstant → z_coords
+                if vertical_orientation == "xz":
+                    # X-Z-Wand: y ≈ const
+                    # Extrahiere X-Koordinaten aus X_grid (einzigartige Werte)
+                    u_axis = np.unique(X_grid)  # X-Koordinaten
+                    # Extrahiere Z-Koordinaten aus Z_grid (einzigartige Werte)
+                    v_axis = np.unique(Z_grid)  # Z-Koordinaten
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"  └─ X-Z-Wand: u_axis (X) len={len(u_axis)}, v_axis (Z) len={len(v_axis)}")
+                elif vertical_orientation == "yz":
+                    # Y-Z-Wand: x ≈ const
+                    # Extrahiere Y-Koordinaten aus Y_grid (einzigartige Werte)
+                    u_axis = np.unique(Y_grid)  # Y-Koordinaten
+                    # Extrahiere Z-Koordinaten aus Z_grid (einzigartige Werte)
+                    v_axis = np.unique(Z_grid)  # Z-Koordinaten
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"  └─ Y-Z-Wand: u_axis (Y) len={len(u_axis)}, v_axis (Z) len={len(v_axis)}")
+                else:
+                    # Fallback: Standard (sollte nicht vorkommen für vertical)
+                    u_axis = sound_field_x
+                    v_axis = sound_field_y
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"  └─ ⚠️ Keine Orientierung erkannt, verwende sound_field_x/y")
+                
+                # 🎯 UPSCALING: Erhöhe Grid-Auflösung (in UV-Koordinaten)
+                if PLOT_UPSCALE_FACTOR > 1:
+                    # Erstelle feineres Grid basierend auf den originalen UV-Koordinaten
+                    u_fine = np.linspace(u_axis.min(), u_axis.max(), len(u_axis) * PLOT_UPSCALE_FACTOR)
+                    v_fine = np.linspace(v_axis.min(), v_axis.max(), len(v_axis) * PLOT_UPSCALE_FACTOR)
+                    U_fine, V_fine = np.meshgrid(u_fine, v_fine, indexing='xy')
+                    
+                    # 🎯 INTERPOLATION: Erstelle Meshgrid aus originalen Koordinaten für Interpolation
+                    if vertical_orientation == "xz":
+                        # X-Z-Wand: Original-Grid ist (X, Y, Z), wir brauchen (X, Z) mit Y=wall_value
+                        # Interpoliere SPL-Werte von originalen 3D-Koordinaten auf neue 3D-Koordinaten
+                        from scipy.interpolate import griddata
+                        # Original-Koordinaten: (X, Y, Z) - die tatsächlichen 3D-Grid-Koordinaten
+                        points_orig = np.column_stack([
+                            X_grid.flatten(),
+                            Y_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        # Neue 3D-Koordinaten: (X, Y=wall_value, Z) = (U_fine, wall_value, V_fine)
+                        Y_new = np.full_like(U_fine, wall_value, dtype=float)
+                        points_new = np.column_stack([
+                            U_fine.ravel(),
+                            Y_new.ravel(),
+                            V_fine.ravel()
+                        ])
+                        # Interpoliere SPL-Werte von (X, Y, Z) auf (X, Y=wall_value, Z)
+                        if is_step_mode:
+                            spl_fine = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_fine = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_fine = spl_fine.reshape(U_fine.shape)
+                        # Interpoliere Maske von (X, Y, Z) auf (X, Y=wall_value, Z)
+                        mask_fine = griddata(
+                            points_orig, surface_mask.flatten().astype(float), points_new,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
+                        # Z_fine = Y konstant
+                        Z_fine = np.full_like(U_fine, wall_value, dtype=float)
+                    elif vertical_orientation == "yz":
+                        # Y-Z-Wand: Original-Grid ist (X, Y, Z), wir brauchen (Y, Z) mit X=wall_value
+                        # Interpoliere SPL-Werte von originalen 3D-Koordinaten auf neue 3D-Koordinaten
+                        from scipy.interpolate import griddata
+                        # Original-Koordinaten: (X, Y, Z) - die tatsächlichen 3D-Grid-Koordinaten
+                        points_orig = np.column_stack([
+                            X_grid.flatten(),
+                            Y_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        # Neue 3D-Koordinaten: (X=wall_value, Y, Z) = (wall_value, U_fine, V_fine)
+                        X_new = np.full_like(U_fine, wall_value, dtype=float)
+                        points_new = np.column_stack([
+                            X_new.ravel(),
+                            U_fine.ravel(),
+                            V_fine.ravel()
+                        ])
+                        # Interpoliere SPL-Werte von (X, Y, Z) auf (X=wall_value, Y, Z)
+                        if is_step_mode:
+                            spl_fine = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_fine = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_fine = spl_fine.reshape(U_fine.shape)
+                        # Interpoliere Maske von (X, Y, Z) auf (X=wall_value, Y, Z)
+                        mask_fine = griddata(
+                            points_orig, surface_mask.flatten().astype(float), points_new,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
+                        # Z_fine = X konstant
+                        Z_fine = np.full_like(U_fine, wall_value, dtype=float)
+                    else:
+                        # Fallback: Normale XY-Interpolation
+                        spl_fine = self._bilinear_interpolate_grid(
+                            sound_field_x, sound_field_y, spl_values,
+                            U_fine.ravel(), V_fine.ravel()
+                        )
+                        spl_fine = spl_fine.reshape(U_fine.shape)
+                        mask_float = surface_mask.astype(float)
+                        mask_fine = self._nearest_interpolate_grid(
+                            sound_field_x, sound_field_y, mask_float,
+                            U_fine.ravel(), V_fine.ravel()
+                        )
+                        mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
+                        Z_fine = self._bilinear_interpolate_grid(
+                            sound_field_x, sound_field_y, Z_grid,
+                            U_fine.ravel(), V_fine.ravel()
+                        )
+                        Z_fine = Z_fine.reshape(U_fine.shape)
+                    
+                    # Transformiere für build_surface_mesh
+                    if vertical_orientation == "xz":
+                        # (U, V) = (X, Z) → (x, y) für build_surface_mesh, Y konstant → z_coords
+                        x_plot = u_fine  # X-Koordinaten
+                        y_plot = v_fine  # Z-Koordinaten
+                        z_coords_plot = np.full_like(U_fine, wall_value, dtype=float)  # Y konstant
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = U_fine  # X-Koordinaten
+                        Y_plot = np.full_like(U_fine, wall_value, dtype=float)  # Y konstant
+                        Z_plot = V_fine  # Z-Koordinaten
+                    elif vertical_orientation == "yz":
+                        # (U, V) = (Y, Z) → (x, y) für build_surface_mesh, X konstant → z_coords
+                        x_plot = u_fine  # Y-Koordinaten
+                        y_plot = v_fine  # Z-Koordinaten
+                        z_coords_plot = np.full_like(U_fine, wall_value, dtype=float)  # X konstant
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = np.full_like(U_fine, wall_value, dtype=float)  # X konstant
+                        Y_plot = U_fine  # Y-Koordinaten
+                        Z_plot = V_fine  # Z-Koordinaten
+                    else:
+                        x_plot = u_fine
+                        y_plot = v_fine
+                        z_coords_plot = Z_fine
+                        X_plot = U_fine
+                        Y_plot = V_fine
+                        Z_plot = Z_fine
+                    
+                    spl_plot = spl_fine
+                    mask_plot = mask_fine
+                else:
+                    # Kein Upscaling
+                    # Erstelle Meshgrid aus u_axis und v_axis
+                    U_plot, V_plot = np.meshgrid(u_axis, v_axis, indexing='xy')
+                    
+                    # Transformiere für build_surface_mesh
+                    if vertical_orientation == "xz":
+                        # (U, V) = (X, Z) → (x, y) für build_surface_mesh, Y konstant → z_coords
+                        x_plot = u_axis  # X-Koordinaten
+                        y_plot = v_axis  # Z-Koordinaten
+                        z_coords_plot = np.full_like(U_plot, wall_value, dtype=float)  # Y konstant
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = U_plot  # X-Koordinaten
+                        Y_plot = np.full_like(U_plot, wall_value, dtype=float)  # Y konstant
+                        Z_plot = V_plot  # Z-Koordinaten
+                        
+                        # Interpoliere SPL-Werte von (X, Y, Z) auf (X, Y=wall_value, Z)
+                        from scipy.interpolate import griddata
+                        points_orig = np.column_stack([
+                            X_grid.flatten(),
+                            Y_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        Y_new = np.full_like(U_plot, wall_value, dtype=float)
+                        points_new = np.column_stack([
+                            U_plot.ravel(),
+                            Y_new.ravel(),
+                            V_plot.ravel()
+                        ])
+                        if is_step_mode:
+                            spl_plot = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_plot = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_plot = spl_plot.reshape(U_plot.shape)
+                        # Interpoliere Maske
+                        mask_plot = griddata(
+                            points_orig, surface_mask.flatten().astype(float), points_new,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_plot = mask_plot.reshape(U_plot.shape).astype(bool)
+                    elif vertical_orientation == "yz":
+                        # (U, V) = (Y, Z) → (x, y) für build_surface_mesh, X konstant → z_coords
+                        x_plot = u_axis  # Y-Koordinaten
+                        y_plot = v_axis  # Z-Koordinaten
+                        z_coords_plot = np.full_like(U_plot, wall_value, dtype=float)  # X konstant
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = np.full_like(U_plot, wall_value, dtype=float)  # X konstant
+                        Y_plot = U_plot  # Y-Koordinaten
+                        Z_plot = V_plot  # Z-Koordinaten
+                        
+                        # Interpoliere SPL-Werte von (X, Y, Z) auf (X=wall_value, Y, Z)
+                        from scipy.interpolate import griddata
+                        points_orig = np.column_stack([
+                            X_grid.flatten(),
+                            Y_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        X_new = np.full_like(U_plot, wall_value, dtype=float)
+                        points_new = np.column_stack([
+                            X_new.ravel(),
+                            U_plot.ravel(),
+                            V_plot.ravel()
+                        ])
+                        if is_step_mode:
+                            spl_plot = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_plot = griddata(
+                                points_orig, spl_values.flatten(), points_new,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_plot = spl_plot.reshape(U_plot.shape)
+                        # Interpoliere Maske
+                        mask_plot = griddata(
+                            points_orig, surface_mask.flatten().astype(float), points_new,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_plot = mask_plot.reshape(U_plot.shape).astype(bool)
+                    else:
+                        x_plot = sound_field_x
+                        y_plot = sound_field_y
+                        z_coords_plot = Z_grid
+                        X_plot = X_grid
+                        Y_plot = Y_grid
+                        Z_plot = Z_grid
+                        spl_plot = spl_values
+                        mask_plot = surface_mask
+                
+                # 🎯 DEBUG: Zeige transformierte Koordinaten
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"  └─ Nach Transformation:")
+                    print(f"     └─ x_plot: min={x_plot.min():.2f}, max={x_plot.max():.2f}, len={len(x_plot)}")
+                    print(f"     └─ y_plot: min={y_plot.min():.2f}, max={y_plot.max():.2f}, len={len(y_plot)}")
+                    print(f"     └─ z_coords_plot: min={z_coords_plot.min():.2f}, max={z_coords_plot.max():.2f}, shape={z_coords_plot.shape}")
+                    print(f"     └─ X_plot: min={X_plot.min():.2f}, max={X_plot.max():.2f}, shape={X_plot.shape}")
+                    print(f"     └─ Y_plot: min={Y_plot.min():.2f}, max={Y_plot.max():.2f}, shape={Y_plot.shape}")
+                    print(f"     └─ Z_plot: min={Z_plot.min():.2f}, max={Z_plot.max():.2f}, shape={Z_plot.shape}")
+                    print(f"     └─ spl_plot: min={spl_plot.min():.2f}, max={spl_plot.max():.2f}, shape={spl_plot.shape}")
+                    print(f"     └─ mask_plot: {np.sum(mask_plot)}/{mask_plot.size} Punkte aktiv")
+                
+                # Color step: Quantisiere Werte
+                if is_step_mode:
+                    scalars = self._quantize_to_steps(spl_plot, cbar_step)
+                else:
+                    scalars = spl_plot
+                
+                # 🎯 ERSTELLE MESH: Transformierte Koordinaten für vertikale Flächen
+                mesh = build_surface_mesh(
+                    x_plot,  # Für X-Z-Wand: X-Koordinaten, für Y-Z-Wand: Y-Koordinaten
+                    y_plot,  # Für X-Z-Wand: Z-Koordinaten, für Y-Z-Wand: Z-Koordinaten
+                    scalars,
+                    z_coords=z_coords_plot,  # Für X-Z-Wand: Y konstant, für Y-Z-Wand: X konstant
+                    surface_mask=mask_plot,
+                    pv_module=pv,
+                    settings=self.settings,
+                    container=container,
+                )
+                
+                if mesh is None or mesh.n_points == 0:
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Vertical] Surface '{surface_id}': Mesh ist None oder leer")
+                    continue
+                
+                # 🎯 KORRIGIERE KOORDINATEN: build_surface_mesh erstellt (x, y, z_coords)
+                # Für vertikale Flächen müssen wir die Koordinaten richtig transformieren
+                if vertical_orientation == "xz":
+                    # X-Z-Wand: build_surface_mesh erstellt (X, Z, Y)
+                    # Wir brauchen: (X, Y, Z) = (X, wall_value, Z)
+                    # Aktuell: mesh.points = (x_plot, y_plot, z_coords) = (X, Z, Y)
+                    # Korrigiere zu: (X, Y, Z) = (X, Y=wall_value, Z)
+                    points_corrected = np.column_stack([
+                        mesh.points[:, 0],  # X (aus x_plot)
+                        mesh.points[:, 2],  # Y (aus z_coords, war konstant)
+                        mesh.points[:, 1],  # Z (aus y_plot)
+                    ])
+                    mesh.points = points_corrected
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Vertical] XZ-Wand: Koordinaten korrigiert")
+                        print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f}")
+                        print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f} (sollte konstant: {wall_value:.2f})")
+                        print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
+                elif vertical_orientation == "yz":
+                    # Y-Z-Wand: build_surface_mesh erstellt (Y, Z, X)
+                    # Wir brauchen: (X, Y, Z) = (wall_value, Y, Z)
+                    # Aktuell: mesh.points = (x_plot, y_plot, z_coords) = (Y, Z, X)
+                    # Korrigiere zu: (X, Y, Z) = (X=wall_value, Y, Z)
+                    points_corrected = np.column_stack([
+                        mesh.points[:, 2],  # X (aus z_coords, war konstant)
+                        mesh.points[:, 0],  # Y (aus x_plot)
+                        mesh.points[:, 1],  # Z (aus y_plot)
+                    ])
+                    mesh.points = points_corrected
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Vertical] YZ-Wand: Koordinaten korrigiert")
+                        print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f} (sollte konstant: {wall_value:.2f})")
+                        print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f}")
+                        print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
+                
+                # 🎯 RANDPUNKTE: Integriere Randpunkte direkt in das Mesh (identisch zu horizontalen Flächen)
+                if 'edge_points_x' in result_data:
+                    edge_x = result_data.get('edge_points_x')
+                    edge_y = result_data.get('edge_points_y')
+                    edge_z = result_data.get('edge_points_z')
+                    edge_spl = result_data.get('edge_points_spl')
+                    
+                    if edge_x is not None and len(edge_x) > 0:
+                        # Konvertiere von [real, imag] Paaren zu komplexen Zahlen (wie bei horizontalen Flächen)
+                        if isinstance(edge_spl[0], (list, tuple)) and len(edge_spl[0]) == 2:
+                            edge_spl_arr = np.array([complex(r, i) for r, i in edge_spl], dtype=complex)
+                        else:
+                            edge_spl_arr = np.array(edge_spl, dtype=complex)
+                        
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Vertical] Surface '{surface_id}': Integriere {len(edge_x)} Randpunkte (Orientierung: {vertical_orientation})")
+                        
+                        mesh_before = mesh.n_points
+                        mesh = self._integrate_edge_points_into_mesh(
+                            main_mesh=mesh,
+                            edge_x=np.array(edge_x, dtype=float),
+                            edge_y=np.array(edge_y, dtype=float),
+                            edge_z=np.array(edge_z, dtype=float),
+                            edge_spl=edge_spl_arr,
+                            time_mode=time_mode,
+                            phase_mode=phase_mode,
+                            cbar_min=cbar_min,
+                            cbar_max=cbar_max,
+                            pv_module=pv,
+                            surface_id=surface_id,
+                            settings=self.settings,
+                            vertical_orientation=vertical_orientation,  # 🎯 NEU: Übergabe der Orientierung
+                            wall_value=wall_value,  # 🎯 NEU: Konstanter Wert für konstante Achse
+                        )
+                        mesh_after = mesh.n_points if mesh is not None else 0
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Vertical] Surface '{surface_id}': Mesh-Punkte: {mesh_before} → {mesh_after} (+{mesh_after - mesh_before})")
+                
+                if mesh is None or mesh.n_points == 0:
+                    continue
+                
+                actor_name = f"vertical_spl_{surface_id}"
+                # Entferne ggf. alten Actor
+                try:
+                    if actor_name in self.plotter.renderer.actors:
+                        self.plotter.remove_actor(actor_name)
+                except Exception:
+                    pass
+                
+                # Füge Mesh zum Plotter hinzu (identisch zu horizontalen Flächen)
+                actor = self.plotter.add_mesh(
+                    mesh,
+                    name=actor_name,
+                    scalars="plot_scalars",
+                    cmap=cmap_object,
+                    clim=(cbar_min, cbar_max),
+                    smooth_shading=not is_step_mode,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    interpolate_before_map=not is_step_mode,
+                )
+                
+                if actor and hasattr(actor, 'SetPickable'):
+                    actor.SetPickable(True)
+                
+                new_vertical_meshes[actor_name] = actor
+                
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Vertical] Surface '{surface_id}': Vertikales Mesh erstellt ({mesh.n_points} Punkte)")
+                    print(f"  └─ Actor '{actor_name}' zum Plotter hinzugefügt")
+                    
+            except Exception as e:
+                import traceback
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[PlotSPL3D] Error processing vertical surface {surface_id}: {e}")
+                    print(f"[PlotSPL3D] Traceback:")
+                    traceback.print_exc()
+                continue
+        
+        # 🎯 DEBUG: Zeige alle hinzugefügten vertikalen Meshes
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Vertical Grids] ✅ Vertikale Surfaces verarbeitet: {len(new_vertical_meshes)} Meshes hinzugefügt")
+            for actor_name, actor in new_vertical_meshes.items():
+                print(f"  └─ {actor_name}: {actor}")
+        
+        # Alte Actors entfernen
+        if hasattr(self, "_vertical_surface_meshes"):
+            for old_name in list(self._vertical_surface_meshes.keys()):
+                if old_name not in new_vertical_meshes:
+                    try:
+                        if old_name in self.plotter.renderer.actors:
+                            self.plotter.remove_actor(old_name)
+                    except Exception:
+                        pass
+        
         self._vertical_surface_meshes = new_vertical_meshes
 
 
