@@ -430,6 +430,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     import traceback
                     traceback.print_exc()
         else:
+            # 🎯 Entferne graue Fläche für enabled Surfaces, wenn SPL-Daten geplottet werden
+            # Die Rahmen (Wireframes) bleiben bestehen, da sie separat gezeichnet werden
             try:
                 empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
                 if empty_plot_actor is not None:

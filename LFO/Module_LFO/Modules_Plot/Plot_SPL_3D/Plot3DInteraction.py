@@ -54,6 +54,9 @@ class SPL3DInteractionHandler:
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event):  # noqa: PLR0911
+        # 🛡️ SICHERHEIT: Prüfe ob Widget noch gültig ist
+        if not hasattr(self, 'widget') or self.widget is None:
+            return QtCore.QObject.eventFilter(self, obj, event)
         if obj is self.widget:
             etype = event.type()
             # 🎯 DOPPELKLICK KOMPLETT SPERREN - Fange Doppelklick-Events ab, bevor PyVista sie verarbeitet
@@ -241,7 +244,14 @@ class SPL3DInteractionHandler:
                 if self.main_window and hasattr(self.main_window, 'ui') and hasattr(self.main_window.ui, 'mouse_position_label'):
                     self.main_window.ui.mouse_position_label.setText("")
             if etype == QtCore.QEvent.Wheel:
-                QtCore.QTimer.singleShot(0, self._save_camera_state)
+                # 🛡️ SICHERHEIT: Prüfe ob Plotter noch gültig ist, bevor Camera-State gespeichert wird
+                try:
+                    if (hasattr(self, 'plotter') and self.plotter is not None and
+                        hasattr(self.plotter, 'camera') and self.plotter.camera is not None):
+                        QtCore.QTimer.singleShot(0, self._save_camera_state)
+                except Exception:
+                    # Plotter nicht verfügbar - Event einfach durchlassen
+                    pass
         return QtCore.QObject.eventFilter(self, obj, event)
 
     def _handle_surface_click(self, click_pos: QtCore.QPoint) -> None:

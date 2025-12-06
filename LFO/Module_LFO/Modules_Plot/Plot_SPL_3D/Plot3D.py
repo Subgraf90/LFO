@@ -709,6 +709,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         """Erzwingt ein Rendering der Szene."""
         if self._is_rendering:
             return
+        # 🛡️ SICHERHEIT: Prüfe ob Plotter noch gültig ist
+        if not hasattr(self, 'plotter') or self.plotter is None:
+            return
         t_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
         self._is_rendering = True
         try:
@@ -717,11 +720,20 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             except Exception:  # pragma: no cover - Rendering kann im Offscreen fehlschlagen
                 pass
             if hasattr(self, 'view_control_widget'):
-                self.view_control_widget.raise_()
+                try:
+                    self.view_control_widget.raise_()
+                except Exception:
+                    pass
             if not self._skip_next_render_restore and self._camera_state is not None:
-                self._restore_camera(self._camera_state)
+                try:
+                    self._restore_camera(self._camera_state)
+                except Exception:
+                    pass
             self._skip_next_render_restore = False
-            self._save_camera_state()
+            try:
+                self._save_camera_state()
+            except Exception:
+                pass
         finally:
             self._is_rendering = False
             if DEBUG_PLOT3D_TIMING:

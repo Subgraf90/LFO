@@ -160,6 +160,30 @@ class UiFile:
         if hasattr(self.main_window, 'calculation_handler'):
             self.main_window.calculation_handler.clear_speaker_position_hashes()
         
+        # 🎯 WICHTIG: Entferne alte Speaker-Actors und lösche Caches beim Laden einer neuen Datei
+        # Alte Daten entfernen, damit neue Daten sauber geladen werden können
+        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+            plotter = self.main_window.draw_plots.draw_spl_plotter
+            if plotter is not None:
+                # Setze Overlay-Signaturen zurück, damit alle Overlays (inkl. Lautsprecher) neu geplottet werden
+                if hasattr(plotter, '_last_overlay_signatures'):
+                    plotter._last_overlay_signatures = {}
+                
+                if hasattr(plotter, 'overlay_speakers'):
+                    overlay_speakers = plotter.overlay_speakers
+                    if overlay_speakers is not None:
+                        # Entferne nur die Speaker-Actors (nicht alle Overlays)
+                        overlay_speakers.clear_category('speakers')
+                        # Lösche alle Speaker-Caches, damit sie mit neuen Daten neu gefüllt werden
+                        overlay_speakers._speaker_actor_cache.clear()
+                        overlay_speakers._speaker_geometry_cache.clear()
+                        overlay_speakers._speaker_geometry_param_cache.clear()
+                        overlay_speakers._array_geometry_cache.clear()
+                        overlay_speakers._array_signature_cache.clear()
+                        overlay_speakers._stack_geometry_cache.clear()
+                        overlay_speakers._stack_signature_cache.clear()
+                        overlay_speakers._overlay_array_cache.clear()
+        
         self._close_widgets()
 
     def _safe_close(self, widget):
@@ -305,6 +329,7 @@ class UiFile:
     def _update_ui_after_load(self):
         try:
             self.main_window.blockSignals(True)
+            
             self.main_window.ui_settings.update_ui_from_settings()
             self.main_window.show_sources_dock_widget()
 
@@ -379,6 +404,16 @@ class UiFile:
                 with QSignalBlocker(sources_tree):
                     sources_tree.setCurrentItem(first_item)
                 sources_instance.refresh_active_selection()
+
+            # 🎯 WICHTIG: Aktualisiere Overlays nach dem Laden, um die neuen Lautsprecher zu plotten
+            # (Die Caches wurden bereits in _clear_current_state() gelöscht)
+            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                plotter = self.main_window.draw_plots.draw_spl_plotter
+                if plotter is not None and hasattr(plotter, 'update_overlays'):
+                    try:
+                        plotter.update_overlays(self.settings, self.container)
+                    except Exception as e:
+                        print(f"[UiFile] Fehler beim Aktualisieren der Overlays nach dem Laden: {e}")
 
             # Öffne Snapshot Widget (wie beim Init)
             if hasattr(self.main_window, 'snapshot_engine'):

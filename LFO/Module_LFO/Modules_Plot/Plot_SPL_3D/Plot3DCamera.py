@@ -34,9 +34,16 @@ class SPL3DCameraController:
     # ------------------------------------------------------------------
     def _save_camera_state(self) -> None:
         """Speichert den aktuellen Kamera-Zustand."""
-        state = self._capture_camera()
-        if state is not None:
-            self._camera_state = state
+        try:
+            # 🛡️ SICHERHEIT: Prüfe ob Plotter noch gültig ist
+            if not hasattr(self, 'plotter') or self.plotter is None:
+                return
+            state = self._capture_camera()
+            if state is not None:
+                self._camera_state = state
+        except Exception:
+            # Plotter nicht verfügbar - ignorieren
+            pass
 
     def _capture_camera(self) -> Optional[dict]:
         """Erfasst den aktuellen Kamera-Zustand."""

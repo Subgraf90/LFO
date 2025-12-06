@@ -31,8 +31,12 @@ from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DHelpers import (
     compute_surface_signature,
     quantize_to_steps,
 )
+from Module_LFO.Modules_Plot.Plot_SPL_3D.ColorbarManager import PHASE_CMAP
 
 DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
+
+# 🎯 NEUER PLOT: Upscaling-Faktor für Grid-Auflösung
+PLOT_UPSCALE_FACTOR = 6
 
 
 class SPL3DPlotRenderer:
@@ -562,6 +566,7 @@ class SPL3DPlotRenderer:
         except Exception:
             return None
 
+    # ⚠️ AUSKOMMENTIERT: Nicht mehr benötigt - Alte Textur-Rendering-Methode
     def _render_surfaces_textured(
         self,
         geometry,
@@ -573,306 +578,220 @@ class SPL3DPlotRenderer:
         cbar_step: float,
     ) -> None:
         """
-        Renderpfad für horizontale Surfaces als 2D-Texturen.
-
-        - Pro Surface wird ein lokales 2D-Bild in Welt-X/Y berechnet.
-        - SPL-Werte stammen aus original_plot_values (coarse Grid) via bilinearer Interpolation.
-        - Die Textur wird auf ein flaches StructuredGrid in derselben XY-Position gelegt.
+        ⚠️ AUSKOMMENTIERT: Nicht mehr benötigt - Wird durch direkten Grid-Plot ersetzt
         """
-        if not hasattr(self, "plotter") or self.plotter is None:
-            return
+        return
 
-        try:
-            import pyvista as pv  # type: ignore
-        except Exception:
-            return
-
-        # Optionales Feintiming für diesen Pfad
-        t_textures_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-
-        # Quelle: Berechnungsraster
-        source_x = np.asarray(getattr(geometry, "source_x", []), dtype=float)
-        source_y = np.asarray(getattr(geometry, "source_y", []), dtype=float)
-        values = np.asarray(original_plot_values, dtype=float)
-        if values.shape != (len(source_y), len(source_x)):
-            return
-
-        # Bestimme ob Step-Modus aktiv ist (vor der Verwendung definieren)
-        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
-
-        # Auflösung der Textur in Metern (XY)
-        # Standard-Basiswert aus den Settings (z.B. 0.03m)
-        # 🎯 Gradient-Modus: etwas feinere Auflösung als im Color-Step-Modus
-        base_tex_res = float(
-            getattr(self.settings, "spl_surface_texture_resolution", 0.03) or 0.03
-        )
-        if is_step_mode:
-            # Color step: Normale Auflösung (harte Stufen benötigen keine hohe Auflösung)
-            tex_res_global = base_tex_res
-        else:
-            # Gradient: 2x feinere Auflösung (Performance-Kompromiss)
-            # Bilineare Interpolation sorgt bereits für glatte Übergänge
-            # (0.01m = 1cm pro Pixel statt 20mm = 2x mehr Pixel)
-            tex_res_global = base_tex_res * 0.5
-
-        # Colormap vorbereiten
-        if isinstance(cmap_object, str):
-            base_cmap = cm.get_cmap(cmap_object)
-        else:
-            base_cmap = cmap_object
-        norm = Normalize(vmin=cbar_min, vmax=cbar_max)
-
-        # Aktive Surfaces ermitteln
-        surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
-        enabled_surfaces: list[tuple[str, list[dict[str, float]], Any]] = []
-        if isinstance(surface_definitions, dict):
-            for surface_id, surface_def in surface_definitions.items():
-                if isinstance(surface_def, SurfaceDefinition):
-                    enabled = bool(getattr(surface_def, "enabled", False))
-                    hidden = bool(getattr(surface_def, "hidden", False))
-                    points = getattr(surface_def, "points", []) or []
-                    surface_obj = surface_def
-                else:
-                    enabled = bool(surface_def.get("enabled", False))
-                    hidden = bool(surface_def.get("hidden", False))
-                    points = surface_def.get("points", []) or []
-                    surface_obj = surface_def
-                if enabled and not hidden and len(points) >= 3:
-                    enabled_surfaces.append((str(surface_id), points, surface_obj))
+    def _integrate_edge_points_into_mesh(
+        self,
+        main_mesh: Any,
+        edge_x: np.ndarray,
+        edge_y: np.ndarray,
+        edge_z: np.ndarray,
+        edge_spl: np.ndarray,
+        time_mode: bool,
+        phase_mode: bool,
+        cbar_min: float,
+        cbar_max: float,
+        pv_module: Any,
+        surface_id: Optional[str] = None,  # 🎯 NEU: Für Polygon-Prüfung
+        settings: Optional[Any] = None,  # 🎯 NEU: Für Surface-Definition
+    ) -> Optional[Any]:
+        """
+        Integriert Randpunkte direkt in das Grid-Mesh.
         
-
-        # Nicht mehr benötigte Textur-Actors entfernen
-        active_ids = {sid for sid, _, _ in enabled_surfaces}
-        for sid, texture_data in list(self._surface_texture_actors.items()):
-            if sid not in active_ids:
+        Die Randpunkte sind erweiterte Datenpunkte innerhalb der Surface (nicht auf der Linie),
+        die mit dem Haupt-Grid kombiniert werden, um ein einheitliches Mesh zu erstellen.
+        
+        Args:
+            main_mesh: Haupt-Grid-Mesh (PyVista PolyData)
+            edge_x, edge_y, edge_z: Koordinaten der Randpunkte
+            edge_spl: SPL-Werte der Randpunkte (komplex)
+            time_mode: Zeit-Modus aktiv
+            phase_mode: Phase-Modus aktiv
+            cbar_min, cbar_max: Colorbar-Grenzen
+            pv_module: PyVista-Modul
+        
+        Returns:
+            Kombiniertes Mesh (Grid + Randpunkte) oder None
+        """
+        try:
+            if edge_x is None or len(edge_x) == 0:
+                return main_mesh
+            
+            # Konvertiere Randpunkte zu numpy Arrays
+            edge_x = np.array(edge_x, dtype=float)
+            edge_y = np.array(edge_y, dtype=float)
+            edge_z = np.array(edge_z, dtype=float)
+            edge_spl_complex = np.array(edge_spl, dtype=complex)
+            
+            # Konvertiere SPL-Werte zu dB (wie im Haupt-Grid)
+            if time_mode:
+                edge_spl_values = np.real(edge_spl_complex)
+                edge_spl_values = np.nan_to_num(edge_spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                edge_spl_values = np.clip(edge_spl_values, cbar_min, cbar_max)
+            elif phase_mode:
+                edge_spl_values = np.angle(edge_spl_complex)
+                edge_spl_values = np.nan_to_num(edge_spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                edge_spl_values = np.clip(edge_spl_values, cbar_min, cbar_max)
+            else:
+                # SPL-Modus: Betrag zu dB
+                pressure_magnitude = np.abs(edge_spl_complex)
+                pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                edge_spl_values = self.functions.mag2db(pressure_magnitude)
+                edge_spl_values = np.nan_to_num(edge_spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Erstelle Punkte-Array für Randpunkte
+            edge_points_3d = np.column_stack([edge_x, edge_y, edge_z])
+            
+            # Hole Punkte und Scalar-Werte aus Haupt-Mesh
+            main_points = main_mesh.points
+            main_scalars = main_mesh["plot_scalars"]
+            
+            # Kombiniere alle Punkte (Grid + Randpunkte)
+            combined_points = np.vstack([main_points, edge_points_3d])
+            combined_scalars = np.concatenate([main_scalars, edge_spl_values])
+            
+            print(f"[DEBUG Plot Mesh] Kombiniere: {len(main_points)} Grid-Punkte + {len(edge_points_3d)} Randpunkte = {len(combined_points)} total")
+            
+            # Erstelle neues Mesh mit allen kombinierten Punkten
+            # Verwende Delaunay-Triangulation für unstrukturierte Punkte
+            combined_mesh = pv_module.PolyData(combined_points)
+            combined_mesh["plot_scalars"] = combined_scalars
+            
+            # 🎯 DEBUG: Prüfe Scalar-Werte
+            scalars_arr = np.array(combined_scalars)
+            valid_scalars = np.sum(np.isfinite(scalars_arr))
+            print(f"[DEBUG Plot Mesh] Scalar-Werte: {valid_scalars}/{len(scalars_arr)} gültig, Bereich: {np.nanmin(scalars_arr):.2f} bis {np.nanmax(scalars_arr):.2f}")
+            
+            # Trianguliere (2D-Projektion auf XY-Ebene, behält Z)
+            if len(combined_points) >= 3:
                 try:
-                    actor = texture_data.get('actor') if isinstance(texture_data, dict) else texture_data
-                    if actor is not None:
-                        self.plotter.remove_actor(actor)
-                except Exception:
-                    pass
-                self._surface_texture_actors.pop(sid, None)
-                # 🚀 TEXTUR-CACHE: Auch Cache-Eintrag entfernen
-                self._surface_texture_cache.pop(sid, None)
-
-        if not enabled_surfaces:
-            return
-
-        # Versuche, aus der Plot-Geometrie einen effektiven Upscaling-Faktor zu rekonstruieren.
-        # Hintergrund: Für achsparallele Rechtecke können wir die Textur grober machen,
-        #              wenn das Plot-Raster bereits hochskaliert ist.
-        effective_upscale_factor: int = 4
+                    combined_mesh = combined_mesh.delaunay_2d(alpha=0.0, tol=0.0)
+                    print(f"[DEBUG Plot Mesh] ✅ Delaunay-Triangulation erfolgreich: {combined_mesh.n_points} Punkte, {combined_mesh.n_cells} Zellen")
+                    
+                    # 🎯 FILTERUNG: Entferne Dreiecke außerhalb der Surface
+                    if surface_id is not None and settings is not None:
+                        combined_mesh = self._filter_triangles_outside_surface(
+                            combined_mesh, surface_id, settings, pv_module
+                        )
+                except Exception as e:
+                    print(f"[DEBUG Plot Mesh] ⚠️ Fehler bei Delaunay-Triangulation: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Falls Triangulation fehlschlägt, verwende Haupt-Mesh ohne Randpunkte
+                    return main_mesh
+            
+            return combined_mesh
+            
+        except Exception as e:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[PlotSPL3D] Fehler beim Integrieren von Randpunkten: {e}")
+            return main_mesh
+    
+    def _filter_triangles_outside_surface(
+        self,
+        mesh: Any,
+        surface_id: str,
+        settings: Any,
+        pv_module: Any,
+    ) -> Any:
+        """
+        Filtert Dreiecke außerhalb der Surface nach Delaunay-Triangulation.
+        
+        Prüft für jedes Dreieck, ob sein Schwerpunkt innerhalb des Surface-Polygons liegt.
+        Nur Dreiecke innerhalb der Surface werden behalten.
+        
+        Args:
+            mesh: PyVista PolyData-Mesh nach Delaunay-Triangulation
+            surface_id: ID der Surface
+            settings: Settings-Objekt mit Surface-Definitionen
+            pv_module: PyVista-Modul
+        
+        Returns:
+            Gefiltertes Mesh (nur Dreiecke innerhalb der Surface)
+        """
         try:
-            plot_x = np.asarray(getattr(geometry, "plot_x", []), dtype=float)
-            plot_y = np.asarray(getattr(geometry, "plot_y", []), dtype=float)
-            if plot_x.size > 1 and plot_y.size > 1 and source_x.size > 1 and source_y.size > 1:
-                # Nutze das Verhältnis der Stützstellen als Approximation
-                ratio_x = (float(plot_x.size) - 1.0) / (float(source_x.size) - 1.0)
-                ratio_y = (float(plot_y.size) - 1.0) / (float(source_y.size) - 1.0)
-                approx = max(ratio_x, ratio_y)
-                if approx > 1.2:
-                    # Runde auf ganzzahligen Faktor und begrenze auf sinnvollen Bereich
-                    effective_upscale_factor = int(round(approx))
-                    if effective_upscale_factor < 1:
-                        effective_upscale_factor = 1
-                    if effective_upscale_factor > 8:
-                        effective_upscale_factor = 8
-        except Exception:
-            effective_upscale_factor = 1
-
-        if DEBUG_PLOT3D_TIMING:
-            print(
-                "[PlotSPL3D] _render_surfaces_textured config: "
-                f"base_tex_res={base_tex_res:.4f} m, "
-                f"tex_res_global={tex_res_global:.4f} m, "
-                f"effective_upscale_factor={effective_upscale_factor}"
-            )
-
-        # 🚀 PARALLELISIERUNG: Verarbeite Surfaces parallel
-        # Cache-Prüfung erfolgt im Hauptthread, Berechnungen parallel
-        surfaces_to_process = []
-        cached_surfaces = []
-        
-        # SCHRITT 1: Cache-Prüfung im Hauptthread (thread-safe)
-        for surface_id, points, surface_obj in enabled_surfaces:
-            # Berechne Signatur für Cache-Prüfung (schnell, kann im Hauptthread bleiben)
-            poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
-            poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
-            if poly_x.size == 0 or poly_y.size == 0:
-                continue
+            # Hole Surface-Definition
+            surface_definitions = getattr(settings, 'surface_definitions', {})
+            if surface_id not in surface_definitions:
+                return mesh
             
-            dict_points = [
-                {"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "z": float(p.get("z", 0.0))}
-                for p in points
-            ]
-            plane_model, _ = derive_surface_plane(dict_points)
+            surface_def = surface_definitions[surface_id]
+            if isinstance(surface_def, SurfaceDefinition):
+                polygon_points = getattr(surface_def, 'points', []) or []
+            else:
+                polygon_points = surface_def.get('points', [])
             
-            # 🎯 WICHTIG: Berechne tex_res_surface mit der GLEICHEN Logik wie in _process_planar_surface_texture
-            # Dies ist kritisch für korrekte Cache-Prüfung, da die Signatur sonst nicht übereinstimmt
-            tex_res_surface = tex_res_global
+            if len(polygon_points) < 3:
+                return mesh
             
-            # Heuristik: Erkenne axis-aligned Rechtecke (gleiche Logik wie in _process_planar_surface_texture)
-            is_axis_aligned_rectangle = False
+            # 🚀 VEKTORISIERTE FILTERUNG: Nutze PyVista's cell_centers für alle Schwerpunkte
+            n_cells = mesh.n_cells
+            if n_cells == 0:
+                return mesh
+            
+            # Berechne alle Zell-Schwerpunkte vektorisiert mit PyVista
             try:
-                if poly_x.size >= 4 and poly_y.size >= 4:
-                    px = poly_x
-                    py = poly_y
-                    if (
-                        poly_x.size >= 2
-                        and abs(poly_x[0] - poly_x[-1]) < 1e-6
-                        and abs(poly_y[0] - poly_y[-1]) < 1e-6
-                    ):
-                        px = poly_x[:-1]
-                        py = poly_y[:-1]
-                    if px.size >= 4:
-                        xmin_rect = float(px.min())
-                        xmax_rect = float(px.max())
-                        ymin_rect = float(py.min())
-                        ymax_rect = float(py.max())
-                        span_x = xmax_rect - xmin_rect
-                        span_y = ymax_rect - ymin_rect
-                        tol = 1e-3
-                        
-                        if span_x > tol and span_y > tol:
-                            on_left = np.isclose(px, xmin_rect, atol=tol)
-                            on_right = np.isclose(px, xmax_rect, atol=tol)
-                            on_bottom = np.isclose(py, ymin_rect, atol=tol)
-                            on_top = np.isclose(py, ymax_rect, atol=tol)
-                            on_edge = on_left | on_right | on_bottom | on_top
-                            if np.all(on_edge):
-                                has_left = bool(np.any(on_left))
-                                has_right = bool(np.any(on_right))
-                                has_bottom = bool(np.any(on_bottom))
-                                has_top = bool(np.any(on_top))
-                                has_tl = bool(np.any(on_left & on_top))
-                                has_tr = bool(np.any(on_right & on_top))
-                                has_bl = bool(np.any(on_left & on_bottom))
-                                has_br = bool(np.any(on_right & on_bottom))
-                                
-                                if has_left and has_right and has_bottom and has_top and has_tl and has_tr and has_bl and has_br:
-                                    is_axis_aligned_rectangle = True
+                cell_centers = mesh.cell_centers().points  # Shape: (n_cells, 3)
+                centroids_x = cell_centers[:, 0]
+                centroids_y = cell_centers[:, 1]
             except Exception:
-                is_axis_aligned_rectangle = False
+                # Fallback: Manuelle Berechnung
+                points = mesh.points
+                centroids_x = np.zeros(n_cells, dtype=float)
+                centroids_y = np.zeros(n_cells, dtype=float)
+                for i in range(n_cells):
+                    try:
+                        cell = mesh.get_cell(i)
+                        cell_indices = cell.point_ids
+                        cell_points = points[cell_indices]
+                        centroid = np.mean(cell_points, axis=0)
+                        centroids_x[i] = centroid[0]
+                        centroids_y[i] = centroid[1]
+                    except Exception:
+                        centroids_x[i] = np.nan
+                        centroids_y[i] = np.nan
             
-            # Wenn axis-aligned rectangle und upscale_factor > 1, verwende größere tex_res_surface
-            if is_axis_aligned_rectangle and effective_upscale_factor > 1:
-                tex_res_surface = tex_res_global * float(effective_upscale_factor)
+            # 🚀 VEKTORISIERTE POLYGON-PRÜFUNG: Prüfe alle Schwerpunkte gleichzeitig
+            from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import _points_in_polygon_batch_plot
             
-            # Berechne Signatur mit korrekter tex_res_surface
-            texture_signature = self._calculate_texture_signature(
-                surface_id=surface_id,
-                points=points,
-                source_x=source_x,
-                source_y=source_y,
-                values=values,
-                cbar_min=cbar_min,
-                cbar_max=cbar_max,
-                cmap_object=cmap_object,
-                colorization_mode=colorization_mode,
-                cbar_step=cbar_step,
-                tex_res_surface=tex_res_surface,
-                plane_model=plane_model,
+            # Konvertiere Polygon-Punkte
+            px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
+            py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
+            poly_points_dict = [{"x": x, "y": y} for x, y in zip(px, py)]
+            
+            # Prüfe alle Schwerpunkte gleichzeitig (als 2D-Array, Shape: (n_cells, 1))
+            inside_mask = _points_in_polygon_batch_plot(
+                centroids_x.reshape(-1, 1),  # X-Koordinaten als 2D-Array
+                centroids_y.reshape(-1, 1),  # Y-Koordinaten als 2D-Array
+                poly_points_dict
             )
             
-            # Prüfe Cache
-            cached_texture_data = self._surface_texture_actors.get(surface_id)
-            cached_signature = self._surface_texture_cache.get(surface_id)
+            if inside_mask is None:
+                return mesh
             
-            if cached_texture_data is not None and cached_signature == texture_signature:
-                cached_actor = cached_texture_data.get('actor') if isinstance(cached_texture_data, dict) else None
-                if cached_actor is not None:
-                    # Cache-HIT: Wiederverwenden
-                    cached_surfaces.append((surface_id, cached_texture_data))
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[PlotSPL3D] surface {surface_id}: CACHE-HIT - Textur wiederverwendet")
-                    continue
+            # Filtere: Nur Zellen mit Schwerpunkt innerhalb des Polygons
+            inside_mask_1d = inside_mask.flatten()
             
-            # Cache-MISS: Muss verarbeitet werden
-            surfaces_to_process.append((surface_id, points, surface_obj))
-        
-        # SCHRITT 2: Sequenzielle Verarbeitung der Surfaces ohne Cache (Parallelisierung entfernt)
-        axis_aligned_count = 0
-        surfaces_processed = 0
-        
-        # Sequenzielle Verarbeitung
-        for surface_id, points, surface_obj in surfaces_to_process:
-            try:
-                # Verarbeite Surface
-                result = self._process_single_surface_texture(
-                    surface_id=surface_id,
-                    points=points,
-                    surface_obj=surface_obj,
-                    source_x=source_x,
-                    source_y=source_y,
-                    values=values,
-                    cbar_min=cbar_min,
-                    cbar_max=cbar_max,
-                    base_cmap=base_cmap,
-                    norm=norm,
-                    is_step_mode=is_step_mode,
-                    colorization_mode=colorization_mode,
-                    cbar_step=cbar_step,
-                    tex_res_global=tex_res_global,
-                    effective_upscale_factor=effective_upscale_factor,
-                )
-                
-                if result is None:
-                    continue
-                
-                grid = result['grid']
-                tex = result['texture']
-                metadata = result['metadata']
-                texture_signature = result['texture_signature']
-                
-                # Alten Actor entfernen
-                old_texture_data = self._surface_texture_actors.get(surface_id)
-                if old_texture_data is not None:
-                    old_actor = old_texture_data.get('actor') if isinstance(old_texture_data, dict) else old_texture_data
-                    if old_actor is not None:
-                        try:
-                            self.plotter.remove_actor(old_actor)
-                        except Exception:
-                            pass
-                
-                # Neuen Actor hinzufügen
-                actor_name = f"{self.SURFACE_NAME}_tex_{surface_id}"
-                actor = self.plotter.add_mesh(
-                    grid,
-                    name=actor_name,
-                    texture=tex,
-                    show_scalar_bar=False,
-                    reset_camera=False,
-                )
-                if hasattr(actor, 'SetPickable'):
-                    actor.SetPickable(False)
-                
-                # Metadaten aktualisieren
-                metadata['actor'] = actor
-                self._surface_texture_actors[surface_id] = metadata
-                self._surface_texture_cache[surface_id] = texture_signature
-                
-                # Setze auch auf self.plotter
-                if not hasattr(self.plotter, '_surface_texture_actors'):
-                    self.plotter._surface_texture_actors = {}
-                self.plotter._surface_texture_actors[surface_id] = {
-                    'actor': actor,
-                    'surface_id': surface_id,
-                }
-                
-                surfaces_processed += 1
-            except Exception as e:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[PlotSPL3D] Error processing surface {surface_id}: {e}")
-        
-        # Timing-Ausgabe
-        if DEBUG_PLOT3D_TIMING:
-            t_textures_end = time.perf_counter()
-            print(
-                f"[PlotSPL3D] _render_surfaces_textured TOTAL: "
-                f"{(t_textures_end - t_textures_start) * 1000.0:7.2f} ms, "
-                f"surfaces_processed={surfaces_processed}, "
-                f"surfaces_cached={len(cached_surfaces)}"
-            )
+            # Entferne NaN-Punkte (Fehler bei Schwerpunkt-Berechnung)
+            valid_mask = np.isfinite(centroids_x) & np.isfinite(centroids_y)
+            inside_mask_1d = inside_mask_1d & valid_mask
+            
+            cells_to_keep = np.where(inside_mask_1d)[0].tolist()
+            
+            # Filtere Mesh: Nur gültige Zellen behalten
+            if len(cells_to_keep) < n_cells:
+                filtered_mesh = mesh.extract_cells(cells_to_keep)
+                print(f"[DEBUG Plot Mesh] Filterung (vektorisiert): {n_cells} → {len(cells_to_keep)} Zellen (entfernt: {n_cells - len(cells_to_keep)})")
+                return filtered_mesh
+            
+            return mesh
+            
+        except Exception as e:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[PlotSPL3D] Fehler beim Filtern von Dreiecken: {e}")
+            return mesh
 
     @measure_time("PlotSPL3D.update_spl_plot")
     def update_spl_plot(
@@ -882,36 +801,337 @@ class SPL3DPlotRenderer:
         sound_field_pressure: Iterable[float],
         colorization_mode: str = "Gradient",
     ):
-        """Aktualisiert die SPL-Fläche."""
-        t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-
-        camera_state = self._camera_state or self._capture_camera()
-
-        # Wenn keine gültigen SPL-Daten vorliegen, belassen wir die bestehende Szene
-        # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
-        if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
+        """
+        🎯 NEUER PLOT: Plottet direkt die berechneten Grid-Punkte pro Surface.
+        
+        - Verwendet Daten aus calculation_spl['surface_grids'] und calculation_spl['surface_results']
+        - Surface-Maske: Nur Punkte innerhalb der Surface werden geplottet
+        - Upscaling für bessere Darstellung
+        - Unterstützt Color step und Gradient
+        """
+        if not hasattr(self, "plotter") or self.plotter is None:
             return
 
-        x = np.asarray(sound_field_x, dtype=float)
-        y = np.asarray(sound_field_y, dtype=float)
+        if pv is None:
+            return
 
+        t_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+        
+        # 🎯 ENTFERNE EMPTY PLOT FLÄCHEN: Entferne graue Flächen aus Empty Plot, wenn SPL Plot erstellt wird
+        # Die Rahmen (Wireframes) bleiben bestehen, nur die Flächen werden entfernt
         try:
-            pressure = np.asarray(sound_field_pressure, dtype=float)
-        except Exception:  # noqa: BLE001
-            # Ungültige SPL-Daten → Szene nicht leeren, nur SPL-Update abbrechen
+            if hasattr(self, 'overlay_surfaces') and hasattr(self.plotter, 'renderer'):
+                empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
+                if empty_plot_actor is not None:
+                    self.plotter.remove_actor('surface_enabled_empty_plot_batch')
+                    if hasattr(self.overlay_surfaces, 'overlay_actor_names'):
+                        if 'surface_enabled_empty_plot_batch' in self.overlay_surfaces.overlay_actor_names:
+                            self.overlay_surfaces.overlay_actor_names.remove('surface_enabled_empty_plot_batch')
+                    if hasattr(self.overlay_surfaces, '_category_actors'):
+                        if 'surfaces' in self.overlay_surfaces._category_actors:
+                            if 'surface_enabled_empty_plot_batch' in self.overlay_surfaces._category_actors['surfaces']:
+                                self.overlay_surfaces._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
+        except Exception as e:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[PlotSPL3D] Fehler beim Entfernen von Empty Plot Flächen: {e}")
+        
+        # Hole Container mit Berechnungsergebnissen
+        container = getattr(self, "container", None)
+        if container is None or not hasattr(container, "calculation_spl"):
             return
 
+        calc_spl = getattr(container, "calculation_spl", {}) or {}
+        surface_grids_data = calc_spl.get("surface_grids", {})
+        surface_results_data = calc_spl.get("surface_results", {})
+        
+        if not surface_grids_data or not surface_results_data:
+            return
+
+        # Plot-Mode bestimmen
         plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
         phase_mode = plot_mode == 'Phase alignment'
         time_mode = plot_mode == 'SPL over time'
         self._phase_mode_active = phase_mode
         self._time_mode_active = time_mode
 
-
-        if pressure.ndim != 2:
-            if pressure.size == (len(y) * len(x)):
+        # Colorbar-Parameter
+        self.colorbar_manager.update_modes(phase_mode_active=phase_mode, time_mode_active=time_mode)
+        self.colorbar_manager.set_override(None)
+        colorbar_params = self.colorbar_manager.get_colorbar_params(phase_mode)
+        cbar_min = colorbar_params['min']
+        cbar_max = colorbar_params['max']
+        cbar_step = colorbar_params['step']
+        tick_step = colorbar_params['tick_step']
+        
+        # Colorization-Mode
+        is_step_mode = colorization_mode == "Color step" and cbar_step > 0
+        
+        # Colormap
+        if time_mode:
+            cmap_object = 'RdBu_r'
+        elif phase_mode:
+            cmap_object = PHASE_CMAP
+        else:
+            cmap_object = 'jet'
+        
+        # Entferne alte Surface-Actors
+        if hasattr(self, '_surface_actors'):
+            for surface_id, actor in list(self._surface_actors.items()):
                 try:
-                    pressure = pressure.reshape(len(y), len(x))
+                        self.plotter.remove_actor(actor)
+                except Exception:
+                    pass
+            self._surface_actors.clear()
+        else:
+            self._surface_actors = {}
+        
+        # Verarbeite jede Surface
+        surfaces_processed = 0
+        for surface_id in surface_grids_data.keys():
+            if surface_id not in surface_results_data:
+                continue
+            
+            try:
+                # Lade Grid-Daten
+                grid_data = surface_grids_data[surface_id]
+                result_data = surface_results_data[surface_id]
+                
+                # Konvertiere zu numpy Arrays
+                X_grid = np.array(grid_data['X_grid'], dtype=float)
+                Y_grid = np.array(grid_data['Y_grid'], dtype=float)
+                Z_grid = np.array(grid_data['Z_grid'], dtype=float)
+                sound_field_x = np.array(grid_data['sound_field_x'], dtype=float)
+                sound_field_y = np.array(grid_data['sound_field_y'], dtype=float)
+                surface_mask = np.array(grid_data['surface_mask'], dtype=bool)
+                
+                # Lade SPL-Werte (komplex)
+                sound_field_p_complex = np.array(result_data['sound_field_p'], dtype=complex)
+                
+                # Konvertiere zu SPL in dB
+                if time_mode:
+                    # Für Zeit-Modus: Direkt verwenden
+                    spl_values = np.real(sound_field_p_complex)
+                    spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                elif phase_mode:
+                    # Für Phase-Modus: Phase extrahieren
+                    spl_values = np.angle(sound_field_p_complex)
+                    spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                else:
+                    # Für SPL-Modus: Betrag zu dB
+                    pressure_magnitude = np.abs(sound_field_p_complex)
+                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                    spl_values = self.functions.mag2db(pressure_magnitude)
+                    spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                ny, nx = X_grid.shape
+                
+                # 🎯 UPSCALING: Erhöhe Grid-Auflösung
+                if PLOT_UPSCALE_FACTOR > 1:
+                    # Erstelle feineres Grid basierend auf den originalen Koordinaten
+                    x_fine = np.linspace(sound_field_x.min(), sound_field_x.max(), nx * PLOT_UPSCALE_FACTOR)
+                    y_fine = np.linspace(sound_field_y.min(), sound_field_y.max(), ny * PLOT_UPSCALE_FACTOR)
+                    X_fine, Y_fine = np.meshgrid(x_fine, y_fine, indexing='xy')
+                    
+                    # 🚀 OPTIMIERUNG: Verwende optimierte bilineare Interpolation für reguläre Grids
+                    # statt scipy.interpolate.griddata (schneller für reguläre Grids)
+                    # Interpoliere Z-Grid
+                    Z_fine = self._bilinear_interpolate_grid(
+                        sound_field_x, sound_field_y, Z_grid,
+                        X_fine.ravel(), Y_fine.ravel()
+                    )
+                    Z_fine = Z_fine.reshape(X_fine.shape)
+                    
+                    # Interpoliere SPL-Werte
+                    spl_fine = self._bilinear_interpolate_grid(
+                        sound_field_x, sound_field_y, spl_values,
+                        X_fine.ravel(), Y_fine.ravel()
+                    )
+                    spl_fine = spl_fine.reshape(X_fine.shape)
+                    
+                    # Interpoliere Surface-Maske (nearest neighbor für bool-Werte)
+                    mask_float = surface_mask.astype(float)
+                    mask_fine = self._nearest_interpolate_grid(
+                        sound_field_x, sound_field_y, mask_float,
+                        X_fine.ravel(), Y_fine.ravel()
+                    )
+                    mask_fine = mask_fine.reshape(X_fine.shape).astype(bool)
+                    
+                    # Verwende upgescalte Daten
+                    X_plot = X_fine
+                    Y_plot = Y_fine
+                    Z_plot = Z_fine
+                    spl_plot = spl_fine
+                    mask_plot = mask_fine
+                    x_plot = x_fine
+                    y_plot = y_fine
+                else:
+                    # Kein Upscaling
+                    X_plot = X_grid
+                    Y_plot = Y_grid
+                    Z_plot = Z_grid
+                    spl_plot = spl_values
+                    mask_plot = surface_mask
+                    x_plot = sound_field_x
+                    y_plot = sound_field_y
+                
+                # Color step: Quantisiere Werte
+                if is_step_mode:
+                    scalars = self._quantize_to_steps(spl_plot, cbar_step)
+                else:
+                    scalars = spl_plot
+                
+                # Erstelle Mesh mit build_surface_mesh (mit Surface-Maske)
+                mesh = build_surface_mesh(
+                    x_plot,
+                    y_plot,
+                    scalars,
+                    z_coords=Z_plot,
+                    surface_mask=mask_plot,  # 🎯 MASKE: Nur Punkte innerhalb der Surface plotten
+                    pv_module=pv,
+                    settings=self.settings,
+                    container=container,
+                )
+                
+                if mesh is None or mesh.n_points == 0:
+                    continue
+            
+                # 🎯 RANDPUNKTE: Integriere Randpunkte direkt in das Grid-Mesh
+                # DEBUG: Prüfe verfügbare Keys in result_data
+                available_keys = list(result_data.keys())
+                has_edge_points = 'edge_points_x' in result_data
+                print(f"[DEBUG Plot] Surface '{surface_id}': Verfügbare Keys: {available_keys}")
+                print(f"[DEBUG Plot] Surface '{surface_id}': edge_points_x vorhanden: {has_edge_points}")
+                
+                if 'edge_points_x' in result_data:
+                    edge_x = result_data.get('edge_points_x')
+                    edge_y = result_data.get('edge_points_y')
+                    edge_z = result_data.get('edge_points_z')
+                    edge_spl = result_data.get('edge_points_spl')
+                    
+                    print(f"[DEBUG Plot] Surface '{surface_id}': Randpunkte-Daten geladen - edge_x type: {type(edge_x)}, len: {len(edge_x) if edge_x is not None else 0}")
+                    
+                    # Konvertiere zu NumPy-Arrays
+                    if edge_x is not None:
+                        edge_x = np.array(edge_x)
+                    if edge_y is not None:
+                        edge_y = np.array(edge_y)
+                    if edge_z is not None:
+                        edge_z = np.array(edge_z)
+                    
+                    edge_count = len(edge_x) if edge_x is not None else 0
+                    if edge_count > 0:
+                        print(f"[DEBUG Plot] Surface '{surface_id}': Integriere {edge_count} Randpunkte")
+                        
+                        # Prüfe Randpunkte-Daten
+                        if edge_spl is not None:
+                            # Konvertiere von [real, imag] Paaren zu komplexen Zahlen
+                            if isinstance(edge_spl[0], (list, tuple)) and len(edge_spl[0]) == 2:
+                                # Liste von [real, imag] Paaren
+                                edge_spl_arr = np.array([complex(r, i) for r, i in edge_spl], dtype=complex)
+                            else:
+                                # Bereits komplexe Zahlen
+                                edge_spl_arr = np.array(edge_spl, dtype=complex)
+                            edge_spl_mag = np.abs(edge_spl_arr)
+                            edge_spl_db = 20 * np.log10(np.maximum(edge_spl_mag, 1e-12))
+                            valid_spl = np.sum(np.isfinite(edge_spl_db))
+                            print(f"  └─ Randpunkte SPL: {valid_spl}/{edge_count} gültig, Bereich: {np.nanmin(edge_spl_db):.1f} bis {np.nanmax(edge_spl_db):.1f} dB")
+                        
+                        # Übergebe bereits konvertierte Arrays
+                        if edge_spl_arr is not None:
+                            mesh_before = mesh.n_points if mesh is not None else 0
+                            mesh = self._integrate_edge_points_into_mesh(
+                                main_mesh=mesh,
+                                edge_x=edge_x,
+                                edge_y=edge_y,
+                                edge_z=edge_z,
+                                edge_spl=edge_spl_arr,  # Verwende bereits konvertiertes Array
+                                time_mode=time_mode,
+                                phase_mode=phase_mode,
+                                cbar_min=cbar_min,
+                                cbar_max=cbar_max,
+                                pv_module=pv,
+                                surface_id=surface_id,  # 🎯 NEU: Für Polygon-Prüfung
+                                settings=self.settings,  # 🎯 NEU: Für Surface-Definition
+                            )
+                        else:
+                            print(f"[DEBUG Plot] Surface '{surface_id}': Keine gültigen Randpunkte-SPL-Daten, überspringe Integration")
+                        mesh_after = mesh.n_points if mesh is not None else 0
+                        print(f"  └─ Mesh-Punkte: {mesh_before} → {mesh_after} (+{mesh_after - mesh_before})")
+                else:
+                    print(f"[DEBUG Plot] Surface '{surface_id}': KEINE Randpunkte gefunden!")
+                
+                if mesh is None or mesh.n_points == 0:
+                    continue
+                
+                # Füge kombiniertes Mesh (Grid + Randpunkte) zum Plotter hinzu
+                actor_name = f"{self.SURFACE_NAME}_grid_{surface_id}"
+                actor = self.plotter.add_mesh(
+                    mesh,
+                    name=actor_name,
+                    scalars="plot_scalars",
+                    cmap=cmap_object,
+                    clim=(cbar_min, cbar_max),
+                    smooth_shading=not is_step_mode,
+                    show_scalar_bar=False,
+                    reset_camera=False,
+                    interpolate_before_map=not is_step_mode,
+                )
+                
+                self._surface_actors[surface_id] = actor
+                
+                surfaces_processed += 1
+                
+            except Exception as e:
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[PlotSPL3D] Error processing surface {surface_id}: {e}")
+                continue
+        
+        # Aktualisiere Colorbar
+        self.colorbar_manager.render_colorbar(
+            colorization_mode,
+            force=False,
+            tick_step=tick_step,
+            phase_mode_active=phase_mode,
+            time_mode_active=time_mode,
+        )
+        self.cbar = self.colorbar_manager.cbar
+        
+        # Camera
+        if not self._has_plotted_data:
+            self._maximize_camera_view(add_padding=True)
+            self._has_plotted_data = True
+        
+        self.render()
+        
+        if DEBUG_PLOT3D_TIMING:
+            t_end = time.perf_counter()
+            print(
+                f"[PlotSPL3D] update_spl_plot (NEU): "
+                f"{(t_end - t_start) * 1000.0:.2f} ms, "
+                f"surfaces={surfaces_processed}"
+            )
+        
+            return
+
+        # ============================================================
+        # ⚠️ AUSKOMMENTIERTER ALTER CODE (für Referenz sichtbar)
+        # Der folgende Code nach dem return ist unreachable und wurde
+        # durch die neue Implementierung ersetzt (direkter Grid-Plot pro Surface).
+        # Der alte Code rief _render_surfaces_textured() und
+        # _update_vertical_spl_surfaces() auf.
+        # 
+        # WICHTIG: Dieser Code wird nicht ausgeführt, da er nach dem return steht!
+        # ============================================================
+        """
+        # ALTER CODE BEGINNT HIER (Zeile 813-1160):
+        # Der gesamte alte SPL-Plot-Code wurde hier auskommentiert,
+        # da er durch die neue Implementierung ersetzt wurde.
+        # 
+        # Dieser Code ist unreachable (nach return) und wird nur
+        # für Referenz-Zwecke sichtbar gehalten.
+        
                 except Exception:  # noqa: BLE001
                     return
             else:
@@ -1060,7 +1280,7 @@ class SPL3DPlotRenderer:
         if time_mode:
             cmap_object = 'RdBu_r'
         elif phase_mode:
-            cmap_object = self.PHASE_CMAP
+            cmap_object = PHASE_CMAP
         else:
             cmap_object = 'jet'
 
@@ -1086,7 +1306,8 @@ class SPL3DPlotRenderer:
             self._surface_actors.pop(sid, None)
         
         # 🎯 Entferne graue Fläche für enabled Surfaces aus dem leeren Plot (falls vorhanden)
-        # Dies muss VOR dem Zeichnen der neuen SPL-Daten passieren
+        # Dies muss VOR dem Zeichnen der neuen SPL-Daten passieren.
+        # Die Rahmen bleiben bestehen, da sie separat als Wireframes gezeichnet werden.
         if hasattr(self, 'overlay_surfaces'):
             try:
                 empty_plot_actor = self.plotter.renderer.actors.get('surface_enabled_empty_plot_batch')
@@ -1259,6 +1480,8 @@ class SPL3DPlotRenderer:
                 f"  camera/render   : {(t_end - t_after_vertical) * 1000.0:7.2f} ms\n"
                 f"  TOTAL           : {(t_end - t_start_total) * 1000.0:7.2f} ms"
             )
+        # ALTER CODE ENDET HIER
+        """
 
     def _get_vertical_color_limits(self) -> tuple[float, float]:
         """

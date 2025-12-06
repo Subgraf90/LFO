@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
+# ⚠️ NEUER GRID-GENERATOR: Verwende FlexibleGridGenerator statt SurfaceGridCalculator
+from Module_LFO.Modules_Calculate.FlexibleGridGenerator import FlexibleGridGenerator, SurfaceGrid
+# Alte Import bleibt auskommentiert für Referenz:
+# from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
 from Module_LFO.Modules_Init.Logging import measure_time, perf_section
-from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
-    derive_surface_plane,
-    _points_in_polygon_batch_uv,
-)
+# ⚠️ VERALTET: Diese Imports werden nur noch in auskommentierten Methoden verwendet
+# from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
+#     derive_surface_plane,
+#     _points_in_polygon_batch_uv,
+# )
 from typing import List, Dict, Tuple, Optional, Any
+import math
 
 DEBUG_SOUNDFIELD = bool(int(__import__("os").environ.get("LFO_DEBUG_SOUNDFIELD", "1")))
 
@@ -23,13 +28,15 @@ class SoundFieldCalculator(ModuleBase):
         # 🚀 PERFORMANCE: Cache für optimierten Balloon-Data Zugriff
         self._data_container = None  # Wird bei Bedarf gesetzt
         
-        # 🎯 GEOMETRY CACHE: Verhindert unnötige Neuberechnungen
-        self._geometry_cache = {}  # {source_key: {distances, azimuths, elevations}}
-        self._grid_cache = None    # Gespeichertes Grid
-        self._grid_hash = None     # Hash der Grid-Parameter
+        # ⚠️ VERALTET: Geometry Cache (wird nicht mehr verwendet, da FlexibleGridGenerator eigenes Caching hat)
+        # self._geometry_cache = {}  # {source_key: {distances, azimuths, elevations}}
+        # self._grid_cache = None    # Gespeichertes Grid
+        # self._grid_hash = None     # Hash der Grid-Parameter
         
-        # 🎯 GRID-CALCULATOR: Separate Instanz für Grid-Erstellung
-        self._grid_calculator = SurfaceGridCalculator(settings)
+        # 🎯 NEUER GRID-GENERATOR: FlexibleGridGenerator (Hybrid-Ansatz)
+        self._grid_generator = FlexibleGridGenerator(settings)
+        # Alter Code auskommentiert:
+        # self._grid_calculator = SurfaceGridCalculator(settings)
    
     @measure_time("SoundFieldCalculator.calculate_soundfield_pressure")
     def calculate_soundfield_pressure(self):
@@ -152,451 +159,304 @@ class SoundFieldCalculator(ModuleBase):
         # Hole aktivierte Surfaces
         enabled_surfaces = self._get_enabled_surfaces()
         
-        # 🎯 VERWENDE SURFACE-GRID-CALCULATOR: Erstellt komplettes Grid basierend auf enabled Surfaces
-        (
-            sound_field_x,
-            sound_field_y,
-            X_grid,
-            Y_grid,
-            Z_grid,
-            surface_mask,
-        ) = self._grid_calculator.create_calculation_grid(enabled_surfaces)
-        # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
-        total_points = int(X_grid.size)
-        active_points = int(np.count_nonzero(surface_mask))
-        resolution = self.settings.resolution
-        nx_points = len(sound_field_x)
-        ny_points = len(sound_field_y)
+        # 🎯 NEU: Grid pro Surface - Erstelle für jede Surface ein eigenes Grid
+        print(f"[DEBUG Grid-Erstellung] ════════════════════════════════════════════════════════")
+        print(f"[DEBUG Grid-Erstellung] Starte Grid-Generierung PRO SURFACE mit FlexibleGridGenerator")
+        print(f"[DEBUG Grid-Erstellung] Anzahl enabled Surfaces: {len(enabled_surfaces)}")
+        print(f"[DEBUG Grid-Erstellung] Resolution: {self.settings.resolution} m")
+        print(f"[DEBUG Grid-Erstellung] Mindestanzahl Punkte: 3×3 = 9 Punkte pro Surface")
         
-        # 🐛 DEBUG: Prüfe Z-Koordinaten für schräge Flächen
-        if DEBUG_SOUNDFIELD and enabled_surfaces:
-            # Importiere Funktionen außerhalb der Schleife
-            from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
-                derive_surface_plane,
-                evaluate_surface_plane,
-            )
-            from matplotlib.path import Path
-            
-            print(f"[SoundFieldCalculator] Grid-Erstellung:")
-            print(f"  Grid shape: X_grid={X_grid.shape}, Y_grid={Y_grid.shape}, Z_grid={Z_grid.shape}")
-            print(f"  X range: [{X_grid.min():.2f}, {X_grid.max():.2f}]")
-            print(f"  Y range: [{Y_grid.min():.2f}, {Y_grid.max():.2f}]")
-            print(f"  Z range: [{Z_grid.min():.2f}, {Z_grid.max():.2f}]")
-            print(f"  Active points: {active_points} / {total_points}")
-            
-            # Prüfe Z-Koordinaten für schräge Flächen
-            for surface_id, surface_def in enabled_surfaces:
-                points = surface_def.get("points", [])
-                if len(points) < 3:
-                    continue
-                
-                # Prüfe ob Fläche schräg ist
-                model, _ = derive_surface_plane(points)
-                if model is None:
-                    continue
-                
-                mode = model.get("mode", "constant")
-                if mode == "constant":
-                    continue
-                
-                # Finde Grid-Punkte auf dieser Fläche
-                poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
-                poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
-                poly_path = Path(np.column_stack((poly_x, poly_y)))
-                points_2d = np.column_stack((X_grid.ravel(), Y_grid.ravel()))
-                inside = poly_path.contains_points(points_2d)
-                inside = inside.reshape(X_grid.shape)
-                
-                # Prüfe Z-Koordinaten
-                points_with_z = np.sum((inside) & (np.abs(Z_grid) > 1e-6))
-                points_in_surface = np.sum(inside)
-                
-                print(f"  [DEBUG Z-Grid] {surface_id} (mode={mode}):")
-                print(f"    Points in surface: {points_in_surface}, Points with Z≠0: {points_with_z}")
-                
-                if np.any(inside):
-                    # Prüfe Z-Koordinaten an Ecken
-                    corners = [
-                        (0, 0, "oben-links"),
-                        (0, X_grid.shape[1]-1, "oben-rechts"),
-                        (X_grid.shape[0]-1, 0, "unten-links"),
-                        (X_grid.shape[0]-1, X_grid.shape[1]-1, "unten-rechts"),
-                    ]
-                    for jj, ii, name in corners:
-                        if inside[jj, ii]:
-                            x_val = X_grid[jj, ii]
-                            y_val = Y_grid[jj, ii]
-                            z_val = Z_grid[jj, ii]
-                            
-                            # Berechne erwarteten Z-Wert aus Plane-Model
-                            z_expected = evaluate_surface_plane(model, x_val, y_val)
-                            
-                            print(f"    Corner {name} [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
-                    
-                    # Prüfe auch einige Punkte innerhalb der Fläche
-                    inside_indices = np.where(inside)
-                    if len(inside_indices[0]) > 0:
-                        # Wähle einige zufällige Punkte
-                        sample_indices = np.random.choice(len(inside_indices[0]), min(5, len(inside_indices[0])), replace=False)
-                        for idx in sample_indices:
-                            jj = inside_indices[0][idx]
-                            ii = inside_indices[1][idx]
-                            x_val = X_grid[jj, ii]
-                            y_val = Y_grid[jj, ii]
-                            z_val = Z_grid[jj, ii]
-                            z_expected = evaluate_surface_plane(model, x_val, y_val)
-                            print(f"    Sample [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
-                else:
-                    print(f"    ⚠️  Keine Grid-Punkte innerhalb der Surface gefunden!")
-        surface_meshes = self._grid_calculator.get_surface_meshes()
-        surface_samples = self._grid_calculator.get_surface_sampling_points()
-        # Sichtbarkeits-Occluder aus aktuellen Surface-Definitionen ableiten
-        # HINWEIS: Occlusion / Schattenbildung vorübergehend deaktiviert
-        occluders: List[Dict[str, Any]] = []
-        grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
-        surface_mask_flat = surface_mask.reshape(-1)
-        # Optionaler Diagnose-Check zur Symmetrie von Grid & Masken
-        if DEBUG_SOUNDFIELD:
-            try:
-                self._debug_check_grid_and_mask_symmetry(
-                    sound_field_x,
-                    sound_field_y,
-                    X_grid,
-                    Y_grid,
-                    Z_grid,
-                    surface_mask,
-                    enabled_surfaces,
-                )
-            except Exception as e:
-                print(f"[SoundFieldCalculator] Symmetrie-Check konnte nicht ausgeführt werden: {e}")
-
-        surface_field_buffers: Dict[str, np.ndarray] = {}
-        surface_point_buffers: Dict[str, np.ndarray] = {}
-        if surface_samples:
-            for sample in surface_samples:
-                # Planare Flächen: Feldwerte direkt aus dem globalen Grid
-                # über lokale Indizes auslesen (klassischer Pfad)
-                if not getattr(sample, "is_vertical", False) and sample.indices.size > 0:
-                    surface_field_buffers[sample.surface_id] = np.zeros(
-                        sample.indices.shape[0],
-                        dtype=complex,
-                    )
-                # Vertikale UND planare Flächen: 3D-Sample-Punkte bekommen
-                # eigene Feldpuffer (für vertikale Wände ist das der Hauptpfad)
-                sample_coords = np.asarray(sample.coordinates)
-                if sample_coords.size > 0:
-                    surface_point_buffers[sample.surface_id] = np.zeros(
-                        sample_coords.reshape(-1, 3).shape[0],
-                        dtype=complex,
-                    )
+        # Erstelle Grid pro Surface
+        surface_grids: Dict[str, SurfaceGrid] = self._grid_generator.generate_per_surface(
+            enabled_surfaces,
+            resolution=self.settings.resolution,
+            min_points_per_dimension=3  # Mindestens 3×3 = 9 Punkte
+        )
         
-        # Wenn keine aktiven Quellen, gib leere Arrays zurück
-        if not has_active_sources:
-            return [], sound_field_x, sound_field_y, ({} if capture_arrays else None)
+        # Debug: Zeige Grid-Informationen pro Surface
+        total_points_all = 0
+        for surface_id, grid in surface_grids.items():
+            total_points = int(grid.X_grid.size)
+            active_points = int(np.count_nonzero(grid.surface_mask))
+            print(f"[DEBUG Grid-Erstellung] Surface '{surface_id}': "
+                  f"Grid-Shape={grid.X_grid.shape}, Active={active_points}/{total_points}, "
+                  f"Resolution={grid.resolution:.3f} m")
+            total_points_all += active_points
         
-        # Initialisiere das Schallfeld als 2D-Array komplexer Zahlen
-        # Shape: [Y, X] = [Zeilen, Spalten] (NumPy-Konvention!)
-        sound_field_p = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=complex)
-        array_fields = {} if capture_arrays else None
+        print(f"[DEBUG Grid-Erstellung] ✅ Gesamt: {len(surface_grids)} Surface-Grids erstellt, "
+              f"{total_points_all} aktive Punkte insgesamt")
+        print(f"[DEBUG Grid-Erstellung] ════════════════════════════════════════════════════════")
+        
+        if not surface_grids:
+            # Keine Surfaces → Leere Arrays zurückgeben
+            return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
         # ============================================================
-        # SCHRITT 2: Vorbereitung - Physikalische Konstanten
+        # SCHRITT 2: Berechne Physikalische Konstanten (EINMALIG)
         # ============================================================
-        # Berechne physikalische Konstanten (einmalig für alle Quellen)
-        # 🌡️ Temperaturabhängige Schallgeschwindigkeit (wird in UiSettings berechnet)
+        # 🚀 PROZESSOPTIMIERUNG: Konstanten nur einmal berechnen für alle Surfaces
         speed_of_sound = self.settings.speed_of_sound
         wave_number = self.functions.wavenumber(speed_of_sound, self.settings.calculate_frequency)
         calculate_frequency = self.settings.calculate_frequency
         a_source_pa = self.functions.db2spl(self.functions.db2mag(self.settings.a_source_db))
         
-        # Speichere Minimum und Maximum der berechneten Pegel für Vergleich
-        min_level = float('inf')
-        max_level = float('-inf')
+        phys_constants = {
+            'speed_of_sound': speed_of_sound,
+            'wave_number': wave_number,
+            'calculate_frequency': calculate_frequency,
+            'a_source_pa': a_source_pa,
+        }
+        
+        # Wenn keine aktiven Quellen, gib leere Ergebnisse zurück
+        if not has_active_sources:
+            # Speichere trotzdem Grid-Daten
+            if isinstance(self.calculation_spl, dict):
+                surface_grids_data = {}
+                for surface_id, grid in surface_grids.items():
+                    surface_grids_data[surface_id] = {
+                        'sound_field_x': grid.sound_field_x.tolist(),
+                        'sound_field_y': grid.sound_field_y.tolist(),
+                        'X_grid': grid.X_grid.tolist(),
+                        'Y_grid': grid.Y_grid.tolist(),
+                        'Z_grid': grid.Z_grid.tolist(),
+                        'surface_mask': grid.surface_mask.astype(bool).tolist(),
+                        'resolution': grid.resolution,
+                    }
+                self.calculation_spl['surface_grids'] = surface_grids_data
+            
+            # Kombiniere Koordinaten für Rückgabewerte (leer)
+            all_x = []
+            all_y = []
+            for grid in surface_grids.values():
+                all_x.extend(grid.sound_field_x.tolist())
+                all_y.extend(grid.sound_field_y.tolist())
+            
+            if all_x and all_y:
+                unique_x = np.unique(np.array(all_x))
+                unique_y = np.unique(np.array(all_y))
+                unique_x.sort()
+                unique_y.sort()
+                return [], unique_x, unique_y, ({} if capture_arrays else None)
+            else:
+                return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
         # ============================================================
-        # SCHRITT 3: Iteriere über alle Lautsprecher-Arrays
+        # SCHRITT 3: Berechne pro Surface-Grid (PROZESSOPTIMIERT)
         # ============================================================
-        for array_key, speaker_array in self.settings.speaker_arrays.items():
-            if speaker_array.mute or speaker_array.hide:
-                continue
-            array_wave = (
-                np.zeros_like(sound_field_p, dtype=complex) if capture_arrays else None
-            )
-            
-            # Konvertiere Lautsprechernamen in Indizes
-            speaker_indices = []
-            for speaker_name in speaker_array.source_polar_pattern:
-                try:
-                    speaker_names = self._data_container.get_speaker_names()
-                    index = speaker_names.index(speaker_name)
-                    speaker_indices.append(index)
-                except ValueError:
-                    speaker_indices.append(0)
-            
-            source_indices = np.array(speaker_indices)
-            source_position_x = getattr(
-                speaker_array,
-                'source_position_calc_x',
-                getattr(speaker_array, 'source_position_x', None),
-            )
-            source_position_y = getattr(
-                speaker_array,
-                'source_position_calc_y',
-                getattr(speaker_array, 'source_position_y', None),
-            )
-            source_position_z = getattr(
-                speaker_array,
-                'source_position_calc_z',
-                getattr(speaker_array, 'source_position_z', None),
-            )
-
+        print(f"[DEBUG Berechnung] ════════════════════════════════════════════════════════")
+        print(f"[DEBUG Berechnung] Starte Berechnung PRO SURFACE (prozessoptimiert)")
+        print(f"[DEBUG Berechnung] Anzahl Surface-Grids: {len(surface_grids)}")
         
-            source_azimuth = np.deg2rad(speaker_array.source_azimuth)
-            source_delay = speaker_array.delay
+        # Speichere Ergebnisse pro Surface
+        surface_results: Dict[str, Dict[str, Any]] = {}
+        combined_array_fields = {} if capture_arrays else None
+        
+        # Berechne für jedes Surface-Grid einzeln
+        for surface_id, grid in surface_grids.items():
+            total_points = grid.X_grid.size
+            active_points = np.count_nonzero(grid.surface_mask)
+            extended_points = total_points - active_points
+            print(f"[DEBUG Berechnung] Berechne Surface '{surface_id}'...")
+            print(f"  └─ Grid-Shape: {grid.X_grid.shape}")
+            print(f"  └─ Total Punkte: {total_points}, Active (in Surface): {active_points}, Extended (außerhalb): {extended_points}")
             
-            # Stelle sicher, dass source_time ein Array/Liste ist
-            if isinstance(speaker_array.source_time, (int, float)):
-                # Einzelner Wert - konvertiere zu Liste
-                source_time = [speaker_array.source_time + source_delay]
-            else:
-                source_time = [time + source_delay for time in speaker_array.source_time]
-            source_time = [x / 1000 for x in source_time]
-            source_gain = speaker_array.gain
-            source_level = speaker_array.source_level + source_gain
-            source_level = self.functions.db2mag(np.array(source_level))
+            # Berechne Schallfeld für dieses Surface-Grid
+            sound_field_p_surface, array_fields_surface = self._calculate_sound_field_for_surface_grid(
+                grid,
+                phys_constants,
+                capture_arrays=capture_arrays
+            )
             
-            # ============================================================
-            # SCHRITT 4: Iteriere über alle Lautsprecher im Array
-            # ============================================================
-            for isrc in range(len(source_indices)):
-                speaker_name = speaker_array.source_polar_pattern[isrc]
-                
-                # --------------------------------------------------------
-                # 4.1: VEKTORISIERTE GEOMETRIE-BERECHNUNG
-                # --------------------------------------------------------
-                # Berechne Distanz-Vektoren für ALLE Punkte gleichzeitig
-                # Resultat: 2D-Arrays mit Shape [ny, nx]
-                x_distances = X_grid - source_position_x[isrc]  # Distanz in X-Richtung
-                y_distances = Y_grid - source_position_y[isrc]  # Distanz in Y-Richtung
-                
-                # Berechne horizontale Distanz (Pythagoras in 2D)
-                # √(x² + y²) für ALLE Punkte gleichzeitig
-                horizontal_dists = np.sqrt(x_distances**2 + y_distances**2)
-                
-                # 🎯 Z-DISTANZ: Verwende interpolierte Z-Koordinaten aus Surfaces (falls aktiviert)
-                # Z_grid enthält die Z-Koordinaten jedes Grid-Punkts (aus Surface-Interpolation)
-                # Wenn keine Surfaces aktiviert sind, ist Z_grid = 0 (Standard)
-                z_distance = Z_grid - source_position_z[isrc]  # Z-Distanz für jeden Punkt individuell
-                
-                # Berechne 3D-Distanz (Pythagoras in 3D)
-                # √(horizontal² + z²) für ALLE Punkte gleichzeitig
-                source_dists = np.sqrt(horizontal_dists**2 + z_distance**2)
-                
-                # --------------------------------------------------------
-                # 4.2: VEKTORISIERTE WINKEL-BERECHNUNG
-                # --------------------------------------------------------
-                # Berechne Azimut-Winkel für ALLE Punkte gleichzeitig
-                source_to_point_angles = np.arctan2(y_distances, x_distances)
-                azimuths = (np.degrees(source_to_point_angles) + np.degrees(source_azimuth[isrc])) % 360
-                azimuths = (360 - azimuths) % 360  # Invertiere (Uhrzeigersinn)
-                azimuths = (azimuths + 90) % 360  # Drehe 90° (Polar-Koordinatensystem)
-                
-                # Berechne Elevations-Winkel für ALLE Punkte gleichzeitig
-                # Verwende die individuellen Z-Distanzen (aus Surface-Interpolation)
-                elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
-                
-                # --------------------------------------------------------
-                # 4.3: BATCH-INTERPOLATION (der Performance-Booster! 🚀)
-                # --------------------------------------------------------
-                # Hole Balloon-Daten für ALLE Punkte in EINEM Aufruf
-                # Input:  azimuths[151, 101], elevations[151, 101]
-                # Output: polar_gains[151, 101], polar_phases[151, 101]
-                # → 15.251 Interpolationen gleichzeitig statt in einer Loop!
-                polar_gains, polar_phases = self.get_balloon_data_batch(speaker_name, azimuths, elevations)
-                
-                if polar_gains is not None and polar_phases is not None:
-                    
-                    # --------------------------------------------------------
-                    # 4.5: VEKTORISIERTE WELLENBERECHNUNG (das Herzstück! 🎵)
-                    # --------------------------------------------------------
-                    # Konvertiere Magnitude von dB zu linearen Werten (für ALLE Punkte)
-                    # 10^(dB/20) → z.B. 94dB → 50.000 (linear)
-                    magnitude_linear = 10 ** (polar_gains / 20)
-                    
-                    # Konvertiere Phase von Grad zu Radiant (für ALLE Punkte)
-                    polar_phase_rad = np.radians(polar_phases)
-                    
-                    # Initialisiere Wellen-Array (gleiches Shape wie Grid)
-                    source_position = np.array(
-                        [
-                            source_position_x[isrc],
-                            source_position_y[isrc],
-                            source_position_z[isrc],
-                        ],
-                        dtype=float,
-                    )
-                    polarity_flag = False
-                    if hasattr(speaker_array, 'source_polarity'):
-                        try:
-                            polarity_flag = bool(speaker_array.source_polarity[isrc])
-                        except (TypeError, IndexError):
-                            polarity_flag = False
-
-                    source_props = {
-                        "magnitude_linear": magnitude_linear.reshape(-1),
-                        "polar_phase_rad": polar_phase_rad.reshape(-1),
-                        "source_level": source_level[isrc],
-                        "a_source_pa": a_source_pa,
-                        "wave_number": wave_number,
-                        "frequency": calculate_frequency,
-                        "source_time": source_time[isrc],
-                        "polarity": polarity_flag,
-                        "distances": source_dists.reshape(-1),
-                    }
-
-                    # 🎯 MASKEN-LOGIK: Nur Punkte auf aktiven Surfaces berechnen
-                    mask_options = {
-                        "min_distance": 0.001,
-                    }
-                    # Sichtbarkeitsmaske (Raytracing gegen vertikale Flächen)
-                    # Occlusion-Logik aktuell deaktiviert: nur Surface-Maske verwenden
-                    if surface_mask_flat is not None:
-                        mask_options["additional_mask"] = surface_mask_flat
-                    wave_flat = self._compute_wave_for_points(
-                        grid_points,
-                        source_position,
-                        source_props,
-                        mask_options,
-                    )
-                    wave = wave_flat.reshape(source_dists.shape)
-                    
-                    # --------------------------------------------------------
-                    # 4.6: AKKUMULATION (Interferenz-Überlagerung)
-                    # --------------------------------------------------------
-                    # Addiere die Welle dieses Lautsprechers zum Gesamt-Schallfeld
-                    # Komplexe Addition → Automatische Interferenz (konstruktiv/destruktiv)
-                    sound_field_p += wave
-                    if surface_field_buffers:
-                        for sample in surface_samples:
-                            # Nur planare Surfaces nutzen die (row,col)-Indizes
-                            # im globalen Grid. Vertikale Flächen haben ein
-                            # eigenes lokales Raster und werden separat über
-                            # surface_point_buffers versorgt.
-                            if getattr(sample, "is_vertical", False):
-                                continue
-                            buffer = surface_field_buffers.get(sample.surface_id)
-                            if buffer is None or sample.indices.size == 0:
-                                continue
-                            rows = sample.indices[:, 0]
-                            cols = sample.indices[:, 1]
-                            buffer += wave[rows, cols]
-                    if surface_point_buffers:
-                        for sample in surface_samples:
-                            point_buffer = surface_point_buffers.get(sample.surface_id)
-                            if point_buffer is None or sample.coordinates.size == 0:
-                                continue
-
-                            coords = np.asarray(sample.coordinates, dtype=float).reshape(-1, 3)
-                            dx = coords[:, 0] - source_position_x[isrc]
-                            dy = coords[:, 1] - source_position_y[isrc]
-                            dz = coords[:, 2] - source_position_z[isrc]
-                            horizontal = np.sqrt(dx**2 + dy**2)
-                            sample_dists = np.sqrt(horizontal**2 + dz**2)
-
-                            sample_azimuths = (np.degrees(np.arctan2(dy, dx)) + np.degrees(source_azimuth[isrc])) % 360
-                            sample_azimuths = (360 - sample_azimuths) % 360
-                            sample_azimuths = (sample_azimuths + 90) % 360
-                            sample_elevations = np.degrees(np.arctan2(dz, horizontal))
-
-                            azimuths_payload = sample_azimuths.reshape(1, -1)
-                            elevations_payload = sample_elevations.reshape(1, -1)
-                            sample_gains, sample_phases = self.get_balloon_data_batch(
-                                speaker_name,
-                                azimuths_payload,
-                                elevations_payload,
-                            )
-                            if sample_gains is None or sample_phases is None:
-                                continue
-
-                            sample_props = {
-                                "magnitude_linear": (10 ** (sample_gains.reshape(-1) / 20)),
-                                "polar_phase_rad": np.radians(sample_phases.reshape(-1)),
-                                "source_level": source_level[isrc],
-                                "a_source_pa": a_source_pa,
-                                "wave_number": wave_number,
-                                "frequency": calculate_frequency,
-                                "source_time": source_time[isrc],
-                                "polarity": polarity_flag,
-                                "distances": sample_dists,
-                            }
-
-                            # Occlusion-Logik aktuell deaktiviert
-                            mask_options_samples = {"min_distance": 0.001}
-                            sample_wave = self._compute_wave_for_points(
-                                coords,
-                                source_position,
-                                sample_props,
-                                mask_options_samples,
-                            )
-                            point_buffer += sample_wave
-                    if capture_arrays:
-                        array_wave += wave
-            if capture_arrays and array_wave is not None:
-                array_fields[array_key] = array_wave
-
-        # 🎯 Speichere Z-Grid für Plot-Verwendung
-        # Konvertiere Z_grid zu Liste für JSON-Serialisierung
-        surface_fields = {}
-        if surface_field_buffers:
-            for surface_id, buffer in surface_field_buffers.items():
-                surface_fields[surface_id] = buffer.copy()
-        else:
-            surface_fields = self._calculate_surface_mesh_fields(sound_field_p, surface_samples)
-
-        if surface_point_buffers:
-            for surface_id, buffer in surface_point_buffers.items():
-                if buffer.size == 0:
-                    continue
-                surface_fields[surface_id] = buffer.copy()
-
-        sample_payloads = []
-        if surface_samples:
-            for sample in surface_samples:
-                sample_payloads.append(
-                    {
-                        "surface_id": sample.surface_id,
-                        "name": sample.name,
-                        "coordinates": sample.coordinates.tolist(),
-                        "indices": sample.indices.tolist(),
-                        "grid_shape": list(sample.grid_shape),
-                        "kind": "vertical" if getattr(sample, "is_vertical", False) else "planar",
-                    }
-                )
-
-        if isinstance(self.calculation_spl, dict):
-            self.calculation_spl['sound_field_z'] = Z_grid.tolist()
-            # 🎯 Speichere erweiterte Maske für Berechnung
-            self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()
-            # 🎯 Berechne und speichere strikte Maske für Plot (ohne Erweiterung)
-            enabled_surfaces = self._get_enabled_surfaces()
-            if enabled_surfaces:
-                surface_mask_strict = self._grid_calculator._create_surface_mask(
-                    X_grid, Y_grid, enabled_surfaces, include_edges=False
-                )
-                self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
-            else:
-                self.calculation_spl['surface_mask_strict'] = surface_mask.astype(bool).tolist()
-            if surface_meshes:
-                self.calculation_spl['surface_meshes'] = [
-                    mesh.to_payload() for mesh in surface_meshes
-                ]
-            self.calculation_spl['surface_samples'] = sample_payloads
-            self.calculation_spl['surface_fields'] = {
-                surface_id: values.tolist()
-                for surface_id, values in surface_fields.items()
+            # 🎯 DEBUG: Prüfe ob alle Punkte berechnet wurden
+            if DEBUG_SOUNDFIELD:
+                spl_non_zero = np.count_nonzero(np.abs(sound_field_p_surface))
+                print(f"  └─ Berechnete SPL-Werte: {spl_non_zero}/{sound_field_p_surface.size} nicht-null")
+            
+            # Speichere Ergebnis pro Surface
+            surface_results[surface_id] = {
+                'sound_field_p': sound_field_p_surface,
+                'sound_field_x': grid.sound_field_x,
+                'sound_field_y': grid.sound_field_y,
+                'X_grid': grid.X_grid,
+                'Y_grid': grid.Y_grid,
+                'Z_grid': grid.Z_grid,
+                'surface_mask': grid.surface_mask,
             }
-
-        return sound_field_p, sound_field_x, sound_field_y, array_fields
+            
+            # Kombiniere Array-Felder (falls gewünscht)
+            if capture_arrays and array_fields_surface:
+                for array_key, array_wave in array_fields_surface.items():
+                    if array_key not in combined_array_fields:
+                        combined_array_fields[array_key] = {}
+                    combined_array_fields[array_key][surface_id] = array_wave
+        
+        print(f"[DEBUG Berechnung] ✅ Berechnung abgeschlossen für {len(surface_results)} Surfaces")
+        print(f"[DEBUG Berechnung] ════════════════════════════════════════════════════════")
+        
+        # ============================================================
+        # SCHRITT 4: Randpunkte generieren (1cm Auflösung entlang Kanten)
+        # ============================================================
+        # Füge Randpunkte zu surface_results hinzu (separate Arrays)
+        # Werte werden per Nearest Neighbor interpoliert (keine neue Berechnung)
+        for surface_id, result in surface_results.items():
+            if surface_id not in surface_grids:
+                    continue
+            grid = surface_grids[surface_id]
+            
+            # Generiere Randpunkte
+            edge_points = self._generate_edge_points_for_surface(
+                grid=grid,
+                spl_values=result['sound_field_p'],
+                edge_resolution=0.01  # 1cm
+            )
+            
+            # Füge zu Ergebnissen hinzu
+            if edge_points:
+                result['edge_points_x'] = edge_points['x']
+                result['edge_points_y'] = edge_points['y']
+                result['edge_points_z'] = edge_points['z']
+                result['edge_points_spl'] = edge_points['spl']
+                print(f"[DEBUG Randpunkte] '{surface_id}': {len(edge_points['x'])} Randpunkte generiert")
+        
+        # ============================================================
+        # SCHRITT 5: Kombiniere Ergebnisse für Rückwärtskompatibilität
+        # ============================================================
+        # Für Rückwärtskompatibilität: Kombiniere alle Grids zu einem gemeinsamen Grid
+        # (für Plot-Verwendung, später wird das pro Surface gerendert)
+        all_x = []
+        all_y = []
+        
+        for grid in surface_grids.values():
+            all_x.extend(grid.sound_field_x.tolist())
+            all_y.extend(grid.sound_field_y.tolist())
+        
+        if all_x and all_y:
+            unique_x = np.unique(np.array(all_x))
+            unique_y = np.unique(np.array(all_y))
+            unique_x.sort()
+            unique_y.sort()
+            
+            # Erstelle kombiniertes Grid für Rückgabewerte
+            X_grid_combined, Y_grid_combined = np.meshgrid(unique_x, unique_y, indexing='xy')
+            Z_grid_combined = np.zeros_like(X_grid_combined, dtype=float)
+            surface_mask_combined = np.zeros_like(X_grid_combined, dtype=bool)
+            sound_field_p_combined = np.zeros_like(X_grid_combined, dtype=complex)
+            
+            # Interpoliere Ergebnisse auf kombiniertes Grid
+            from scipy.interpolate import griddata
+            
+            for surface_id, result in surface_results.items():
+                grid = surface_grids[surface_id]
+                
+                # Interpoliere Z-Grid
+                points_orig = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
+                z_orig = grid.Z_grid.ravel()
+                mask_orig = grid.surface_mask.ravel()
+                sound_field_orig = result['sound_field_p'].ravel()
+                
+                points_new = np.column_stack([X_grid_combined.ravel(), Y_grid_combined.ravel()])
+                
+                # Interpoliere nur aktive Punkte
+                if np.any(mask_orig):
+                    z_interp = griddata(
+                        points_orig[mask_orig],
+                        z_orig[mask_orig],
+                        points_new,
+                        method='nearest',
+                        fill_value=0.0
+                    )
+                    mask_interp = griddata(
+                        points_orig,
+                        mask_orig.astype(float),
+                        points_new,
+                        method='nearest',
+                        fill_value=0.0
+                    ) > 0.5
+                    sound_field_interp = griddata(
+                        points_orig[mask_orig],
+                        sound_field_orig[mask_orig],
+                        points_new,
+                        method='nearest',
+                        fill_value=0.0 + 0.0j
+                    )
+                    
+                    # Kombiniere (letzte Surface gewinnt bei Überlappung)
+                    mask_interp_2d = mask_interp.reshape(X_grid_combined.shape)
+                    Z_grid_combined[mask_interp_2d] = z_interp.reshape(X_grid_combined.shape)[mask_interp_2d]
+                    surface_mask_combined |= mask_interp_2d
+                    sound_field_p_combined[mask_interp_2d] = sound_field_interp.reshape(X_grid_combined.shape)[mask_interp_2d]
+        else:
+            # Fallback: Leere Arrays
+            unique_x = np.array([])
+            unique_y = np.array([])
+            X_grid_combined = np.array([]).reshape(0, 0)
+            Y_grid_combined = np.array([]).reshape(0, 0)
+            Z_grid_combined = np.array([]).reshape(0, 0)
+            surface_mask_combined = np.array([]).reshape(0, 0)
+            sound_field_p_combined = np.array([]).reshape(0, 0)
+        
+        # ============================================================
+        # SCHRITT 5: Speichere Ergebnisse
+        # ============================================================
+        if isinstance(self.calculation_spl, dict):
+            # Speichere kombiniertes Grid für Rückwärtskompatibilität
+            self.calculation_spl['sound_field_z'] = Z_grid_combined.tolist()
+            self.calculation_spl['surface_mask'] = surface_mask_combined.astype(bool).tolist()
+            self.calculation_spl['surface_mask_strict'] = surface_mask_combined.astype(bool).tolist()
+            
+            # 🎯 NEU: Speichere Grid-Daten und Ergebnisse pro Surface
+            surface_grids_data = {}
+            surface_results_data = {}
+            
+            for surface_id, grid in surface_grids.items():
+                result = surface_results[surface_id]
+                surface_grids_data[surface_id] = {
+                    'sound_field_x': grid.sound_field_x.tolist(),
+                    'sound_field_y': grid.sound_field_y.tolist(),
+                    'X_grid': grid.X_grid.tolist(),
+                    'Y_grid': grid.Y_grid.tolist(),
+                    'Z_grid': grid.Z_grid.tolist(),
+                    'surface_mask': grid.surface_mask.astype(bool).tolist(),
+                    'resolution': grid.resolution,
+                }
+                
+                # Speichere Berechnungsergebnisse pro Surface
+                sound_field_p_complex = result['sound_field_p']
+                surface_results_data[surface_id] = {
+                    'sound_field_p': np.array(sound_field_p_complex).tolist(),
+                    'sound_field_p_magnitude': np.abs(sound_field_p_complex).tolist(),
+                }
+                
+                # 🎯 RANDPUNKTE: Füge Randpunkte-Daten hinzu (falls vorhanden)
+                if 'edge_points_x' in result:
+                    edge_x = result['edge_points_x']
+                    edge_y = result['edge_points_y']
+                    edge_z = result['edge_points_z']
+                    edge_spl = result['edge_points_spl']
+                    
+                    # Konvertiere zu Listen (komplexe Zahlen als [real, imag] Paare)
+                    edge_spl_complex = np.array(edge_spl, dtype=complex)
+                    
+                    surface_results_data[surface_id]['edge_points_x'] = np.array(edge_x).tolist()
+                    surface_results_data[surface_id]['edge_points_y'] = np.array(edge_y).tolist()
+                    surface_results_data[surface_id]['edge_points_z'] = np.array(edge_z).tolist()
+                    # Speichere komplexe SPL-Werte als Liste von [real, imag] Paaren
+                    surface_results_data[surface_id]['edge_points_spl'] = [
+                        [float(np.real(val)), float(np.imag(val))] for val in edge_spl_complex
+                    ]
+                    
+                    print(f"[DEBUG Speicherung] Randpunkte für '{surface_id}' gespeichert: {len(edge_x)} Punkte")
+            
+            self.calculation_spl['surface_grids'] = surface_grids_data
+            self.calculation_spl['surface_results'] = surface_results_data
+            
+            # ⚠️ VERALTET: Leere Listen für Rückwärtskompatibilität (werden nicht mehr verwendet)
+            # self.calculation_spl['surface_meshes'] = []
+            # self.calculation_spl['surface_samples'] = []
+            # self.calculation_spl['surface_fields'] = {}
+        
+        # Rückgabe: Kombiniertes Grid für Rückwärtskompatibilität
+        return sound_field_p_combined, unique_x, unique_y, combined_array_fields
     
     def _compute_wave_for_points(
         self,
@@ -669,27 +529,197 @@ class SoundFieldCalculator(ModuleBase):
             wave = -wave
         
         return wave
-
-    def _calculate_surface_mesh_fields(
+    
+    @measure_time("SoundFieldCalculator._calculate_sound_field_for_surface_grid")
+    def _calculate_sound_field_for_surface_grid(
         self,
-        sound_field_complex: np.ndarray,
-        surface_samples: List["SurfaceSamplingPoints"],
-    ) -> Dict[str, np.ndarray]:
-        surface_fields: Dict[str, np.ndarray] = {}
-        if sound_field_complex is None or not surface_samples:
-            return surface_fields
+        surface_grid: SurfaceGrid,
+        phys_constants: Dict[str, Any],
+        capture_arrays: bool = False
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """
+        🚀 PROZESSOPTIMIERT: Berechnet das Schallfeld für ein einzelnes Surface-Grid.
+        
+        Diese Methode führt die vollständig vektorisierte Berechnung für ein Surface-Grid durch.
+        Alle Optimierungen (Batch-Interpolation, vektorisierte Operationen) bleiben erhalten.
+        
+        Args:
+            surface_grid: SurfaceGrid-Objekt mit X_grid, Y_grid, Z_grid, surface_mask
+            phys_constants: Dictionary mit physikalischen Konstanten (wird einmal berechnet)
+            capture_arrays: Wenn True, werden Array-Felder zurückgegeben
+        
+        Returns:
+            Tuple von (sound_field_p, array_fields_dict)
+            - sound_field_p: 2D-Array komplexer Zahlen (Shape: [ny, nx])
+            - array_fields_dict: Dict von {array_key: array_wave} (wenn capture_arrays=True)
+        """
+        # Extrahiere Grid-Daten
+        X_grid = surface_grid.X_grid
+        Y_grid = surface_grid.Y_grid
+        Z_grid = surface_grid.Z_grid
+        surface_mask = surface_grid.surface_mask
+        
+        # Initialisiere Schallfeld
+        ny, nx = X_grid.shape
+        sound_field_p = np.zeros((ny, nx), dtype=complex)
+        array_fields = {} if capture_arrays else None
+        
+        # Extrahiere physikalische Konstanten (bereits berechnet)
+        speed_of_sound = phys_constants['speed_of_sound']
+        wave_number = phys_constants['wave_number']
+        calculate_frequency = phys_constants['calculate_frequency']
+        a_source_pa = phys_constants['a_source_pa']
+        
+        # Bereite Grid-Punkte vor
+        grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
+        surface_mask_flat = surface_mask.reshape(-1)
+        
+        # Iteriere über alle Lautsprecher-Arrays
+        for array_key, speaker_array in self.settings.speaker_arrays.items():
+            if speaker_array.mute or speaker_array.hide:
+                continue
+            
+            array_wave = np.zeros_like(sound_field_p, dtype=complex) if capture_arrays else None
+            
+            # Konvertiere Lautsprechernamen in Indizes
+            speaker_indices = []
+            for speaker_name in speaker_array.source_polar_pattern:
+                try:
+                    speaker_names = self._data_container.get_speaker_names()
+                    index = speaker_names.index(speaker_name)
+                    speaker_indices.append(index)
+                except ValueError:
+                    speaker_indices.append(0)
+            
+            source_indices = np.array(speaker_indices)
+            source_position_x = getattr(
+                speaker_array,
+                'source_position_calc_x',
+                getattr(speaker_array, 'source_position_x', None),
+            )
+            source_position_y = getattr(
+                speaker_array,
+                'source_position_calc_y',
+                getattr(speaker_array, 'source_position_y', None),
+            )
+            source_position_z = getattr(
+                speaker_array,
+                'source_position_calc_z',
+                getattr(speaker_array, 'source_position_z', None),
+            )
+        
+            source_azimuth = np.deg2rad(speaker_array.source_azimuth)
+            source_delay = speaker_array.delay
+            
+            # Stelle sicher, dass source_time ein Array/Liste ist
+            if isinstance(speaker_array.source_time, (int, float)):
+                source_time = [speaker_array.source_time + source_delay]
+            else:
+                source_time = [time + source_delay for time in speaker_array.source_time]
+            source_time = [x / 1000 for x in source_time]
+            source_gain = speaker_array.gain
+            source_level = speaker_array.source_level + source_gain
+            source_level = self.functions.db2mag(np.array(source_level))
+            
+            # Iteriere über alle Lautsprecher im Array
+            for isrc in range(len(source_indices)):
+                speaker_name = speaker_array.source_polar_pattern[isrc]
+                
+                # VEKTORISIERTE GEOMETRIE-BERECHNUNG
+                x_distances = X_grid - source_position_x[isrc]
+                y_distances = Y_grid - source_position_y[isrc]
+                horizontal_dists = np.sqrt(x_distances**2 + y_distances**2)
+                z_distance = Z_grid - source_position_z[isrc]
+                source_dists = np.sqrt(horizontal_dists**2 + z_distance**2)
+                
+                # VEKTORISIERTE WINKEL-BERECHNUNG
+                source_to_point_angles = np.arctan2(y_distances, x_distances)
+                azimuths = (np.degrees(source_to_point_angles) + np.degrees(source_azimuth[isrc])) % 360
+                azimuths = (360 - azimuths) % 360
+                azimuths = (azimuths + 90) % 360
+                elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
+                
+                # BATCH-INTERPOLATION
+                polar_gains, polar_phases = self.get_balloon_data_batch(speaker_name, azimuths, elevations)
+                
+                if polar_gains is not None and polar_phases is not None:
+                    # VEKTORISIERTE WELLENBERECHNUNG
+                    magnitude_linear = 10 ** (polar_gains / 20)
+                    polar_phase_rad = np.radians(polar_phases)
+                    
+                    source_position = np.array(
+                        [
+                            source_position_x[isrc],
+                            source_position_y[isrc],
+                            source_position_z[isrc],
+                        ],
+                        dtype=float,
+                    )
+                    
+                    polarity_flag = False
+                    if hasattr(speaker_array, 'source_polarity'):
+                        try:
+                            polarity_flag = bool(speaker_array.source_polarity[isrc])
+                        except (TypeError, IndexError):
+                            polarity_flag = False
 
-        try:
-            for sample in surface_samples:
-                if sample.indices.size == 0:
-                    continue
-                rows = sample.indices[:, 0]
-                cols = sample.indices[:, 1]
-                values = sound_field_complex[rows, cols]
-                surface_fields[sample.surface_id] = values.copy()
-        except Exception:
-            pass
-        return surface_fields
+                    source_props = {
+                        "magnitude_linear": magnitude_linear.reshape(-1),
+                        "polar_phase_rad": polar_phase_rad.reshape(-1),
+                        "source_level": source_level[isrc],
+                        "a_source_pa": a_source_pa,
+                        "wave_number": wave_number,
+                        "frequency": calculate_frequency,
+                        "source_time": source_time[isrc],
+                        "polarity": polarity_flag,
+                        "distances": source_dists.reshape(-1),
+                    }
+
+                    # MASKEN-LOGIK: Nur Punkte auf aktiven Surfaces berechnen
+                    mask_options = {
+                        "min_distance": 0.001,
+                        "additional_mask": surface_mask_flat,
+                    }
+                    
+                    wave_flat = self._compute_wave_for_points(
+                        grid_points,
+                        source_position,
+                        source_props,
+                        mask_options,
+                    )
+                    wave = wave_flat.reshape(source_dists.shape)
+                    
+                    # AKKUMULATION (Interferenz-Überlagerung)
+                    sound_field_p += wave
+                    if capture_arrays and array_wave is not None:
+                        array_wave += wave
+            
+            if capture_arrays and array_wave is not None:
+                array_fields[array_key] = array_wave
+
+        return sound_field_p, array_fields
+
+    # ⚠️ VERALTET: Diese Methode wird nicht mehr verwendet (alte Berechnung mit SurfaceSamplingPoints)
+    # def _calculate_surface_mesh_fields(
+    #     self,
+    #     sound_field_complex: np.ndarray,
+    #     surface_samples: List["SurfaceSamplingPoints"],
+    # ) -> Dict[str, np.ndarray]:
+    #     surface_fields: Dict[str, np.ndarray] = {}
+    #     if sound_field_complex is None or not surface_samples:
+    #         return surface_fields
+    #
+    #     try:
+    #         for sample in surface_samples:
+    #             if sample.indices.size == 0:
+    #                 continue
+    #             rows = sample.indices[:, 0]
+    #             cols = sample.indices[:, 1]
+    #             values = sound_field_complex[rows, cols]
+    #             surface_fields[sample.surface_id] = values.copy()
+    #     except Exception:
+    #         pass
+    #     return surface_fields
 
     def calculate_sound_field(self):
         """
@@ -949,6 +979,151 @@ class SoundFieldCalculator(ModuleBase):
     # SURFACE-INTEGRATION: Helper-Methoden
     # ============================================================
     
+    @measure_time("SoundFieldCalculator._generate_edge_points_for_surface")
+    def _generate_edge_points_for_surface(
+        self,
+        grid: SurfaceGrid,
+        spl_values: np.ndarray,
+        edge_resolution: float = 0.01,  # 1cm entlang der Kante
+        strip_width_factor: float = 0.25  # Streifen-Breite = 25% der Resolution
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Generiert Randpunkte entlang der Polygon-Kanten einer Surface in einem Streifen.
+        
+        - Generiert Punkte in edge_resolution (1cm) Auflösung entlang jeder Kante
+        - Generiert zusätzlich Punkte in einem Streifen INNERHALB der Surface
+        - Streifen-Breite: strip_width_factor * resolution (z.B. 25cm bei 1m Resolution)
+        - Berechnet Z-Koordinaten über Plane-Model
+        - Interpoliert SPL-Werte per Nearest Neighbor vom nächsten Grid-Punkt
+        
+        Args:
+            grid: SurfaceGrid mit Polygon-Definition und Plane-Model
+            spl_values: Berechnete SPL-Werte (komplex) für Grid-Punkte
+            edge_resolution: Auflösung der Randpunkte in Metern (Standard: 0.01 = 1cm)
+            strip_width_factor: Faktor für Streifen-Breite (0.25 = 25% der Resolution)
+        
+        Returns:
+            Dict mit 'x', 'y', 'z', 'spl' Arrays oder None bei Fehler
+        """
+        try:
+            # Extrahiere Polygon-Punkte
+            polygon_points = grid.geometry.points
+            if len(polygon_points) < 3:
+                return None
+            
+            # Extrahiere X/Y-Koordinaten
+            poly_x = np.array([p.get('x', 0.0) for p in polygon_points], dtype=float)
+            poly_y = np.array([p.get('y', 0.0) for p in polygon_points], dtype=float)
+            
+            # Generiere Punkte entlang jeder Kante
+            edge_x_list = []
+            edge_y_list = []
+            
+            n_points = len(poly_x)
+            # Verwende Set, um Duplikate zu vermeiden (Eckpunkte können mehrfach vorkommen)
+            seen_points = set()
+            
+            for i in range(n_points):
+                # Kante von Punkt i zu Punkt (i+1) mod n_points
+                x0, y0 = poly_x[i], poly_y[i]
+                x1, y1 = poly_x[(i + 1) % n_points], poly_y[(i + 1) % n_points]
+                
+                # Berechne Kantenlänge
+                edge_length = math.hypot(x1 - x0, y1 - y0)
+                
+                if edge_length < 1e-6:
+                    continue  # Überspringe sehr kurze Kanten
+                
+                # Anzahl der Punkte auf dieser Kante (mindestens 2: Start + Ende)
+                n_edge_points = max(2, int(np.ceil(edge_length / edge_resolution)) + 1)
+                
+                # Generiere Punkte entlang der Kante
+                for j in range(n_edge_points):
+                    t = j / (n_edge_points - 1) if n_edge_points > 1 else 0.0
+                    x_edge = x0 + t * (x1 - x0)
+                    y_edge = y0 + t * (y1 - y0)
+                    
+                    # Verwende Set, um Duplikate zu vermeiden (Eckpunkte)
+                    point_key = (round(x_edge, 6), round(y_edge, 6))
+                    if point_key not in seen_points:
+                        seen_points.add(point_key)
+                        edge_x_list.append(x_edge)
+                        edge_y_list.append(y_edge)
+            
+            if not edge_x_list:
+                return None
+            
+            edge_x = np.array(edge_x_list, dtype=float)
+            edge_y = np.array(edge_y_list, dtype=float)
+            
+            # Berechne Z-Koordinaten über Plane-Model
+            from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import evaluate_surface_plane
+            plane_model = grid.geometry.plane_model
+            edge_z = np.zeros_like(edge_x, dtype=float)
+            
+            if plane_model:
+                for i in range(len(edge_x)):
+                    edge_z[i] = evaluate_surface_plane(plane_model, edge_x[i], edge_y[i])
+            
+            # Nearest Neighbor Interpolation der SPL-Werte
+            # Finde für jeden Randpunkt den nächsten Grid-Punkt innerhalb der Surface
+            X_grid = grid.X_grid
+            Y_grid = grid.Y_grid
+            surface_mask = grid.surface_mask
+            
+            # Extrahiere nur Grid-Punkte innerhalb der Surface
+            valid_mask = surface_mask
+            valid_x = X_grid[valid_mask]
+            valid_y = Y_grid[valid_mask]
+            valid_spl = spl_values[valid_mask]
+            
+            if len(valid_x) == 0:
+                return None
+            
+            # Nearest Neighbor Interpolation mit scipy
+            from scipy.spatial import cKDTree
+            from scipy.interpolate import griddata
+            
+            # Erstelle KD-Tree für schnelle Nearest Neighbor Suche
+            tree = cKDTree(np.column_stack([valid_x, valid_y]))
+            
+            # Finde nächstgelegene Grid-Punkte für alle Randpunkte
+            distances, indices = tree.query(np.column_stack([edge_x, edge_y]), k=1)
+            
+            # Hole SPL-Werte der nächstgelegenen Punkte
+            edge_spl = valid_spl[indices]
+            
+            # 🎯 DEBUG: Prüfe ob Randpunkte mit Werten befüllt werden
+            if DEBUG_SOUNDFIELD:
+                n_edge_points = len(edge_x)
+                n_valid_points = len(valid_x)
+                edge_spl_complex = np.array(edge_spl, dtype=complex)
+                edge_spl_mag = np.abs(edge_spl_complex)
+                edge_spl_db = 20 * np.log10(np.maximum(edge_spl_mag, 1e-12))
+                valid_count = np.sum(np.isfinite(edge_spl_db))
+                min_dist = float(np.min(distances)) if len(distances) > 0 else 0.0
+                max_dist = float(np.max(distances)) if len(distances) > 0 else 0.0
+                mean_dist = float(np.mean(distances)) if len(distances) > 0 else 0.0
+                
+                print(f"[DEBUG Randpunkte] '{grid.geometry.surface_id}':")
+                print(f"  └─ {n_edge_points} Randpunkte generiert")
+                print(f"  └─ {n_valid_points} Grid-Punkte für Interpolation verfügbar")
+                print(f"  └─ {valid_count}/{n_edge_points} Randpunkte mit gültigen Werten")
+                print(f"  └─ SPL-Bereich: {np.nanmin(edge_spl_db):.1f} bis {np.nanmax(edge_spl_db):.1f} dB")
+                print(f"  └─ Distanz zum nächsten Grid-Punkt: min={min_dist:.3f}m, max={max_dist:.3f}m, mean={mean_dist:.3f}m")
+            
+            return {
+                'x': edge_x,
+                'y': edge_y,
+                'z': edge_z,
+                'spl': edge_spl
+            }
+            
+        except Exception as e:
+            if DEBUG_SOUNDFIELD:
+                print(f"[DEBUG Randpunkte] Fehler beim Generieren: {e}")
+            return None
+    
     def _get_enabled_surfaces(self) -> List[Tuple[str, Dict]]:
         """
         Gibt alle aktivierten Surfaces zurück, die für die Berechnung verwendet werden sollen.
@@ -985,229 +1160,4 @@ class SoundFieldCalculator(ModuleBase):
                 enabled.append((surface_id, surface_data))
         
         return enabled
-
-    # ============================================================
-    # RAYTRACING / SICHTBARKEITSPRÜFUNG
-    # ============================================================
-
-    def _build_vertical_occluders(
-        self, enabled_surfaces: List[Tuple[str, Dict]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Baut eine Liste einfacher vertikaler Occluder-Flächen auf.
-
-        Für Rechenaufwand-Schonung werden nur klar senkrechte Flächen
-        betrachtet, deren XY-Projektion praktisch eine Linie ist:
-        - XZ-Wände:   y ≈ const  → axis='y'
-        - YZ-Wände:   x ≈ const  → axis='x'
-
-        Die Fläche wird als Rechteck in (u,z) angenähert; das genügt für
-        eine robuste Sichtbarkeitsprüfung.
-        """
-        occluders: List[Dict[str, Any]] = []
-        if not enabled_surfaces:
-            return occluders
-
-        for surface_id, surface_def in enabled_surfaces:
-            points = surface_def.get("points") or []
-            if len(points) < 3:
-                continue
-
-            # Versuche, ein planare Z(x,y)-Fläche zu erkennen. Wenn das
-            # gelingt, ist die Fläche nicht senkrecht und wird hier nicht
-            # als Occluder verwendet (sie wird bereits im Z_grid berücksichtigt).
-            try:
-                model, _ = derive_surface_plane(points)
-            except Exception:
-                model = None
-            if model is not None:
-                # Planare "Boden"- oder Rampenflächen -> keine vertikale Wand
-                continue
-
-            xs = np.array([float(p.get("x", 0.0)) for p in points], dtype=float)
-            ys = np.array([float(p.get("y", 0.0)) for p in points], dtype=float)
-            zs = np.array([float(p.get("z", 0.0)) for p in points], dtype=float)
-
-            x_span = float(np.ptp(xs))
-            y_span = float(np.ptp(ys))
-            z_span = float(np.ptp(zs))
-
-            # Echte vertikale Wand hat signifikante Höhe
-            if z_span <= 1e-3:
-                continue
-
-            # Fall 1: XZ-Wand (y ≈ const)
-            if y_span < 1e-6 and x_span >= 1e-6:
-                y_wall = float(np.mean(ys))
-                occluders.append(
-                    {
-                        "surface_id": surface_id,
-                        "axis": "y",
-                        "value": y_wall,
-                        "u_min": float(xs.min()),
-                        "u_max": float(xs.max()),
-                        "z_min": float(zs.min()),
-                        "z_max": float(zs.max()),
-                        # Polygon in (u,z) = (x,z)
-                        "poly_u": xs.copy(),
-                        "poly_v": zs.copy(),
-                    }
-                )
-            # Fall 2: YZ-Wand (x ≈ const)
-            elif x_span < 1e-6 and y_span >= 1e-6:
-                x_wall = float(np.mean(xs))
-                occluders.append(
-                    {
-                        "surface_id": surface_id,
-                        "axis": "x",
-                        "value": x_wall,
-                        "u_min": float(ys.min()),
-                        "u_max": float(ys.max()),
-                        "z_min": float(zs.min()),
-                        "z_max": float(zs.max()),
-                        # Polygon in (u,z) = (y,z)
-                        "poly_u": ys.copy(),
-                        "poly_v": zs.copy(),
-                    }
-                )
-
-        return occluders
-
-    def _compute_visibility_mask_for_source(
-        self,
-        source_position: np.ndarray,
-        grid_points: np.ndarray,
-        grid_z: np.ndarray,
-        occluders: List[Dict[str, Any]],
-        exclude_surface_ids: Optional[set] = None,
-    ) -> np.ndarray:
-        """
-        Berechnet für einen Lautsprecher eine Sichtbarkeitsmaske über alle
-        Berechnungspunkte mittels sehr einfacher Raytracing-Logik.
-
-        Für jede vertikale Fläche (Occluder) wird geprüft, ob der Strahl von
-        der Quelle zum Punkt die Ebene der Wand schneidet UND der
-        Schnittpunkt innerhalb des (u,z)-Rechtecks der Wand liegt.
-
-        Rückgabe:
-            visibility_mask (bool, Shape: [N]): True = sichtbar, False = verdeckt
-        """
-        if not occluders or grid_points.size == 0:
-            return np.ones(grid_points.shape[0], dtype=bool)
-
-        src = np.asarray(source_position, dtype=float).reshape(3)
-        pts = np.asarray(grid_points, dtype=float).reshape(-1, 3)
-        z_pts = np.asarray(grid_z, dtype=float).reshape(-1)
-
-        # Standardmäßig alle Punkte sichtbar
-        visible = np.ones(pts.shape[0], dtype=bool)
-
-        xs, ys, zs = src[0], src[1], src[2]
-        px = pts[:, 0]
-        py = pts[:, 1]
-        pz = z_pts  # bereits aus Z_grid übernommen
-
-        for occ in occluders:
-            surf_id = occ.get("surface_id")
-            if exclude_surface_ids and surf_id in exclude_surface_ids:
-                continue
-            axis = occ.get("axis")
-            wall_val = float(occ.get("value", 0.0))
-            u_min = float(occ.get("u_min", 0.0))
-            u_max = float(occ.get("u_max", 0.0))
-            z_min = float(occ.get("z_min", 0.0))
-            z_max = float(occ.get("z_max", 0.0))
-            poly_u = np.asarray(occ.get("poly_u", []), dtype=float)
-            poly_v = np.asarray(occ.get("poly_v", []), dtype=float)
-
-            # Punkte, bei denen Strahl überhaupt die Wand-Ebene schneiden kann
-            if axis == "y":
-                # Ebene y = wall_val
-                denom = py - ys
-                # Quelle und Punkt auf derselben Seite -> kein Schnitt
-                side_src = ys - wall_val
-                side_pts = py - wall_val
-            elif axis == "x":
-                # Ebene x = wall_val
-                denom = px - xs
-                side_src = xs - wall_val
-                side_pts = px - wall_val
-            else:
-                continue
-
-            # Nur Punkte mit echter Richtungsänderung zur Wand
-            different_side = (side_src * side_pts) < 0.0
-            # Numerische Stabilität
-            valid_denom = np.abs(denom) > 1e-9
-            candidates = different_side & valid_denom
-            if not np.any(candidates):
-                continue
-
-            # Schnittparameter t im Intervall (0,1)
-            if axis == "y":
-                t = (wall_val - ys) / denom
-            else:
-                t = (wall_val - xs) / denom
-            between = (t > 0.0) & (t < 1.0)
-            cand_idx = candidates & between
-            if not np.any(cand_idx):
-                continue
-
-            # Schnittkoordinaten entlang des Strahls
-            x_int = xs + t * (px - xs)
-            y_int = ys + t * (py - ys)
-            z_int = zs + t * (pz - zs)
-
-            if axis == "y":
-                u_int = x_int
-            else:
-                u_int = y_int
-
-            # Grober Bounding-Box-Test im (u,z)-Raum
-            inside_u_bb = (u_int >= (u_min - 1e-6)) & (u_int <= (u_max + 1e-6))
-            inside_z_bb = (z_int >= (z_min - 1e-6)) & (z_int <= (z_max + 1e-6))
-            cand_poly = cand_idx & inside_u_bb & inside_z_bb
-            if not np.any(cand_poly):
-                continue
-
-            # Exakter Polygon-Test im (u,z)-Raum
-            try:
-                if poly_u.size >= 3 and poly_v.size >= 3:
-                    U = u_int[cand_poly].reshape(1, -1)
-                    V = z_int[cand_poly].reshape(1, -1)
-                    poly_mask = _points_in_polygon_batch_uv(U, V, poly_u, poly_v)
-                    if poly_mask is not None:
-                        poly_inside = poly_mask.reshape(-1)
-                        tmp = np.zeros_like(cand_poly, dtype=bool)
-                        tmp[np.where(cand_poly)[0]] = poly_inside
-                        cand_poly = cand_poly & tmp
-            except Exception:
-                # Fallback: nur Bounding-Box verwenden
-                pass
-
-            occluded_here = cand_poly
-            if np.any(occluded_here):
-                visible[occluded_here] = False
-
-        return visible
-
-    # ============================================================
-    # DEBUG / VALIDIERUNG
-    # ============================================================
-
-    def _debug_check_grid_and_mask_symmetry(
-        self,
-        sound_field_x: np.ndarray,
-        sound_field_y: np.ndarray,
-        X_grid: np.ndarray,
-        Y_grid: np.ndarray,
-        Z_grid: np.ndarray,
-        surface_mask: np.ndarray,
-        enabled_surfaces: List[Tuple[str, Dict]],
-    ) -> None:
-        """
-        Ehemaliger Diagnose-Check (Symmetrie von Grid & Surfaces).
-        Wird aktuell nicht mehr für Konsolenausgaben verwendet.
-        """
-        return
 
