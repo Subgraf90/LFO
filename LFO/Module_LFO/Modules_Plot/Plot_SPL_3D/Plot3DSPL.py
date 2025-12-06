@@ -1934,7 +1934,36 @@ class SPL3DPlotRenderer:
             if DEBUG_PLOT3D_TIMING:
                 print(f"[DEBUG Vertical Grids] Surface '{surface_id}': orientation={orientation}")
             
-            if orientation != 'vertical':
+            # Prüfe, ob Surface vertikal ist (entweder "vertical" oder "sloped" mit vertikaler Ausrichtung)
+            is_vertical = False
+            if orientation == 'vertical':
+                is_vertical = True
+            elif orientation == 'sloped':
+                # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
+                # Hole Surface-Definition für Koordinatenprüfung
+                surf_def = surface_definitions.get(surface_id)
+                if surf_def is not None:
+                    if hasattr(surf_def, "to_dict"):
+                        surf_data = surf_def.to_dict()
+                    elif isinstance(surf_def, dict):
+                        surf_data = surf_def
+                    else:
+                        surf_data = {}
+                    points = surf_data.get('points', [])
+                    if len(points) >= 3:
+                        xs = np.array([p.get('x', 0.0) if isinstance(p, dict) else getattr(p, 'x', 0.0) for p in points], dtype=float)
+                        ys = np.array([p.get('y', 0.0) if isinstance(p, dict) else getattr(p, 'y', 0.0) for p in points], dtype=float)
+                        zs = np.array([p.get('z', 0.0) if isinstance(p, dict) else getattr(p, 'z', 0.0) for p in points], dtype=float)
+                        x_span = float(np.ptp(xs))
+                        y_span = float(np.ptp(ys))
+                        z_span = float(np.ptp(zs))
+                        # Schräge vertikale Fläche: z_span ist signifikant größer als x_span und y_span
+                        if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
+                            is_vertical = True
+                            if DEBUG_PLOT3D_TIMING:
+                                print(f"[DEBUG Vertical Grids] Surface '{surface_id}': Schräge vertikale Fläche erkannt (z_span={z_span:.3f} > max(x_span={x_span:.3f}, y_span={y_span:.3f}) * 0.5)")
+            
+            if not is_vertical:
                 continue
             
             if DEBUG_PLOT3D_TIMING:
@@ -2025,14 +2054,30 @@ class SPL3DPlotRenderer:
                         # Y-Z-Wand: x ≈ const
                         vertical_orientation = "yz"
                         wall_value = float(np.mean(xs))  # Konstanter X-Wert
-                    elif z_span > max(x_span, y_span) * 0.5:
-                        # Schräge vertikale Surface: Bestimme dominante Orientierung
-                        if x_span < y_span:
-                            vertical_orientation = "yz"
-                            wall_value = float(np.mean(xs))
-                        else:
-                            vertical_orientation = "xz"
+                    elif z_span > max(x_span, y_span) * 0.5 and x_span >= eps_line and y_span >= eps_line:
+                        # Schräge vertikale Surface: z_span ist signifikant UND beide x_span und y_span variieren
+                        # Diese Fläche liegt schräg im Raum und muss in ihrer lokalen (u,v)-Ebene behandelt werden
+                        # u = Projektion auf XY-Ebene (entlang der längsten Ausdehnung), v = Z
+                        # Bestimme dominante Richtung in XY
+                        if x_span >= y_span:
+                            # Dominante Richtung ist X → u = X, v = Z, Y variiert
+                            vertical_orientation = "xz_slanted"
+                            # Y variiert entlang der Fläche, wir verwenden den Mittelwert als Referenz
                             wall_value = float(np.mean(ys))
+                        else:
+                            # Dominante Richtung ist Y → u = Y, v = Z, X variiert
+                            vertical_orientation = "yz_slanted"
+                            # X variiert entlang der Fläche, wir verwenden den Mittelwert als Referenz
+                            wall_value = float(np.mean(xs))
+                    elif x_span >= eps_line and y_span >= eps_line and z_span >= eps_line:
+                        # Schräge vertikale Surface: Variiert in X, Y und Z (Fallback)
+                        # Bestimme dominante Richtung in XY
+                        if x_span >= y_span:
+                            vertical_orientation = "xz_slanted"
+                            wall_value = float(np.mean(ys))
+                        else:
+                            vertical_orientation = "yz_slanted"
+                            wall_value = float(np.mean(xs))
                 
                 # 🎯 DEBUG: Zeige Koordinaten-Informationen
                 if DEBUG_PLOT3D_TIMING:
@@ -2070,6 +2115,22 @@ class SPL3DPlotRenderer:
                     v_axis = np.unique(Z_grid)  # Z-Koordinaten
                     if DEBUG_PLOT3D_TIMING:
                         print(f"  └─ Y-Z-Wand: u_axis (Y) len={len(u_axis)}, v_axis (Z) len={len(v_axis)}")
+                elif vertical_orientation == "xz_slanted":
+                    # Schräge X-Z-Wand: X und Z variieren, Y variiert entlang der Fläche
+                    # u = X (dominante Richtung), v = Z
+                    # Y wird aus der Flächengeometrie interpoliert
+                    u_axis = np.unique(X_grid)  # X-Koordinaten
+                    v_axis = np.unique(Z_grid)  # Z-Koordinaten
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"  └─ Schräge X-Z-Wand: u_axis (X) len={len(u_axis)}, v_axis (Z) len={len(v_axis)}")
+                elif vertical_orientation == "yz_slanted":
+                    # Schräge Y-Z-Wand: Y und Z variieren, X variiert entlang der Fläche
+                    # u = Y (dominante Richtung), v = Z
+                    # X wird aus der Flächengeometrie interpoliert
+                    u_axis = np.unique(Y_grid)  # Y-Koordinaten
+                    v_axis = np.unique(Z_grid)  # Z-Koordinaten
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"  └─ Schräge Y-Z-Wand: u_axis (Y) len={len(u_axis)}, v_axis (Z) len={len(v_axis)}")
                 else:
                     # Fallback: Standard (sollte nicht vorkommen für vertical)
                     u_axis = sound_field_x
@@ -2159,6 +2220,90 @@ class SPL3DPlotRenderer:
                         mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
                         # Z_fine = X konstant
                         Z_fine = np.full_like(U_fine, wall_value, dtype=float)
+                    elif vertical_orientation == "xz_slanted":
+                        # Schräge X-Z-Wand: X und Z variieren, Y variiert entlang der Fläche
+                        # Y_grid wurde bereits in FlexibleGridGenerator interpoliert
+                        # Interpoliere nur in 2D (X, Z) auf (U_fine, V_fine), nicht in 3D
+                        from scipy.interpolate import griddata
+                        # Original-Koordinaten in 2D (u,v) = (X, Z)
+                        points_orig_2d = np.column_stack([
+                            X_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        # Neue 2D-Koordinaten: (U_fine, V_fine) = (X, Z)
+                        points_new_2d = np.column_stack([
+                            U_fine.ravel(),
+                            V_fine.ravel()
+                        ])
+                        # Interpoliere Y-Koordinaten in 2D (X, Z) → (U_fine, V_fine)
+                        # Y_grid wurde bereits interpoliert, wir interpolieren nur auf feineres Grid
+                        Y_interp = griddata(
+                            points_orig_2d, Y_grid.flatten(), points_new_2d,
+                            method='linear', fill_value=wall_value
+                        )
+                        Y_interp = Y_interp.reshape(U_fine.shape)
+                        # Interpoliere SPL-Werte in 2D (X, Z) → (U_fine, V_fine)
+                        if is_step_mode:
+                            spl_fine = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_fine = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_fine = spl_fine.reshape(U_fine.shape)
+                        # Interpoliere Maske in 2D (X, Z) → (U_fine, V_fine)
+                        mask_fine = griddata(
+                            points_orig_2d, surface_mask.flatten().astype(float), points_new_2d,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
+                        # Z_fine = interpoliertes Y
+                        Z_fine = Y_interp
+                    elif vertical_orientation == "yz_slanted":
+                        # Schräge Y-Z-Wand: Y und Z variieren, X variiert entlang der Fläche
+                        # X_grid wurde bereits in FlexibleGridGenerator interpoliert
+                        # Interpoliere nur in 2D (Y, Z) auf (U_fine, V_fine), nicht in 3D
+                        from scipy.interpolate import griddata
+                        # Original-Koordinaten in 2D (u,v) = (Y, Z)
+                        points_orig_2d = np.column_stack([
+                            Y_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        # Neue 2D-Koordinaten: (U_fine, V_fine) = (Y, Z)
+                        points_new_2d = np.column_stack([
+                            U_fine.ravel(),
+                            V_fine.ravel()
+                        ])
+                        # Interpoliere X-Koordinaten in 2D (Y, Z) → (U_fine, V_fine)
+                        # X_grid wurde bereits interpoliert, wir interpolieren nur auf feineres Grid
+                        X_interp = griddata(
+                            points_orig_2d, X_grid.flatten(), points_new_2d,
+                            method='linear', fill_value=wall_value
+                        )
+                        X_interp = X_interp.reshape(U_fine.shape)
+                        # Interpoliere SPL-Werte in 2D (Y, Z) → (U_fine, V_fine)
+                        if is_step_mode:
+                            spl_fine = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_fine = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_fine = spl_fine.reshape(U_fine.shape)
+                        # Interpoliere Maske in 2D (Y, Z) → (U_fine, V_fine)
+                        mask_fine = griddata(
+                            points_orig_2d, surface_mask.flatten().astype(float), points_new_2d,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
+                        # Z_fine = interpoliertes X
+                        Z_fine = X_interp
                     else:
                         # Fallback: Normale XY-Interpolation
                         spl_fine = self._bilinear_interpolate_grid(
@@ -2195,6 +2340,24 @@ class SPL3DPlotRenderer:
                         z_coords_plot = np.full_like(U_fine, wall_value, dtype=float)  # X konstant
                         # 3D-Koordinaten für finales Mesh
                         X_plot = np.full_like(U_fine, wall_value, dtype=float)  # X konstant
+                        Y_plot = U_fine  # Y-Koordinaten
+                        Z_plot = V_fine  # Z-Koordinaten
+                    elif vertical_orientation == "xz_slanted":
+                        # Schräge X-Z-Wand: (U, V) = (X, Z) → (x, y) für build_surface_mesh, Y interpoliert → z_coords
+                        x_plot = u_fine  # X-Koordinaten
+                        y_plot = v_fine  # Z-Koordinaten
+                        z_coords_plot = Z_fine  # Y interpoliert (aus Z_fine, das Y_interp enthält)
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = U_fine  # X-Koordinaten
+                        Y_plot = Z_fine  # Y interpoliert
+                        Z_plot = V_fine  # Z-Koordinaten
+                    elif vertical_orientation == "yz_slanted":
+                        # Schräge Y-Z-Wand: (U, V) = (Y, Z) → (x, y) für build_surface_mesh, X interpoliert → z_coords
+                        x_plot = u_fine  # Y-Koordinaten
+                        y_plot = v_fine  # Z-Koordinaten
+                        z_coords_plot = Z_fine  # X interpoliert (aus Z_fine, das X_interp enthält)
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = Z_fine  # X interpoliert
                         Y_plot = U_fine  # Y-Koordinaten
                         Z_plot = V_fine  # Z-Koordinaten
                     else:
@@ -2293,6 +2456,82 @@ class SPL3DPlotRenderer:
                             method='nearest', fill_value=0.0
                         )
                         mask_plot = mask_plot.reshape(U_plot.shape).astype(bool)
+                    elif vertical_orientation == "xz_slanted":
+                        # Schräge X-Z-Wand: (U, V) = (X, Z) → (x, y) für build_surface_mesh, Y interpoliert → z_coords
+                        # Y_grid wurde bereits in FlexibleGridGenerator interpoliert
+                        x_plot = u_axis  # X-Koordinaten
+                        y_plot = v_axis  # Z-Koordinaten
+                        # Y_grid ist bereits interpoliert, verwende direkt
+                        z_coords_plot = Y_grid  # Y interpoliert (bereits vorhanden)
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = U_plot  # X-Koordinaten
+                        Y_plot = Y_grid  # Y interpoliert (bereits vorhanden)
+                        Z_plot = V_plot  # Z-Koordinaten
+                        # Interpoliere SPL-Werte in 2D (X, Z) → (U_plot, V_plot)
+                        from scipy.interpolate import griddata
+                        points_orig_2d = np.column_stack([
+                            X_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        points_new_2d = np.column_stack([
+                            U_plot.ravel(),
+                            V_plot.ravel()
+                        ])
+                        if is_step_mode:
+                            spl_plot = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_plot = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_plot = spl_plot.reshape(U_plot.shape)
+                        # Interpoliere Maske in 2D (X, Z) → (U_plot, V_plot)
+                        mask_plot = griddata(
+                            points_orig_2d, surface_mask.flatten().astype(float), points_new_2d,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_plot = mask_plot.reshape(U_plot.shape).astype(bool)
+                    elif vertical_orientation == "yz_slanted":
+                        # Schräge Y-Z-Wand: (U, V) = (Y, Z) → (x, y) für build_surface_mesh, X interpoliert → z_coords
+                        # X_grid wurde bereits in FlexibleGridGenerator interpoliert
+                        x_plot = u_axis  # Y-Koordinaten
+                        y_plot = v_axis  # Z-Koordinaten
+                        # X_grid ist bereits interpoliert, verwende direkt
+                        z_coords_plot = X_grid  # X interpoliert (bereits vorhanden)
+                        # 3D-Koordinaten für finales Mesh
+                        X_plot = X_grid  # X interpoliert (bereits vorhanden)
+                        Y_plot = U_plot  # Y-Koordinaten
+                        Z_plot = V_plot  # Z-Koordinaten
+                        # Interpoliere SPL-Werte in 2D (Y, Z) → (U_plot, V_plot)
+                        from scipy.interpolate import griddata
+                        points_orig_2d = np.column_stack([
+                            Y_grid.flatten(),
+                            Z_grid.flatten()
+                        ])
+                        points_new_2d = np.column_stack([
+                            U_plot.ravel(),
+                            V_plot.ravel()
+                        ])
+                        if is_step_mode:
+                            spl_plot = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='nearest', fill_value=0.0
+                            )
+                        else:
+                            spl_plot = griddata(
+                                points_orig_2d, spl_values.flatten(), points_new_2d,
+                                method='linear', fill_value=0.0
+                            )
+                        spl_plot = spl_plot.reshape(U_plot.shape)
+                        # Interpoliere Maske in 2D (Y, Z) → (U_plot, V_plot)
+                        mask_plot = griddata(
+                            points_orig_2d, surface_mask.flatten().astype(float), points_new_2d,
+                            method='nearest', fill_value=0.0
+                        )
+                        mask_plot = mask_plot.reshape(U_plot.shape).astype(bool)
                     else:
                         x_plot = sound_field_x
                         y_plot = sound_field_y
@@ -2370,6 +2609,38 @@ class SPL3DPlotRenderer:
                     if DEBUG_PLOT3D_TIMING:
                         print(f"[DEBUG Vertical] YZ-Wand: Koordinaten korrigiert")
                         print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f} (sollte konstant: {wall_value:.2f})")
+                        print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f}")
+                        print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
+                elif vertical_orientation == "xz_slanted":
+                    # Schräge X-Z-Wand: build_surface_mesh erstellt (X, Z, Y_interp)
+                    # Wir brauchen: (X, Y, Z) = (X, Y_interp, Z)
+                    # Aktuell: mesh.points = (x_plot, y_plot, z_coords) = (X, Z, Y_interp)
+                    # Korrigiere zu: (X, Y, Z) = (X, Y_interp, Z)
+                    points_corrected = np.column_stack([
+                        mesh.points[:, 0],  # X (aus x_plot)
+                        mesh.points[:, 2],  # Y (aus z_coords, war interpoliert)
+                        mesh.points[:, 1],  # Z (aus y_plot)
+                    ])
+                    mesh.points = points_corrected
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Vertical] Schräge XZ-Wand: Koordinaten korrigiert")
+                        print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f}")
+                        print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f} (interpoliert)")
+                        print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
+                elif vertical_orientation == "yz_slanted":
+                    # Schräge Y-Z-Wand: build_surface_mesh erstellt (Y, Z, X_interp)
+                    # Wir brauchen: (X, Y, Z) = (X_interp, Y, Z)
+                    # Aktuell: mesh.points = (x_plot, y_plot, z_coords) = (Y, Z, X_interp)
+                    # Korrigiere zu: (X, Y, Z) = (X_interp, Y, Z)
+                    points_corrected = np.column_stack([
+                        mesh.points[:, 2],  # X (aus z_coords, war interpoliert)
+                        mesh.points[:, 0],  # Y (aus x_plot)
+                        mesh.points[:, 1],  # Z (aus y_plot)
+                    ])
+                    mesh.points = points_corrected
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Vertical] Schräge YZ-Wand: Koordinaten korrigiert")
+                        print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f} (interpoliert)")
                         print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f}")
                         print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
                 

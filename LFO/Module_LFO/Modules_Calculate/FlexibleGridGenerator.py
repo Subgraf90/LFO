@@ -141,10 +141,18 @@ class SurfaceAnalyzer(ModuleBase):
                 if mode == 'constant':
                     orientation = "planar"
                 elif mode in ['x', 'y', 'xy']:
-                    orientation = "sloped"
+                    # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
+                    if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
+                        # Schräge vertikale Fläche: hat Plane-Model, aber z_span ist signifikant größer
+                        orientation = "vertical"
+                    else:
+                        orientation = "sloped"
             else:
                 # Kein Plane-Model → könnte vertikal sein
                 if (x_span < 1e-6 or y_span < 1e-6) and z_span > 1e-3:
+                    orientation = "vertical"
+                elif z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
+                    # Schräge vertikale Fläche ohne Plane-Model
                     orientation = "vertical"
             
             geometry = SurfaceGeometry(
@@ -723,56 +731,226 @@ class GridBuilder(ModuleBase):
                         print(f"  └─ step (refined): {step:.3f} m (base: {base_resolution:.3f} m)")
                 
             else:
-                # Fallback: Verwende normale X-Y-Ebene
-                print(f"[DEBUG Vertical Grid] ⚠️ Keine klare Orientierung, verwende X-Y-Ebene (Fallback)")
-                if not geometry.bbox:
-                    width = getattr(self.settings, 'width', 150.0)
-                    length = getattr(self.settings, 'length', 100.0)
-                    min_x, max_x = -width / 2, width / 2
-                    min_y, max_y = -length / 2, length / 2
+                # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
+                if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
+                    # Schräge vertikale Fläche: Bestimme dominante Orientierung
+                    if x_span < y_span:
+                        # Y-Z-Wand schräg: Y und Z variieren, X variiert entlang der Fläche
+                        # u = y, v = z
+                        u_min, u_max = float(ys.min()), float(ys.max())
+                        v_min, v_max = float(zs.min()), float(zs.max())
+                        # X wird später interpoliert
+                        from scipy.interpolate import griddata
+                        
+                        # Erstelle Grid in (u,v)-Ebene = (y,z)-Ebene
+                        u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                        v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                        
+                        if u_axis.size < 2 or v_axis.size < 2:
+                            # Fallback
+                            print(f"[DEBUG Vertical Grid] ⚠️ Zu wenige Punkte in (y,z)-Ebene, verwende Fallback")
+                            if not geometry.bbox:
+                                width = getattr(self.settings, 'width', 150.0)
+                                length = getattr(self.settings, 'length', 100.0)
+                                min_x, max_x = -width / 2, width / 2
+                                min_y, max_y = -length / 2, length / 2
+                            else:
+                                min_x, max_x, min_y, max_y = geometry.bbox
+                            width = max_x - min_x
+                            height = max_y - min_y
+                            nx_base = max(1, int(np.ceil(width / resolution)) + 1)
+                            ny_base = max(1, int(np.ceil(height / resolution)) + 1)
+                            total_points_base = nx_base * ny_base
+                            min_total_points = min_points_per_dimension ** 2
+                            if total_points_base < min_total_points:
+                                diagonal = np.sqrt(width**2 + height**2)
+                                if diagonal > 0:
+                                    adaptive_resolution = diagonal / min_points_per_dimension
+                                    adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
+                                    resolution = adaptive_resolution
+                            min_x -= resolution
+                            max_x += resolution
+                            min_y -= resolution
+                            max_y += resolution
+                            sound_field_x = np.arange(min_x, max_x + resolution, resolution)
+                            sound_field_y = np.arange(min_y, max_y + resolution, resolution)
+                            if len(sound_field_x) < min_points_per_dimension:
+                                n_points_needed = min_points_per_dimension - len(sound_field_x)
+                                step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
+                                if step_x <= 0:
+                                    step_x = resolution
+                                additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
+                                sound_field_x = np.concatenate([sound_field_x, additional_x])
+                            if len(sound_field_y) < min_points_per_dimension:
+                                n_points_needed = min_points_per_dimension - len(sound_field_y)
+                                step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
+                                if step_y <= 0:
+                                    step_y = resolution
+                                additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
+                                sound_field_y = np.concatenate([sound_field_y, additional_y])
+                            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
+                            Z_grid = np.zeros_like(X_grid, dtype=float)
+                        else:
+                            # Erstelle 2D-Meshgrid in (u,v)-Ebene = (y,z)-Ebene
+                            U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                            
+                            # Interpoliere X-Koordinaten von Surface-Punkten auf (y,z)-Grid
+                            points_surface = np.column_stack([ys, zs])
+                            points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
+                            X_interp = griddata(
+                                points_surface, xs,
+                                points_grid,
+                                method='linear', fill_value=float(np.mean(xs))
+                            )
+                            X_interp = X_interp.reshape(U_grid.shape)
+                            
+                            # Transformiere zu (X, Y, Z) Koordinaten
+                            X_grid = X_interp  # X interpoliert
+                            Y_grid = U_grid  # u = y
+                            Z_grid = V_grid  # v = z
+                            
+                            # sound_field_x und sound_field_y für Rückgabe
+                            sound_field_x = u_axis  # y-Koordinaten
+                            sound_field_y = v_axis  # z-Koordinaten
+                            
+                            print(f"[DEBUG Vertical Grid] Y-Z-Wand schräg: Grid in (y,z)-Ebene erstellt, X interpoliert")
+                            print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
+                            print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                            print(f"  └─ X interpoliert: min={X_interp.min():.3f}, max={X_interp.max():.3f}")
+                    else:
+                        # X-Z-Wand schräg: X und Z variieren, Y variiert entlang der Fläche
+                        # u = x, v = z
+                        u_min, u_max = float(xs.min()), float(xs.max())
+                        v_min, v_max = float(zs.min()), float(zs.max())
+                        # Y wird später interpoliert
+                        from scipy.interpolate import griddata
+                        
+                        # Erstelle Grid in (u,v)-Ebene = (x,z)-Ebene
+                        u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                        v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                        
+                        if u_axis.size < 2 or v_axis.size < 2:
+                            # Fallback
+                            print(f"[DEBUG Vertical Grid] ⚠️ Zu wenige Punkte in (x,z)-Ebene, verwende Fallback")
+                            if not geometry.bbox:
+                                width = getattr(self.settings, 'width', 150.0)
+                                length = getattr(self.settings, 'length', 100.0)
+                                min_x, max_x = -width / 2, width / 2
+                                min_y, max_y = -length / 2, length / 2
+                            else:
+                                min_x, max_x, min_y, max_y = geometry.bbox
+                            width = max_x - min_x
+                            height = max_y - min_y
+                            nx_base = max(1, int(np.ceil(width / resolution)) + 1)
+                            ny_base = max(1, int(np.ceil(height / resolution)) + 1)
+                            total_points_base = nx_base * ny_base
+                            min_total_points = min_points_per_dimension ** 2
+                            if total_points_base < min_total_points:
+                                diagonal = np.sqrt(width**2 + height**2)
+                                if diagonal > 0:
+                                    adaptive_resolution = diagonal / min_points_per_dimension
+                                    adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
+                                    resolution = adaptive_resolution
+                            min_x -= resolution
+                            max_x += resolution
+                            min_y -= resolution
+                            max_y += resolution
+                            sound_field_x = np.arange(min_x, max_x + resolution, resolution)
+                            sound_field_y = np.arange(min_y, max_y + resolution, resolution)
+                            if len(sound_field_x) < min_points_per_dimension:
+                                n_points_needed = min_points_per_dimension - len(sound_field_x)
+                                step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
+                                if step_x <= 0:
+                                    step_x = resolution
+                                additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
+                                sound_field_x = np.concatenate([sound_field_x, additional_x])
+                            if len(sound_field_y) < min_points_per_dimension:
+                                n_points_needed = min_points_per_dimension - len(sound_field_y)
+                                step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
+                                if step_y <= 0:
+                                    step_y = resolution
+                                additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
+                                sound_field_y = np.concatenate([sound_field_y, additional_y])
+                            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
+                            Z_grid = np.zeros_like(X_grid, dtype=float)
+                        else:
+                            # Erstelle 2D-Meshgrid in (u,v)-Ebene = (x,z)-Ebene
+                            U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                            
+                            # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
+                            points_surface = np.column_stack([xs, zs])
+                            points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
+                            Y_interp = griddata(
+                                points_surface, ys,
+                                points_grid,
+                                method='linear', fill_value=float(np.mean(ys))
+                            )
+                            Y_interp = Y_interp.reshape(U_grid.shape)
+                            
+                            # Transformiere zu (X, Y, Z) Koordinaten
+                            X_grid = U_grid  # u = x
+                            Y_grid = Y_interp  # Y interpoliert
+                            Z_grid = V_grid  # v = z
+                            
+                            # sound_field_x und sound_field_y für Rückgabe
+                            sound_field_x = u_axis  # x-Koordinaten
+                            sound_field_y = v_axis  # z-Koordinaten
+                            
+                            print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
+                            print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
+                            print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                            print(f"  └─ Y interpoliert: min={Y_interp.min():.3f}, max={Y_interp.max():.3f}")
                 else:
-                    min_x, max_x, min_y, max_y = geometry.bbox
-                
-                width = max_x - min_x
-                height = max_y - min_y
-                nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                total_points_base = nx_base * ny_base
-                min_total_points = min_points_per_dimension ** 2
-                
-                if total_points_base < min_total_points:
-                    diagonal = np.sqrt(width**2 + height**2)
-                    if diagonal > 0:
-                        adaptive_resolution = diagonal / min_points_per_dimension
-                        adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                        resolution = adaptive_resolution
-                
-                min_x -= resolution
-                max_x += resolution
-                min_y -= resolution
-                max_y += resolution
-                
-                sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                
-                if len(sound_field_x) < min_points_per_dimension:
-                    n_points_needed = min_points_per_dimension - len(sound_field_x)
-                    step = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                    if step <= 0:
-                        step = resolution
-                    additional_x = np.arange(max_x + step, max_x + step * n_points_needed, step)
-                    sound_field_x = np.concatenate([sound_field_x, additional_x])
-                
-                if len(sound_field_y) < min_points_per_dimension:
-                    n_points_needed = min_points_per_dimension - len(sound_field_y)
-                    step = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                    if step <= 0:
-                        step = resolution
-                    additional_y = np.arange(max_y + step, max_y + step * n_points_needed, step)
-                    sound_field_y = np.concatenate([sound_field_y, additional_y])
-                
-                X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                Z_grid = np.zeros_like(X_grid, dtype=float)
+                    # Fallback: Verwende normale X-Y-Ebene
+                    print(f"[DEBUG Vertical Grid] ⚠️ Keine klare Orientierung, verwende X-Y-Ebene (Fallback)")
+                    if not geometry.bbox:
+                        width = getattr(self.settings, 'width', 150.0)
+                        length = getattr(self.settings, 'length', 100.0)
+                        min_x, max_x = -width / 2, width / 2
+                        min_y, max_y = -length / 2, length / 2
+                    else:
+                        min_x, max_x, min_y, max_y = geometry.bbox
+                    
+                    width = max_x - min_x
+                    height = max_y - min_y
+                    nx_base = max(1, int(np.ceil(width / resolution)) + 1)
+                    ny_base = max(1, int(np.ceil(height / resolution)) + 1)
+                    total_points_base = nx_base * ny_base
+                    min_total_points = min_points_per_dimension ** 2
+                    
+                    if total_points_base < min_total_points:
+                        diagonal = np.sqrt(width**2 + height**2)
+                        if diagonal > 0:
+                            adaptive_resolution = diagonal / min_points_per_dimension
+                            adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
+                            resolution = adaptive_resolution
+                    
+                    min_x -= resolution
+                    max_x += resolution
+                    min_y -= resolution
+                    max_y += resolution
+                    
+                    sound_field_x = np.arange(min_x, max_x + resolution, resolution)
+                    sound_field_y = np.arange(min_y, max_y + resolution, resolution)
+                    
+                    if len(sound_field_x) < min_points_per_dimension:
+                        n_points_needed = min_points_per_dimension - len(sound_field_x)
+                        step = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
+                        if step <= 0:
+                            step = resolution
+                        additional_x = np.arange(max_x + step, max_x + step * n_points_needed, step)
+                        sound_field_x = np.concatenate([sound_field_x, additional_x])
+                    
+                    if len(sound_field_y) < min_points_per_dimension:
+                        n_points_needed = min_points_per_dimension - len(sound_field_y)
+                        step = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
+                        if step <= 0:
+                            step = resolution
+                        additional_y = np.arange(max_y + step, max_y + step * n_points_needed, step)
+                        sound_field_y = np.concatenate([sound_field_y, additional_y])
+                    
+                    X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
+                    Z_grid = np.zeros_like(X_grid, dtype=float)
         else:
             # PLANARE/SCHRÄGE SURFACES: Grid in X-Y-Ebene (wie bisher)
             if not geometry.bbox:
@@ -886,9 +1064,36 @@ class GridBuilder(ModuleBase):
                 surface_mask = self._dilate_mask_minimal(surface_mask)
                 print(f"[DEBUG Vertical Mask] Y-Z-Wand: Maske in (y,z)-Ebene erstellt")
             else:
-                # Fallback: Verwende normale Maske
-                surface_mask = self._create_surface_mask(X_grid, Y_grid, geometry)
-                print(f"[DEBUG Vertical Mask] ⚠️ Fallback: Maske in X-Y-Ebene erstellt")
+                # Prüfe, ob es eine schräge vertikale Fläche ist
+                z_span = float(np.ptp(zs))
+                if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
+                    # Schräge vertikale Fläche: Bestimme dominante Orientierung
+                    if x_span < y_span:
+                        # Y-Z-Wand schräg: Maske in (y,z)-Ebene
+                        U_grid = Y_grid  # u = y
+                        V_grid = Z_grid  # v = z
+                        polygon_uv = [
+                            {"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))}
+                            for p in points
+                        ]
+                        surface_mask = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                        surface_mask = self._dilate_mask_minimal(surface_mask)
+                        print(f"[DEBUG Vertical Mask] Y-Z-Wand schräg: Maske in (y,z)-Ebene erstellt")
+                    else:
+                        # X-Z-Wand schräg: Maske in (x,z)-Ebene
+                        U_grid = X_grid  # u = x
+                        V_grid = Z_grid  # v = z
+                        polygon_uv = [
+                            {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
+                            for p in points
+                        ]
+                        surface_mask = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                        surface_mask = self._dilate_mask_minimal(surface_mask)
+                        print(f"[DEBUG Vertical Mask] X-Z-Wand schräg: Maske in (x,z)-Ebene erstellt")
+                else:
+                    # Fallback: Verwende normale Maske
+                    surface_mask = self._create_surface_mask(X_grid, Y_grid, geometry)
+                    print(f"[DEBUG Vertical Mask] ⚠️ Fallback: Maske in X-Y-Ebene erstellt")
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
