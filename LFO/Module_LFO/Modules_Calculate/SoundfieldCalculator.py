@@ -430,7 +430,7 @@ class SoundFieldCalculator(ModuleBase):
                 # 🎯 RANDPUNKTE: Füge Randpunkte-Daten hinzu (falls vorhanden)
                 if 'edge_points_x' in result:
                     edge_x = result['edge_points_x']
-                    edge_y = result['edge_points_y']
+                    edge_y = result['edge_points_y']        
                     edge_z = result['edge_points_z']
                     edge_spl = result['edge_points_spl']
                     
@@ -574,6 +574,10 @@ class SoundFieldCalculator(ModuleBase):
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         surface_mask_flat = surface_mask.reshape(-1)
         
+        # 🎯 ERWEITERTE MASKE: Erstelle Maske, die auch Punkte außerhalb der Surface enthält
+        # Dies ermöglicht SPL-Berechnung für erweiterte Randpunkte
+        extended_mask_flat = self._create_extended_mask(surface_mask)
+        
         # Iteriere über alle Lautsprecher-Arrays
         for array_key, speaker_array in self.settings.speaker_arrays.items():
             if speaker_array.mute or speaker_array.hide:
@@ -675,10 +679,11 @@ class SoundFieldCalculator(ModuleBase):
                         "distances": source_dists.reshape(-1),
                     }
 
-                    # MASKEN-LOGIK: Nur Punkte auf aktiven Surfaces berechnen
+                    # MASKEN-LOGIK: Verwende erweiterte Maske für SPL-Berechnung
+                    # Erweiterte Maske enthält auch Punkte außerhalb der Surface (für bessere Interpolation)
                     mask_options = {
                         "min_distance": 0.001,
-                        "additional_mask": surface_mask_flat,
+                        "additional_mask": extended_mask_flat,  # 🎯 ERWEITERTE MASKE: Berechne auch für Punkte außerhalb
                     }
                     
                     wave_flat = self._compute_wave_for_points(
@@ -1123,6 +1128,29 @@ class SoundFieldCalculator(ModuleBase):
             if DEBUG_SOUNDFIELD:
                 print(f"[DEBUG Randpunkte] Fehler beim Generieren: {e}")
             return None
+    
+    def _create_extended_mask(self, surface_mask: np.ndarray) -> np.ndarray:
+        """
+        Erstellt eine erweiterte Maske, die auch Punkte außerhalb der Surface enthält.
+        
+        Die erweiterte Maske enthält:
+        - Alle Punkte innerhalb der Surface (originale Maske)
+        - Alle Punkte im erweiterten Grid (außerhalb der Surface)
+        
+        Dies ermöglicht SPL-Berechnung für erweiterte Randpunkte, die für die
+        Triangulation und Interpolation benötigt werden.
+        
+        Args:
+            surface_mask: 2D-Boolean-Array (Shape: [ny, nx]) - originale Surface-Maske
+        
+        Returns:
+            1D-Boolean-Array (Shape: [ny*nx]) - erweiterte Maske (alle Punkte im Grid)
+        """
+        # 🎯 ERWEITERTE MASKE: Alle Punkte im Grid sind gültig für SPL-Berechnung
+        # Die erweiterten Punkte außerhalb der Surface werden ebenfalls berechnet
+        # (haben aber möglicherweise niedrigere SPL-Werte)
+        extended_mask = np.ones_like(surface_mask, dtype=bool)
+        return extended_mask.reshape(-1)
     
     def _get_enabled_surfaces(self) -> List[Tuple[str, Dict]]:
         """

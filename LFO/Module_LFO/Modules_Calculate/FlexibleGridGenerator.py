@@ -449,7 +449,40 @@ class GridBuilder(ModuleBase):
             Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
             print(f"  └─ Z-Werte berechnet für ALLE {total_grid_points} Punkte (auch außerhalb Surface)")
         else:
-            print(f"  └─ ⚠️ Kein Plane-Model vorhanden, Z-Werte bleiben 0")
+            # 🎯 FALLBACK: Lineare Interpolation basierend auf Surface Z-Werten
+            # Wenn kein Plane-Model vorhanden ist, interpoliere Z-Werte von Surface-Punkten
+            if points_in_surface > 0:
+                # Extrahiere Z-Werte der Surface-Punkte (falls vorhanden)
+                surface_points = geometry.points
+                if surface_points and len(surface_points) >= 3:
+                    # Extrahiere Z-Koordinaten aus Surface-Punkten
+                    surface_z = np.array([p.get('z', 0.0) for p in surface_points], dtype=float)
+                    surface_x = np.array([p.get('x', 0.0) for p in surface_points], dtype=float)
+                    surface_y = np.array([p.get('y', 0.0) for p in surface_points], dtype=float)
+                    
+                    # Prüfe ob Z-Werte variieren
+                    if np.any(np.abs(surface_z - surface_z[0]) > 1e-6):
+                        # Interpoliere Z-Werte für alle Grid-Punkte (auch außerhalb Surface)
+                        from scipy.interpolate import griddata
+                        points_surface = np.column_stack([surface_x, surface_y])
+                        points_grid = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
+                        Z_interp = griddata(
+                            points_surface,
+                            surface_z,
+                            points_grid,
+                            method='linear',  # Lineare Interpolation
+                            fill_value=0.0   # Fallback für Punkte außerhalb
+                        )
+                        Z_grid = Z_interp.reshape(X_grid.shape)
+                        print(f"  └─ Z-Werte linear interpoliert für ALLE {total_grid_points} Punkte (basierend auf Surface-Punkten)")
+                    else:
+                        # Alle Surface-Punkte haben gleichen Z-Wert
+                        Z_grid.fill(surface_z[0])
+                        print(f"  └─ Z-Werte auf konstanten Wert {surface_z[0]:.3f} gesetzt für ALLE {total_grid_points} Punkte")
+                else:
+                    print(f"  └─ ⚠️ Kein Plane-Model und keine Surface-Punkte vorhanden, Z-Werte bleiben 0")
+            else:
+                print(f"  └─ ⚠️ Kein Plane-Model vorhanden, Z-Werte bleiben 0")
         
         return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask)
 

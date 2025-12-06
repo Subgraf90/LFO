@@ -31,3 +31,4 @@ Statt nur Punkte AUF der Kante zu generieren, sollten wir einen **Streifen INNER
 - Prüfe mit Punkt-in-Polygon-Test vor der Generierung
 
 
+

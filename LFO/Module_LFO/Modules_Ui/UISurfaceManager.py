@@ -394,12 +394,100 @@ class UISurfaceManager(ModuleBase):
     
     # ---- TreeWidget Management --------------------------------------
     
+    def _save_expand_state(self):
+        """Speichert den Expand/Collapse-Zustand aller Gruppen im TreeWidget."""
+        if not hasattr(self, 'surface_tree_widget') or not self.surface_tree_widget:
+            return {}
+        
+        expand_state = {}
+        
+        def save_item_state(item, path=""):
+            """Rekursiv speichert den Expand-Zustand von Items."""
+            if not item:
+                return
+            
+            item_type = item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                # Speichere den Zustand für Gruppen
+                group_id_data = item.data(0, Qt.UserRole)
+                if isinstance(group_id_data, dict):
+                    group_id = group_id_data.get("id")
+                else:
+                    group_id = group_id_data
+                
+                # Verwende group_id als eindeutigen Pfad
+                item_path = f"{path}/{group_id}" if path else str(group_id)
+                expand_state[item_path] = item.isExpanded()
+                
+                # Rekursiv für Child-Items
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    save_item_state(child, item_path)
+            elif item_type == "surface":
+                # Für Surfaces: Rekursiv für Child-Items (falls sie in Gruppen sind)
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    save_item_state(child, path)
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.surface_tree_widget.topLevelItemCount()):
+            item = self.surface_tree_widget.topLevelItem(i)
+            save_item_state(item)
+        
+        return expand_state
+    
+    def _restore_expand_state(self, expand_state):
+        """Stellt den Expand/Collapse-Zustand aller Gruppen im TreeWidget wieder her."""
+        if not hasattr(self, 'surface_tree_widget') or not self.surface_tree_widget:
+            return
+        if not expand_state:
+            return
+        
+        def restore_item_state(item, path=""):
+            """Rekursiv stellt den Expand-Zustand von Items wieder her."""
+            if not item:
+                return
+            
+            item_type = item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                # Stelle den Zustand für Gruppen wieder her
+                group_id_data = item.data(0, Qt.UserRole)
+                if isinstance(group_id_data, dict):
+                    group_id = group_id_data.get("id")
+                else:
+                    group_id = group_id_data
+                
+                # Verwende group_id als eindeutigen Pfad
+                item_path = f"{path}/{group_id}" if path else str(group_id)
+                
+                if item_path in expand_state:
+                    item.setExpanded(expand_state[item_path])
+                
+                # Rekursiv für Child-Items
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    restore_item_state(child, item_path)
+            elif item_type == "surface":
+                # Für Surfaces: Rekursiv für Child-Items (falls sie in Gruppen sind)
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    restore_item_state(child, path)
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.surface_tree_widget.topLevelItemCount()):
+            item = self.surface_tree_widget.topLevelItem(i)
+            restore_item_state(item)
+    
     def load_surfaces(self):
         """Lädt alle Surfaces und Gruppen in das TreeWidget"""
         if not hasattr(self, 'surface_tree_widget'):
             return
         
         logger = logging.getLogger(__name__)
+        
+        # Speichere aktuellen Expand-Zustand vor dem Neuaufbau
+        expand_state = self._save_expand_state()
+        
         self.surface_tree_widget.blockSignals(True)
         self.surface_tree_widget.clear()
         
@@ -439,8 +527,11 @@ class UISurfaceManager(ModuleBase):
         else:
             self._load_surfaces_without_progress(default_surface_id, surface_store, root_group_id)
         
-        self.surface_tree_widget.expandAll()
         self.validate_all_checkboxes()
+        
+        # Stelle den Expand-Zustand wieder her (anstatt expandAll())
+        self._restore_expand_state(expand_state)
+        
         self.surface_tree_widget.blockSignals(False)
         # Nach dem Laden keine Auswahl markieren → Highlight-Liste leeren
         setattr(self.settings, "active_surface_highlight_ids", [])
@@ -608,7 +699,8 @@ class UISurfaceManager(ModuleBase):
                 group_item.insertChild(0, surface_item)
                 self.ensure_surface_checkboxes(surface_item)
         
-        group_item.setExpanded(True)
+        # Expand-Zustand wird später durch _restore_expand_state() wiederhergestellt
+        # group_item.setExpanded(True)  # Entfernt, da Zustand wiederhergestellt wird
     
     def _create_surface_item(self, surface_id, surface_data):
         """Erstellt ein TreeWidgetItem für ein Surface"""
@@ -656,6 +748,10 @@ class UISurfaceManager(ModuleBase):
         bold_font = item.font(0)
         bold_font.setBold(True)
         item.setFont(0, bold_font)
+        
+        # Erhöhe Item-Höhe für mehr Abstand zwischen Gruppen
+        from PyQt5.QtCore import QSize
+        item.setSizeHint(0, QSize(0, 32))  # Standard ist ~24px, erhöht auf 32px
         
         # Flags
         item.setFlags(
@@ -754,20 +850,22 @@ class UISurfaceManager(ModuleBase):
         Reagiert auf Auswahländerungen im Surface-Tree:
         - Aktualisiert die Tabs (wie bisher über show_surfaces_tab)
         - Setzt active_surface_highlight_ids für den 3D-Plot
+        - Unterstützt mehrere ausgewählte Items und Gruppen
         - Triggert update_overlays() für rote Umrandung.
         """
         if not hasattr(self, 'surface_tree_widget'):
             return
 
-        selected_item = self.surface_tree_widget.currentItem()
-        if not selected_item:
+        # Hole alle ausgewählten Items (nicht nur currentItem) für Mehrfachauswahl
+        selected_items = self.surface_tree_widget.selectedItems()
+        
+        if not selected_items:
             # Keine Auswahl → keine Highlights
             setattr(self.settings, "active_surface_highlight_ids", [])
+            setattr(self.settings, "active_surface_id", None)
             return
 
-        item_type = selected_item.data(0, Qt.UserRole + 1)
-
-        # UI-Tabs wie bisher aktualisieren
+        # UI-Tabs wie bisher aktualisieren (basierend auf currentItem)
         try:
             self.show_surfaces_tab()
         except Exception:
@@ -775,33 +873,53 @@ class UISurfaceManager(ModuleBase):
 
         highlight_ids = []
         surface_store = getattr(self.settings, "surface_definitions", {}) or {}
+        active_surface_id = None
 
-        if item_type == "surface":
-            surface_id = selected_item.data(0, Qt.UserRole)
-            if isinstance(surface_id, dict):
-                surface_id = surface_id.get("id")
-            if isinstance(surface_id, str) and surface_id in surface_store:
-                highlight_ids = [surface_id]
-                # Setze zusätzlich das klassische active_surface_id,
-                # damit auch ältere Signatur-Logik im Plot auf Auswahl reagiert.
-                try:
-                    setattr(self.settings, "active_surface_id", surface_id)
-                except Exception:
-                    pass
-        elif item_type == "group":
-            group_id_data = selected_item.data(0, Qt.UserRole)
-            # group_id kann ein Dict sein (wie in WindowSurfaceWidget) oder direkt die ID
-            if isinstance(group_id_data, dict):
-                group_id = group_id_data.get("id")
-            else:
-                group_id = group_id_data
-            # Sammle rekursiv alle Surfaces aus der Gruppe und ihren Untergruppen
-            if group_id:
-                highlight_ids = self._collect_all_surfaces_from_group(group_id, surface_store)
-            else:
-                highlight_ids = []
-            
-            # Setze active_surface_id auf None, damit nur highlight_ids verwendet werden
+        # Verarbeite alle ausgewählten Items
+        for selected_item in selected_items:
+            try:
+                item_type = selected_item.data(0, Qt.UserRole + 1)
+            except RuntimeError:
+                # Item wurde gelöscht, überspringe
+                continue
+
+            if item_type == "surface":
+                surface_id = selected_item.data(0, Qt.UserRole)
+                if isinstance(surface_id, dict):
+                    surface_id = surface_id.get("id")
+                if isinstance(surface_id, str) and surface_id in surface_store:
+                    if surface_id not in highlight_ids:
+                        highlight_ids.append(surface_id)
+                    # Setze active_surface_id auf das erste ausgewählte Surface
+                    if active_surface_id is None:
+                        active_surface_id = surface_id
+            elif item_type == "group":
+                group_id_data = selected_item.data(0, Qt.UserRole)
+                # group_id kann ein Dict sein (wie in WindowSurfaceWidget) oder direkt die ID
+                if isinstance(group_id_data, dict):
+                    group_id = group_id_data.get("id")
+                else:
+                    group_id = group_id_data
+                
+                # Sammle rekursiv alle Surfaces aus der Gruppe und ihren Untergruppen
+                if group_id:
+                    group_surfaces = self._collect_all_surfaces_from_group(group_id, surface_store)
+                    for surface_id in group_surfaces:
+                        if surface_id not in highlight_ids:
+                            highlight_ids.append(surface_id)
+                    
+                    # Setze active_surface_id auf das erste Surface der ersten Gruppe (falls noch nicht gesetzt)
+                    if active_surface_id is None and group_surfaces:
+                        active_surface_id = group_surfaces[0]
+
+        # Setze active_surface_id (nur wenn ein Surface ausgewählt ist, nicht nur Gruppen)
+        if active_surface_id:
+            try:
+                setattr(self.settings, "active_surface_id", active_surface_id)
+            except Exception:
+                pass
+        else:
+            # Nur Gruppen ausgewählt → setze active_surface_id auf None
             try:
                 setattr(self.settings, "active_surface_id", None)
             except Exception:
@@ -1064,8 +1182,13 @@ class UISurfaceManager(ModuleBase):
         # Wähle das neue Surface aus (rekursiv durchsuchen)
         self._select_surface_in_tree(surface_id)
     
-    def _select_surface_in_tree(self, surface_id):
-        """Wählt ein Surface im TreeWidget aus (rekursiv)"""
+    def _select_surface_in_tree(self, surface_id, skip_overlays=False):
+        """Wählt ein Surface im TreeWidget aus (rekursiv)
+        
+        Args:
+            surface_id: Die ID des auszuwählenden Surfaces
+            skip_overlays: Wenn True, wird update_overlays() nicht aufgerufen (Standard: False)
+        """
         def find_item(parent_item=None):
             if parent_item is None:
                 # Durchsuche Top-Level-Items
@@ -1141,28 +1264,29 @@ class UISurfaceManager(ModuleBase):
                 print(f"[DEBUG SURFACE CLICK] Set active_surface_highlight_ids = {highlight_ids}")
                 
                 # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
-                # für rote Umrandung der ausgewählten Fläche
-                main_window = getattr(self, "main_window", None)
-                if (
-                    main_window is not None
-                    and hasattr(main_window, "draw_plots")
-                    and hasattr(main_window.draw_plots, "draw_spl_plotter")
-                ):
-                    draw_spl = main_window.draw_plots.draw_spl_plotter
-                    if hasattr(draw_spl, "update_overlays"):
-                        try:
-                            print(f"[DEBUG SURFACE CLICK] Calling update_overlays...")
-                            draw_spl.update_overlays(self.settings, self.container)
-                            print(f"[DEBUG SURFACE CLICK] update_overlays returned")
-                        except Exception as e:
-                            # Fehler hier sollen die restliche UI nicht blockieren
-                            print(f"[DEBUG SURFACE CLICK] ERROR in update_overlays: {e}")
-                            import traceback
-                            traceback.print_exc()
+                # für rote Umrandung der ausgewählten Fläche (nur wenn nicht übersprungen)
+                if not skip_overlays:
+                    main_window = getattr(self, "main_window", None)
+                    if (
+                        main_window is not None
+                        and hasattr(main_window, "draw_plots")
+                        and hasattr(main_window.draw_plots, "draw_spl_plotter")
+                    ):
+                        draw_spl = main_window.draw_plots.draw_spl_plotter
+                        if hasattr(draw_spl, "update_overlays"):
+                            try:
+                                print(f"[DEBUG SURFACE CLICK] Calling update_overlays...")
+                                draw_spl.update_overlays(self.settings, self.container)
+                                print(f"[DEBUG SURFACE CLICK] update_overlays returned")
+                            except Exception as e:
+                                # Fehler hier sollen die restliche UI nicht blockieren
+                                print(f"[DEBUG SURFACE CLICK] ERROR in update_overlays: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print(f"[DEBUG SURFACE CLICK] draw_spl has no update_overlays method")
                     else:
-                        print(f"[DEBUG SURFACE CLICK] draw_spl has no update_overlays method")
-                else:
-                    print(f"[DEBUG SURFACE CLICK] Cannot access draw_spl (main_window={main_window is not None})")
+                        print(f"[DEBUG SURFACE CLICK] Cannot access draw_spl (main_window={main_window is not None})")
             except Exception:
                 # Fehler hier sollen die Auswahl nicht blockieren
                 pass
@@ -1189,7 +1313,7 @@ class UISurfaceManager(ModuleBase):
             # Explizites Update des TreeWidgets
             if hasattr(self, 'surface_tree_widget'):
                 self.surface_tree_widget.update()
-                self.surface_tree_widget.expandAll()
+                # expandAll() entfernt - Zustand wird bereits durch load_surfaces() wiederhergestellt
             
             # Aktualisiere Plots und Overlays (inkl. neue Surfaces im 3D-Plot)
             if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
@@ -1208,39 +1332,109 @@ class UISurfaceManager(ModuleBase):
     # ---- Event Handlers ---------------------------------------------
     
     def on_surface_enable_changed(self, surface_id, state):
-        """Wird aufgerufen, wenn sich der Enable-Status eines Surfaces ändert"""
-        surface = self._get_surface(surface_id)
-        if surface:
-            if isinstance(surface, SurfaceDefinition):
-                surface.enabled = (state == Qt.Checked)
-            else:
-                surface['enabled'] = (state == Qt.Checked)
-            
-            # Aktualisiere Berechnungen
-            if hasattr(self.main_window, 'update_speaker_array_calculations'):
-                self.main_window.update_speaker_array_calculations()
+        """Wird aufgerufen, wenn sich der Enable-Status eines Surfaces ändert. Bei Mehrfachauswahl werden alle ausgewählten Surfaces aktualisiert."""
+        enable_value = (state == Qt.Checked)
+        
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.surface_tree_widget.selectedItems()
+        surfaces_to_update = []
+        
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Sammle alle ausgewählten Surfaces
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type == "surface":
+                        item_surface_id = item.data(0, Qt.UserRole)
+                        if isinstance(item_surface_id, dict):
+                            item_surface_id = item_surface_id.get('id')
+                        if item_surface_id:
+                            surfaces_to_update.append(item_surface_id)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Nur das aktuelle Surface
+            surfaces_to_update = [surface_id]
+        
+        # Wende Enable auf alle Surfaces an
+        for sid in surfaces_to_update:
+            surface = self._get_surface(sid)
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    surface.enabled = enable_value
+                else:
+                    surface['enabled'] = enable_value
+                
+                # Aktualisiere auch die Checkbox im TreeWidget
+                item = self._find_tree_item_by_id(sid)
+                if item:
+                    enable_checkbox = self.surface_tree_widget.itemWidget(item, 1)
+                    if enable_checkbox:
+                        enable_checkbox.blockSignals(True)
+                        enable_checkbox.setChecked(enable_value)
+                        enable_checkbox.blockSignals(False)
+        
+        # Aktualisiere Berechnungen
+        if hasattr(self.main_window, 'update_speaker_array_calculations'):
+            self.main_window.update_speaker_array_calculations()
     
     def on_surface_hide_changed(self, surface_id, state):
-        """Wird aufgerufen, wenn sich der Hide-Status eines Surfaces ändert"""
-        surface = self._get_surface(surface_id)
-        if surface:
-            if isinstance(surface, SurfaceDefinition):
-                surface.hidden = (state == Qt.Checked)
-            else:
-                surface['hidden'] = (state == Qt.Checked)
-            
-            # Speichere Hide-Status in Settings
-            if hasattr(self.settings, 'set_surface_hidden'):
-                self.settings.set_surface_hidden(surface_id, state == Qt.Checked)
-            
-            # Aktualisiere Plots und Overlays (inkl. Hide-Status-Änderung)
-            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
-                self.main_window.draw_plots.update_plots_for_surface_state()
-            elif hasattr(self.main_window, 'update_speaker_array_calculations'):
-                # Fallback: Berechnungen aktualisieren
-                # 🚀 OPTIMIERUNG: update_speaker_array_calculations() ruft intern plot_spl() auf,
-                # was wiederum update_overlays() aufruft, daher ist der redundante Aufruf entfernt
-                self.main_window.update_speaker_array_calculations()
+        """Wird aufgerufen, wenn sich der Hide-Status eines Surfaces ändert. Bei Mehrfachauswahl werden alle ausgewählten Surfaces aktualisiert."""
+        hide_value = (state == Qt.Checked)
+        
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.surface_tree_widget.selectedItems()
+        surfaces_to_update = []
+        
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Sammle alle ausgewählten Surfaces
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type == "surface":
+                        item_surface_id = item.data(0, Qt.UserRole)
+                        if isinstance(item_surface_id, dict):
+                            item_surface_id = item_surface_id.get('id')
+                        if item_surface_id:
+                            surfaces_to_update.append(item_surface_id)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Nur das aktuelle Surface
+            surfaces_to_update = [surface_id]
+        
+        # Wende Hide auf alle Surfaces an
+        for sid in surfaces_to_update:
+            surface = self._get_surface(sid)
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    surface.hidden = hide_value
+                else:
+                    surface['hidden'] = hide_value
+                
+                # Speichere Hide-Status in Settings
+                if hasattr(self.settings, 'set_surface_hidden'):
+                    self.settings.set_surface_hidden(sid, hide_value)
+                
+                # Aktualisiere auch die Checkbox im TreeWidget
+                item = self._find_tree_item_by_id(sid)
+                if item:
+                    hide_checkbox = self.surface_tree_widget.itemWidget(item, 2)
+                    if hide_checkbox:
+                        hide_checkbox.blockSignals(True)
+                        hide_checkbox.setChecked(hide_value)
+                        hide_checkbox.blockSignals(False)
+        
+        # Aktualisiere Plots und Overlays (inkl. Hide-Status-Änderung)
+        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+            self.main_window.draw_plots.update_plots_for_surface_state()
+        elif hasattr(self.main_window, 'update_speaker_array_calculations'):
+            # Fallback: Berechnungen aktualisieren
+            # 🚀 OPTIMIERUNG: update_speaker_array_calculations() ruft intern plot_spl() auf,
+            # was wiederum update_overlays() aufruft, daher ist der redundante Aufruf entfernt
+            self.main_window.update_speaker_array_calculations()
     
     def on_surface_xy_changed(self, surface_id, state):
         """Wird aufgerufen, wenn sich der XY-Status eines Surfaces ändert"""
@@ -1275,34 +1469,110 @@ class UISurfaceManager(ModuleBase):
                         self.main_window.calculate_axes(update_plot=True)
     
     def on_group_enable_changed(self, group_item, state):
-        """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert"""
-        group_id = group_item.data(0, Qt.UserRole)
-        checked = (state == Qt.Checked)
-        self._group_controller.set_surface_group_enabled(group_id, checked)
+        """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
+        enable_value = (state == Qt.Checked)
         
-        # Speichere Status in lokalem Cache
-        if group_id in self.surface_groups:
-            self.surface_groups[group_id]['enabled'] = checked
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.surface_tree_widget.selectedItems()
+        groups_to_update = []
         
-        # Aktualisiere alle Child-Checkboxen
-        self._update_group_child_checkboxes(group_item, 1, checked)
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Sammle alle ausgewählten Gruppen
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type == "group":
+                        groups_to_update.append(item)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Nur die aktuelle Gruppe
+            groups_to_update = [group_item]
+        
+        # Wende Enable auf alle Gruppen an
+        for group in groups_to_update:
+            try:
+                group_id_data = group.data(0, Qt.UserRole)
+                if isinstance(group_id_data, dict):
+                    group_id = group_id_data.get("id")
+                else:
+                    group_id = group_id_data
+                
+                if group_id:
+                    self._group_controller.set_surface_group_enabled(group_id, enable_value)
+                    
+                    # Speichere Status in lokalem Cache
+                    if group_id in self.surface_groups:
+                        self.surface_groups[group_id]['enabled'] = enable_value
+                    
+                    # Aktualisiere alle Child-Checkboxen
+                    self._update_group_child_checkboxes(group, 1, enable_value)
+                    
+                    # Aktualisiere auch die Gruppen-Checkbox
+                    enable_checkbox = self.surface_tree_widget.itemWidget(group, 1)
+                    if enable_checkbox:
+                        enable_checkbox.blockSignals(True)
+                        enable_checkbox.setChecked(enable_value)
+                        enable_checkbox.blockSignals(False)
+            except RuntimeError:
+                # Item wurde gelöscht, überspringe
+                continue
         
         # Aktualisiere Berechnungen
         if hasattr(self.main_window, 'update_speaker_array_calculations'):
             self.main_window.update_speaker_array_calculations()
     
     def on_group_hide_changed(self, group_item, state):
-        """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert"""
-        group_id = group_item.data(0, Qt.UserRole)
-        checked = (state == Qt.Checked)
-        self._group_controller.set_surface_group_hidden(group_id, checked)
+        """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
+        hide_value = (state == Qt.Checked)
         
-        # Speichere Status in lokalem Cache
-        if group_id in self.surface_groups:
-            self.surface_groups[group_id]['hidden'] = checked
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.surface_tree_widget.selectedItems()
+        groups_to_update = []
         
-        # Aktualisiere alle Child-Checkboxen
-        self._update_group_child_checkboxes(group_item, 2, checked)
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Sammle alle ausgewählten Gruppen
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type == "group":
+                        groups_to_update.append(item)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Nur die aktuelle Gruppe
+            groups_to_update = [group_item]
+        
+        # Wende Hide auf alle Gruppen an
+        for group in groups_to_update:
+            try:
+                group_id_data = group.data(0, Qt.UserRole)
+                if isinstance(group_id_data, dict):
+                    group_id = group_id_data.get("id")
+                else:
+                    group_id = group_id_data
+                
+                if group_id:
+                    self._group_controller.set_surface_group_hidden(group_id, hide_value)
+                    
+                    # Speichere Status in lokalem Cache
+                    if group_id in self.surface_groups:
+                        self.surface_groups[group_id]['hidden'] = hide_value
+                    
+                    # Aktualisiere alle Child-Checkboxen
+                    self._update_group_child_checkboxes(group, 2, hide_value)
+                    
+                    # Aktualisiere auch die Gruppen-Checkbox
+                    hide_checkbox = self.surface_tree_widget.itemWidget(group, 2)
+                    if hide_checkbox:
+                        hide_checkbox.blockSignals(True)
+                        hide_checkbox.setChecked(hide_value)
+                        hide_checkbox.blockSignals(False)
+            except RuntimeError:
+                # Item wurde gelöscht, überspringe
+                continue
         
         # Aktualisiere Plots und Overlays (inkl. Hide-Status-Änderung der Gruppe)
         if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
@@ -1994,37 +2264,85 @@ class UISurfaceManager(ModuleBase):
     def show_context_menu(self, position):
         """Zeigt das Kontextmenü für das TreeWidget"""
         item = self.surface_tree_widget.itemAt(position)
+        selected_items = self.surface_tree_widget.selectedItems()
         
         menu = QMenu(self.surface_tree_widget)
         
-        add_surface_action = menu.addAction("Add Surface")
-        add_group_action = menu.addAction("Add Group")
-        menu.addSeparator()
-        duplicate_action = menu.addAction("Duplicate")
-        delete_action = menu.addAction("Delete")
+        # Prüfe, ob mehrere Items ausgewählt sind
+        multiple_selected = len(selected_items) > 1
         
-        if item:
-            self.surface_tree_widget.setCurrentItem(item)
-            item_type = item.data(0, Qt.UserRole + 1)
+        if item or selected_items:
+            # Bestimme Item-Typen
+            has_groups = False
+            has_surfaces = False
             
-            if item_type == "group":
+            if selected_items:
+                for sel_item in selected_items:
+                    item_type = sel_item.data(0, Qt.UserRole + 1)
+                    if item_type == "group":
+                        has_groups = True
+                    else:
+                        has_surfaces = True
+            elif item:
+                item_type = item.data(0, Qt.UserRole + 1)
+                if item_type == "group":
+                    has_groups = True
+                else:
+                    has_surfaces = True
+            
+            # Einheitliche Reihenfolge: Duplicate, Rename, ---, Delete
+            duplicate_action = menu.addAction("Duplicate")
+            rename_action = menu.addAction("Rename")
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete")
+            
+            # Anpasse Text basierend auf Typ
+            if has_groups and not has_surfaces:
                 delete_action.setText("Delete Group")
-            else:
+            elif has_surfaces and not has_groups:
                 delete_action.setText("Delete Surface")
+            
+            # Rename deaktivieren, wenn mehrere Items ausgewählt
+            if multiple_selected:
+                rename_action.setEnabled(False)
+            else:
+                # Bei Einzelauswahl: Setze aktuelles Item
+                if item:
+                    self.surface_tree_widget.setCurrentItem(item)
         else:
+            # Kein Item ausgewählt: Zeige Add-Optionen
+            add_surface_action = menu.addAction("Add Surface")
+            add_group_action = menu.addAction("Add Group")
+            menu.addSeparator()
+            duplicate_action = menu.addAction("Duplicate")
+            rename_action = menu.addAction("Rename")
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete")
+            
             delete_action.setEnabled(False)
             duplicate_action.setEnabled(False)
+            rename_action.setEnabled(False)
         
         action = menu.exec_(self.surface_tree_widget.viewport().mapToGlobal(position))
         
-        if action == add_surface_action:
-            self.add_surface()
-        elif action == add_group_action:
-            self.add_group(item)
-        elif action == duplicate_action:
-            self.duplicate_item(item)
-        elif action == delete_action:
-            self.delete_item(item)
+        if action:
+            if action.text() == "Add Surface":
+                self.add_surface()
+            elif action.text() == "Add Group":
+                self.add_group(item)
+            elif action == duplicate_action:
+                if multiple_selected:
+                    self._handle_multiple_duplicate(selected_items)
+                else:
+                    self.duplicate_item(item)
+            elif action == rename_action:
+                if not multiple_selected and item:
+                    self.surface_tree_widget.editItem(item)
+            elif action == delete_action:
+                if multiple_selected:
+                    self._handle_multiple_delete(selected_items)
+                else:
+                    self.delete_item(item)
     
     def add_group(self, reference_item=None):
         """Fügt eine neue Gruppe hinzu"""
@@ -2081,8 +2399,13 @@ class UISurfaceManager(ModuleBase):
                 self.surface_tree_widget.setCurrentItem(item)
                 break
     
-    def duplicate_item(self, item):
-        """Dupliziert ein Surface oder eine Gruppe"""
+    def duplicate_item(self, item, update_calculations=True):
+        """Dupliziert ein Surface oder eine Gruppe
+        
+        Args:
+            item: Das zu duplizierende Item
+            update_calculations: Wenn True, werden Berechnungen am Ende ausgeführt (Standard: True)
+        """
         if not item:
             return
         
@@ -2155,11 +2478,128 @@ class UISurfaceManager(ModuleBase):
                 # Stelle sicher, dass Gruppen-Struktur aktuell ist
                 self._group_controller.ensure_structure()
                 
-                # Lade TreeWidget neu
-                self.load_surfaces()
+                # Lade TreeWidget neu (nur wenn update_calculations=True, sonst wird es am Ende in _handle_multiple_duplicate gemacht)
+                if update_calculations:
+                    # Blockiere Signale während load_surfaces, um Berechnungen zu vermeiden
+                    self.surface_tree_widget.blockSignals(True)
+                    try:
+                        self.load_surfaces()
+                        
+                        # Wähle das neue Surface aus (Signale sind bereits blockiert)
+                        self._select_surface_in_tree(new_surface_id, skip_overlays=False)
+                    finally:
+                        self.surface_tree_widget.blockSignals(False)
+                else:
+                    # Bei Mehrfachauswahl: Nur Surface hinzufügen, TreeWidget wird später neu geladen
+                    pass
+    
+    def _handle_multiple_duplicate(self, selected_items):
+        """Dupliziert mehrere ausgewählte Items. Berechnungen werden erst am Ende ausgeführt."""
+        if not selected_items:
+            return
+        
+        # Blockiere Signale während der gesamten Mehrfach-Duplikation
+        self.surface_tree_widget.blockSignals(True)
+        
+        try:
+            # Stelle sicher, dass Gruppen-Struktur aktuell ist
+            self._group_controller.ensure_structure()
+            
+            # Dupliziere alle Items (ohne Berechnungen während der Duplikation)
+            for item in selected_items:
+                self.duplicate_item(item, update_calculations=False)
+            
+            # Lade TreeWidget einmal am Ende neu (nach allen Duplikationen)
+            # Signale sind bereits blockiert, daher keine Berechnungen
+            self.load_surfaces()
+            
+            # Aktualisiere Plots und Overlays erst nach allen UI-Updates
+            if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                self.main_window.draw_plots.update_plots_for_surface_state()
+            elif hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+        finally:
+            # Signale wieder aktivieren
+            self.surface_tree_widget.blockSignals(False)
+    
+    def _handle_multiple_delete(self, selected_items):
+        """Löscht mehrere ausgewählte Items"""
+        if not selected_items:
+            return
+        
+        # Sammle zuerst alle IDs, bevor wir etwas löschen (sonst werden Items ungültig)
+        surface_ids_to_delete = []
+        group_ids_to_delete = []
+        default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
+        
+        for item in selected_items:
+            if item is None:
+                continue
+            
+            try:
+                item_type = item.data(0, Qt.UserRole + 1)
+            except RuntimeError:
+                # Item wurde bereits gelöscht, überspringe
+                continue
+            
+            if item_type == "surface":
+                surface_id = item.data(0, Qt.UserRole)
+                if isinstance(surface_id, dict):
+                    surface_id = surface_id.get('id')
                 
-                # Wähle das neue Surface aus
-                self._select_surface_in_tree(new_surface_id)
+                # Prüfe, ob es die Default-Surface ist
+                if surface_id != default_surface_id:
+                    surface_ids_to_delete.append(surface_id)
+                else:
+                    from PyQt5.QtWidgets import QMessageBox
+                    QMessageBox.information(
+                        self.surface_dockWidget,
+                        "Action not possible",
+                        "The default surface cannot be deleted."
+                    )
+            elif item_type == "group":
+                group_id = item.data(0, Qt.UserRole)
+                if isinstance(group_id, dict):
+                    group_id = group_id.get('id')
+                
+                # Prüfe, ob es die Root-Gruppe ist
+                if group_id != self._group_controller.root_group_id:
+                    group_ids_to_delete.append(group_id)
+                else:
+                    from PyQt5.QtWidgets import QMessageBox
+                    QMessageBox.information(
+                        self.surface_dockWidget,
+                        "Aktion nicht möglich",
+                        "Die Root-Gruppe kann nicht gelöscht werden."
+                    )
+        
+        # Lösche alle Surfaces auf einmal
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        for surface_id in surface_ids_to_delete:
+            if surface_id in surface_store:
+                # Entferne aus Gruppe
+                self._group_controller.detach_surface(surface_id)
+                del surface_store[surface_id]
+        if surface_ids_to_delete:
+            self.settings.surface_definitions = surface_store
+        
+        # Lösche alle Gruppen auf einmal
+        for group_id in group_ids_to_delete:
+            try:
+                success = self._group_controller.remove_surface_group(group_id)
+                if success and hasattr(self, 'surface_groups') and group_id in self.surface_groups:
+                    del self.surface_groups[group_id]
+            except Exception as e:
+                # Fehler beim Löschen einer Gruppe ignorieren und weitermachen
+                print(f"Fehler beim Löschen der Gruppe {group_id}: {e}")
+        
+        # Lade TreeWidget nur einmal am Ende neu
+        if surface_ids_to_delete or group_ids_to_delete:
+            self.load_surfaces()
+            
+            # 🎯 Trigger Calc/Plot Update: Surfaces/Gruppen wurden gelöscht
+            if hasattr(self.main_window, "draw_plots") and hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                self.main_window.draw_plots.update_plots_for_surface_state()
     
     def delete_item(self, item):
         """Löscht ein Surface oder eine Gruppe"""

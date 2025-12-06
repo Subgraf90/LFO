@@ -2366,10 +2366,14 @@ class Sources(ModuleBase, QObject):
         highlight_array_ids = []
         
         for selected_item in selected_items:
-            item_type = selected_item.data(0, Qt.UserRole + 1)
+            try:
+                item_type = selected_item.data(0, Qt.UserRole + 1)
+            except RuntimeError:
+                # Item wurde gelöscht, überspringe
+                continue
             
             if item_type == "group":
-                # Für Gruppen: Sammle alle Arrays der Gruppe
+                # Für Gruppen: Sammle alle Arrays der Gruppe (rekursiv alle Child-Items)
                 group_name = selected_item.text(0)
                 
                 # Finde die Gruppe in settings.speaker_array_groups
@@ -2387,33 +2391,54 @@ class Sources(ModuleBase, QObject):
                     
                     # Füge alle Child-Array-IDs hinzu
                     for array_id in child_array_ids:
-                        if array_id not in highlight_array_ids:
-                            highlight_array_ids.append(str(array_id))
-                    
-                    # Auch aus dem TreeWidget: Durchlaufe alle Child-Items
-                    for i in range(selected_item.childCount()):
-                        child_item = selected_item.child(i)
-                        child_array_id = child_item.data(0, Qt.UserRole)
-                        if child_array_id is not None:
-                            array_id_str = str(child_array_id)
-                            if array_id_str not in highlight_array_ids:
-                                highlight_array_ids.append(array_id_str)
-                else:
-                    # Fallback: Sammle direkt aus TreeWidget-Childs
-                    for i in range(selected_item.childCount()):
-                        child_item = selected_item.child(i)
-                        child_array_id = child_item.data(0, Qt.UserRole)
-                        if child_array_id is not None:
-                            array_id_str = str(child_array_id)
-                            if array_id_str not in highlight_array_ids:
-                                highlight_array_ids.append(array_id_str)
-            else:
-                # Einzelnes Array
-                speaker_array_id = selected_item.data(0, Qt.UserRole)
-                if speaker_array_id is not None:
-                    array_id_str = str(speaker_array_id)
+                        array_id_str = str(array_id)
+                        if array_id_str not in highlight_array_ids:
+                            highlight_array_ids.append(array_id_str)
+                
+                # Sammle auch direkt aus TreeWidget-Childs (rekursiv für verschachtelte Strukturen)
+                def collect_child_arrays(parent_item):
+                    """Rekursiv sammelt alle Array-IDs aus Child-Items"""
+                    child_ids = []
+                    try:
+                        for i in range(parent_item.childCount()):
+                            child_item = parent_item.child(i)
+                            if child_item is None:
+                                continue
+                            
+                            try:
+                                child_type = child_item.data(0, Qt.UserRole + 1)
+                                if child_type == "group":
+                                    # Rekursiv für verschachtelte Gruppen (falls möglich)
+                                    child_ids.extend(collect_child_arrays(child_item))
+                                else:
+                                    # Array-Item
+                                    child_array_id = child_item.data(0, Qt.UserRole)
+                                    if child_array_id is not None:
+                                        child_ids.append(str(child_array_id))
+                            except RuntimeError:
+                                # Child-Item wurde gelöscht, überspringe
+                                continue
+                    except RuntimeError:
+                        # Parent-Item wurde gelöscht
+                        pass
+                    return child_ids
+                
+                # Sammle alle Child-Arrays rekursiv
+                child_array_ids_from_tree = collect_child_arrays(selected_item)
+                for array_id_str in child_array_ids_from_tree:
                     if array_id_str not in highlight_array_ids:
                         highlight_array_ids.append(array_id_str)
+            else:
+                # Einzelnes Array
+                try:
+                    speaker_array_id = selected_item.data(0, Qt.UserRole)
+                    if speaker_array_id is not None:
+                        array_id_str = str(speaker_array_id)
+                        if array_id_str not in highlight_array_ids:
+                            highlight_array_ids.append(array_id_str)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
         
         # Setze Highlight-IDs
         if highlight_array_ids:
@@ -3408,18 +3433,76 @@ class Sources(ModuleBase, QObject):
 
 
     def update_mute_state(self, array_id, state):
-        speaker_array = self.settings.get_speaker_array(array_id)
-        if speaker_array:
-            speaker_array.mute = (state == Qt.Checked)
-            # Berechnen des beamsteerings, windowing, und Impulse
-            self.main_window.update_speaker_array_calculations()  
+        """Aktualisiert den Mute-Status eines Arrays. Bei Mehrfachauswahl werden alle ausgewählten Arrays aktualisiert."""
+        mute_value = (state == Qt.Checked)
+        
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.sources_tree_widget.selectedItems()
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Wende auf alle ausgewählten Arrays an
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type != "group":  # Nur Arrays, keine Gruppen
+                        item_array_id = item.data(0, Qt.UserRole)
+                        if item_array_id is not None:
+                            speaker_array = self.settings.get_speaker_array(item_array_id)
+                            if speaker_array:
+                                speaker_array.mute = mute_value
+                                
+                                # Aktualisiere auch die Checkbox im TreeWidget
+                                mute_checkbox = self.sources_tree_widget.itemWidget(item, 1)
+                                if mute_checkbox:
+                                    mute_checkbox.blockSignals(True)
+                                    mute_checkbox.setChecked(mute_value)
+                                    mute_checkbox.blockSignals(False)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Normales Verhalten
+            speaker_array = self.settings.get_speaker_array(array_id)
+            if speaker_array:
+                speaker_array.mute = mute_value
+        
+        # Berechnen des beamsteerings, windowing, und Impulse
+        self.main_window.update_speaker_array_calculations()  
     
     def update_hide_state(self, array_id, state):
-        speaker_array = self.settings.get_speaker_array(array_id)
-        if speaker_array:
-            speaker_array.hide = (state == Qt.Checked)
-            # Berechnen des beamsteerings, windowing, und Impulse
-            self.main_window.update_speaker_array_calculations()  
+        """Aktualisiert den Hide-Status eines Arrays. Bei Mehrfachauswahl werden alle ausgewählten Arrays aktualisiert."""
+        hide_value = (state == Qt.Checked)
+        
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.sources_tree_widget.selectedItems()
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Wende auf alle ausgewählten Arrays an
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type != "group":  # Nur Arrays, keine Gruppen
+                        item_array_id = item.data(0, Qt.UserRole)
+                        if item_array_id is not None:
+                            speaker_array = self.settings.get_speaker_array(item_array_id)
+                            if speaker_array:
+                                speaker_array.hide = hide_value
+                                
+                                # Aktualisiere auch die Checkbox im TreeWidget
+                                hide_checkbox = self.sources_tree_widget.itemWidget(item, 2)
+                                if hide_checkbox:
+                                    hide_checkbox.blockSignals(True)
+                                    hide_checkbox.setChecked(hide_value)
+                                    hide_checkbox.blockSignals(False)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Normales Verhalten
+            speaker_array = self.settings.get_speaker_array(array_id)
+            if speaker_array:
+                speaker_array.hide = hide_value
+        
+        # Berechnen des beamsteerings, windowing, und Impulse
+        self.main_window.update_speaker_array_calculations()  
                     
     def update_array_id(self, item, column):
         array_id = item.data(0, Qt.UserRole)
@@ -3521,55 +3604,68 @@ class Sources(ModuleBase, QObject):
                     self.main_window.draw_plots.draw_polar_pattern.initialize_empty_plots()
 
 
-    def duplicate_array(self, item):
-        """Dupliziert das ausgewählte Array"""
+    def duplicate_array(self, item, update_calculations=True):
+        """Dupliziert das ausgewählte Array
+        
+        Args:
+            item: Das zu duplizierende Array-Item
+            update_calculations: Wenn True, werden Berechnungen am Ende ausgeführt (Standard: True)
+        """
         if item:
-            original_array_id = item.data(0, Qt.UserRole)
-            original_array = self.settings.get_speaker_array(original_array_id)
+            # Blockiere Signale während der Duplikation, um Berechnungen zu vermeiden
+            self.sources_tree_widget.blockSignals(True)
             
-            if original_array:
-                # Erstelle neue Array-ID
-                new_array_id = 1
-                while new_array_id in self.settings.get_all_speaker_array_ids():
-                    new_array_id += 1
+            try:
+                original_array_id = item.data(0, Qt.UserRole)
+                original_array = self.settings.get_speaker_array(original_array_id)
                 
-                # Kopiere Array-Einstellungen
-                self.settings.duplicate_speaker_array(original_array_id, new_array_id)
-                new_array = self.settings.get_speaker_array(new_array_id)
-                new_array.name = f"copy of {original_array.name}"
-                
-                # Erstelle neues TreeWidget Item
-                new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
-                new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
-                new_array_item.setData(0, Qt.UserRole, new_array_id)
-                new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
-                
-                # Erstelle Checkboxen
-                mute_checkbox = self.create_checkbox(new_array.mute)
-                hide_checkbox = self.create_checkbox(new_array.hide)
-                self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
-                self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
-                self._update_color_indicator(new_array_item, new_array)
-                
-                mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
-                hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
-                
-                # Erstelle neue Speakerspecs-Instanz
-                speakerspecs_instance = self.create_speakerspecs_instance(new_array_id)
-                self.init_ui(speakerspecs_instance, self.speaker_tab_layout)
-                self.add_speakerspecs_instance(new_array_id, speakerspecs_instance)
-                
-                # Wähle das neue Item aus
-                self.sources_tree_widget.setCurrentItem(new_array_item)
-                
-                # Aktualisiere die Anzeige
-                self.main_window.update_speaker_array_calculations()
-                
-                # Validiere alle Checkboxen nach Duplizierung
-                self.validate_all_checkboxes()
-                
-                # Passe Spaltenbreite an den Inhalt an
-                self.adjust_column_width_to_content()
+                if original_array:
+                    # Erstelle neue Array-ID
+                    new_array_id = 1
+                    while new_array_id in self.settings.get_all_speaker_array_ids():
+                        new_array_id += 1
+                    
+                    # Kopiere Array-Einstellungen
+                    self.settings.duplicate_speaker_array(original_array_id, new_array_id)
+                    new_array = self.settings.get_speaker_array(new_array_id)
+                    new_array.name = f"copy of {original_array.name}"
+                    
+                    # Erstelle neues TreeWidget Item
+                    new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
+                    new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
+                    new_array_item.setData(0, Qt.UserRole, new_array_id)
+                    new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+                    
+                    # Erstelle Checkboxen
+                    mute_checkbox = self.create_checkbox(new_array.mute)
+                    hide_checkbox = self.create_checkbox(new_array.hide)
+                    self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
+                    self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
+                    self._update_color_indicator(new_array_item, new_array)
+                    
+                    mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
+                    hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
+                    
+                    # Erstelle neue Speakerspecs-Instanz
+                    speakerspecs_instance = self.create_speakerspecs_instance(new_array_id)
+                    self.init_ui(speakerspecs_instance, self.speaker_tab_layout)
+                    self.add_speakerspecs_instance(new_array_id, speakerspecs_instance)
+                    
+                    # Wähle das neue Item aus (Signale sind blockiert, daher keine Berechnungen)
+                    self.sources_tree_widget.setCurrentItem(new_array_item)
+                    
+                    # Validiere alle Checkboxen nach Duplizierung
+                    self.validate_all_checkboxes()
+                    
+                    # Passe Spaltenbreite an den Inhalt an
+                    self.adjust_column_width_to_content()
+                    
+                    # Aktualisiere die Anzeige erst nach allen UI-Updates (nur wenn gewünscht)
+                    if update_calculations:
+                        self.main_window.update_speaker_array_calculations()
+            finally:
+                # Signale wieder aktivieren
+                self.sources_tree_widget.blockSignals(False)
 
 
             
@@ -5050,36 +5146,68 @@ class Sources(ModuleBase, QObject):
     def show_context_menu(self, position):
         """Zeigt das Kontextmenü an der Mausposition"""
         item = self.sources_tree_widget.itemAt(position)
+        selected_items = self.sources_tree_widget.selectedItems()
         context_menu = QMenu()
         
-        if item:
-            # Prüfe, ob es sich um eine Gruppe handelt
-            is_group = item.data(0, Qt.UserRole + 1) == "group"  # UserRole+1 als Marker für Gruppen
+        # Prüfe, ob mehrere Items ausgewählt sind
+        multiple_selected = len(selected_items) > 1
+        
+        if item or selected_items:
+            # Bestimme Item-Typen der ausgewählten Items
+            has_groups = False
+            has_arrays = False
             
-            if is_group:
-                # Kontextmenü für Gruppen
-                duplicate_group_action = context_menu.addAction("Duplicate Group")
-                rename_action = context_menu.addAction("Rename")
-                context_menu.addSeparator()
-                delete_group_action = context_menu.addAction("Delete Group")
-                
-                duplicate_group_action.triggered.connect(lambda: self.duplicate_group(item))
-                rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
-                delete_group_action.triggered.connect(lambda: self.delete_group(item))
-            else:
-                # Kontextmenü für Source Items
-                duplicate_action = context_menu.addAction("Duplicate")
-                rename_action = context_menu.addAction("Rename")
-                context_menu.addSeparator()
+            if selected_items:
+                for sel_item in selected_items:
+                    item_type = sel_item.data(0, Qt.UserRole + 1)
+                    if item_type == "group":
+                        has_groups = True
+                    else:
+                        has_arrays = True
+            elif item:
+                item_type = item.data(0, Qt.UserRole + 1)
+                if item_type == "group":
+                    has_groups = True
+                else:
+                    has_arrays = True
+            
+            # Einheitliche Reihenfolge: Duplicate, Rename, ---, Change Color (nur Arrays), ---, Delete
+            duplicate_action = context_menu.addAction("Duplicate" if not has_groups else "Duplicate Group" if not has_arrays else "Duplicate")
+            rename_action = context_menu.addAction("Rename")
+            
+            # Rename deaktivieren, wenn mehrere Items ausgewählt
+            if multiple_selected:
+                rename_action.setEnabled(False)
+            
+            context_menu.addSeparator()
+            
+            # Change Color nur für Arrays
+            if has_arrays and not has_groups:
                 change_color_action = context_menu.addAction("Change Color")
                 context_menu.addSeparator()
-                delete_action = context_menu.addAction("Delete")
+            
+            delete_action = context_menu.addAction("Delete" if not has_groups else "Delete Group" if not has_arrays else "Delete")
+            
+            # Verbinde Aktionen mit Funktionen
+            if multiple_selected:
+                # Mehrere Items: Führe Aktionen für alle aus
+                duplicate_action.triggered.connect(lambda: self._handle_multiple_duplicate(selected_items))
+                delete_action.triggered.connect(lambda: self._handle_multiple_delete(selected_items))
+                if has_arrays and not has_groups:
+                    change_color_action.triggered.connect(lambda: self._handle_multiple_change_color(selected_items))
+            else:
+                # Einzelnes Item
+                if has_groups:
+                    duplicate_action.triggered.connect(lambda: self.duplicate_group(item))
+                    delete_action.triggered.connect(lambda: self.delete_group(item))
+                else:
+                    duplicate_action.triggered.connect(lambda: self.duplicate_array(item))
+                    delete_action.triggered.connect(lambda: self.delete_array())
+                    if has_arrays and not has_groups:
+                        change_color_action.triggered.connect(lambda: self.change_array_color(item))
                 
-                # Verbinde Aktionen mit Funktionen
-                duplicate_action.triggered.connect(lambda: self.duplicate_array(item))
-                rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
-                change_color_action.triggered.connect(lambda: self.change_array_color(item))
-                delete_action.triggered.connect(lambda: self.delete_array())
+                if not multiple_selected:
+                    rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
         else:
             # Kontextmenü für leeren Bereich
             create_group_action = context_menu.addAction("Create Group")
@@ -5231,6 +5359,9 @@ class Sources(ModuleBase, QObject):
         if not font.bold():
             font.setBold(True)
         item.setFont(0, font)
+        # Erhöhe Item-Höhe für mehr Abstand zwischen Gruppen
+        from PyQt5.QtCore import QSize
+        item.setSizeHint(0, QSize(0, 32))  # Standard ist ~24px, erhöht auf 32px
 
     def _update_color_indicator(self, item, speaker_array):
         """Erstellt oder aktualisiert das Farb-Quadrat eines Source-Items."""
@@ -5342,165 +5473,232 @@ class Sources(ModuleBase, QObject):
         # Passe Spaltenbreite an
         self.adjust_column_width_to_content()
     
-    def duplicate_group(self, group_item):
-        """Dupliziert eine Gruppe mit allen ihren Child-Arrays"""
+    def duplicate_group(self, group_item, update_calculations=True):
+        """Dupliziert eine Gruppe mit allen ihren Child-Arrays
+        
+        Args:
+            group_item: Das zu duplizierende Gruppen-Item
+            update_calculations: Wenn True, werden Berechnungen am Ende ausgeführt (Standard: True)
+        """
         if not group_item:
             return
         
-        # Prüfe, ob es wirklich eine Gruppe ist
-        if group_item.data(0, Qt.UserRole + 1) != "group":
-            return
+        # Blockiere Signale während der Duplikation, um Berechnungen zu vermeiden
+        self.sources_tree_widget.blockSignals(True)
         
-        # Sammle alle Child-Array-IDs
-        child_array_ids = []
-        for i in range(group_item.childCount()):
-            child = group_item.child(i)
-            array_id = child.data(0, Qt.UserRole)
-            if array_id is not None:
-                child_array_ids.append(array_id)
-        
-        if not child_array_ids:
-            return  # Keine Arrays zum Duplizieren
-        
-        # Hole Gruppen-Informationen
-        group_name = group_item.text(0)
-        mute_checkbox = self.sources_tree_widget.itemWidget(group_item, 1)
-        hide_checkbox = self.sources_tree_widget.itemWidget(group_item, 2)
-        group_mute = mute_checkbox.isChecked() if mute_checkbox else False
-        group_hide = hide_checkbox.isChecked() if hide_checkbox else False
-        
-        # Dupliziere alle Arrays in der Gruppe
-        duplicated_array_ids = []
-        duplicated_items = []
-        
-        for array_id in child_array_ids:
-            original_array = self.settings.get_speaker_array(array_id)
-            if not original_array:
-                continue
+        try:
+            # Prüfe, ob es wirklich eine Gruppe ist
+            if group_item.data(0, Qt.UserRole + 1) != "group":
+                return
             
-            # Erstelle neue Array-ID
-            new_array_id = 1
-            while new_array_id in self.settings.get_all_speaker_array_ids():
-                new_array_id += 1
+            # Sammle alle Child-Array-IDs
+            child_array_ids = []
+            for i in range(group_item.childCount()):
+                child = group_item.child(i)
+                array_id = child.data(0, Qt.UserRole)
+                if array_id is not None:
+                    child_array_ids.append(array_id)
             
-            # Dupliziere das Array
-            self.settings.duplicate_speaker_array(array_id, new_array_id)
-            new_array = self.settings.get_speaker_array(new_array_id)
-            new_array.name = f"copy of {original_array.name}"
+            if not child_array_ids:
+                return  # Keine Arrays zum Duplizieren
             
-            duplicated_array_ids.append(new_array_id)
+            # Hole Gruppen-Informationen
+            group_name = group_item.text(0)
+            mute_checkbox = self.sources_tree_widget.itemWidget(group_item, 1)
+            hide_checkbox = self.sources_tree_widget.itemWidget(group_item, 2)
+            group_mute = mute_checkbox.isChecked() if mute_checkbox else False
+            group_hide = hide_checkbox.isChecked() if hide_checkbox else False
             
-            # Erstelle neues TreeWidget Item
-            new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
-            new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
-            new_array_item.setData(0, Qt.UserRole, new_array_id)
-            new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+            # Dupliziere alle Arrays in der Gruppe
+            duplicated_array_ids = []
+            duplicated_items = []
             
-            # Erstelle Checkboxen
-            mute_checkbox = self.create_checkbox(new_array.mute)
-            hide_checkbox = self.create_checkbox(new_array.hide)
-            self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
-            self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
-            self._update_color_indicator(new_array_item, new_array)
+            for array_id in child_array_ids:
+                original_array = self.settings.get_speaker_array(array_id)
+                if not original_array:
+                    continue
+                
+                # Erstelle neue Array-ID
+                new_array_id = 1
+                while new_array_id in self.settings.get_all_speaker_array_ids():
+                    new_array_id += 1
+                
+                # Dupliziere das Array
+                self.settings.duplicate_speaker_array(array_id, new_array_id)
+                new_array = self.settings.get_speaker_array(new_array_id)
+                new_array.name = f"copy of {original_array.name}"
+                
+                duplicated_array_ids.append(new_array_id)
+                
+                # Erstelle neues TreeWidget Item
+                new_array_item = QTreeWidgetItem(self.sources_tree_widget, [new_array.name])
+                new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
+                new_array_item.setData(0, Qt.UserRole, new_array_id)
+                new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+                
+                # Erstelle Checkboxen
+                mute_checkbox = self.create_checkbox(new_array.mute)
+                hide_checkbox = self.create_checkbox(new_array.hide)
+                self.sources_tree_widget.setItemWidget(new_array_item, 1, mute_checkbox)
+                self.sources_tree_widget.setItemWidget(new_array_item, 2, hide_checkbox)
+                self._update_color_indicator(new_array_item, new_array)
+                
+                mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
+                hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
+                
+                # Erstelle neue Speakerspecs-Instanz
+                speakerspecs_instance = self.create_speakerspecs_instance(new_array_id)
+                self.init_ui(speakerspecs_instance, self.speaker_tab_layout)
+                self.add_speakerspecs_instance(new_array_id, speakerspecs_instance)
+                
+                duplicated_items.append(new_array_item)
             
-            mute_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_mute_state(id, state))
-            hide_checkbox.stateChanged.connect(lambda state, id=new_array_id: self.update_hide_state(id, state))
+            # Erstelle neue Gruppe
+            group_count = sum(1 for i in range(self.sources_tree_widget.topLevelItemCount()) 
+                             if self.sources_tree_widget.topLevelItem(i) and 
+                             self.sources_tree_widget.topLevelItem(i).data(0, Qt.UserRole + 1) == "group")
+            new_group_name = f"copy of {group_name}"
             
-            # Erstelle neue Speakerspecs-Instanz
-            speakerspecs_instance = self.create_speakerspecs_instance(new_array_id)
-            self.init_ui(speakerspecs_instance, self.speaker_tab_layout)
-            self.add_speakerspecs_instance(new_array_id, speakerspecs_instance)
+            new_group_item = QTreeWidgetItem(self.sources_tree_widget, [new_group_name])
+            new_group_item.setFlags(new_group_item.flags() | Qt.ItemIsEditable)
+            new_group_item.setData(0, Qt.UserRole + 1, "group")
+            new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
+            self._apply_group_item_style(new_group_item)
             
-            duplicated_items.append(new_array_item)
-        
-        # Erstelle neue Gruppe
-        group_count = sum(1 for i in range(self.sources_tree_widget.topLevelItemCount()) 
-                         if self.sources_tree_widget.topLevelItem(i) and 
-                         self.sources_tree_widget.topLevelItem(i).data(0, Qt.UserRole + 1) == "group")
-        new_group_name = f"copy of {group_name}"
-        
-        new_group_item = QTreeWidgetItem(self.sources_tree_widget, [new_group_name])
-        new_group_item.setFlags(new_group_item.flags() | Qt.ItemIsEditable)
-        new_group_item.setData(0, Qt.UserRole + 1, "group")
-        new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
-        self._apply_group_item_style(new_group_item)
-        
-        # Erstelle Checkboxen für neue Gruppe
-        new_mute_checkbox = self.create_checkbox(group_mute)
-        new_hide_checkbox = self.create_checkbox(group_hide)
-        
-        # Verbinde Checkboxen
-        new_mute_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_mute_changed(g_item, state))
-        new_hide_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_hide_changed(g_item, state))
-        
-        self.sources_tree_widget.setItemWidget(new_group_item, 1, new_mute_checkbox)
-        self.sources_tree_widget.setItemWidget(new_group_item, 2, new_hide_checkbox)
-        
-        # Füge alle duplizierten Items zur neuen Gruppe hinzu
-        for array_item in duplicated_items:
-            new_group_item.addChild(array_item)
-            # Stelle sicher, dass Checkboxen existieren
-            self.ensure_source_checkboxes(array_item)
-        
-        new_group_item.setExpanded(True)
-        
-        # Validiere alle Checkboxen nach Duplizierung der Gruppe
-        self.validate_all_checkboxes()
-        
-        # Passe Spaltenbreite an
-        self.adjust_column_width_to_content()
-        
-        # Aktualisiere Berechnungen
-        self.main_window.update_speaker_array_calculations()
+            # Erstelle Checkboxen für neue Gruppe
+            new_mute_checkbox = self.create_checkbox(group_mute)
+            new_hide_checkbox = self.create_checkbox(group_hide)
+            
+            # Verbinde Checkboxen
+            new_mute_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_mute_changed(g_item, state))
+            new_hide_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_hide_changed(g_item, state))
+            
+            self.sources_tree_widget.setItemWidget(new_group_item, 1, new_mute_checkbox)
+            self.sources_tree_widget.setItemWidget(new_group_item, 2, new_hide_checkbox)
+            
+            # Füge alle duplizierten Items zur neuen Gruppe hinzu
+            for array_item in duplicated_items:
+                new_group_item.addChild(array_item)
+                # Stelle sicher, dass Checkboxen existieren
+                self.ensure_source_checkboxes(array_item)
+            
+            new_group_item.setExpanded(True)
+            
+            # Validiere alle Checkboxen nach Duplizierung der Gruppe
+            self.validate_all_checkboxes()
+            
+            # Passe Spaltenbreite an
+            self.adjust_column_width_to_content()
+            
+            # Aktualisiere Berechnungen erst nach allen UI-Updates (nur wenn gewünscht)
+            if update_calculations:
+                self.main_window.update_speaker_array_calculations()
+        finally:
+            # Signale wieder aktivieren
+            self.sources_tree_widget.blockSignals(False)
     
     def on_group_mute_changed(self, group_item, state):
-        """Handler für Mute-Checkbox von Gruppen - setzt Mute für alle Childs"""
+        """Handler für Mute-Checkbox von Gruppen - setzt Mute für alle Childs. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
         if not group_item:
             return
         
         mute_value = (state == Qt.Checked)
         
-        # Setze Mute für alle Child-Arrays
-        for i in range(group_item.childCount()):
-            child = group_item.child(i)
-            array_id = child.data(0, Qt.UserRole)
-            if array_id is not None:
-                speaker_array = self.settings.get_speaker_array(array_id)
-                if speaker_array:
-                    speaker_array.mute = mute_value
-                    
-                    # Aktualisiere auch die Checkbox im Child
-                    child_mute_checkbox = self.sources_tree_widget.itemWidget(child, 1)
-                    if child_mute_checkbox:
-                        child_mute_checkbox.blockSignals(True)
-                        child_mute_checkbox.setChecked(mute_value)
-                        child_mute_checkbox.blockSignals(False)
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.sources_tree_widget.selectedItems()
+        groups_to_update = []
+        
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Sammle alle ausgewählten Gruppen
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type == "group":
+                        groups_to_update.append(item)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Nur die aktuelle Gruppe
+            groups_to_update = [group_item]
+        
+        # Wende Mute auf alle Gruppen und deren Childs an
+        for group in groups_to_update:
+            # Setze Mute für alle Child-Arrays
+            for i in range(group.childCount()):
+                child = group.child(i)
+                array_id = child.data(0, Qt.UserRole)
+                if array_id is not None:
+                    speaker_array = self.settings.get_speaker_array(array_id)
+                    if speaker_array:
+                        speaker_array.mute = mute_value
+                        
+                        # Aktualisiere auch die Checkbox im Child
+                        child_mute_checkbox = self.sources_tree_widget.itemWidget(child, 1)
+                        if child_mute_checkbox:
+                            child_mute_checkbox.blockSignals(True)
+                            child_mute_checkbox.setChecked(mute_value)
+                            child_mute_checkbox.blockSignals(False)
+            
+            # Aktualisiere auch die Gruppen-Checkbox
+            group_mute_checkbox = self.sources_tree_widget.itemWidget(group, 1)
+            if group_mute_checkbox:
+                group_mute_checkbox.blockSignals(True)
+                group_mute_checkbox.setChecked(mute_value)
+                group_mute_checkbox.blockSignals(False)
         
         # Aktualisiere Berechnungen
         self.main_window.update_speaker_array_calculations()
     
     def on_group_hide_changed(self, group_item, state):
-        """Handler für Hide-Checkbox von Gruppen - setzt Hide für alle Childs"""
+        """Handler für Hide-Checkbox von Gruppen - setzt Hide für alle Childs. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
         if not group_item:
             return
         
         hide_value = (state == Qt.Checked)
         
-        # Setze Hide für alle Child-Arrays
-        for i in range(group_item.childCount()):
-            child = group_item.child(i)
-            array_id = child.data(0, Qt.UserRole)
-            if array_id is not None:
-                speaker_array = self.settings.get_speaker_array(array_id)
-                if speaker_array:
-                    speaker_array.hide = hide_value
-                    
-                    # Aktualisiere auch die Checkbox im Child
-                    child_hide_checkbox = self.sources_tree_widget.itemWidget(child, 2)
-                    if child_hide_checkbox:
-                        child_hide_checkbox.blockSignals(True)
-                        child_hide_checkbox.setChecked(hide_value)
-                        child_hide_checkbox.blockSignals(False)
+        # Prüfe, ob mehrere Items ausgewählt sind
+        selected_items = self.sources_tree_widget.selectedItems()
+        groups_to_update = []
+        
+        if len(selected_items) > 1:
+            # Mehrfachauswahl: Sammle alle ausgewählten Gruppen
+            for item in selected_items:
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type == "group":
+                        groups_to_update.append(item)
+                except RuntimeError:
+                    # Item wurde gelöscht, überspringe
+                    continue
+        else:
+            # Einzelauswahl: Nur die aktuelle Gruppe
+            groups_to_update = [group_item]
+        
+        # Wende Hide auf alle Gruppen und deren Childs an
+        for group in groups_to_update:
+            # Setze Hide für alle Child-Arrays
+            for i in range(group.childCount()):
+                child = group.child(i)
+                array_id = child.data(0, Qt.UserRole)
+                if array_id is not None:
+                    speaker_array = self.settings.get_speaker_array(array_id)
+                    if speaker_array:
+                        speaker_array.hide = hide_value
+                        
+                        # Aktualisiere auch die Checkbox im Child
+                        child_hide_checkbox = self.sources_tree_widget.itemWidget(child, 2)
+                        if child_hide_checkbox:
+                            child_hide_checkbox.blockSignals(True)
+                            child_hide_checkbox.setChecked(hide_value)
+                            child_hide_checkbox.blockSignals(False)
+            
+            # Aktualisiere auch die Gruppen-Checkbox
+            group_hide_checkbox = self.sources_tree_widget.itemWidget(group, 2)
+            if group_hide_checkbox:
+                group_hide_checkbox.blockSignals(True)
+                group_hide_checkbox.setChecked(hide_value)
+                group_hide_checkbox.blockSignals(False)
         
         # Aktualisiere Berechnungen
         self.main_window.update_speaker_array_calculations()
@@ -5519,6 +5717,125 @@ class Sources(ModuleBase, QObject):
                 
                 # Aktualisiere die Anzeige
                 self.main_window.update_speaker_array_calculations()
+    
+    def _handle_multiple_duplicate(self, selected_items):
+        """Dupliziert mehrere ausgewählte Items. Berechnungen werden erst am Ende ausgeführt."""
+        if not selected_items:
+            return
+        
+        # Blockiere Signale während der gesamten Mehrfach-Duplikation
+        self.sources_tree_widget.blockSignals(True)
+        
+        try:
+            # Trenne Gruppen und Arrays
+            groups = [item for item in selected_items if item.data(0, Qt.UserRole + 1) == "group"]
+            arrays = [item for item in selected_items if item.data(0, Qt.UserRole + 1) != "group"]
+            
+            # Dupliziere zuerst Arrays, dann Gruppen (ohne Berechnungen während der Duplikation)
+            for item in arrays:
+                self.duplicate_array(item, update_calculations=False)
+            
+            for item in groups:
+                self.duplicate_group(item, update_calculations=False)
+            
+            # Validiere alle Checkboxen nach allen Duplikationen
+            self.validate_all_checkboxes()
+            
+            # Passe Spaltenbreite an
+            self.adjust_column_width_to_content()
+            
+            # Aktualisiere Berechnungen erst nach allen UI-Updates
+            self.main_window.update_speaker_array_calculations()
+        finally:
+            # Signale wieder aktivieren
+            self.sources_tree_widget.blockSignals(False)
+    
+    def _handle_multiple_delete(self, selected_items):
+        """Löscht mehrere ausgewählte Items"""
+        if not selected_items:
+            return
+        
+        # Sammle zuerst alle IDs, bevor wir etwas löschen (sonst werden Items ungültig)
+        array_ids_to_delete = []
+        group_items_to_delete = []
+        speakerspecs_to_remove = []
+        
+        for item in selected_items:
+            if item is None:
+                continue
+            
+            try:
+                item_type = item.data(0, Qt.UserRole + 1)
+            except RuntimeError:
+                # Item wurde bereits gelöscht, überspringe
+                continue
+            
+            if item_type == "group":
+                group_items_to_delete.append(item)
+            else:
+                array_id = item.data(0, Qt.UserRole)
+                if array_id is not None:
+                    array_ids_to_delete.append((item, array_id))
+        
+        # Lösche zuerst Arrays
+        for item, array_id in array_ids_to_delete:
+            try:
+                # Entferne das Item aus dem TreeWidget
+                parent = item.parent()
+                if parent:
+                    parent.removeChild(item)
+                else:
+                    index = self.sources_tree_widget.indexOfTopLevelItem(item)
+                    if index != -1:
+                        self.sources_tree_widget.takeTopLevelItem(index)
+                
+                # Entferne das Array aus den Einstellungen
+                self.settings.remove_speaker_array(array_id)
+                
+                # Sammle speakerspecs-Objekte zum Entfernen
+                for instance in self.speakerspecs_instance:
+                    if instance['id'] == array_id:
+                        speakerspecs_to_remove.append(instance)
+                        break
+            except RuntimeError:
+                # Item wurde bereits gelöscht, überspringe
+                continue
+        
+        # Entferne speakerspecs-Objekte
+        for instance in speakerspecs_to_remove:
+            if instance in self.speakerspecs_instance:
+                self.speakerspecs_instance.remove(instance)
+                if 'scroll_area' in instance:
+                    instance['scroll_area'].setParent(None)
+        
+        # Lösche Gruppen (delete_group ruft keine TreeWidget-Neuaufbau-Funktion auf)
+        for item in group_items_to_delete:
+            try:
+                self.delete_group(item)
+            except RuntimeError:
+                # Item wurde bereits gelöscht, überspringe
+                continue
+        
+        # Aktualisiere die Berechnungen
+        if array_ids_to_delete or group_items_to_delete:
+            self.main_window.update_speaker_array_calculations()
+        
+        # Validiere alle Checkboxen nach dem Löschen
+        self.validate_all_checkboxes()
+        
+        # Passe Spaltenbreite an
+        self.adjust_column_width_to_content()
+    
+    def _handle_multiple_change_color(self, selected_items):
+        """Ändert die Farbe mehrerer ausgewählter Arrays"""
+        if not selected_items:
+            return
+        
+        # Nur Arrays, keine Gruppen
+        arrays = [item for item in selected_items if item.data(0, Qt.UserRole + 1) != "group"]
+        
+        for item in arrays:
+            self.change_array_color(item)
 
     def update_delay_fields_state(self, speaker_array_id, is_manual):
         """
@@ -5815,6 +6132,78 @@ class Sources(ModuleBase, QObject):
                     'relative_gain': existing_data.get('relative_gain', 0.0)
                 }
     
+    def _save_expand_state(self):
+        """Speichert den Expand/Collapse-Zustand aller Gruppen im TreeWidget."""
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return {}
+        
+        expand_state = {}
+        
+        def save_item_state(item, path=""):
+            """Rekursiv speichert den Expand-Zustand von Items."""
+            if not item:
+                return
+            
+            item_type = item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                # Speichere den Zustand für Gruppen
+                group_name = item.text(0)
+                item_path = f"{path}/{group_name}" if path else group_name
+                expand_state[item_path] = item.isExpanded()
+                
+                # Rekursiv für Child-Items
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    save_item_state(child, item_path)
+            else:
+                # Für Arrays: Rekursiv für Child-Items (falls sie in Gruppen sind)
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    save_item_state(child, path)
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            item = self.sources_tree_widget.topLevelItem(i)
+            save_item_state(item)
+        
+        return expand_state
+    
+    def _restore_expand_state(self, expand_state):
+        """Stellt den Expand/Collapse-Zustand aller Gruppen im TreeWidget wieder her."""
+        if not hasattr(self, 'sources_tree_widget') or not self.sources_tree_widget:
+            return
+        if not expand_state:
+            return
+        
+        def restore_item_state(item, path=""):
+            """Rekursiv stellt den Expand-Zustand von Items wieder her."""
+            if not item:
+                return
+            
+            item_type = item.data(0, Qt.UserRole + 1)
+            if item_type == "group":
+                # Stelle den Zustand für Gruppen wieder her
+                group_name = item.text(0)
+                item_path = f"{path}/{group_name}" if path else group_name
+                
+                if item_path in expand_state:
+                    item.setExpanded(expand_state[item_path])
+                
+                # Rekursiv für Child-Items
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    restore_item_state(child, item_path)
+            else:
+                # Für Arrays: Rekursiv für Child-Items (falls sie in Gruppen sind)
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    restore_item_state(child, path)
+        
+        # Durchlaufe alle Top-Level-Items
+        for i in range(self.sources_tree_widget.topLevelItemCount()):
+            item = self.sources_tree_widget.topLevelItem(i)
+            restore_item_state(item)
+    
     def load_groups_structure(self):
         """
         Lädt die Gruppen-Struktur aus settings.speaker_array_groups und stellt sie im TreeWidget wieder her.
@@ -5824,6 +6213,9 @@ class Sources(ModuleBase, QObject):
         
         if not hasattr(self.settings, 'speaker_array_groups') or not self.settings.speaker_array_groups:
             return
+        
+        # Speichere aktuellen Expand-Zustand vor dem Neuaufbau
+        expand_state = self._save_expand_state()
         
         # Blockiere Signale während des Ladens
         self.sources_tree_widget.blockSignals(True)
@@ -5891,11 +6283,12 @@ class Sources(ModuleBase, QObject):
                         
                         # Stelle sicher, dass Checkboxen existieren
                         self.ensure_source_checkboxes(array_item)
-                
-                group_item.setExpanded(True)
             
             # Validiere alle Checkboxen nach dem Laden
             self.validate_all_checkboxes()
+            
+            # Stelle den Expand-Zustand wieder her
+            self._restore_expand_state(expand_state)
             
             # Passe Spaltenbreite an
             self.adjust_column_width_to_content()
