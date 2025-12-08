@@ -25,7 +25,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     prepare_vertical_plot_geometry,
     VerticalPlotGeometry,
 )
-from Module_LFO.Modules_Init.Logging import measure_time
+from Module_LFO.Modules_Init.Logging import PERF_ENABLED, measure_time, perf_section
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DHelpers import (
     has_valid_data,
     compute_surface_signature,
@@ -35,7 +35,8 @@ from Module_LFO.Modules_Plot.Plot_SPL_3D.ColorbarManager import PHASE_CMAP
 
 DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
 
-# 🎯 NEUER PLOT: Upscaling-Faktor für Grid-Auflösung
+# 🎯 Upscaling-Faktor für Grid-Auflösung (einheitlich für alle Flächen)
+# Gleichbehandlung: 1 = kein Upscaling (planar/sloped/vertikal gleich dicht)
 PLOT_UPSCALE_FACTOR = 6
 
 
@@ -643,8 +644,15 @@ class SPL3DPlotRenderer:
                 edge_spl_values = self.functions.mag2db(pressure_magnitude)
                 edge_spl_values = np.nan_to_num(edge_spl_values, nan=0.0, posinf=0.0, neginf=0.0)
             
-            # Erstelle Punkte-Array für Randpunkte
+            # 🎯 WICHTIG: Randpunkte werden bereits entlang der 3D-Kanten generiert und liegen daher
+            # bereits exakt auf der Flächenebene. KEINE Projektion nötig!
+            # Die Projektion würde Randpunkte außerhalb des Grid-Bereichs nach innen verschieben,
+            # was zu unsauberen Rändern führt.
             edge_points_3d = np.column_stack([edge_x, edge_y, edge_z])
+            
+            is_slanted = vertical_orientation in ("xz_slanted", "yz_slanted")
+            if DEBUG_PLOT3D_TIMING and is_slanted:
+                print(f"[DEBUG Plot Mesh] [{vertical_orientation}] Randpunkte direkt verwendet (bereits auf 3D-Kanten)")
             
             # Hole Punkte und Scalar-Werte aus Haupt-Mesh
             main_points = main_mesh.points
@@ -654,28 +662,76 @@ class SPL3DPlotRenderer:
             combined_points = np.vstack([main_points, edge_points_3d])
             combined_scalars = np.concatenate([main_scalars, edge_spl_values])
             
-            print(f"[DEBUG Plot Mesh] Kombiniere: {len(main_points)} Grid-Punkte + {len(edge_points_3d)} Randpunkte = {len(combined_points)} total")
+            is_slanted = vertical_orientation in ("xz_slanted", "yz_slanted")
+            if DEBUG_PLOT3D_TIMING and is_slanted:
+                print(f"[DEBUG Plot Mesh] [{vertical_orientation}] Kombiniere: {len(main_points)} Grid-Punkte + {len(edge_points_3d)} Randpunkte = {len(combined_points)} total")
             
             # Erstelle neues Mesh mit allen kombinierten Punkten
             # Verwende Delaunay-Triangulation für unstrukturierte Punkte
             combined_mesh = pv_module.PolyData(combined_points)
             combined_mesh["plot_scalars"] = combined_scalars
             
-            # 🎯 DEBUG: Prüfe Scalar-Werte
-            scalars_arr = np.array(combined_scalars)
-            valid_scalars = np.sum(np.isfinite(scalars_arr))
-            print(f"[DEBUG Plot Mesh] Scalar-Werte: {valid_scalars}/{len(scalars_arr)} gültig, Bereich: {np.nanmin(scalars_arr):.2f} bis {np.nanmax(scalars_arr):.2f}")
+            # 🎯 DEBUG: Prüfe Scalar-Werte (nur für schräge Flächen)
+            if DEBUG_PLOT3D_TIMING and is_slanted:
+                scalars_arr = np.array(combined_scalars)
+                valid_scalars = np.sum(np.isfinite(scalars_arr))
+                print(f"[DEBUG Plot Mesh] [{vertical_orientation}] Scalar-Werte: {valid_scalars}/{len(scalars_arr)} gültig, Bereich: {np.nanmin(scalars_arr):.2f} bis {np.nanmax(scalars_arr):.2f}")
             
             # 🎯 TRIANGULATION: Wähle richtige Projektionsebene
             # Für vertikale Flächen: Triangulation in XZ oder YZ-Ebene
             # Für horizontale Flächen: Triangulation in XY-Ebene (Standard)
             if len(combined_points) >= 3:
                 try:
-                    if vertical_orientation == "xz":
-                        # X-Z-Wand: Triangulation in XZ-Ebene
+                    # 🎯 WICHTIG: Filtere Punkte außerhalb des Polygons BEVOR Triangulation
+                    # Delaunay erzeugt eine konvexe Hülle, die Punkte außerhalb des Polygons enthalten kann
+                    # Diese Punkte führen zu Zacken an den Rändern
+                    if surface_id is not None and settings is not None:
+                        from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import _points_in_polygon_batch_plot
+                        surface_definitions = getattr(settings, 'surface_definitions', {})
+                        if surface_id in surface_definitions:
+                            surface_def = surface_definitions[surface_id]
+                            if isinstance(surface_def, SurfaceDefinition):
+                                polygon_points = getattr(surface_def, 'points', []) or []
+                            else:
+                                polygon_points = surface_def.get('points', [])
+                            
+                            if len(polygon_points) >= 3:
+                                # Projiziere Polygon in die richtige Ebene
+                                if vertical_orientation in ("xz", "xz_slanted"):
+                                    poly_points_dict = [{"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))} for p in polygon_points]
+                                    points_u = combined_points[:, 0]  # X
+                                    points_v = combined_points[:, 2]  # Z
+                                elif vertical_orientation in ("yz", "yz_slanted"):
+                                    poly_points_dict = [{"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))} for p in polygon_points]
+                                    points_u = combined_points[:, 1]  # Y
+                                    points_v = combined_points[:, 2]  # Z
+                                else:
+                                    poly_points_dict = [{"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0))} for p in polygon_points]
+                                    points_u = combined_points[:, 0]  # X
+                                    points_v = combined_points[:, 1]  # Y
+                                
+                                # Prüfe welche Punkte innerhalb des Polygons liegen
+                                points_inside = _points_in_polygon_batch_plot(
+                                    points_u.reshape(-1, 1),
+                                    points_v.reshape(-1, 1),
+                                    poly_points_dict
+                                )
+                                
+                                if points_inside is not None:
+                                    points_inside_1d = points_inside.flatten()
+                                    n_before = len(combined_points)
+                                    combined_points = combined_points[points_inside_1d]
+                                    combined_scalars = combined_scalars[points_inside_1d]
+                                    n_after = len(combined_points)
+                                    if DEBUG_PLOT3D_TIMING and vertical_orientation in ("xz_slanted", "yz_slanted"):
+                                        print(f"[DEBUG Pre-Filter] Entfernt {n_before - n_after} Punkte außerhalb Polygon (vor Triangulation)")
+                    
+                    if vertical_orientation in ("xz", "xz_slanted"):
+                        # X-Z-Wand (senkrecht oder schräg): Triangulation in XZ-Ebene
                         # Extrahiere X und Z Koordinaten
                         x_coords = combined_points[:, 0]  # X
                         z_coords = combined_points[:, 2]  # Z
+                        y_coords_orig = combined_points[:, 1]  # Y (für Interpolation bei schrägen Wänden)
                         # PyVista's delaunay_2d arbeitet in XY-Ebene, also: (x, z) → (x, z, 0)
                         points_2d_3d = np.column_stack([
                             x_coords,  # x → x
@@ -687,33 +743,113 @@ class SPL3DPlotRenderer:
                         temp_mesh_2d["plot_scalars"] = combined_scalars
                         temp_mesh_2d = temp_mesh_2d.delaunay_2d(alpha=0.0, tol=0.0)
                         
-                        # Stelle 3D-Koordinaten wieder her: (x, z, 0) → (x, y=wall_value, z)
-                        if wall_value is not None:
-                            y_value = wall_value
+                        # Stelle 3D-Koordinaten wieder her: (x, z, 0) → (x, y, z)
+                        if vertical_orientation == "xz_slanted":
+                            # Schräge Wand: Y-Koordinaten über robusten Ebenen-Fit bestimmen (y = a*x + b*z + c)
+                            # Verwende bevorzugt die Polygon-Punkte für den Fit, damit der Rand exakt passt
+                            poly_points = []
+                            try:
+                                if settings is not None and surface_id is not None:
+                                    surface_definitions = getattr(settings, "surface_definitions", {})
+                                    if surface_id in surface_definitions:
+                                        surf_def = surface_definitions[surface_id]
+                                        if isinstance(surf_def, dict):
+                                            poly_points = surf_def.get("points", []) or []
+                                        elif hasattr(surf_def, "points"):
+                                            poly_points = getattr(surf_def, "points", []) or []
+                            except Exception:
+                                poly_points = []
+                            
+                            if poly_points:
+                                poly_x = np.array([float(p.get("x", 0.0)) for p in poly_points], dtype=float)
+                                poly_z = np.array([float(p.get("z", 0.0)) for p in poly_points], dtype=float)
+                                poly_y = np.array([float(p.get("y", 0.0)) for p in poly_points], dtype=float)
+                                fit_x = poly_x
+                                fit_z = poly_z
+                                fit_y = poly_y
+                                y_min, y_max = float(poly_y.min()), float(poly_y.max())
+                            else:
+                                # Fallback: verwende kombinierte Punkte (Grid + Rand)
+                                fit_x = x_coords
+                                fit_z = z_coords
+                                fit_y = y_coords_orig
+                                y_min, y_max = float(np.min(y_coords_orig)), float(np.max(y_coords_orig))
+                            
+                            A = np.column_stack([fit_x, fit_z, np.ones(len(fit_x))])
+                            try:
+                                coeffs, _, _, _ = np.linalg.lstsq(A, fit_y, rcond=None)
+                                a, b, c = coeffs
+                            except Exception:
+                                a, b, c = 0.0, 0.0, float(np.mean(fit_y))
+                            
+                            # Wende Fit auf neue Punkte an
+                            x_new = temp_mesh_2d.points[:, 0]
+                            z_new = temp_mesh_2d.points[:, 1]
+                            y_pred = a * x_new + b * z_new + c
+                            # Clamp auf Polygon-/Original-Y-Bereich, um Extrapolation zu vermeiden
+                            y_values = np.clip(y_pred, y_min, y_max)
+                            
+                            if DEBUG_PLOT3D_TIMING:
+                                fit_err = np.abs(A.dot(np.array([a, b, c])) - fit_y)
+                                print(f"[DEBUG XZ-Triangulation] Ebenen-Fit y=ax+bz+c (poly bevorzugt): a={a:.4f}, b={b:.4f}, c={c:.4f}, "
+                                      f"err_mean={fit_err.mean():.4f}, err_max={fit_err.max():.4f}, clamp=[{y_min:.2f},{y_max:.2f}]")
                         else:
-                            y_value = np.mean(combined_points[:, 1])
+                            # Senkrechte Wand: Y konstant
+                            if wall_value is not None:
+                                y_value = wall_value
+                            else:
+                                y_value = np.mean(combined_points[:, 1])
+                            y_values = np.full(len(temp_mesh_2d.points), y_value, dtype=float)
                         
                         # 🎯 WICHTIG: delaunay_2d transformiert Punkte, aber Z-Koordinaten bleiben erhalten
                         # temp_mesh_2d.points hat Shape (n, 3) mit (x', z', 0) nach delaunay_2d
                         # points[:, 0] = x' (transformiert), points[:, 1] = z' (transformiert, ist die Z-Koordinate)
-                        # Erstelle 3D-Punkte: (x, y, z) mit konstantem Y
+                        # Erstelle 3D-Punkte: (x, y, z)
                         points_3d = np.column_stack([
                             temp_mesh_2d.points[:, 0],  # x (aus delaunay_2d)
-                            np.full(len(temp_mesh_2d.points), y_value, dtype=float),  # y (konstant)
+                            y_values,  # y (konstant oder interpoliert)
                             temp_mesh_2d.points[:, 1],  # z (aus delaunay_2d, war y-Koordinate in delaunay_2d)
                         ])
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG XZ-Triangulation] Wiederhergestellte Koordinaten:")
-                            print(f"  └─ X: min={points_3d[:, 0].min():.3f}, max={points_3d[:, 0].max():.3f}")
-                            print(f"  └─ Y: min={points_3d[:, 1].min():.3f}, max={points_3d[:, 1].max():.3f} (konstant: {y_value:.3f})")
-                            print(f"  └─ Z: min={points_3d[:, 2].min():.3f}, max={points_3d[:, 2].max():.3f}")
+                        if DEBUG_PLOT3D_TIMING and vertical_orientation in ("xz", "xz_slanted"):
+                            is_slanted = vertical_orientation == "xz_slanted"
+                            print(f"[DEBUG XZ-Triangulation] Wiederhergestellte Koordinaten ({'schräg' if is_slanted else 'senkrecht'}):")
+                            print(f"  └─ X: [{points_3d[:, 0].min():.2f}, {points_3d[:, 0].max():.2f}] span={points_3d[:, 0].max()-points_3d[:, 0].min():.2f}")
+                            print(f"  └─ Y: [{points_3d[:, 1].min():.2f}, {points_3d[:, 1].max():.2f}] span={points_3d[:, 1].max()-points_3d[:, 1].min():.2f} {'(interpoliert)' if is_slanted else f'(konstant: {y_values[0]:.2f})'}")
+                            print(f"  └─ Z: [{points_3d[:, 2].min():.2f}, {points_3d[:, 2].max():.2f}] span={points_3d[:, 2].max()-points_3d[:, 2].min():.2f}")
+                            
+                            # Prüfe ob Delaunay neue Punkte außerhalb des ursprünglichen Bereichs erzeugt hat
+                            x_orig_min, x_orig_max = x_coords.min(), x_coords.max()
+                            z_orig_min, z_orig_max = z_coords.min(), z_coords.max()
+                            y_orig_min, y_orig_max = y_coords_orig.min(), y_coords_orig.max() if is_slanted else (y_values[0], y_values[0])
+                            
+                            x_new_min, x_new_max = points_3d[:, 0].min(), points_3d[:, 0].max()
+                            z_new_min, z_new_max = points_3d[:, 2].min(), points_3d[:, 2].max()
+                            y_new_min, y_new_max = points_3d[:, 1].min(), points_3d[:, 1].max()
+                            
+                            x_outside = (x_new_min < x_orig_min - 0.01) or (x_new_max > x_orig_max + 0.01)
+                            z_outside = (z_new_min < z_orig_min - 0.01) or (z_new_max > z_orig_max + 0.01)
+                            y_outside = (y_new_min < y_orig_min - 0.01) or (y_new_max > y_orig_max + 0.01) if is_slanted else False
+                            
+                            if x_outside or z_outside or y_outside:
+                                print(f"  ⚠️  Delaunay hat neue Punkte außerhalb des ursprünglichen Bereichs erzeugt:")
+                                if x_outside:
+                                    print(f"     └─ X: ursprünglich [{x_orig_min:.3f}, {x_orig_max:.3f}], nachher [{x_new_min:.3f}, {x_new_max:.3f}]")
+                                if z_outside:
+                                    print(f"     └─ Z: ursprünglich [{z_orig_min:.3f}, {z_orig_max:.3f}], nachher [{z_new_min:.3f}, {z_new_max:.3f}]")
+                                if y_outside:
+                                    print(f"     └─ Y: ursprünglich [{y_orig_min:.3f}, {y_orig_max:.3f}], nachher [{y_new_min:.3f}, {y_new_max:.3f}]")
+                            
+                            # Prüfe Konsistenz mit ursprünglichen Z-Koordinaten
+                            if abs(points_3d[:, 2].min() - z_orig_min) > 0.1 or abs(points_3d[:, 2].max() - z_orig_max) > 0.1:
+                                print(f"  ⚠️  Z-Koordinaten-Abweichung nach Triangulation: ursprünglich [{z_orig_min:.2f}, {z_orig_max:.2f}], nachher [{points_3d[:, 2].min():.2f}, {points_3d[:, 2].max():.2f}]")
                         combined_mesh = pv_module.PolyData(points_3d, temp_mesh_2d.faces)
                         combined_mesh["plot_scalars"] = temp_mesh_2d["plot_scalars"]
-                    elif vertical_orientation == "yz":
-                        # Y-Z-Wand: Triangulation in YZ-Ebene
+                    elif vertical_orientation in ("yz", "yz_slanted"):
+                        # Y-Z-Wand (senkrecht oder schräg): Triangulation in YZ-Ebene
                         # Extrahiere Y und Z Koordinaten
                         y_coords = combined_points[:, 1]  # Y
                         z_coords = combined_points[:, 2]  # Z
+                        x_coords_orig = combined_points[:, 0]  # X (für Interpolation bei schrägen Wänden)
                         # PyVista's delaunay_2d arbeitet in XY-Ebene, also: (y, z) → (y, z, 0)
                         points_2d_3d = np.column_stack([
                             y_coords,  # y → x (für delaunay_2d)
@@ -725,33 +861,86 @@ class SPL3DPlotRenderer:
                         temp_mesh_2d["plot_scalars"] = combined_scalars
                         temp_mesh_2d = temp_mesh_2d.delaunay_2d(alpha=0.0, tol=0.0)
                         
-                        # Stelle 3D-Koordinaten wieder her: (y, z, 0) → (x=wall_value, y, z)
-                        if wall_value is not None:
-                            x_value = wall_value
+                        # Stelle 3D-Koordinaten wieder her: (y, z, 0) → (x, y, z)
+                        if vertical_orientation == "yz_slanted":
+                            # Schräge Wand: X-Koordinaten über robusten Ebenen-Fit bestimmen (x = a*y + b*z + c)
+                            # Verwende bevorzugt die Polygon-Punkte für den Fit, damit der Rand exakt passt
+                            poly_points = []
+                            try:
+                                if settings is not None and surface_id is not None:
+                                    surface_definitions = getattr(settings, "surface_definitions", {})
+                                    if surface_id in surface_definitions:
+                                        surf_def = surface_definitions[surface_id]
+                                        if isinstance(surf_def, dict):
+                                            poly_points = surf_def.get("points", []) or []
+                                        elif hasattr(surf_def, "points"):
+                                            poly_points = getattr(surf_def, "points", []) or []
+                            except Exception:
+                                poly_points = []
+                            
+                            if poly_points:
+                                poly_y = np.array([float(p.get("y", 0.0)) for p in poly_points], dtype=float)
+                                poly_z = np.array([float(p.get("z", 0.0)) for p in poly_points], dtype=float)
+                                poly_x = np.array([float(p.get("x", 0.0)) for p in poly_points], dtype=float)
+                                fit_y = poly_y
+                                fit_z = poly_z
+                                fit_x = poly_x
+                                x_min, x_max = float(poly_x.min()), float(poly_x.max())
+                            else:
+                                fit_y = y_coords
+                                fit_z = z_coords
+                                fit_x = x_coords_orig
+                                x_min, x_max = float(np.min(x_coords_orig)), float(np.max(x_coords_orig))
+                            
+                            A = np.column_stack([fit_y, fit_z, np.ones(len(fit_y))])
+                            try:
+                                coeffs, _, _, _ = np.linalg.lstsq(A, fit_x, rcond=None)
+                                a, b, c = coeffs
+                            except Exception:
+                                a, b, c = 0.0, 0.0, float(np.mean(fit_x))
+                            y_new = temp_mesh_2d.points[:, 0]
+                            z_new = temp_mesh_2d.points[:, 1]
+                            x_pred = a * y_new + b * z_new + c
+                            x_values = np.clip(x_pred, x_min, x_max)
+                            if DEBUG_PLOT3D_TIMING:
+                                fit_err = np.abs(A.dot(np.array([a, b, c])) - fit_x)
+                                print(f"[DEBUG YZ-Triangulation] Ebenen-Fit x=ay+bz+c (poly bevorzugt): a={a:.4f}, b={b:.4f}, c={c:.4f}, "
+                                      f"err_mean={fit_err.mean():.4f}, err_max={fit_err.max():.4f}, clamp=[{x_min:.2f},{x_max:.2f}]")
                         else:
-                            x_value = np.mean(combined_points[:, 0])
+                            # Senkrechte Wand: X konstant
+                            if wall_value is not None:
+                                x_value = wall_value
+                            else:
+                                x_value = np.mean(combined_points[:, 0])
+                            x_values = np.full(len(temp_mesh_2d.points), x_value, dtype=float)
                         
                         # 🎯 WICHTIG: delaunay_2d transformiert Punkte, aber Z-Koordinaten bleiben erhalten
                         # temp_mesh_2d.points hat Shape (n, 3) mit (y', z', 0) nach delaunay_2d
                         # points[:, 0] = y' (transformiert), points[:, 1] = z' (transformiert, ist die Z-Koordinate)
-                        # Erstelle 3D-Punkte: (x, y, z) mit konstantem X
+                        # Erstelle 3D-Punkte: (x, y, z)
                         points_3d = np.column_stack([
-                            np.full(len(temp_mesh_2d.points), x_value, dtype=float),  # x (konstant)
+                            x_values,  # x (konstant oder interpoliert)
                             temp_mesh_2d.points[:, 0],  # y (aus delaunay_2d, war x-Koordinate in delaunay_2d)
                             temp_mesh_2d.points[:, 1],  # z (aus delaunay_2d, war y-Koordinate in delaunay_2d)
                         ])
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG YZ-Triangulation] Wiederhergestellte Koordinaten:")
-                            print(f"  └─ X: min={points_3d[:, 0].min():.3f}, max={points_3d[:, 0].max():.3f} (konstant: {x_value:.3f})")
-                            print(f"  └─ Y: min={points_3d[:, 1].min():.3f}, max={points_3d[:, 1].max():.3f}")
-                            print(f"  └─ Z: min={points_3d[:, 2].min():.3f}, max={points_3d[:, 2].max():.3f}")
+                        if DEBUG_PLOT3D_TIMING and vertical_orientation in ("yz", "yz_slanted"):
+                            is_slanted = vertical_orientation == "yz_slanted"
+                            print(f"[DEBUG YZ-Triangulation] Wiederhergestellte Koordinaten ({'schräg' if is_slanted else 'senkrecht'}):")
+                            print(f"  └─ X: [{points_3d[:, 0].min():.2f}, {points_3d[:, 0].max():.2f}] span={points_3d[:, 0].max()-points_3d[:, 0].min():.2f} {'(interpoliert)' if is_slanted else f'(konstant: {x_values[0]:.2f})'}")
+                            print(f"  └─ Y: [{points_3d[:, 1].min():.2f}, {points_3d[:, 1].max():.2f}] span={points_3d[:, 1].max()-points_3d[:, 1].min():.2f}")
+                            print(f"  └─ Z: [{points_3d[:, 2].min():.2f}, {points_3d[:, 2].max():.2f}] span={points_3d[:, 2].max()-points_3d[:, 2].min():.2f}")
+                            # Prüfe Konsistenz mit ursprünglichen Z-Koordinaten
+                            z_orig_min, z_orig_max = z_coords.min(), z_coords.max()
+                            if abs(points_3d[:, 2].min() - z_orig_min) > 0.1 or abs(points_3d[:, 2].max() - z_orig_max) > 0.1:
+                                print(f"  ⚠️  Z-Koordinaten-Abweichung nach Triangulation: ursprünglich [{z_orig_min:.2f}, {z_orig_max:.2f}], nachher [{points_3d[:, 2].min():.2f}, {points_3d[:, 2].max():.2f}]")
                         combined_mesh = pv_module.PolyData(points_3d, temp_mesh_2d.faces)
                         combined_mesh["plot_scalars"] = temp_mesh_2d["plot_scalars"]
                     else:
                         # Horizontale Fläche: Standard-Triangulation in XY-Ebene
                         combined_mesh = combined_mesh.delaunay_2d(alpha=0.0, tol=0.0)
                     
-                    print(f"[DEBUG Plot Mesh] ✅ Delaunay-Triangulation erfolgreich: {combined_mesh.n_points} Punkte, {combined_mesh.n_cells} Zellen")
+                    if DEBUG_PLOT3D_TIMING and is_slanted:
+                        print(f"[DEBUG Plot Mesh] [{vertical_orientation}] ✅ Delaunay-Triangulation erfolgreich: {combined_mesh.n_points} Punkte, {combined_mesh.n_cells} Zellen")
                     
                     # 🎯 FILTERUNG: Entferne Dreiecke außerhalb der Surface
                     if surface_id is not None and settings is not None:
@@ -810,82 +999,148 @@ class SPL3DPlotRenderer:
             if len(polygon_points) < 3:
                 return mesh
             
-            # 🚀 VEKTORISIERTE FILTERUNG: Nutze PyVista's cell_centers für alle Schwerpunkte
+            # 🎯 STRENGE FILTERUNG: Prüfe ALLE Eckpunkte jeder Zelle, nicht nur den Schwerpunkt
+            # Eine Zelle wird nur behalten, wenn ALLE ihre Eckpunkte innerhalb des Polygons liegen
+            # Das verhindert Artefakte an den Rändern, wo Dreiecke teilweise außerhalb liegen
             n_cells = mesh.n_cells
             if n_cells == 0:
                 return mesh
             
-            # Berechne alle Zell-Schwerpunkte vektorisiert mit PyVista
-            try:
-                cell_centers = mesh.cell_centers().points  # Shape: (n_cells, 3)
-                centroids_3d = cell_centers
-            except Exception:
-                # Fallback: Manuelle Berechnung
-                points = mesh.points
-                centroids_3d = np.zeros((n_cells, 3), dtype=float)
-                for i in range(n_cells):
-                    try:
-                        cell = mesh.get_cell(i)
-                        cell_indices = cell.point_ids
-                        cell_points = points[cell_indices]
-                        centroid = np.mean(cell_points, axis=0)
-                        centroids_3d[i] = centroid
-                    except Exception:
-                        centroids_3d[i] = np.nan
-            
             # 🎯 PROJEKTION: Wähle richtige Projektionsebene für Polygon-Prüfung
             from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import _points_in_polygon_batch_plot
             
-            if vertical_orientation == "xz":
-                # X-Z-Wand: Prüfe in XZ-Ebene
-                centroids_u = centroids_3d[:, 0]  # X
-                centroids_v = centroids_3d[:, 2]  # Z
-                # Polygon in XZ-Ebene
+            # Bereite Polygon vor
+            if vertical_orientation in ("xz", "xz_slanted"):
+                # X-Z-Wand (senkrecht oder schräg): Prüfe in XZ-Ebene
                 px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
                 pz = np.array([float(p.get("z", 0.0)) for p in polygon_points], dtype=float)
                 poly_points_dict = [{"x": x, "y": z} for x, z in zip(px, pz)]  # x=u, y=v
-            elif vertical_orientation == "yz":
-                # Y-Z-Wand: Prüfe in YZ-Ebene
-                centroids_u = centroids_3d[:, 1]  # Y
-                centroids_v = centroids_3d[:, 2]  # Z
-                # Polygon in YZ-Ebene
+            elif vertical_orientation in ("yz", "yz_slanted"):
+                # Y-Z-Wand (senkrecht oder schräg): Prüfe in YZ-Ebene
                 py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
                 pz = np.array([float(p.get("z", 0.0)) for p in polygon_points], dtype=float)
                 poly_points_dict = [{"x": y, "y": z} for y, z in zip(py, pz)]  # x=u, y=v
             else:
                 # Horizontale Fläche: Prüfe in XY-Ebene (Standard)
-                centroids_u = centroids_3d[:, 0]  # X
-                centroids_v = centroids_3d[:, 1]  # Y
-                # Polygon in XY-Ebene
                 px = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
                 py = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
                 poly_points_dict = [{"x": x, "y": y} for x, y in zip(px, py)]
             
-            # Prüfe alle Schwerpunkte gleichzeitig (als 2D-Array, Shape: (n_cells, 1))
-            inside_mask = _points_in_polygon_batch_plot(
-                centroids_u.reshape(-1, 1),  # U-Koordinaten als 2D-Array
-                centroids_v.reshape(-1, 1),  # V-Koordinaten als 2D-Array
+            # Hole alle Punkte des Meshes
+            points_3d = mesh.points  # Shape: (n_points, 3)
+            
+            # Projiziere Punkte in die richtige Ebene
+            if vertical_orientation in ("xz", "xz_slanted"):
+                points_u = points_3d[:, 0]  # X
+                points_v = points_3d[:, 2]  # Z
+            elif vertical_orientation in ("yz", "yz_slanted"):
+                points_u = points_3d[:, 1]  # Y
+                points_v = points_3d[:, 2]  # Z
+            else:
+                points_u = points_3d[:, 0]  # X
+                points_v = points_3d[:, 1]  # Y
+            
+            # Prüfe alle Punkte gleichzeitig
+            points_inside = _points_in_polygon_batch_plot(
+                points_u.reshape(-1, 1),  # U-Koordinaten als 2D-Array
+                points_v.reshape(-1, 1),  # V-Koordinaten als 2D-Array
                 poly_points_dict
             )
             
-            if inside_mask is None:
+            if points_inside is None:
                 if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Filter] ⚠️ inside_mask ist None für '{surface_id}'")
+                    print(f"[DEBUG Filter] ⚠️ points_inside ist None für '{surface_id}'")
                 return mesh
             
-            # Filtere: Nur Zellen mit Schwerpunkt innerhalb des Polygons
-            inside_mask_1d = inside_mask.flatten()
+            points_inside_1d = points_inside.flatten()
             
-            # Entferne NaN-Punkte (Fehler bei Schwerpunkt-Berechnung)
-            valid_mask = np.isfinite(centroids_u) & np.isfinite(centroids_v)
-            inside_mask_1d = inside_mask_1d & valid_mask
+            # 🎯 STRENGE FILTERUNG: Entferne Zellen, wenn:
+            # 1. NICHT ALLE Eckpunkte innerhalb sind ODER
+            # 2. Der Schwerpunkt außerhalb ist (für zusätzliche Sicherheit)
+            cells_to_keep = []
             
-            # 🎯 DEBUG: Zeige Details zur Filterung
-            if DEBUG_PLOT3D_TIMING:
+            # Berechne Schwerpunkte für alle Zellen
+            try:
+                cell_centers = mesh.cell_centers().points
+                centroids_3d = cell_centers
+                if vertical_orientation in ("xz", "xz_slanted"):
+                    centroids_u = centroids_3d[:, 0]
+                    centroids_v = centroids_3d[:, 2]
+                elif vertical_orientation in ("yz", "yz_slanted"):
+                    centroids_u = centroids_3d[:, 1]
+                    centroids_v = centroids_3d[:, 2]
+                else:
+                    centroids_u = centroids_3d[:, 0]
+                    centroids_v = centroids_3d[:, 1]
+                
+                # Prüfe Schwerpunkte
+                centroids_inside = _points_in_polygon_batch_plot(
+                    centroids_u.reshape(-1, 1),
+                    centroids_v.reshape(-1, 1),
+                    poly_points_dict
+                )
+                centroids_inside_1d = centroids_inside.flatten() if centroids_inside is not None else np.ones(n_cells, dtype=bool)
+            except Exception:
+                centroids_inside_1d = np.ones(n_cells, dtype=bool)
+                centroids_u = np.array([])
+                centroids_v = np.array([])
+            
+            # 🎯 STRENGE FILTERUNG: Für schräge/überhängende Flächen zusätzliche Prüfung
+            is_slanted_strict = vertical_orientation in ("xz_slanted", "yz_slanted")
+            
+            for i in range(n_cells):
+                try:
+                    cell = mesh.get_cell(i)
+                    cell_point_ids = cell.point_ids
+                    
+                    # Prüfe ob ALLE Punkte der Zelle innerhalb sind
+                    all_points_inside = np.all(points_inside_1d[cell_point_ids])
+                    any_point_inside = np.any(points_inside_1d[cell_point_ids])
+                    
+                    # Prüfe ob Schwerpunkt innerhalb ist
+                    centroid_inside = centroids_inside_1d[i] if i < len(centroids_inside_1d) else True
+                    
+                    # 🎯 VEREINFACHTE FILTERUNG: Da wir bereits vor der Triangulation filtern,
+                    # sollten alle Punkte innerhalb des Polygons sein. Delaunay kann jedoch
+                    # neue Punkte auf der konvexen Hülle erzeugen, die außerhalb des Polygons liegen.
+                    # Daher prüfen wir: Behalte Zelle nur wenn ALLE Eckpunkte innerhalb sind.
+                    # Dies sorgt für saubere Ränder ohne Zacken.
+                    if all_points_inside:
+                        cells_to_keep.append(i)
+                    elif DEBUG_PLOT3D_TIMING and is_slanted_strict:
+                        # Debug: Zeige warum Zelle entfernt wurde
+                        n_outside = np.sum(~points_inside_1d[cell_point_ids])
+                        print(f"[DEBUG Filter] Zelle {i} entfernt: {n_outside}/{len(cell_point_ids)} Punkte außerhalb Polygon")
+                except Exception:
+                    # Bei Fehler: Zelle überspringen
+                    continue
+            
+            # Für Debug: Berechne auch Schwerpunkte (nur für Ausgabe)
+            try:
+                cell_centers = mesh.cell_centers().points
+                centroids_3d = cell_centers
+                if vertical_orientation in ("xz", "xz_slanted"):
+                    centroids_u = centroids_3d[:, 0]
+                    centroids_v = centroids_3d[:, 2]
+                elif vertical_orientation in ("yz", "yz_slanted"):
+                    centroids_u = centroids_3d[:, 1]
+                    centroids_v = centroids_3d[:, 2]
+                else:
+                    centroids_u = centroids_3d[:, 0]
+                    centroids_v = centroids_3d[:, 1]
+            except Exception:
+                centroids_u = np.array([])
+                centroids_v = np.array([])
+            
+            inside_mask_1d = np.array([i in cells_to_keep for i in range(n_cells)], dtype=bool)
+            
+            # 🎯 DEBUG: Zeige Details zur Filterung (nur für schräge/überhängende Flächen)
+            is_slanted = vertical_orientation in ("xz_slanted", "yz_slanted")
+            if DEBUG_PLOT3D_TIMING and is_slanted:
                 n_inside = int(np.sum(inside_mask_1d))
-                n_valid = int(np.sum(valid_mask))
-                n_invalid = n_cells - n_valid
-                print(f"[DEBUG Filter] Surface '{surface_id}' (Orientierung: {vertical_orientation}):")
+                n_valid = n_cells  # Alle Zellen sind gültig (Fehlerbehandlung oben)
+                n_invalid = 0
+                print(f"[DEBUG Filter] Surface '{surface_id}' ({vertical_orientation}):")
                 print(f"  └─ Total Zellen: {n_cells}")
                 print(f"  └─ Gültige Zellen (kein NaN): {n_valid}/{n_cells} (ungültig: {n_invalid})")
                 print(f"  └─ Zellen innerhalb Polygon: {n_inside}/{n_cells} ({100*n_inside/n_cells:.1f}%)")
@@ -895,18 +1150,207 @@ class SPL3DPlotRenderer:
                     print(f"  └─ Polygon: {len(poly_points_dict)} Punkte")
                     print(f"  └─ Polygon U-Range: [{poly_u.min():.3f}, {poly_u.max():.3f}]")
                     print(f"  └─ Polygon V-Range: [{poly_v.min():.3f}, {poly_v.max():.3f}]")
-                    print(f"  └─ Centroids U-Range: [{centroids_u.min():.3f}, {centroids_u.max():.3f}]")
-                    print(f"  └─ Centroids V-Range: [{centroids_v.min():.3f}, {centroids_v.max():.3f}]")
+                    if len(centroids_u) > 0:
+                        print(f"  └─ Centroids U-Range: [{centroids_u.min():.3f}, {centroids_u.max():.3f}]")
+                        print(f"  └─ Centroids V-Range: [{centroids_v.min():.3f}, {centroids_v.max():.3f}]")
+                    
+                    # 🎯 DEBUG: Analysiere entfernte und behaltene Zellen
+                    removed_cells = n_cells - n_inside
+                    if removed_cells > 0:
+                        # Finde Zellen, die entfernt wurden
+                        removed_mask = ~inside_mask_1d
+                        kept_mask = inside_mask_1d
+                        
+                        removed_centroids_u = centroids_u[removed_mask] if len(centroids_u) > 0 else np.array([])
+                        removed_centroids_v = centroids_v[removed_mask] if len(centroids_v) > 0 else np.array([])
+                        kept_centroids_u = centroids_u[kept_mask] if len(centroids_u) > 0 else np.array([])
+                        kept_centroids_v = centroids_v[kept_mask] if len(centroids_v) > 0 else np.array([])
+                        
+                        if len(removed_centroids_u) > 0:
+                            print(f"  └─ Entfernte Zellen: {removed_cells}")
+                            print(f"     └─ Entfernte Centroids U-Range: [{removed_centroids_u.min():.3f}, {removed_centroids_u.max():.3f}]")
+                            print(f"     └─ Entfernte Centroids V-Range: [{removed_centroids_v.min():.3f}, {removed_centroids_v.max():.3f}]")
+                            
+                    if len(kept_centroids_u) > 0:
+                        print(f"  └─ Behaltene Zellen: {n_inside}")
+                        print(f"     └─ Behaltene Centroids U-Range: [{kept_centroids_u.min():.3f}, {kept_centroids_u.max():.3f}]")
+                        print(f"     └─ Behaltene Centroids V-Range: [{kept_centroids_v.min():.3f}, {kept_centroids_v.max():.3f}]")
+                        
+                        # 🎯 PRÜFE AUF PLANE FLÄCHEN: Analysiere Y-Variation (für xz_slanted) oder X-Variation (für yz_slanted)
+                        if vertical_orientation == "xz_slanted":
+                            # Für xz_slanted: Y sollte variieren (schräge Fläche)
+                            # Hole Y-Koordinaten der behaltenen Zellen
+                            kept_cell_indices = np.where(kept_mask)[0]
+                            kept_cells_y = []
+                            kept_cells_y_span = []
+                            for idx in kept_cell_indices[:min(100, len(kept_cell_indices))]:  # Prüfe max 100 Zellen
+                                try:
+                                    cell = mesh.get_cell(idx)
+                                    cell_points_3d = points_3d[cell.point_ids]
+                                    y_coords = cell_points_3d[:, 1]  # Y-Koordinaten
+                                    y_span = y_coords.max() - y_coords.min()
+                                    kept_cells_y.append(y_coords.mean())
+                                    kept_cells_y_span.append(y_span)
+                                except:
+                                    continue
+                            
+                            if len(kept_cells_y) > 0:
+                                kept_cells_y = np.array(kept_cells_y)
+                                kept_cells_y_span = np.array(kept_cells_y_span)
+                                print(f"     └─ Y-Koordinaten der behaltenen Zellen: min={kept_cells_y.min():.3f}, max={kept_cells_y.max():.3f}, span={kept_cells_y.max()-kept_cells_y.min():.3f}")
+                                print(f"     └─ Y-Span pro Zelle: min={kept_cells_y_span.min():.6f}, max={kept_cells_y_span.max():.6f}, mean={kept_cells_y_span.mean():.6f}")
+                                
+                                # Prüfe ob es Zellen mit sehr kleiner Y-Span gibt (plan verlaufend)
+                                flat_threshold = 0.01  # 1cm Toleranz
+                                flat_cells = np.sum(kept_cells_y_span < flat_threshold)
+                                if flat_cells > 0:
+                                    print(f"     ⚠️  PLANE FLÄCHEN ERKANNT: {flat_cells}/{len(kept_cells_y_span)} Zellen haben Y-Span < {flat_threshold}m (plan verlaufend)")
+                                    flat_indices = np.where(kept_cells_y_span < flat_threshold)[0]
+                                    flat_y_values = kept_cells_y[flat_indices]
+                                    print(f"        └─ Plane Zellen Y-Bereich: [{flat_y_values.min():.3f}, {flat_y_values.max():.3f}]")
+                                    
+                                    # Prüfe ob diese Zellen innerhalb des Polygons liegen
+                                    # (könnten durch Delaunay Convex Hull entstanden sein)
+                                    if len(flat_y_values) > 0:
+                                        # Prüfe ob die Y-Werte der planen Zellen außerhalb des erwarteten Bereichs liegen
+                                        # Für xz_slanted sollte Y zwischen den Polygon-Punkten interpoliert werden
+                                        # Hole ursprüngliche Y-Koordinaten der Polygon-Punkte
+                                        poly_y_orig = np.array([float(p.get("y", 0.0)) for p in polygon_points], dtype=float)
+                                        if len(poly_y_orig) > 0:
+                                            poly_y_min, poly_y_max = poly_y_orig.min(), poly_y_orig.max()
+                                            flat_outside = np.sum((flat_y_values < poly_y_min - 0.1) | (flat_y_values > poly_y_max + 0.1))
+                                            if flat_outside > 0:
+                                                print(f"        ⚠️  {flat_outside} plane Zellen haben Y außerhalb Polygon Y-Bereich [{poly_y_min:.3f}, {poly_y_max:.3f}]")
+                        
+                        elif vertical_orientation == "yz_slanted":
+                            # Für yz_slanted: X sollte variieren (schräge Fläche)
+                            kept_cell_indices = np.where(kept_mask)[0]
+                            kept_cells_x = []
+                            kept_cells_x_span = []
+                            for idx in kept_cell_indices[:min(100, len(kept_cell_indices))]:
+                                try:
+                                    cell = mesh.get_cell(idx)
+                                    cell_points_3d = points_3d[cell.point_ids]
+                                    x_coords = cell_points_3d[:, 0]  # X-Koordinaten
+                                    x_span = x_coords.max() - x_coords.min()
+                                    kept_cells_x.append(x_coords.mean())
+                                    kept_cells_x_span.append(x_span)
+                                except:
+                                    continue
+                            
+                            if len(kept_cells_x) > 0:
+                                kept_cells_x = np.array(kept_cells_x)
+                                kept_cells_x_span = np.array(kept_cells_x_span)
+                                print(f"     └─ X-Koordinaten der behaltenen Zellen: min={kept_cells_x.min():.3f}, max={kept_cells_x.max():.3f}, span={kept_cells_x.max()-kept_cells_x.min():.3f}")
+                                print(f"     └─ X-Span pro Zelle: min={kept_cells_x_span.min():.6f}, max={kept_cells_x_span.max():.6f}, mean={kept_cells_x_span.mean():.6f}")
+                                
+                                flat_threshold = 0.01
+                                flat_cells = np.sum(kept_cells_x_span < flat_threshold)
+                                if flat_cells > 0:
+                                    print(f"     ⚠️  PLANE FLÄCHEN ERKANNT: {flat_cells}/{len(kept_cells_x_span)} Zellen haben X-Span < {flat_threshold}m (plan verlaufend)")
+                                    flat_indices = np.where(kept_cells_x_span < flat_threshold)[0]
+                                    flat_x_values = kept_cells_x[flat_indices]
+                                    print(f"        └─ Plane Zellen X-Bereich: [{flat_x_values.min():.3f}, {flat_x_values.max():.3f}]")
+                                    
+                                    poly_x_orig = np.array([float(p.get("x", 0.0)) for p in polygon_points], dtype=float)
+                                    if len(poly_x_orig) > 0:
+                                        poly_x_min, poly_x_max = poly_x_orig.min(), poly_x_orig.max()
+                                        flat_outside = np.sum((flat_x_values < poly_x_min - 0.1) | (flat_x_values > poly_x_max + 0.1))
+                                        if flat_outside > 0:
+                                            print(f"        ⚠️  {flat_outside} plane Zellen haben X außerhalb Polygon X-Bereich [{poly_x_min:.3f}, {poly_x_max:.3f}]")
+                            
+                            # Prüfe ob entfernte Zellen außerhalb Polygon-Bounds liegen
+                            u_outside = (removed_centroids_u.min() < poly_u.min()) or (removed_centroids_u.max() > poly_u.max())
+                            v_outside = (removed_centroids_v.min() < poly_v.min()) or (removed_centroids_v.max() > poly_v.max())
+                            
+                            # Prüfe ob behaltene Zellen außerhalb Polygon-Bounds liegen (FEHLER!)
+                            if len(kept_centroids_u) > 0:
+                                kept_u_outside = (kept_centroids_u.min() < poly_u.min()) or (kept_centroids_u.max() > poly_u.max())
+                                kept_v_outside = (kept_centroids_v.min() < poly_v.min()) or (kept_centroids_v.max() > poly_v.max())
+                                
+                                if kept_u_outside or kept_v_outside:
+                                    print(f"     ⚠️  BEHALTENE ZELLEN LIEGEN AUSSERHALB POLYGON-BOUNDS! (FEHLER!)")
+                                    if kept_u_outside:
+                                        print(f"        └─ Behaltene U: [{kept_centroids_u.min():.3f}, {kept_centroids_u.max():.3f}], Polygon U: [{poly_u.min():.3f}, {poly_u.max():.3f}]")
+                                    if kept_v_outside:
+                                        print(f"        └─ Behaltene V: [{kept_centroids_v.min():.3f}, {kept_centroids_v.max():.3f}], Polygon V: [{poly_v.min():.3f}, {poly_v.max():.3f}]")
+                                    
+                                    # Zähle wie viele behaltene Centroids außerhalb liegen
+                                    kept_outside_u = np.sum((kept_centroids_u < poly_u.min()) | (kept_centroids_u > poly_u.max()))
+                                    kept_outside_v = np.sum((kept_centroids_v < poly_v.min()) | (kept_centroids_v > poly_v.max()))
+                                    print(f"        └─ Behaltene Centroids außerhalb U-Bounds: {kept_outside_u}/{len(kept_centroids_u)}")
+                                    print(f"        └─ Behaltene Centroids außerhalb V-Bounds: {kept_outside_v}/{len(kept_centroids_v)}")
+                            
+                            if u_outside or v_outside:
+                                print(f"     ✅ Entfernte Zellen liegen korrekt außerhalb Polygon-Bounds")
+                            else:
+                                print(f"     ⚠️  Entfernte Zellen liegen innerhalb Polygon-Bounds! (Möglicher Filterfehler)")
             
             cells_to_keep = np.where(inside_mask_1d)[0].tolist()
             
             # Filtere Mesh: Nur gültige Zellen behalten
             if len(cells_to_keep) < n_cells:
                 filtered_mesh = mesh.extract_cells(cells_to_keep)
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Plot Mesh] Filterung (vektorisiert): {n_cells} → {len(cells_to_keep)} Zellen (entfernt: {n_cells - len(cells_to_keep)})")
+                if DEBUG_PLOT3D_TIMING and is_slanted:
+                    print(f"[DEBUG Plot Mesh] [{vertical_orientation}] Filterung: {n_cells} → {len(cells_to_keep)} Zellen (entfernt: {n_cells - len(cells_to_keep)})")
                     print(f"  └─ Mesh-Punkte: {mesh.n_points} → {filtered_mesh.n_points} (+{filtered_mesh.n_points - mesh.n_points})")
+                    
+                    # 🎯 DEBUG: Prüfe Bounds der gefilterten Fläche vs. Polygon
+                    if len(filtered_mesh.points) > 0:
+                        filtered_points_3d = filtered_mesh.points
+                        if vertical_orientation in ("xz", "xz_slanted"):
+                            filtered_u = filtered_points_3d[:, 0]  # X
+                            filtered_v = filtered_points_3d[:, 2]  # Z
+                        elif vertical_orientation in ("yz", "yz_slanted"):
+                            filtered_u = filtered_points_3d[:, 1]  # Y
+                            filtered_v = filtered_points_3d[:, 2]  # Z
+                        else:
+                            filtered_u = filtered_points_3d[:, 0]  # X
+                            filtered_v = filtered_points_3d[:, 1]  # Y
+                        
+                        poly_u = np.array([p.get('x', 0.0) for p in poly_points_dict], dtype=float)
+                        poly_v = np.array([p.get('y', 0.0) for p in poly_points_dict], dtype=float)
+                        
+                        # Prüfe ob gefilterte Fläche außerhalb Polygon-Bounds liegt
+                        u_outside = (filtered_u.min() < poly_u.min()) or (filtered_u.max() > poly_u.max())
+                        v_outside = (filtered_v.min() < poly_v.min()) or (filtered_v.max() > poly_v.max())
+                        
+                        if u_outside or v_outside:
+                            print(f"  ⚠️  GEFILTERTE FLÄCHE LIEGT AUSSERHALB POLYGON-BOUNDS!")
+                            print(f"     └─ Polygon U: [{poly_u.min():.3f}, {poly_u.max():.3f}], Gefiltert U: [{filtered_u.min():.3f}, {filtered_u.max():.3f}]")
+                            print(f"     └─ Polygon V: [{poly_v.min():.3f}, {poly_v.max():.3f}], Gefiltert V: [{filtered_v.min():.3f}, {filtered_v.max():.3f}]")
+                            
+                            # Prüfe wie viele Punkte außerhalb liegen
+                            points_outside_u = np.sum((filtered_u < poly_u.min()) | (filtered_u > poly_u.max()))
+                            points_outside_v = np.sum((filtered_v < poly_v.min()) | (filtered_v > poly_v.max()))
+                            print(f"     └─ Punkte außerhalb U-Bounds: {points_outside_u}/{len(filtered_u)}")
+                            print(f"     └─ Punkte außerhalb V-Bounds: {points_outside_v}/{len(filtered_v)}")
                 return filtered_mesh
+            
+            # 🎯 DEBUG: Auch wenn keine Filterung stattfand, prüfe Bounds
+            if DEBUG_PLOT3D_TIMING and is_slanted:
+                if len(mesh.points) > 0:
+                    mesh_points_3d = mesh.points
+                    if vertical_orientation in ("xz", "xz_slanted"):
+                        mesh_u = mesh_points_3d[:, 0]  # X
+                        mesh_v = mesh_points_3d[:, 2]  # Z
+                    elif vertical_orientation in ("yz", "yz_slanted"):
+                        mesh_u = mesh_points_3d[:, 1]  # Y
+                        mesh_v = mesh_points_3d[:, 2]  # Z
+                    else:
+                        mesh_u = mesh_points_3d[:, 0]  # X
+                        mesh_v = mesh_points_3d[:, 1]  # Y
+                    
+                    poly_u = np.array([p.get('x', 0.0) for p in poly_points_dict], dtype=float)
+                    poly_v = np.array([p.get('y', 0.0) for p in poly_points_dict], dtype=float)
+                    
+                    u_outside = (mesh_u.min() < poly_u.min()) or (mesh_u.max() > poly_u.max())
+                    v_outside = (mesh_v.min() < poly_v.min()) or (mesh_v.max() > poly_v.max())
+                    
+                    if u_outside or v_outside:
+                        print(f"  ⚠️  UNGEFILTERTE FLÄCHE LIEGT AUSSERHALB POLYGON-BOUNDS!")
+                        print(f"     └─ Polygon U: [{poly_u.min():.3f}, {poly_u.max():.3f}], Mesh U: [{mesh_u.min():.3f}, {mesh_u.max():.3f}]")
+                        print(f"     └─ Polygon V: [{poly_v.min():.3f}, {poly_v.max():.3f}], Mesh V: [{mesh_v.min():.3f}, {mesh_v.max():.3f}]")
             
             return mesh
             
@@ -1050,10 +1494,23 @@ class SPL3DPlotRenderer:
                 
                 # 🎯 PRÜFE ORIENTIERUNG: Überspringe vertikale Surfaces (werden separat behandelt)
                 orientation = grid_data.get('orientation', 'unknown')
+                dominant_axis = grid_data.get('dominant_axis', None)  # 🎯 NEU: Lade dominant_axis
+                
                 if orientation == 'vertical':
                     if DEBUG_PLOT3D_TIMING:
                         print(f"[DEBUG Plot] Surface '{surface_id}': Überspringe vertikale Surface (wird separat behandelt)")
                     continue
+                
+                # 🎯 KONVERTIERE ORIENTIERUNG: Für Filterung brauchen wir "xz", "yz" oder None
+                # Für planare/schräge Flächen: None (Standard XY-Ebene)
+                # Für vertikale Flächen: dominant_axis ("xz" oder "yz")
+                vertical_orientation_for_filter = None
+                if orientation == 'vertical' and dominant_axis:
+                    vertical_orientation_for_filter = dominant_axis
+                # Für planare/schräge Flächen bleibt None (wird in XY-Ebene gefiltert)
+                
+                if DEBUG_PLOT3D_TIMING:
+                    print(f"[DEBUG Plot] Surface '{surface_id}': orientation={orientation}, dominant_axis={dominant_axis}, vertical_orientation_for_filter={vertical_orientation_for_filter}")
                 
                 # Konvertiere zu numpy Arrays
                 X_grid = np.array(grid_data['X_grid'], dtype=float)
@@ -1223,6 +1680,7 @@ class SPL3DPlotRenderer:
                                 pv_module=pv,
                                 surface_id=surface_id,  # 🎯 NEU: Für Polygon-Prüfung
                                 settings=self.settings,  # 🎯 NEU: Für Surface-Definition
+                                vertical_orientation=vertical_orientation_for_filter,  # 🎯 NEU: Übergabe der Orientierung
                             )
                         else:
                             print(f"[DEBUG Plot] Surface '{surface_id}': Keine gültigen Randpunkte-SPL-Daten, überspringe Integration")
@@ -1495,7 +1953,13 @@ class SPL3DPlotRenderer:
             except Exception:  # noqa: BLE001
                 pass
 
-        # Zeichne alle aktiven Surfaces als Texturflächen
+        # Zeichne alle aktiven Surfaces als Texturflächen (planar/sloped)
+        with perf_section(
+            "Plot3D.render_surfaces_textured",
+            mode=colorization_mode_used,
+            phase_mode=phase_mode,
+            time_mode=time_mode,
+        ):
         self._render_surfaces_textured(
             geometry,
             original_plot_values,
@@ -1602,6 +2066,12 @@ class SPL3DPlotRenderer:
         # Merke den aktuell verwendeten Colorization-Mode, damit
         # _update_vertical_spl_surfaces identisch reagieren kann.
         self._last_colorization_mode = colorization_mode_used
+        with perf_section(
+            "Plot3D.update_vertical_spl_surfaces",
+            mode=colorization_mode_used,
+            phase_mode=phase_mode,
+            time_mode=time_mode,
+        ):
         self._update_vertical_spl_surfaces()
 
         if DEBUG_PLOT3D_TIMING:
@@ -2542,16 +3012,13 @@ class SPL3DPlotRenderer:
                         spl_plot = spl_values
                         mask_plot = surface_mask
                 
-                # 🎯 DEBUG: Zeige transformierte Koordinaten
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"  └─ Nach Transformation:")
-                    print(f"     └─ x_plot: min={x_plot.min():.2f}, max={x_plot.max():.2f}, len={len(x_plot)}")
-                    print(f"     └─ y_plot: min={y_plot.min():.2f}, max={y_plot.max():.2f}, len={len(y_plot)}")
-                    print(f"     └─ z_coords_plot: min={z_coords_plot.min():.2f}, max={z_coords_plot.max():.2f}, shape={z_coords_plot.shape}")
-                    print(f"     └─ X_plot: min={X_plot.min():.2f}, max={X_plot.max():.2f}, shape={X_plot.shape}")
-                    print(f"     └─ Y_plot: min={Y_plot.min():.2f}, max={Y_plot.max():.2f}, shape={Y_plot.shape}")
-                    print(f"     └─ Z_plot: min={Z_plot.min():.2f}, max={Z_plot.max():.2f}, shape={Z_plot.shape}")
-                    print(f"     └─ spl_plot: min={spl_plot.min():.2f}, max={spl_plot.max():.2f}, shape={spl_plot.shape}")
+                # 🎯 DEBUG: Zeige transformierte Koordinaten (nur für schräge/überhängende Flächen)
+                is_slanted = vertical_orientation in ("xz_slanted", "yz_slanted")
+                if DEBUG_PLOT3D_TIMING and is_slanted:
+                    print(f"  └─ [{vertical_orientation}] Nach Transformation:")
+                    print(f"     └─ X_plot: min={X_plot.min():.2f}, max={X_plot.max():.2f}, span={X_plot.max()-X_plot.min():.2f}")
+                    print(f"     └─ Y_plot: min={Y_plot.min():.2f}, max={Y_plot.max():.2f}, span={Y_plot.max()-Y_plot.min():.2f} {'(interpoliert)' if is_slanted else ''}")
+                    print(f"     └─ Z_plot: min={Z_plot.min():.2f}, max={Z_plot.max():.2f}, span={Z_plot.max()-Z_plot.min():.2f}")
                     print(f"     └─ mask_plot: {np.sum(mask_plot)}/{mask_plot.size} Punkte aktiv")
                 
                 # Color step: Quantisiere Werte
@@ -2623,10 +3090,18 @@ class SPL3DPlotRenderer:
                     ])
                     mesh.points = points_corrected
                     if DEBUG_PLOT3D_TIMING:
+                        bounds_before = (mesh.points[:, 0].min(), mesh.points[:, 0].max(),
+                                       mesh.points[:, 1].min(), mesh.points[:, 1].max(),
+                                       mesh.points[:, 2].min(), mesh.points[:, 2].max())
                         print(f"[DEBUG Vertical] Schräge XZ-Wand: Koordinaten korrigiert")
-                        print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f}")
-                        print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f} (interpoliert)")
-                        print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
+                        print(f"  └─ X: [{points_corrected[:, 0].min():.2f}, {points_corrected[:, 0].max():.2f}] span={points_corrected[:, 0].max()-points_corrected[:, 0].min():.2f}")
+                        print(f"  └─ Y: [{points_corrected[:, 1].min():.2f}, {points_corrected[:, 1].max():.2f}] span={points_corrected[:, 1].max()-points_corrected[:, 1].min():.2f} (interpoliert)")
+                        print(f"  └─ Z: [{points_corrected[:, 2].min():.2f}, {points_corrected[:, 2].max():.2f}] span={points_corrected[:, 2].max()-points_corrected[:, 2].min():.2f}")
+                        # Prüfe Konsistenz mit Z_plot
+                        z_expected_min, z_expected_max = Z_plot.min(), Z_plot.max()
+                        z_actual_min, z_actual_max = points_corrected[:, 2].min(), points_corrected[:, 2].max()
+                        if abs(z_actual_min - z_expected_min) > 0.1 or abs(z_actual_max - z_expected_max) > 0.1:
+                            print(f"  ⚠️  Z-Koordinaten-Abweichung: erwartet [{z_expected_min:.2f}, {z_expected_max:.2f}], tatsächlich [{z_actual_min:.2f}, {z_actual_max:.2f}]")
                 elif vertical_orientation == "yz_slanted":
                     # Schräge Y-Z-Wand: build_surface_mesh erstellt (Y, Z, X_interp)
                     # Wir brauchen: (X, Y, Z) = (X_interp, Y, Z)
@@ -2640,9 +3115,14 @@ class SPL3DPlotRenderer:
                     mesh.points = points_corrected
                     if DEBUG_PLOT3D_TIMING:
                         print(f"[DEBUG Vertical] Schräge YZ-Wand: Koordinaten korrigiert")
-                        print(f"  └─ X: min={points_corrected[:, 0].min():.2f}, max={points_corrected[:, 0].max():.2f} (interpoliert)")
-                        print(f"  └─ Y: min={points_corrected[:, 1].min():.2f}, max={points_corrected[:, 1].max():.2f}")
-                        print(f"  └─ Z: min={points_corrected[:, 2].min():.2f}, max={points_corrected[:, 2].max():.2f}")
+                        print(f"  └─ X: [{points_corrected[:, 0].min():.2f}, {points_corrected[:, 0].max():.2f}] span={points_corrected[:, 0].max()-points_corrected[:, 0].min():.2f} (interpoliert)")
+                        print(f"  └─ Y: [{points_corrected[:, 1].min():.2f}, {points_corrected[:, 1].max():.2f}] span={points_corrected[:, 1].max()-points_corrected[:, 1].min():.2f}")
+                        print(f"  └─ Z: [{points_corrected[:, 2].min():.2f}, {points_corrected[:, 2].max():.2f}] span={points_corrected[:, 2].max()-points_corrected[:, 2].min():.2f}")
+                        # Prüfe Konsistenz mit Z_plot
+                        z_expected_min, z_expected_max = Z_plot.min(), Z_plot.max()
+                        z_actual_min, z_actual_max = points_corrected[:, 2].min(), points_corrected[:, 2].max()
+                        if abs(z_actual_min - z_expected_min) > 0.1 or abs(z_actual_max - z_expected_max) > 0.1:
+                            print(f"  ⚠️  Z-Koordinaten-Abweichung: erwartet [{z_expected_min:.2f}, {z_expected_max:.2f}], tatsächlich [{z_actual_min:.2f}, {z_actual_max:.2f}]")
                 
                 # 🎯 RANDPUNKTE: Integriere Randpunkte direkt in das Mesh (identisch zu horizontalen Flächen)
                 if 'edge_points_x' in result_data:
@@ -2662,6 +3142,13 @@ class SPL3DPlotRenderer:
                             print(f"[DEBUG Vertical] Surface '{surface_id}': Integriere {len(edge_x)} Randpunkte (Orientierung: {vertical_orientation})")
                         
                         mesh_before = mesh.n_points
+                        mesh_bounds_before = None
+                        if DEBUG_PLOT3D_TIMING and vertical_orientation in ("xz_slanted", "yz_slanted"):
+                            mesh_bounds_before = (
+                                mesh.points[:, 0].min(), mesh.points[:, 0].max(),
+                                mesh.points[:, 1].min(), mesh.points[:, 1].max(),
+                                mesh.points[:, 2].min(), mesh.points[:, 2].max()
+                            )
                         mesh = self._integrate_edge_points_into_mesh(
                             main_mesh=mesh,
                             edge_x=np.array(edge_x, dtype=float),
@@ -2680,7 +3167,23 @@ class SPL3DPlotRenderer:
                         )
                         mesh_after = mesh.n_points if mesh is not None else 0
                         if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG Vertical] Surface '{surface_id}': Mesh-Punkte: {mesh_before} → {mesh_after} (+{mesh_after - mesh_before})")
+                            if vertical_orientation in ("xz_slanted", "yz_slanted") and mesh is not None:
+                                mesh_bounds_after = (
+                                    mesh.points[:, 0].min(), mesh.points[:, 0].max(),
+                                    mesh.points[:, 1].min(), mesh.points[:, 1].max(),
+                                    mesh.points[:, 2].min(), mesh.points[:, 2].max()
+                                )
+                                print(f"[DEBUG Vertical] Surface '{surface_id}' ({vertical_orientation}): Mesh-Punkte: {mesh_before} → {mesh_after} (+{mesh_after - mesh_before})")
+                                if mesh_bounds_before:
+                                    print(f"  └─ Bounds VOR Randpunkten: X[{mesh_bounds_before[0]:.2f}, {mesh_bounds_before[1]:.2f}] Y[{mesh_bounds_before[2]:.2f}, {mesh_bounds_before[3]:.2f}] Z[{mesh_bounds_before[4]:.2f}, {mesh_bounds_before[5]:.2f}]")
+                                print(f"  └─ Bounds NACH Randpunkten: X[{mesh_bounds_after[0]:.2f}, {mesh_bounds_after[1]:.2f}] Y[{mesh_bounds_after[2]:.2f}, {mesh_bounds_after[3]:.2f}] Z[{mesh_bounds_after[4]:.2f}, {mesh_bounds_after[5]:.2f}]")
+                                # Prüfe auf große Änderungen
+                                if mesh_bounds_before:
+                                    z_diff = abs(mesh_bounds_after[4] - mesh_bounds_before[4]) + abs(mesh_bounds_after[5] - mesh_bounds_before[5])
+                                    if z_diff > 0.5:
+                                        print(f"  ⚠️  Große Z-Koordinaten-Änderung nach Randpunkten: {z_diff:.2f}")
+                            else:
+                                    print(f"[DEBUG Vertical] Surface '{surface_id}': Mesh-Punkte: {mesh_before} → {mesh_after} (+{mesh_after - mesh_before})")
                 
                 if mesh is None or mesh.n_points == 0:
                     continue
@@ -2715,6 +3218,59 @@ class SPL3DPlotRenderer:
                     print(f"[DEBUG Vertical] Surface '{surface_id}': Vertikales Mesh erstellt ({mesh.n_points} Punkte)")
                     print(f"  └─ Actor '{actor_name}' zum Plotter hinzugefügt")
                     
+                    # 🎯 DEBUG: Zeige finale Bounds der geplotteten Fläche
+                    if mesh.n_points > 0:
+                        final_points = mesh.points
+                        final_bounds = {
+                            'X': (final_points[:, 0].min(), final_points[:, 0].max()),
+                            'Y': (final_points[:, 1].min(), final_points[:, 1].max()),
+                            'Z': (final_points[:, 2].min(), final_points[:, 2].max()),
+                        }
+                        print(f"  └─ Finale Bounds der geplotteten Fläche:")
+                        print(f"     └─ X: [{final_bounds['X'][0]:.2f}, {final_bounds['X'][1]:.2f}] span={final_bounds['X'][1]-final_bounds['X'][0]:.2f}")
+                        print(f"     └─ Y: [{final_bounds['Y'][0]:.2f}, {final_bounds['Y'][1]:.2f}] span={final_bounds['Y'][1]-final_bounds['Y'][0]:.2f}")
+                        print(f"     └─ Z: [{final_bounds['Z'][0]:.2f}, {final_bounds['Z'][1]:.2f}] span={final_bounds['Z'][1]-final_bounds['Z'][0]:.2f}")
+                        
+                        # Prüfe gegen Polygon-Bounds
+                        if surface_id and hasattr(self, 'settings'):
+                            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+                            if surface_id in surface_definitions:
+                                surface_def = surface_definitions[surface_id]
+                                if isinstance(surface_def, SurfaceDefinition):
+                                    polygon_points = getattr(surface_def, 'points', []) or []
+                                else:
+                                    polygon_points = surface_def.get('points', [])
+                                
+                                if len(polygon_points) > 0:
+                                    poly_x = np.array([p.get('x', 0.0) for p in polygon_points], dtype=float)
+                                    poly_y = np.array([p.get('y', 0.0) for p in polygon_points], dtype=float)
+                                    poly_z = np.array([p.get('z', 0.0) for p in polygon_points], dtype=float)
+                                    
+                                    poly_bounds = {
+                                        'X': (poly_x.min(), poly_x.max()),
+                                        'Y': (poly_y.min(), poly_y.max()),
+                                        'Z': (poly_z.min(), poly_z.max()),
+                                    }
+                                    
+                                    # Prüfe ob geplottete Fläche außerhalb Polygon liegt
+                                    outside_x = (final_bounds['X'][0] < poly_bounds['X'][0]) or (final_bounds['X'][1] > poly_bounds['X'][1])
+                                    outside_y = (final_bounds['Y'][0] < poly_bounds['Y'][0]) or (final_bounds['Y'][1] > poly_bounds['Y'][1])
+                                    outside_z = (final_bounds['Z'][0] < poly_bounds['Z'][0]) or (final_bounds['Z'][1] > poly_bounds['Z'][1])
+                                    
+                                    if outside_x or outside_y or outside_z:
+                                        print(f"  ⚠️  GEPLOTTETE FLÄCHE LIEGT AUSSERHALB POLYGON-BOUNDS!")
+                                        print(f"     └─ Polygon X: [{poly_bounds['X'][0]:.2f}, {poly_bounds['X'][1]:.2f}], Geplottet X: [{final_bounds['X'][0]:.2f}, {final_bounds['X'][1]:.2f}]")
+                                        print(f"     └─ Polygon Y: [{poly_bounds['Y'][0]:.2f}, {poly_bounds['Y'][1]:.2f}], Geplottet Y: [{final_bounds['Y'][0]:.2f}, {final_bounds['Y'][1]:.2f}]")
+                                        print(f"     └─ Polygon Z: [{poly_bounds['Z'][0]:.2f}, {poly_bounds['Z'][1]:.2f}], Geplottet Z: [{final_bounds['Z'][0]:.2f}, {final_bounds['Z'][1]:.2f}]")
+                                        
+                                        # Berechne wie viele Punkte außerhalb liegen
+                                        points_outside_x = np.sum((final_points[:, 0] < poly_bounds['X'][0]) | (final_points[:, 0] > poly_bounds['X'][1]))
+                                        points_outside_y = np.sum((final_points[:, 1] < poly_bounds['Y'][0]) | (final_points[:, 1] > poly_bounds['Y'][1]))
+                                        points_outside_z = np.sum((final_points[:, 2] < poly_bounds['Z'][0]) | (final_points[:, 2] > poly_bounds['Z'][1]))
+                                        print(f"     └─ Punkte außerhalb X-Bounds: {points_outside_x}/{mesh.n_points} ({100*points_outside_x/mesh.n_points:.1f}%)")
+                                        print(f"     └─ Punkte außerhalb Y-Bounds: {points_outside_y}/{mesh.n_points} ({100*points_outside_y/mesh.n_points:.1f}%)")
+                                        print(f"     └─ Punkte außerhalb Z-Bounds: {points_outside_z}/{mesh.n_points} ({100*points_outside_z/mesh.n_points:.1f}%)")
+                    
             except Exception as e:
                 import traceback
                 if DEBUG_PLOT3D_TIMING:
@@ -2726,8 +3282,8 @@ class SPL3DPlotRenderer:
         # 🎯 DEBUG: Zeige alle hinzugefügten vertikalen Meshes
         if DEBUG_PLOT3D_TIMING:
             print(f"[DEBUG Vertical Grids] ✅ Vertikale Surfaces verarbeitet: {len(new_vertical_meshes)} Meshes hinzugefügt")
-            for actor_name, actor in new_vertical_meshes.items():
-                print(f"  └─ {actor_name}: {actor}")
+            for actor_name in new_vertical_meshes.keys():
+                print(f"  └─ {actor_name}")
         
         # Alte Actors entfernen
         if hasattr(self, "_vertical_surface_meshes"):

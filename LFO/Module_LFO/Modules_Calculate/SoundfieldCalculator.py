@@ -483,6 +483,7 @@ class SoundFieldCalculator(ModuleBase):
                     'surface_mask': grid.surface_mask.astype(bool).tolist(),
                     'resolution': grid.resolution,
                     'orientation': grid.geometry.orientation,  # 🎯 NEU: Speichere Orientierung für Plot
+                    'dominant_axis': getattr(grid.geometry, 'dominant_axis', None),  # 🎯 NEU: Speichere dominant_axis für Plot
                 }
                 
                 # Speichere Berechnungsergebnisse pro Surface
@@ -1098,13 +1099,19 @@ class SoundFieldCalculator(ModuleBase):
             if len(polygon_points) < 3:
                 return None
             
-            # Extrahiere X/Y-Koordinaten
+            # Extrahiere 3D-Koordinaten
             poly_x = np.array([p.get('x', 0.0) for p in polygon_points], dtype=float)
             poly_y = np.array([p.get('y', 0.0) for p in polygon_points], dtype=float)
+            poly_z = np.array([p.get('z', 0.0) for p in polygon_points], dtype=float)
+            
+            # 🎯 PRÜFE ORIENTIERUNG: Für vertikale schräge Flächen müssen Randpunkte entlang 3D-Kanten generiert werden
+            orientation = grid.geometry.orientation
+            is_vertical_slanted = orientation == "vertical" and grid.geometry.dominant_axis in ("xz", "yz")
             
             # Generiere Punkte entlang jeder Kante
             edge_x_list = []
             edge_y_list = []
+            edge_z_list = []
             
             n_points = len(poly_x)
             # Verwende Set, um Duplikate zu vermeiden (Eckpunkte können mehrfach vorkommen)
@@ -1112,11 +1119,16 @@ class SoundFieldCalculator(ModuleBase):
             
             for i in range(n_points):
                 # Kante von Punkt i zu Punkt (i+1) mod n_points
-                x0, y0 = poly_x[i], poly_y[i]
-                x1, y1 = poly_x[(i + 1) % n_points], poly_y[(i + 1) % n_points]
+                x0, y0, z0 = poly_x[i], poly_y[i], poly_z[i]
+                x1, y1, z1 = poly_x[(i + 1) % n_points], poly_y[(i + 1) % n_points], poly_z[(i + 1) % n_points]
                 
                 # Berechne Kantenlänge
-                edge_length = math.hypot(x1 - x0, y1 - y0)
+                if is_vertical_slanted:
+                    # Für schräge vertikale Flächen: 3D-Kantenlänge verwenden
+                    edge_length = math.sqrt((x1 - x0)**2 + (y1 - y0)**2 + (z1 - z0)**2)
+                else:
+                    # Für horizontale Flächen: XY-Kantenlänge (wie bisher)
+                    edge_length = math.hypot(x1 - x0, y1 - y0)
                 
                 if edge_length < 1e-6:
                     continue  # Überspringe sehr kurze Kanten
@@ -1130,12 +1142,23 @@ class SoundFieldCalculator(ModuleBase):
                     x_edge = x0 + t * (x1 - x0)
                     y_edge = y0 + t * (y1 - y0)
                     
-                    # Verwende Set, um Duplikate zu vermeiden (Eckpunkte)
-                    point_key = (round(x_edge, 6), round(y_edge, 6))
+                    if is_vertical_slanted:
+                        # Für schräge vertikale Flächen: Z direkt aus 3D-Kante
+                        z_edge = z0 + t * (z1 - z0)
+                        # Verwende 3D-Koordinaten für Duplikat-Erkennung
+                        point_key = (round(x_edge, 6), round(y_edge, 6), round(z_edge, 6))
+                    else:
+                        # Für horizontale Flächen: Z wird später über Plane-Model berechnet
+                        z_edge = None
+                        # Verwende XY-Koordinaten für Duplikat-Erkennung (wie bisher)
+                        point_key = (round(x_edge, 6), round(y_edge, 6))
+                    
                     if point_key not in seen_points:
                         seen_points.add(point_key)
                         edge_x_list.append(x_edge)
                         edge_y_list.append(y_edge)
+                        if z_edge is not None:
+                            edge_z_list.append(z_edge)
             
             if not edge_x_list:
                 return None
@@ -1143,20 +1166,26 @@ class SoundFieldCalculator(ModuleBase):
             edge_x = np.array(edge_x_list, dtype=float)
             edge_y = np.array(edge_y_list, dtype=float)
             
-            # Berechne Z-Koordinaten über Plane-Model
-            from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import evaluate_surface_plane
-            plane_model = grid.geometry.plane_model
-            edge_z = np.zeros_like(edge_x, dtype=float)
-            
-            if plane_model:
-                for i in range(len(edge_x)):
-                    edge_z[i] = evaluate_surface_plane(plane_model, edge_x[i], edge_y[i])
+            # Berechne Z-Koordinaten
+            if is_vertical_slanted:
+                # Für schräge vertikale Flächen: Z bereits aus 3D-Kanten berechnet
+                edge_z = np.array(edge_z_list, dtype=float)
+            else:
+                # Für horizontale Flächen: Z über Plane-Model berechnen (wie bisher)
+                from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import evaluate_surface_plane
+                plane_model = grid.geometry.plane_model
+                edge_z = np.zeros_like(edge_x, dtype=float)
+                
+                if plane_model:
+                    for i in range(len(edge_x)):
+                        edge_z[i] = evaluate_surface_plane(plane_model, edge_x[i], edge_y[i])
             
             # Nearest Neighbor Interpolation der SPL-Werte
             # 🎯 ERWEITERT: Verwende ALLE Grid-Punkte (inkl. erweiterte Punkte außerhalb)
             # für Nearest Neighbor Interpolation, da diese bereits korrekte SPL-Werte haben
             X_grid = grid.X_grid
             Y_grid = grid.Y_grid
+            Z_grid = grid.Z_grid
             surface_mask = grid.surface_mask
             
             # 🎯 ERWEITERTE MASKE: Verwende alle Grid-Punkte (auch außerhalb Surface)
@@ -1173,11 +1202,19 @@ class SoundFieldCalculator(ModuleBase):
             from scipy.spatial import cKDTree
             from scipy.interpolate import griddata
             
-            # Erstelle KD-Tree für schnelle Nearest Neighbor Suche
-            tree = cKDTree(np.column_stack([valid_x, valid_y]))
-            
-            # Finde nächstgelegene Grid-Punkte für alle Randpunkte
-            distances, indices = tree.query(np.column_stack([edge_x, edge_y]), k=1)
+            # 🎯 Für vertikale schräge Flächen: 3D-KD-Tree verwenden
+            if is_vertical_slanted:
+                # 3D-Koordinaten für Grid-Punkte
+                valid_z = Z_grid[extended_mask]
+                # Erstelle 3D-KD-Tree
+                tree = cKDTree(np.column_stack([valid_x, valid_y, valid_z]))
+                # Finde nächstgelegene Grid-Punkte für alle Randpunkte (3D)
+                distances, indices = tree.query(np.column_stack([edge_x, edge_y, edge_z]), k=1)
+            else:
+                # Für horizontale Flächen: 2D-KD-Tree in XY (wie bisher)
+                tree = cKDTree(np.column_stack([valid_x, valid_y]))
+                # Finde nächstgelegene Grid-Punkte für alle Randpunkte (2D)
+                distances, indices = tree.query(np.column_stack([edge_x, edge_y]), k=1)
             
             # Hole SPL-Werte der nächstgelegenen Punkte
             edge_spl = valid_spl[indices]

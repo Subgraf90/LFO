@@ -16,12 +16,13 @@ Output: Grids für verschiedene Berechnungen (Superposition, FEM, FDTD)
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
 from abc import ABC, abstractmethod
+import time
 import numpy as np
 import math
 import os
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Init.Logging import measure_time, perf_section
+from Module_LFO.Modules_Init.Logging import PERF_ENABLED, measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     evaluate_surface_plane,
@@ -42,6 +43,7 @@ class SurfaceGeometry:
     orientation: str = "unknown"  # "planar", "sloped", "vertical"
     normal: Optional[np.ndarray] = None  # Normale (falls planare Fläche)
     bbox: Optional[Tuple[float, float, float, float]] = None  # (min_x, max_x, min_y, max_y)
+    dominant_axis: Optional[str] = None  # "xz", "yz" oder None (für vertikale Flächen)
 
 
 @dataclass
@@ -87,12 +89,721 @@ class SurfaceAnalyzer(ModuleBase):
         super().__init__(settings)
         self.settings = settings
     
+    def _compute_robust_plane_normal_svd(
+        self,
+        points: List[Dict[str, float]]
+    ) -> Tuple[Optional[np.ndarray], Optional[float], Optional[Dict[str, float]]]:
+        """
+        🎯 ROBUSTESTE METHODE: SVD-basiertes Least-Squares Plane Fitting.
+        
+        Funktioniert für:
+        - 3 bis beliebig viele Punkte
+        - Beliebige Orientierung im Raum
+        - Ausreißer-resistent
+        - Numerisch stabil
+        
+        Returns:
+            (normal, plane_fit_error, plane_params)
+            - normal: Normale der Ebene (normalisiert)
+            - plane_fit_error: RMS-Fehler der Ebenen-Anpassung
+            - plane_params: Dict mit {a, b, c, d} für ax + by + cz + d = 0
+        """
+        if len(points) < 3:
+            return None, None, None
+        
+        coords = np.array([
+            [float(p.get('x', 0.0)), float(p.get('y', 0.0)), float(p.get('z', 0.0))]
+            for p in points
+        ], dtype=float)
+        
+        n_points = coords.shape[0]
+        
+        # Für genau 3 Punkte: Direkte Normale über Kreuzprodukt
+        if n_points == 3:
+            v1 = coords[1] - coords[0]
+            v2 = coords[2] - coords[0]
+            normal = np.cross(v1, v2)
+            norm = np.linalg.norm(normal)
+            if norm < 1e-9:
+                return None, None, None
+            normal = normal / norm
+            
+            # Berechne d für ax + by + cz + d = 0
+            # Verwende ersten Punkt
+            d = -np.dot(normal, coords[0])
+            
+            # RMS-Fehler (sollte 0 sein für 3 Punkte)
+            errors = np.abs(np.dot(coords, normal) + d)
+            rms_error = float(np.sqrt(np.mean(errors**2)))
+            
+            return normal, rms_error, {
+                'a': float(normal[0]),
+                'b': float(normal[1]),
+                'c': float(normal[2]),
+                'd': float(d)
+            }
+        
+        # Für 4+ Punkte: SVD-basiertes Least-Squares Plane Fitting
+        # Methode: ax + by + cz + d = 0
+        # Zentriere Punkte für bessere numerische Stabilität
+        center = np.mean(coords, axis=0)
+        coords_centered = coords - center
+        
+        # Prüfe auf degenerierte Fälle
+        if np.allclose(coords_centered, 0, atol=1e-9):
+            return None, None, None
+        
+        # SVD: coords_centered = U * S * V^T
+        # Die Normale ist der rechte Singulärvektor zum kleinsten Singulärwert
+        try:
+            U, s, Vt = np.linalg.svd(coords_centered, full_matrices=False)
+            
+            # Kleinster Singulärwert → Normale der Ebene
+            # Die Normale ist die letzte Zeile von Vt (entspricht kleinstem Singulärwert)
+            normal = Vt[-1, :]
+            norm = np.linalg.norm(normal)
+            
+            if norm < 1e-9:
+                return None, None, None
+            
+            normal = normal / norm
+            
+            # Stelle sicher, dass Normale konsistent orientiert ist
+            # (zeige in Richtung mit positiver Z-Komponente, wenn möglich)
+            if normal[2] < 0:
+                normal = -normal
+            
+            # Berechne d für ax + by + cz + d = 0
+            # Verwende Zentroid
+            d = -np.dot(normal, center)
+            
+            # Berechne RMS-Fehler der Ebenen-Anpassung
+            distances = np.abs(np.dot(coords, normal) + d)
+            rms_error = float(np.sqrt(np.mean(distances**2)))
+            
+            # Plane-Parameter
+            plane_params = {
+                'a': float(normal[0]),
+                'b': float(normal[1]),
+                'c': float(normal[2]),
+                'd': float(d)
+            }
+            
+            return normal, rms_error, plane_params
+            
+        except Exception as e:
+            if DEBUG_FLEXIBLE_GRID:
+                print(f"[DEBUG SVD] Fehler bei SVD: {e}")
+            return None, None, None
+    
+    def _compute_surface_normal(self, points: List[Dict[str, float]]) -> Optional[np.ndarray]:
+        """
+        Berechnet die Normale einer Fläche aus den Polygon-Punkten.
+        Robuste Methode für kleine und große Polygone, auch bei Kugel-Geometrien.
+        """
+        if len(points) < 3:
+            return None
+        
+        # Konvertiere zu numpy-Array
+        coords = np.array([
+            [float(p.get('x', 0.0)), float(p.get('y', 0.0)), float(p.get('z', 0.0))]
+            for p in points
+        ], dtype=float)
+        
+        if coords.shape[0] < 3:
+            return None
+        
+        # Für sehr kleine Polygone (z.B. Kugel-Faces): Verwende alle Punkte
+        # Für größere Polygone: Verwende repräsentative Stichprobe
+        n_points = len(coords)
+        if n_points <= 4:
+            # Alle Punkte verwenden
+            indices = list(range(n_points))
+        else:
+            # Repräsentative Stichprobe (erste, mittlere, letzte Punkte)
+            step = max(1, n_points // 4)
+            indices = list(range(0, n_points, step))
+            if indices[-1] != n_points - 1:
+                indices.append(n_points - 1)
+        
+        # Berechne Normale über mehrere Dreiecke (robuster)
+        normals = []
+        center = np.mean(coords, axis=0)
+        
+        # Verwende verschiedene Dreiecks-Kombinationen
+        used_indices = set()
+        for i in range(len(indices)):
+            idx0 = indices[i]
+            idx1 = indices[(i + 1) % len(indices)]
+            idx2 = indices[(i + 2) % len(indices)]
+            
+            # Vermeide doppelte Berechnungen
+            triangle_key = tuple(sorted([idx0, idx1, idx2]))
+            if triangle_key in used_indices:
+                continue
+            used_indices.add(triangle_key)
+            
+            p0 = coords[idx0]
+            p1 = coords[idx1]
+            p2 = coords[idx2]
+            
+            v1 = p1 - p0
+            v2 = p2 - p0
+            
+            # Prüfe auf kollineare Punkte
+            if np.linalg.norm(v1) < 1e-9 or np.linalg.norm(v2) < 1e-9:
+                continue
+            
+            # Kreuzprodukt für Normale
+            n = np.cross(v1, v2)
+            norm = np.linalg.norm(n)
+            
+            if norm > 1e-9:
+                n = n / norm
+                # WICHTIG: Normale NICHT umdrehen - behalte Original-Richtung
+                # (kann nach oben oder unten zeigen, je nach Flächen-Orientierung)
+                normals.append(n)
+        
+        if not normals:
+            return None
+        
+        # Durchschnittliche Normale (gewichtet nach Flächeninhalt der Dreiecke)
+        # Für einfachere Berechnung: Einfacher Durchschnitt
+        avg_normal = np.mean(normals, axis=0)
+        norm = np.linalg.norm(avg_normal)
+        if norm > 1e-9:
+            return avg_normal / norm
+        
+        return None
+    
+    def _compute_pca_orientation(self, points: List[Dict[str, float]]) -> Dict[str, Any]:
+        """
+        Berechnet die Hauptkomponenten-Analyse (PCA) der Punkte.
+        Gibt Informationen über die Ausrichtung der Fläche zurück.
+        Robust auch für kleine Polygone (z.B. Kugel-Faces).
+        """
+        if len(points) < 3:
+            return {"vertical_score": 0.0, "dominant_axis": None}
+        
+        coords = np.array([
+            [float(p.get('x', 0.0)), float(p.get('y', 0.0)), float(p.get('z', 0.0))]
+            for p in points
+        ], dtype=float)
+        
+        # Prüfe auf degenerierte Fälle (alle Punkte identisch oder kollinear)
+        if coords.shape[0] < 3:
+            return {"vertical_score": 0.0, "dominant_axis": None}
+        
+        # Zentriere Punkte
+        center = np.mean(coords, axis=0)
+        coords_centered = coords - center
+        
+        # Prüfe ob alle Punkte identisch sind
+        if np.allclose(coords_centered, 0, atol=1e-9):
+            return {"vertical_score": 0.0, "dominant_axis": None}
+        
+        # Für sehr kleine Polygone (z.B. 3 Punkte): Verwende direkte Normale
+        if len(coords) == 3:
+            v1 = coords[1] - coords[0]
+            v2 = coords[2] - coords[0]
+            normal = np.cross(v1, v2)
+            norm = np.linalg.norm(normal)
+            if norm > 1e-9:
+                normal = normal / norm
+                z_axis = np.array([0, 0, 1])
+                cos_angle = np.clip(np.abs(np.dot(normal, z_axis)), 0, 1)
+                angle_deg = np.degrees(np.arccos(cos_angle))
+                vertical_score = angle_deg / 90.0
+                
+                # Bestimme dominante Achse
+                x_span = float(np.ptp(coords[:, 0]))
+                y_span = float(np.ptp(coords[:, 1]))
+                z_span = float(np.ptp(coords[:, 2]))
+                dominant_axis = None
+                if z_span > max(x_span, y_span) * 0.7:
+                    if x_span < y_span * 0.3:
+                        dominant_axis = "yz"
+                    elif y_span < x_span * 0.3:
+                        dominant_axis = "xz"
+                
+                return {
+                    "vertical_score": float(vertical_score),
+                    "angle_with_z": float(angle_deg),
+                    "min_eigenval": 0.0,
+                    "dominant_axis": dominant_axis,
+                    "eigenvals": [0.0, 0.0, 0.0]
+                }
+        
+        # Für größere Polygone: Verwende PCA
+        try:
+            # Kovarianz-Matrix (robust auch bei wenigen Punkten)
+            if len(coords_centered) == 1:
+                cov = np.zeros((3, 3))
+            else:
+                cov = np.cov(coords_centered.T)
+                # Fallback für 1D-Arrays
+                if cov.ndim == 0:
+                    cov = np.zeros((3, 3))
+                elif cov.ndim == 1:
+                    # Diagonal-Matrix
+                    cov = np.diag(cov)
+                    if cov.shape[0] != 3:
+                        cov = np.zeros((3, 3))
+            
+            # Eigenwerte und Eigenvektoren
+            eigenvals, eigenvecs = np.linalg.eigh(cov)
+            # Sortiere nach Eigenwerten (größte zuerst)
+            idx = np.argsort(eigenvals)[::-1]
+            eigenvals = eigenvals[idx]
+            eigenvecs = eigenvecs[:, idx]
+            
+            # Normiere Eigenwerte
+            total_var = np.sum(eigenvals)
+            if total_var < 1e-12:
+                return {"vertical_score": 0.0, "dominant_axis": None}
+            
+            eigenvals_norm = eigenvals / total_var
+            
+            # WICHTIG: Nach Sortierung ist eigenvals[0] der GRÖSSTE Eigenwert
+            # Der kleinste Eigenwert (senkrecht zur Fläche) ist eigenvals[2]
+            # Der zugehörige Eigenvektor gibt die Normale der Fläche an
+            min_eigenval = eigenvals_norm[2]  # Kleinster Eigenwert (senkrecht zur Fläche)
+            min_eigenvec = eigenvecs[:, 2]  # Normale der Fläche
+            
+            # Winkel zwischen Normale und Z-Achse
+            z_axis = np.array([0, 0, 1])
+            # Verwende Absolutwert, da Normale in beide Richtungen zeigen kann
+            cos_angle = np.clip(np.abs(np.dot(min_eigenvec, z_axis)), 0, 1)
+            angle_with_z = np.arccos(cos_angle)
+            angle_deg = np.degrees(angle_with_z)
+            
+            # 🎯 EMPFINDLICHERE VERTIKAL-SCORE für geringe Steigungen:
+            # Linear interpolieren statt einfache Division
+            # 0° = 0.0, 5° = 0.1, 75° = 0.9, 90° = 1.0
+            if angle_deg < 5:
+                vertical_score = angle_deg / 5.0 * 0.1  # 0.0 bis 0.1
+            elif angle_deg < 75:
+                vertical_score = 0.1 + (angle_deg - 5.0) / 70.0 * 0.8  # 0.1 bis 0.9
+            else:
+                vertical_score = 0.9 + (angle_deg - 75.0) / 15.0 * 0.1  # 0.9 bis 1.0
+            
+            vertical_score = np.clip(vertical_score, 0.0, 1.0)
+            
+            # Bestimme dominante Achse (X oder Y)
+            # Prüfe, welche Koordinate in der Fläche am meisten variiert
+            x_span = float(np.ptp(coords[:, 0]))
+            y_span = float(np.ptp(coords[:, 1]))
+            z_span = float(np.ptp(coords[:, 2]))
+            
+            dominant_axis = None
+            if z_span > max(x_span, y_span) * 0.7:
+                # Z variiert am meisten → vertikal
+                if x_span < y_span * 0.3:
+                    dominant_axis = "yz"  # Y-Z-Wand
+                elif y_span < x_span * 0.3:
+                    dominant_axis = "xz"  # X-Z-Wand
+            
+            return {
+                "vertical_score": float(vertical_score),
+                "angle_with_z": float(angle_deg),
+                "min_eigenval": float(min_eigenval),
+                "dominant_axis": dominant_axis,
+                "eigenvals": eigenvals_norm.tolist()
+            }
+        except Exception as e:
+            if DEBUG_FLEXIBLE_GRID:
+                print(f"[DEBUG PCA] Fehler bei PCA-Analyse: {e}")
+            return {"vertical_score": 0.0, "dominant_axis": None}
+    
+    def _determine_orientation_ultra_robust(
+        self,
+        points: List[Dict[str, float]],
+        plane_model: Optional[Dict[str, float]],
+        normal: Optional[np.ndarray]
+    ) -> Tuple[str, Optional[str]]:
+        """
+        🎯 ULTRA-ROBUSTE Orientierungserkennung ohne Einschränkungen.
+        
+        Kombiniert mehrere Methoden:
+        1. SVD-basiertes Plane Fitting (robusteste Methode)
+        2. Normale-Vektor-Analyse
+        3. PCA-Analyse
+        4. Plane-Model-Analyse
+        5. Spannen-Analyse (Fallback)
+        
+        Funktioniert für:
+        - 3 bis beliebig viele Punkte
+        - Beliebige Orientierung (auch negativ geneigt)
+        - Kugel-Geometrien
+        - Ausreißer-resistent
+        """
+        # Konvertiere zu numpy-Array
+        xs = np.array([float(p.get('x', 0.0)) for p in points], dtype=float)
+        ys = np.array([float(p.get('y', 0.0)) for p in points], dtype=float)
+        zs = np.array([float(p.get('z', 0.0)) for p in points], dtype=float)
+        
+        x_span = float(np.ptp(xs))
+        y_span = float(np.ptp(ys))
+        z_span = float(np.ptp(zs))
+        
+        # 🎯 METHODE 1: SVD-basiertes Plane Fitting (robusteste Methode)
+        svd_normal, svd_error, svd_params = self._compute_robust_plane_normal_svd(points)
+        svd_score = 0.0
+        
+        if svd_normal is not None:
+            z_axis = np.array([0, 0, 1])
+            cos_angle = np.clip(np.abs(np.dot(svd_normal, z_axis)), 0, 1)
+            angle_deg = np.degrees(np.arccos(cos_angle))
+            
+            # Qualitäts-Bonus: Geringer Fit-Fehler erhöht Vertrauen
+            quality_bonus = 1.0
+            if svd_error is not None:
+                # Wenn RMS-Fehler sehr klein, ist die Fläche sehr plan
+                if svd_error < 1e-6:
+                    quality_bonus = 1.1  # Leichter Bonus
+                elif svd_error > 0.1:
+                    quality_bonus = 0.9  # Leichter Penalty
+            
+            if angle_deg < 5:
+                svd_score = 0.0 * quality_bonus
+            elif angle_deg < 75:
+                svd_score = ((angle_deg - 5.0) / 70.0) * quality_bonus
+            else:
+                svd_score = 1.0 * quality_bonus
+            
+            svd_score = np.clip(svd_score, 0.0, 1.0)
+        
+        # Methode 2: Normale-Vektor-Analyse (wenn verfügbar)
+        normal_score = 0.0
+        if normal is not None:
+            z_axis = np.array([0, 0, 1])
+            cos_angle = np.clip(np.abs(np.dot(normal, z_axis)), 0, 1)
+            angle_deg = np.degrees(np.arccos(cos_angle))
+            
+            if angle_deg < 5:
+                normal_score = 0.0
+            elif angle_deg < 75:
+                normal_score = (angle_deg - 5.0) / 70.0
+                normal_score = np.clip(normal_score, 0.0, 1.0)
+            else:
+                normal_score = 1.0
+        
+        # Methode 3: PCA-Analyse
+        pca_result = self._compute_pca_orientation(points)
+        pca_vertical_score = pca_result.get("vertical_score", 0.0)
+        pca_dominant_axis = pca_result.get("dominant_axis", None)
+        
+        # Methode 4: Plane-Model-Analyse
+        plane_score = 0.0
+        if plane_model is not None:
+            mode = plane_model.get('mode', 'constant')
+            if mode == 'constant':
+                plane_score = 0.0
+            elif mode in ['x', 'y']:
+                slope = abs(float(plane_model.get('slope', 0.0)))
+                if slope < 0.01:
+                    plane_score = 0.0
+                elif slope < 0.5:
+                    plane_score = (slope - 0.01) / 0.49 * 0.5
+                elif slope < 2.0:
+                    plane_score = 0.5 + (slope - 0.5) / 1.5 * 0.5
+                else:
+                    plane_score = 1.0
+            elif mode == 'xy':
+                slope_x = abs(float(plane_model.get('slope_x', 0.0)))
+                slope_y = abs(float(plane_model.get('slope_y', 0.0)))
+                combined_slope = np.sqrt(slope_x**2 + slope_y**2)
+                if combined_slope < 0.01:
+                    plane_score = 0.0
+                elif combined_slope < 0.5:
+                    plane_score = (combined_slope - 0.01) / 0.49 * 0.5
+                elif combined_slope < 2.0:
+                    plane_score = 0.5 + (combined_slope - 0.5) / 1.5 * 0.5
+                else:
+                    plane_score = 1.0
+        
+        # Methode 5: Spannen-Analyse (Fallback)
+        span_score = 0.0
+        eps_line = 1e-6
+        max_horizontal_span = max(x_span, y_span)
+        if max_horizontal_span < 1e-9:
+            max_horizontal_span = 1e-9
+        z_ratio = z_span / max_horizontal_span if max_horizontal_span > 0 else 0.0
+        
+        if (x_span < eps_line or y_span < eps_line) and z_span > 1e-3:
+            span_score = 1.0
+        elif z_span > 1e-3:
+            if z_ratio < 0.01:
+                span_score = 0.0
+            elif z_ratio < 0.1:
+                span_score = (z_ratio - 0.01) / 0.09 * 0.3
+            elif z_ratio < 0.7:
+                span_score = 0.3 + (z_ratio - 0.1) / 0.6 * 0.7
+            else:
+                span_score = 1.0
+        
+        # 🎯 GEWICHTETE KOMBINATION (SVD hat höchste Priorität)
+        weights = {
+            'svd': 0.5 if svd_normal is not None else 0.0,  # Höchste Priorität
+            'normal': 0.25 if normal is not None else 0.0,
+            'pca': 0.15,
+            'plane': 0.08 if plane_model is not None else 0.0,
+            'span': 0.02
+        }
+        
+        # Normalisiere Gewichte
+        total_weight = sum(weights.values())
+        if total_weight < 1e-6:
+            # Fallback: Nur Spannen-Analyse
+            combined_score = span_score
+        else:
+            for key in weights:
+                weights[key] /= total_weight
+            
+            combined_score = (
+                weights['svd'] * svd_score +
+                weights['normal'] * normal_score +
+                weights['pca'] * pca_vertical_score +
+                weights['plane'] * plane_score +
+                weights['span'] * span_score
+            )
+        
+        # Bestimme Orientierung
+        if combined_score < 0.15:
+            orientation = "planar"
+        elif combined_score < 0.6:
+            orientation = "sloped"
+        else:
+            orientation = "vertical"
+        
+        # Bestimme dominante Achse für vertikale Flächen
+        dominant_axis = None
+        if orientation == "vertical":
+            if pca_dominant_axis:
+                dominant_axis = pca_dominant_axis
+            else:
+                # Fallback: Spannen-Analyse
+                if y_span < eps_line and x_span >= eps_line:
+                    dominant_axis = "xz"
+                elif x_span < eps_line and y_span >= eps_line:
+                    dominant_axis = "yz"
+                elif z_span > max(x_span, y_span) * 0.7:
+                    if x_span < y_span * 0.5:
+                        dominant_axis = "yz"
+                    elif y_span < x_span * 0.5:
+                        dominant_axis = "xz"
+        
+        if DEBUG_FLEXIBLE_GRID:
+            print(f"[DEBUG Ultra-Robust] Score-Analyse:")
+            print(f"  └─ SVD: {svd_score:.3f} (weight: {weights['svd']:.3f}, error: {svd_error:.6f if svd_error else 'N/A'})")
+            print(f"  └─ Normal: {normal_score:.3f} (weight: {weights['normal']:.3f})")
+            print(f"  └─ PCA: {pca_vertical_score:.3f} (weight: {weights['pca']:.3f})")
+            print(f"  └─ Plane: {plane_score:.3f} (weight: {weights['plane']:.3f})")
+            print(f"  └─ Span: {span_score:.3f} (weight: {weights['span']:.3f})")
+            print(f"  └─ Combined: {combined_score:.3f} → {orientation}")
+            if dominant_axis:
+                print(f"  └─ Dominant axis: {dominant_axis}")
+        
+        return orientation, dominant_axis
+    
+    def _determine_orientation_improved(
+        self,
+        points: List[Dict[str, float]],
+        plane_model: Optional[Dict[str, float]],
+        normal: Optional[np.ndarray]
+    ) -> Tuple[str, Optional[str]]:
+        """
+        Bestimmt die Orientierung einer Fläche mit mehreren Methoden.
+        
+        Returns:
+            (orientation, dominant_axis)
+            - orientation: "planar", "sloped", "vertical"
+            - dominant_axis: "xz", "yz", oder None
+        """
+        # Konvertiere zu numpy-Array
+        xs = np.array([float(p.get('x', 0.0)) for p in points], dtype=float)
+        ys = np.array([float(p.get('y', 0.0)) for p in points], dtype=float)
+        zs = np.array([float(p.get('z', 0.0)) for p in points], dtype=float)
+        
+        x_span = float(np.ptp(xs))
+        y_span = float(np.ptp(ys))
+        z_span = float(np.ptp(zs))
+        
+        # Methode 1: Normale-Vektor-Analyse (wenn verfügbar)
+        normal_score = 0.0
+        if normal is not None:
+            z_axis = np.array([0, 0, 1])
+            # Winkel zwischen Normale und Z-Achse
+            # Normale parallel zu Z (0°) = horizontal/planar
+            # Normale senkrecht zu Z (90°) = vertikal
+            # WICHTIG: Verwende Absolutwert, da Normale nach oben oder unten zeigen kann
+            cos_angle = np.clip(np.abs(np.dot(normal, z_axis)), 0, 1)
+            angle_with_z = np.arccos(cos_angle)
+            angle_deg = np.degrees(angle_with_z)
+            
+            # 🎯 EMPFINDLICHERE SCHWELLENWERTE für geringe Steigungen:
+            # 0-5° = planar (praktisch horizontal)
+            # 5-75° = sloped (auch sehr geringe Steigungen werden erkannt)
+            # 75-90° = vertical
+            if angle_deg < 5:
+                normal_score = 0.0  # planar (praktisch horizontal)
+            elif angle_deg < 75:
+                # Sloped: Linear interpolieren zwischen 0.0 und 1.0
+                # 5° → 0.0, 75° → 1.0
+                normal_score = (angle_deg - 5.0) / 70.0  # 0.0 bis 1.0
+                normal_score = np.clip(normal_score, 0.0, 1.0)
+            else:
+                normal_score = 1.0  # vertical
+        
+        # Methode 2: PCA-Analyse
+        pca_result = self._compute_pca_orientation(points)
+        pca_vertical_score = pca_result.get("vertical_score", 0.0)
+        pca_dominant_axis = pca_result.get("dominant_axis", None)
+        
+        # Methode 3: Plane-Model-Analyse
+        plane_score = 0.0
+        if plane_model is not None:
+            mode = plane_model.get('mode', 'constant')
+            if mode == 'constant':
+                plane_score = 0.0  # planar
+            elif mode in ['x', 'y']:
+                # Prüfe Steigung (absolut, funktioniert auch für negative Steigungen)
+                slope = abs(float(plane_model.get('slope', 0.0)))
+                # 🎯 EMPFINDLICHERE SCHWELLENWERTE:
+                # < 0.01 = praktisch planar
+                # 0.01-0.5 = leicht geneigt (sloped)
+                # 0.5-2.0 = mäßig geneigt (sloped)
+                # > 2.0 = steil/vertikal
+                if slope < 0.01:
+                    plane_score = 0.0  # praktisch planar
+                elif slope < 0.5:
+                    # Leicht geneigt: Linear interpolieren
+                    plane_score = (slope - 0.01) / 0.49 * 0.5  # 0.0 bis 0.5
+                elif slope < 2.0:
+                    # Mäßig geneigt: Linear interpolieren
+                    plane_score = 0.5 + (slope - 0.5) / 1.5 * 0.5  # 0.5 bis 1.0
+                else:
+                    plane_score = 1.0  # steil/vertikal
+            elif mode == 'xy':
+                slope_x = abs(float(plane_model.get('slope_x', 0.0)))
+                slope_y = abs(float(plane_model.get('slope_y', 0.0)))
+                # Kombinierte Steigung (Euklidische Norm)
+                combined_slope = np.sqrt(slope_x**2 + slope_y**2)
+                if combined_slope < 0.01:
+                    plane_score = 0.0
+                elif combined_slope < 0.5:
+                    plane_score = (combined_slope - 0.01) / 0.49 * 0.5
+                elif combined_slope < 2.0:
+                    plane_score = 0.5 + (combined_slope - 0.5) / 1.5 * 0.5
+                else:
+                    plane_score = 1.0
+        
+        # Methode 4: Spannen-Analyse (Fallback, besonders wichtig für kleine Polygone)
+        span_score = 0.0
+        eps_line = 1e-6
+        
+        # Berechne relative Spannen
+        max_horizontal_span = max(x_span, y_span)
+        if max_horizontal_span < 1e-9:
+            max_horizontal_span = 1e-9  # Vermeide Division durch Null
+        
+        # Verhältnis von Z-Spanne zu horizontaler Spanne
+        z_ratio = z_span / max_horizontal_span if max_horizontal_span > 0 else 0.0
+        
+        if (x_span < eps_line or y_span < eps_line) and z_span > 1e-3:
+            span_score = 1.0  # vertikal (eine Dimension degeneriert)
+        elif z_span > 1e-3:
+            # 🎯 EMPFINDLICHERE ERKENNUNG auch für geringe Steigungen:
+            # z_ratio < 0.01 = praktisch planar
+            # 0.01 <= z_ratio < 0.1 = leicht geneigt
+            # 0.1 <= z_ratio < 0.7 = mäßig geneigt
+            # z_ratio >= 0.7 = vertikal
+            if z_ratio < 0.01:
+                span_score = 0.0  # praktisch planar
+            elif z_ratio < 0.1:
+                # Leicht geneigt: Linear interpolieren
+                span_score = (z_ratio - 0.01) / 0.09 * 0.3  # 0.0 bis 0.3
+            elif z_ratio < 0.7:
+                # Mäßig geneigt: Linear interpolieren
+                span_score = 0.3 + (z_ratio - 0.1) / 0.6 * 0.7  # 0.3 bis 1.0
+            else:
+                span_score = 1.0  # vertikal
+        
+        # Kombiniere Scores (gewichteter Durchschnitt)
+        # Normale und PCA sind am zuverlässigsten
+        weights = {
+            'normal': 0.4 if normal is not None else 0.0,
+            'pca': 0.4,
+            'plane': 0.15 if plane_model is not None else 0.0,
+            'span': 0.05
+        }
+        
+        # Normalisiere Gewichte
+        total_weight = sum(weights.values())
+        if total_weight < 1e-6:
+            # Fallback: Nur Spannen-Analyse
+            combined_score = span_score
+        else:
+            for key in weights:
+                weights[key] /= total_weight
+            
+            combined_score = (
+                weights['normal'] * normal_score +
+                weights['pca'] * pca_vertical_score +
+                weights['plane'] * plane_score +
+                weights['span'] * span_score
+            )
+        
+        # Bestimme Orientierung basierend auf Score
+        # 🎯 ANGEPASSTE SCHWELLENWERTE für bessere Erkennung geringer Steigungen:
+        # < 0.15 = planar (sehr empfindlich, erkennt auch fast-horizontale Flächen)
+        # 0.15-0.6 = sloped (breiter Bereich für alle geneigten Flächen)
+        # >= 0.6 = vertical
+        if combined_score < 0.15:
+            orientation = "planar"
+        elif combined_score < 0.6:
+            orientation = "sloped"
+        else:
+            orientation = "vertical"
+        
+        # Bestimme dominante Achse für vertikale Flächen
+        dominant_axis = None
+        if orientation == "vertical":
+            # Verwende PCA-Ergebnis oder Spannen-Analyse
+            if pca_dominant_axis:
+                dominant_axis = pca_dominant_axis
+            else:
+                # Fallback: Spannen-Analyse
+                if y_span < eps_line and x_span >= eps_line:
+                    dominant_axis = "xz"  # X-Z-Wand
+                elif x_span < eps_line and y_span >= eps_line:
+                    dominant_axis = "yz"  # Y-Z-Wand
+                elif z_span > max(x_span, y_span) * 0.7:
+                    # Bestimme welche Achse (X oder Y) weniger variiert
+                    if x_span < y_span * 0.5:
+                        dominant_axis = "yz"
+                    elif y_span < x_span * 0.5:
+                        dominant_axis = "xz"
+        
+        if DEBUG_FLEXIBLE_GRID:
+            print(f"[DEBUG Orientation] Score-Analyse:")
+            print(f"  └─ Normal: {normal_score:.3f} (weight: {weights['normal']:.3f})")
+            print(f"  └─ PCA: {pca_vertical_score:.3f} (weight: {weights['pca']:.3f})")
+            print(f"  └─ Plane: {plane_score:.3f} (weight: {weights['plane']:.3f})")
+            print(f"  └─ Span: {span_score:.3f} (weight: {weights['span']:.3f})")
+            print(f"  └─ Combined: {combined_score:.3f} → {orientation}")
+            if dominant_axis:
+                print(f"  └─ Dominant axis: {dominant_axis}")
+        
+        return orientation, dominant_axis
+    
     def analyze_surfaces(
         self,
         enabled_surfaces: List[Tuple[str, Dict]]
     ) -> List[SurfaceGeometry]:
         """
         Analysiert alle enabled Surfaces und bestimmt deren Geometrie.
+        Verwendet verbesserte Methoden: Normale-Vektor, PCA, Plane-Model.
         
         Args:
             enabled_surfaces: Liste von (surface_id, surface_definition) Tupeln
@@ -128,33 +839,15 @@ class SurfaceAnalyzer(ModuleBase):
             # Versuche Plane-Model zu bestimmen
             plane_model, error = derive_surface_plane(points)
             
-            # Bestimme Orientierung
-            x_span = max(xs) - min(xs)
-            y_span = max(ys) - min(ys)
-            z_span = max(zs) - min(zs) if zs else 0.0
+            # Berechne Normale der Fläche (Fallback-Methode)
+            normal = self._compute_surface_normal(points)
             
-            orientation = "unknown"
-            normal = None
+            # 🎯 ULTRA-ROBUSTE Orientierungserkennung (ohne Einschränkungen)
+            orientation, dominant_axis = self._determine_orientation_ultra_robust(
+                points, plane_model, normal
+            )
             
-            if plane_model is not None:
-                mode = plane_model.get('mode', 'constant')
-                if mode == 'constant':
-                    orientation = "planar"
-                elif mode in ['x', 'y', 'xy']:
-                    # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
-                    if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
-                        # Schräge vertikale Fläche: hat Plane-Model, aber z_span ist signifikant größer
-                        orientation = "vertical"
-                    else:
-                        orientation = "sloped"
-            else:
-                # Kein Plane-Model → könnte vertikal sein
-                if (x_span < 1e-6 or y_span < 1e-6) and z_span > 1e-3:
-                    orientation = "vertical"
-                elif z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
-                    # Schräge vertikale Fläche ohne Plane-Model
-                    orientation = "vertical"
-            
+            # Speichere zusätzliche Informationen in geometry
             geometry = SurfaceGeometry(
                 surface_id=surface_id,
                 name=name,
@@ -162,7 +855,8 @@ class SurfaceAnalyzer(ModuleBase):
                 plane_model=plane_model,
                 orientation=orientation,
                 normal=normal,
-                bbox=bbox
+                bbox=bbox,
+                dominant_axis=dominant_axis  # 🎯 NEU: Speichere dominant_axis für Plot
             )
             
             geometries.append(geometry)
@@ -466,6 +1160,7 @@ class GridBuilder(ModuleBase):
         """
         if resolution is None:
             resolution = self.settings.resolution
+        t_orientation_start = time.perf_counter() if PERF_ENABLED else None
         
         # 🎯 VERTIKALE SURFACES: Erstelle Grid direkt in (u,v)-Ebene der Fläche
         # Folgt der bewährten Logik aus SurfaceGridCalculator._build_vertical_surface_samples
@@ -1317,6 +2012,13 @@ class GridBuilder(ModuleBase):
                         print(f"  └─ ⚠️ Kein Plane-Model und keine Surface-Punkte vorhanden, Z-Werte bleiben 0")
                 else:
                     print(f"  └─ ⚠️ Kein Plane-Model vorhanden, Z-Werte bleiben 0")
+        
+        if PERF_ENABLED and t_orientation_start is not None:
+            duration_ms = (time.perf_counter() - t_orientation_start) * 1000.0
+            print(
+                f"[PERF] GridBuilder.build_single_surface_grid.{geometry.orientation}: "
+                f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
+            )
         
         return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask)
 

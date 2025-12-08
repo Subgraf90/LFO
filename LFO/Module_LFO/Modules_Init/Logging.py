@@ -46,7 +46,7 @@ _FAULT_HANDLER_STREAM = None
 
 # Einfacher, global steuerbarer Schalter für Performance‑Messungen
 # Standard jetzt: Performance-Logging AUS, kann per Umgebungsvariable wieder aktiviert werden.
-PERF_ENABLED = os.environ.get("LFO_DEBUG_PERF", "0").strip().lower() in {
+PERF_ENABLED = os.environ.get("LFO_DEBUG_PERF", "1").strip().lower() in {
     "1",
     "true",
     "yes",
