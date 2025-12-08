@@ -218,6 +218,86 @@ def _fit_plane_least_squares(points: np.ndarray) -> Optional[Dict]:
     return best_model
 
 
+def _identify_outliers(
+    points: List[Dict[str, float]],
+    model: Dict,
+    tolerance: float = PLANAR_TOLERANCE,
+) -> List[int]:
+    """
+    Identifiziert Ausreißer basierend auf Abweichungen von der Ebene.
+    
+    Strategie:
+    - Bei ≤4 Punkten: Alle Punkte mit Abweichung > Toleranz sind Ausreißer
+    - Bei >4 Punkten: Nur die Punkte mit den größten Abweichungen sind Ausreißer
+      (Anzahl möglicher Ausreißer: bei 5 Punkten max 2, bei 6+ Punkten entsprechend mehr)
+    
+    Returns:
+        Liste von Indizes der Ausreißer
+    """
+    if len(points) <= 4:
+        # Bei ≤4 Punkten: Alle Punkte mit Abweichung > Toleranz sind Ausreißer
+        outliers = []
+        for i, point in enumerate(points):
+            x = point.get("x", 0.0)
+            y = point.get("y", 0.0)
+            z = point.get("z", 0.0)
+            
+            if model["type"] == "z":
+                predicted = model["slope_x"] * x + model["slope_y"] * y + model["intercept"]
+                error = abs(predicted - z)
+            elif model["type"] == "y":
+                predicted = model["slope_x"] * x + model["slope_z"] * z + model["intercept"]
+                error = abs(predicted - y)
+            elif model["type"] == "x":
+                predicted = model["slope_y"] * y + model["slope_z"] * z + model["intercept"]
+                error = abs(predicted - x)
+            else:
+                error = 0.0
+            
+            if error > tolerance:
+                outliers.append(i)
+        return outliers
+    else:
+        # Bei >4 Punkten: Berechne Abweichungen für alle Punkte und identifiziere die größten
+        errors = []
+        for i, point in enumerate(points):
+            x = point.get("x", 0.0)
+            y = point.get("y", 0.0)
+            z = point.get("z", 0.0)
+            
+            if model["type"] == "z":
+                predicted = model["slope_x"] * x + model["slope_y"] * y + model["intercept"]
+                error = abs(predicted - z)
+            elif model["type"] == "y":
+                predicted = model["slope_x"] * x + model["slope_z"] * z + model["intercept"]
+                error = abs(predicted - y)
+            elif model["type"] == "x":
+                predicted = model["slope_y"] * y + model["slope_z"] * z + model["intercept"]
+                error = abs(predicted - x)
+            else:
+                error = 0.0
+            
+            errors.append((i, error))
+        
+        # Sortiere nach Abweichung (größte zuerst)
+        errors.sort(key=lambda x: x[1], reverse=True)
+        
+        # Bestimme maximale Anzahl möglicher Ausreißer:
+        # Bei 5 Punkten: max 2 Ausreißer
+        # Bei 6 Punkten: max 2 Ausreißer
+        # Bei 7+ Punkten: max 3 Ausreißer (oder mehr, je nach Gesamtzahl)
+        max_outliers = min(2, len(points) - 3) if len(points) <= 6 else min(3, len(points) - 3)
+        
+        # Identifiziere Ausreißer: Die Punkte mit den größten Abweichungen
+        # (nur wenn Abweichung > Toleranz)
+        outliers = []
+        for i, error in errors[:max_outliers]:
+            if error > tolerance:
+                outliers.append(i)
+        
+        return outliers
+
+
 def _correct_points_to_plane(
     points: List[Dict[str, float]],
     model: Dict,
@@ -226,6 +306,9 @@ def _correct_points_to_plane(
     """
     Korrigiert abweichende Punkte auf die Ebene.
     
+    Bei >4 Punkten: Nur die identifizierten Ausreißer werden korrigiert.
+    Bei ≤4 Punkten: Alle Punkte mit Abweichung > Toleranz werden korrigiert.
+    
     Returns:
         (corrected_points, invalid_fields)
     """
@@ -233,10 +316,9 @@ def _correct_points_to_plane(
     invalid_fields = []
     corrections = []
     
-    points_array = np.array([
-        [p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)]
-        for p in points
-    ])
+    # Identifiziere Ausreißer
+    outlier_indices = _identify_outliers(points, model, tolerance)
+    outlier_set = set(outlier_indices)
     
     if model["type"] == "z":
         # Z = ax + by + c
@@ -248,7 +330,8 @@ def _correct_points_to_plane(
             predicted_z = model["slope_x"] * x + model["slope_y"] * y + model["intercept"]
             error = abs(predicted_z - z)
             
-            if error > tolerance:
+            # Korrigiere nur wenn Ausreißer ODER (bei ≤4 Punkten) wenn Abweichung > Toleranz
+            if i in outlier_set or (len(points) <= 4 and error > tolerance):
                 # Korrigiere Z-Wert
                 corrected_z = round(predicted_z / CM_PRECISION) * CM_PRECISION
                 corrected.append({"x": x, "y": y, "z": corrected_z})
@@ -296,7 +379,13 @@ def _correct_points_to_plane(
                 corrected.append({"x": x, "y": y, "z": z})
     
     if corrections:
-        logger.info(f"Korrigiert {len(corrections)} Punkt(e):")
+        if len(points) > 4:
+            logger.info(
+                f"Identifiziert {len(outlier_indices)} Ausreißer von {len(points)} Punkten, "
+                f"korrigiert {len(corrections)} Punkt(e):"
+            )
+        else:
+            logger.info(f"Korrigiert {len(corrections)} Punkt(e):")
         for idx, error, old_val, new_val in corrections:
             coord_name = {"x": "X", "y": "Y", "z": "Z"}[model["type"]]
             logger.info(
