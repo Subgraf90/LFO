@@ -1,27 +1,16 @@
 """
-Modul zur Validierung und Optimierung von Surface-Definitionen.
-
-Dieses Modul prüft Surfaces auf Gültigkeit basierend auf starrer Achse:
-- Bestimmt Orientierung der Fläche (horizontal, vertikal, schräg)
-- Definiert starre Achse (X, Y oder Z)
-- Prüft ob alle Werte der starren Achse konsistent sind
-- Passt abweichende Werte an, sodass alle Punkte eine planare Fläche bilden
-- Entfernt redundante Datenpunkte
-- Rundet Koordinaten auf cm genau
+Einfache Validierung: Prüft ob Punkte planar sind und korrigiert abweichende Punkte.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple, Literal
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
-    derive_surface_plane,
-    evaluate_surface_plane,
-    _fit_planar_surface,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,20 +18,11 @@ logger = logging.getLogger(__name__)
 # Toleranz für cm-genaue Rundung (0.01m = 1cm)
 CM_PRECISION = 0.01
 
-# Toleranz für redundante Punkte (Punkte die näher als diese Distanz sind werden als redundant betrachtet)
+# Toleranz für redundante Punkte
 REDUNDANT_POINT_TOLERANCE = 0.001  # 1mm
 
-# Toleranz für kollineare Punkte
-COLLINEAR_TOLERANCE = 1e-6
-
-# Toleranz für starre Achse (Werte müssen innerhalb dieser Toleranz sein)
-RIGID_AXIS_TOLERANCE = 0.01  # 1cm
-
-# Toleranz für planare Flächen-Validierung
-# Nach cm-Rundung können Punkte bis zu 0.5mm pro Achse abweichen.
-# Für 4 Punkte: max 0.5mm * 2 = 1mm pro Punkt, aber durch Rundung können sich Fehler akkumulieren.
-# Daher großzügige Toleranz von 5cm, um sicherzustellen, dass alle gültigen planaren Flächen akzeptiert werden.
-PLANAR_VALIDATION_TOLERANCE = 0.05  # 5cm (großzügig für Rundungsfehler und numerische Ungenauigkeiten)
+# Toleranz für Planaritätsprüfung (5cm - großzügig für Rundungsfehler)
+PLANAR_TOLERANCE = 0.05  # 5cm
 
 
 class SurfaceValidationResult:
@@ -55,7 +35,7 @@ class SurfaceValidationResult:
         removed_points_count: int,
         rounded_points_count: int,
         error_message: Optional[str] = None,
-        rigid_axis: Optional[Literal["x", "y", "z"]] = None,
+        rigid_axis: Optional[str] = None,
         orientation: Optional[str] = None,
         invalid_fields: Optional[List[Tuple[int, str]]] = None,
     ):
@@ -64,1240 +44,271 @@ class SurfaceValidationResult:
         self.removed_points_count = removed_points_count
         self.rounded_points_count = rounded_points_count
         self.error_message = error_message
-        self.rigid_axis = rigid_axis  # "x", "y" oder "z"
-        self.orientation = orientation  # "horizontal", "vertical_x", "vertical_y", "sloped"
-        self.invalid_fields = invalid_fields or []  # Liste von (point_index, coord_name) für ungültige Felder
+        self.rigid_axis = rigid_axis  # Für Kompatibilität
+        self.orientation = orientation  # Für Kompatibilität
+        self.invalid_fields = invalid_fields or []
 
 
-def determine_surface_orientation(
-    points: List[Dict[str, float]],
-) -> Tuple[Optional[Literal["x", "y", "z"]], Optional[str]]:
+def _check_planarity_geometric(points: np.ndarray) -> Tuple[bool, float]:
     """
-    Bestimmt die Orientierung der Fläche und die starre Achse.
+    Prüft geometrisch ob Punkte planar sind.
     
-    Die starre Achse muss NICHT konstant sein - sie muss nur aus den anderen beiden Achsen
-    berechenbar sein (planare Fläche).
+    Verwendet Least-Squares-Fitting für robustere Prüfung, da gerundete Punkte
+    leicht von der idealen Ebene abweichen können.
     
-    Strategie:
-    1. Prüfe zuerst, ob eine Achse konstant ist (horizontal/vertikal) - das ist der einfachste Fall
-    2. Wenn keine Achse konstant ist, prüfe für jede Achse, ob sie aus den anderen beiden
-       berechenbar ist (planare Validierung)
-    3. Wähle die Achse mit dem besten Fit (kleinster Fehler)
-    
-    Args:
-        points: Liste von Punkten
-        
     Returns:
-        (rigid_axis, orientation) - rigid_axis: "x", "y" oder "z", orientation: Beschreibung
+        (is_planar, max_distance)
     """
     if len(points) < 3:
-        return None, None
+        return False, float('inf')
     
-    # Sammle gültige Punkte mit allen drei Koordinaten
-    valid_points = []
-    for p in points:
-        x_val = p.get("x")
-        y_val = p.get("y")
-        z_val = p.get("z")
-        if x_val is not None and y_val is not None and z_val is not None:
-            try:
-                valid_points.append({
-                    "x": float(x_val),
-                    "y": float(y_val),
-                    "z": float(z_val),
-                })
-            except (ValueError, TypeError):
-                pass
+    # Versuche zuerst geometrische Prüfung (schneller)
+    v1 = points[1] - points[0]
+    v2 = points[2] - points[0]
+    normal = np.cross(v1, v2)
+    normal_norm = np.linalg.norm(normal)
     
-    if len(valid_points) < 3:
-        return None, None
+    if normal_norm < 1e-10:
+        # Punkte sind kollinear
+        return False, float('inf')
     
-    # Sammle Werte für Spannweiten-Berechnung
-    x_vals = [p["x"] for p in valid_points]
-    y_vals = [p["y"] for p in valid_points]
-    z_vals = [p["z"] for p in valid_points]
+    normal = normal / normal_norm
     
-    # Berechne Spannweite pro Achse
-    x_span = float(np.ptp(x_vals)) if len(x_vals) > 0 else float('inf')
-    y_span = float(np.ptp(y_vals)) if len(y_vals) > 0 else float('inf')
-    z_span = float(np.ptp(z_vals)) if len(z_vals) > 0 else float('inf')
+    # Berechne Abweichungen aller Punkte von der Ebene
+    max_distance_geometric = 0.0
+    for point in points:
+        point_vec = point - points[0]
+        distance = abs(np.dot(point_vec, normal))
+        max_distance_geometric = max(max_distance_geometric, distance)
     
-    # Prüfe zuerst einfache Fälle: Ist eine Achse konstant?
-    # Horizontale Fläche: Z-Achse konstant
-    if z_span <= RIGID_AXIS_TOLERANCE:
-        logger.debug(f"Horizontale Fläche erkannt: Z-Spanne = {z_span*100:.2f}cm ≤ {RIGID_AXIS_TOLERANCE*100:.1f}cm")
-        return "z", "horizontal"
+    # Wenn geometrisch planar, fertig
+    if max_distance_geometric < PLANAR_TOLERANCE:
+        return True, max_distance_geometric
     
-    # Vertikale Fläche X: X-Achse konstant
-    if x_span <= RIGID_AXIS_TOLERANCE:
-        logger.debug(f"Vertikale Fläche (X) erkannt: X-Spanne = {x_span*100:.2f}cm ≤ {RIGID_AXIS_TOLERANCE*100:.1f}cm")
-        return "x", "vertical_x"
+    # Wenn nicht geometrisch planar, versuche Least-Squares-Fitting
+    # (robuster gegen Rundungsfehler)
+    xs = points[:, 0]
+    ys = points[:, 1]
+    zs = points[:, 2]
     
-    # Vertikale Fläche Y: Y-Achse konstant
-    if y_span <= RIGID_AXIS_TOLERANCE:
-        logger.debug(f"Vertikale Fläche (Y) erkannt: Y-Spanne = {y_span*100:.2f}cm ≤ {RIGID_AXIS_TOLERANCE*100:.1f}cm")
-        return "y", "vertical_y"
-    
-    # Keine Achse ist konstant - prüfe welche Achse am besten aus den anderen berechenbar ist
-    # Teste jede Achse als starre Achse
-    logger.info(f"Keine konstante Achse gefunden (X-Spanne: {x_span*100:.1f}cm, Y-Spanne: {y_span*100:.1f}cm, Z-Spanne: {z_span*100:.1f}cm)")
-    logger.info(f"Prüfe welche Achse am besten aus den anderen berechenbar ist (planare Validierung)...")
-    
-    best_axis = None
+    # Versuche alle drei Achsen
     best_error = float('inf')
-    best_orientation = "sloped"
-    axis_results = {}
     
-    # Teste Z-Achse als starr: Z = f(X, Y)
-    xs = np.array(x_vals)
-    ys = np.array(y_vals)
-    zs = np.array(z_vals)
-    model_z = _fit_planar_surface(xs, ys, zs)
-    if model_z is not None:
-        # Berechne durchschnittlichen Fehler
-        errors = []
-        for p in valid_points:
-            predicted_z = evaluate_surface_plane(model_z, p["x"], p["y"])
-            error = abs(predicted_z - p["z"])
-            errors.append(error)
-        avg_error_z = float(np.mean(errors))
-        max_error_z = float(np.max(errors))
-        axis_results["z"] = {"avg": avg_error_z, "max": max_error_z}
-        logger.info(
-            f"  Z-Achse als starr (Z = f(X, Y)): "
-            f"durchschnittlicher Fehler: {avg_error_z*100:.2f}cm, max Fehler: {max_error_z*100:.2f}cm"
-        )
-        if avg_error_z < best_error:
-            best_error = avg_error_z
-            best_axis = "z"
-            best_orientation = "sloped"
-    else:
-        logger.info(f"  Z-Achse als starr: Kein planares Modell erstellbar")
+    # Z = f(X, Y)
+    try:
+        A = np.column_stack((xs, ys, np.ones_like(xs)))
+        coeffs, residuals, rank, _ = np.linalg.lstsq(A, zs, rcond=None)
+        if rank >= 3:
+            predicted = coeffs[0] * xs + coeffs[1] * ys + coeffs[2]
+            errors = np.abs(predicted - zs)
+            max_error = float(np.max(errors))
+            best_error = min(best_error, max_error)
+    except:
+        pass
     
-    # Teste X-Achse als starr: X = f(Y, Z)
-    model_x = _fit_planar_surface(ys, zs, xs)
-    if model_x is not None:
-        errors = []
-        # Für X = f(Y, Z): x = slope_x*y + slope_y*z + intercept
-        slope_x = model_x.get("slope_x", 0.0)  # Tatsächlich Koeffizient für Y
-        slope_y = model_x.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-        intercept = model_x.get("intercept", 0.0)
-        for p in valid_points:
-            # Berechne X direkt: x = slope_x*y + slope_y*z + intercept
-            predicted_x = slope_x * p["y"] + slope_y * p["z"] + intercept
-            error = abs(predicted_x - p["x"])
-            errors.append(error)
-        avg_error_x = float(np.mean(errors))
-        max_error_x = float(np.max(errors))
-        axis_results["x"] = {"avg": avg_error_x, "max": max_error_x}
-        logger.info(
-            f"  X-Achse als starr (X = f(Y, Z)): "
-            f"durchschnittlicher Fehler: {avg_error_x*100:.2f}cm, max Fehler: {max_error_x*100:.2f}cm"
-        )
-        if avg_error_x < best_error:
-            best_error = avg_error_x
-            best_axis = "x"
-            best_orientation = "sloped"
-    else:
-        logger.info(f"  X-Achse als starr: Kein planares Modell erstellbar")
+    # Y = f(X, Z)
+    try:
+        A = np.column_stack((xs, zs, np.ones_like(xs)))
+        coeffs, residuals, rank, _ = np.linalg.lstsq(A, ys, rcond=None)
+        if rank >= 3:
+            predicted = coeffs[0] * xs + coeffs[1] * zs + coeffs[2]
+            errors = np.abs(predicted - ys)
+            max_error = float(np.max(errors))
+            best_error = min(best_error, max_error)
+    except:
+        pass
     
-    # Teste Y-Achse als starr: Y = f(X, Z)
-    model_y = _fit_planar_surface(xs, zs, ys)
-    if model_y is not None:
-        errors = []
-        # Für Y = f(X, Z): y = slope_x*x + slope_y*z + intercept
-        slope_x = model_y.get("slope_x", 0.0)
-        slope_y = model_y.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-        intercept = model_y.get("intercept", 0.0)
-        for p in valid_points:
-            # Berechne Y direkt: y = slope_x*x + slope_y*z + intercept
-            predicted_y = slope_x * p["x"] + slope_y * p["z"] + intercept
-            error = abs(predicted_y - p["y"])
-            errors.append(error)
-        avg_error_y = float(np.mean(errors))
-        max_error_y = float(np.max(errors))
-        axis_results["y"] = {"avg": avg_error_y, "max": max_error_y}
-        logger.info(
-            f"  Y-Achse als starr (Y = f(X, Z)): "
-            f"durchschnittlicher Fehler: {avg_error_y*100:.2f}cm, max Fehler: {max_error_y*100:.2f}cm"
-        )
-        if avg_error_y < best_error:
-            best_error = avg_error_y
-            best_axis = "y"
-            best_orientation = "sloped"
-    else:
-        logger.info(f"  Y-Achse als starr: Kein planares Modell erstellbar")
+    # X = f(Y, Z)
+    try:
+        A = np.column_stack((ys, zs, np.ones_like(ys)))
+        coeffs, residuals, rank, _ = np.linalg.lstsq(A, xs, rcond=None)
+        if rank >= 3:
+            predicted = coeffs[0] * ys + coeffs[1] * zs + coeffs[2]
+            errors = np.abs(predicted - xs)
+            max_error = float(np.max(errors))
+            best_error = min(best_error, max_error)
+    except:
+        pass
     
-    # Wenn eine Achse gefunden wurde, verwende sie
-    if best_axis is not None:
-        logger.info(
-            f"✓ Starre Achse bestimmt: {best_axis.upper()}-Achse (schräg), "
-            f"durchschnittlicher Fehler: {best_error*100:.2f}cm"
-        )
-        # Zeige Vergleich mit anderen Achsen
-        for axis, results in axis_results.items():
-            if axis != best_axis:
-                logger.debug(
-                    f"  Vergleich: {axis.upper()}-Achse hätte durchschnittlichen Fehler von "
-                    f"{results['avg']*100:.2f}cm gehabt"
-                )
-        return best_axis, best_orientation
+    # Verwende den besseren Wert (geometrisch oder Least-Squares)
+    max_distance = min(max_distance_geometric, best_error)
+    is_planar = max_distance < PLANAR_TOLERANCE
     
-    # Fallback: Wenn keine Achse funktioniert, verwende Z als Standard
-    logger.warning("Keine optimale starre Achse gefunden, verwende Z als Standard")
-    return "z", "sloped"
+    return is_planar, max_distance
 
 
-def check_rigid_axis_validity(
+def _fit_plane_least_squares(points: np.ndarray) -> Optional[Dict]:
+    """
+    Finde beste Ebene durch Least-Squares-Fitting.
+    Versucht alle drei Achsen als abhängige Variable.
+    
+    Returns:
+        Dict mit Modell-Informationen oder None
+    """
+    if len(points) < 3:
+        return None
+    
+    xs = points[:, 0]
+    ys = points[:, 1]
+    zs = points[:, 2]
+    
+    best_model = None
+    best_error = float('inf')
+    
+    # Versuche Z = ax + by + c
+    try:
+        A = np.column_stack((xs, ys, np.ones_like(xs)))
+        coeffs, residuals, rank, _ = np.linalg.lstsq(A, zs, rcond=None)
+        if rank >= 3:
+            predicted = coeffs[0] * xs + coeffs[1] * ys + coeffs[2]
+            errors = np.abs(predicted - zs)
+            max_error = float(np.max(errors))
+            if max_error < best_error:
+                best_error = max_error
+                best_model = {
+                    "type": "z",
+                    "slope_x": float(coeffs[0]),
+                    "slope_y": float(coeffs[1]),
+                    "intercept": float(coeffs[2]),
+                    "max_error": max_error,
+                }
+    except:
+        pass
+    
+    # Versuche Y = ax + bz + c
+    try:
+        A = np.column_stack((xs, zs, np.ones_like(xs)))
+        coeffs, residuals, rank, _ = np.linalg.lstsq(A, ys, rcond=None)
+        if rank >= 3:
+            predicted = coeffs[0] * xs + coeffs[1] * zs + coeffs[2]
+            errors = np.abs(predicted - ys)
+            max_error = float(np.max(errors))
+            if max_error < best_error:
+                best_error = max_error
+                best_model = {
+                    "type": "y",
+                    "slope_x": float(coeffs[0]),
+                    "slope_z": float(coeffs[1]),
+                    "intercept": float(coeffs[2]),
+                    "max_error": max_error,
+                }
+    except:
+        pass
+    
+    # Versuche X = ay + bz + c
+    try:
+        A = np.column_stack((ys, zs, np.ones_like(ys)))
+        coeffs, residuals, rank, _ = np.linalg.lstsq(A, xs, rcond=None)
+        if rank >= 3:
+            predicted = coeffs[0] * ys + coeffs[1] * zs + coeffs[2]
+            errors = np.abs(predicted - xs)
+            max_error = float(np.max(errors))
+            if max_error < best_error:
+                best_error = max_error
+                best_model = {
+                    "type": "x",
+                    "slope_y": float(coeffs[0]),
+                    "slope_z": float(coeffs[1]),
+                    "intercept": float(coeffs[2]),
+                    "max_error": max_error,
+                }
+    except:
+        pass
+    
+    return best_model
+
+
+def _correct_points_to_plane(
     points: List[Dict[str, float]],
-    rigid_axis: Literal["x", "y", "z"],
-    orientation: Optional[str] = None,
-) -> Tuple[bool, List[Tuple[int, str]]]:
+    model: Dict,
+    tolerance: float = PLANAR_TOLERANCE,
+) -> Tuple[List[Dict[str, float]], List[Tuple[int, str]]]:
     """
-    Prüft ob alle Werte der starren Achse konsistent sind.
+    Korrigiert abweichende Punkte auf die Ebene.
     
-    Für horizontale/vertikale Flächen: Prüft ob alle Werte gleich sind (innerhalb Toleranz).
-    Für schräge Flächen: Prüft ob die Punkte einer planaren Funktion folgen.
-    
-    Args:
-        points: Liste von Punkten
-        rigid_axis: Die starre Achse ("x", "y" oder "z")
-        orientation: Die Orientierung der Fläche ("horizontal", "vertical_x", "vertical_y", "sloped")
-        
     Returns:
-        (is_valid, invalid_fields) - invalid_fields: Liste von (point_index, coord_name) für ungültige Felder
+        (corrected_points, invalid_fields)
     """
-    if len(points) < 3:
-        return False, []
+    corrected = []
+    invalid_fields = []
+    corrections = []
     
-    # Sammle gültige Punkte mit allen drei Koordinaten
-    valid_points = []
-    for i, point in enumerate(points):
-        x_val = point.get("x")
-        y_val = point.get("y")
-        z_val = point.get("z")
-        if x_val is not None and y_val is not None and z_val is not None:
-            try:
-                valid_points.append({
-                    "index": i,
-                    "x": float(x_val),
-                    "y": float(y_val),
-                    "z": float(z_val),
-                })
-            except (ValueError, TypeError):
-                pass
+    points_array = np.array([
+        [p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)]
+        for p in points
+    ])
     
-    # Wenn weniger als 3 Punkte mit allen Koordinaten, ist die Fläche ungültig
-    if len(valid_points) < 3:
-        invalid_fields = [(i, rigid_axis) for i in range(len(points)) if points[i].get(rigid_axis) is None]
-        return False, invalid_fields
-    
-    # Für horizontale/vertikale Flächen: Prüfe ob alle Werte der starren Achse gleich sind
-    # ABER: Auch hier können die Punkte leicht abweichen durch Rundung, daher verwenden wir
-    # die gleiche planare Validierung wie bei schrägen Flächen
-    if orientation in ("horizontal", "vertical_x", "vertical_y"):
-        # Für horizontale/vertikale Flächen können wir auch planare Validierung verwenden
-        # Das ist robuster gegen Rundungsfehler
-        if rigid_axis == "z":
-            # Z = f(X, Y) - sollte konstant sein für horizontale Flächen
-            xs = np.array([p["x"] for p in valid_points])
-            ys = np.array([p["y"] for p in valid_points])
-            zs = np.array([p["z"] for p in valid_points])
-            
-            # Versuche planares Modell zu erstellen
-            all_points_dict = [
-                {"x": p["x"], "y": p["y"], "z": p["z"]}
-                for p in valid_points
-            ]
-            model, error = derive_surface_plane(all_points_dict, tol=PLANAR_VALIDATION_TOLERANCE)
-            
-            if model is None:
-                model = _fit_planar_surface(xs, ys, zs)
-            
-            if model is not None:
-                invalid_fields = []
-                max_error = 0.0
-                for p in valid_points:
-                    predicted_z = evaluate_surface_plane(model, p["x"], p["y"])
-                    actual_z = p["z"]
-                    error = abs(predicted_z - actual_z)
-                    max_error = max(max_error, error)
-                    
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields.append((p["index"], rigid_axis))
-                        logger.debug(
-                            f"  Punkt {p['index']} ungültig: Z={actual_z:.4f}m, "
-                            f"vorhergesagt={predicted_z:.4f}m, Fehler={error*100:.2f}cm"
-                        )
-                
-                for i, point in enumerate(points):
-                    if point.get(rigid_axis) is None:
-                        invalid_fields.append((i, rigid_axis))
-                
-                is_valid = len(invalid_fields) == 0
-                if is_valid:
-                    logger.debug(
-                        f"Horizontale Fläche (Z-Achse) gültig: Alle {len(valid_points)} Punkte planar "
-                        f"(max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                else:
-                    logger.debug(
-                        f"Horizontale Fläche (Z-Achse) ungültig: {len(invalid_fields)} von {len(valid_points)} Punkten "
-                        f"abweichend (max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                return is_valid, invalid_fields
-        
-        elif rigid_axis == "x":
-            # X = f(Y, Z) - sollte konstant sein für vertikale X-Flächen
-            ys = np.array([p["y"] for p in valid_points])
-            zs = np.array([p["z"] for p in valid_points])
-            xs = np.array([p["x"] for p in valid_points])
-            
-            all_points_dict = [
-                {"x": p["y"], "y": p["z"], "z": p["x"]}
-                for p in valid_points
-            ]
-            model, error = derive_surface_plane(all_points_dict, tol=PLANAR_VALIDATION_TOLERANCE)
-            
-            if model is None:
-                model = _fit_planar_surface(ys, zs, xs)
-            
-            if model is not None:
-                invalid_fields = []
-                max_error = 0.0
-                # Für X = f(Y, Z): x = slope_x*y + slope_y*z + intercept
-                slope_x = model.get("slope_x", 0.0)  # Tatsächlich Koeffizient für Y
-                slope_y = model.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-                intercept = model.get("intercept", 0.0)
-                for p in valid_points:
-                    # Berechne X direkt: x = slope_x*y + slope_y*z + intercept
-                    predicted_x = slope_x * p["y"] + slope_y * p["z"] + intercept
-                    actual_x = p["x"]
-                    error = abs(predicted_x - actual_x)
-                    max_error = max(max_error, error)
-                    
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields.append((p["index"], rigid_axis))
-                        logger.debug(
-                            f"  Punkt {p['index']} ungültig: X={actual_x:.4f}m, "
-                            f"vorhergesagt={predicted_x:.4f}m, Fehler={error*100:.2f}cm"
-                        )
-                
-                for i, point in enumerate(points):
-                    if point.get(rigid_axis) is None:
-                        invalid_fields.append((i, rigid_axis))
-                
-                is_valid = len(invalid_fields) == 0
-                if is_valid:
-                    logger.debug(
-                        f"Vertikale Fläche X (X-Achse) gültig: Alle {len(valid_points)} Punkte planar "
-                        f"(max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                else:
-                    logger.debug(
-                        f"Vertikale Fläche X (X-Achse) ungültig: {len(invalid_fields)} von {len(valid_points)} Punkten "
-                        f"abweichend (max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                return is_valid, invalid_fields
-        
-        else:  # rigid_axis == "y"
-            # Y = f(X, Z) - sollte konstant sein für vertikale Y-Flächen
-            xs = np.array([p["x"] for p in valid_points])
-            zs = np.array([p["z"] for p in valid_points])
-            ys = np.array([p["y"] for p in valid_points])
-            
-            all_points_dict = [
-                {"x": p["x"], "y": p["z"], "z": p["y"]}
-                for p in valid_points
-            ]
-            model, error = derive_surface_plane(all_points_dict, tol=PLANAR_VALIDATION_TOLERANCE)
-            
-            if model is None:
-                model = _fit_planar_surface(xs, zs, ys)
-            
-            if model is not None:
-                invalid_fields = []
-                max_error = 0.0
-                # Für Y = f(X, Z): y = slope_x*x + slope_y*z + intercept
-                slope_x = model.get("slope_x", 0.0)
-                slope_y = model.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-                intercept = model.get("intercept", 0.0)
-                for p in valid_points:
-                    # Berechne Y direkt: y = slope_x*x + slope_y*z + intercept
-                    predicted_y = slope_x * p["x"] + slope_y * p["z"] + intercept
-                    actual_y = p["y"]
-                    error = abs(predicted_y - actual_y)
-                    max_error = max(max_error, error)
-                    
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields.append((p["index"], rigid_axis))
-                        logger.debug(
-                            f"  Punkt {p['index']} ungültig: Y={actual_y:.4f}m, "
-                            f"vorhergesagt={predicted_y:.4f}m, Fehler={error*100:.2f}cm"
-                        )
-                
-                for i, point in enumerate(points):
-                    if point.get(rigid_axis) is None:
-                        invalid_fields.append((i, rigid_axis))
-                
-                is_valid = len(invalid_fields) == 0
-                if is_valid:
-                    logger.debug(
-                        f"Vertikale Fläche Y (Y-Achse) gültig: Alle {len(valid_points)} Punkte planar "
-                        f"(max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                else:
-                    logger.debug(
-                        f"Vertikale Fläche Y (Y-Achse) ungültig: {len(invalid_fields)} von {len(valid_points)} Punkten "
-                        f"abweichend (max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                return is_valid, invalid_fields
-        
-        # Fallback: Wenn kein planares Modell erstellt werden konnte, verwende einfache Gleichheitsprüfung
-        axis_values = []
-        valid_indices = []
-        for p in valid_points:
-            value = p[rigid_axis]
-            axis_values.append(value)
-            valid_indices.append(p["index"])
-        
-        axis_array = np.array(axis_values)
-        mean_value = float(np.mean(axis_array))
-        deviations = np.abs(axis_array - mean_value)
-        
-        invalid_fields = []
+    if model["type"] == "z":
+        # Z = ax + by + c
         for i, point in enumerate(points):
-            value = point.get(rigid_axis)
-            if value is None:
-                invalid_fields.append((i, rigid_axis))
+            x = point.get("x", 0.0)
+            y = point.get("y", 0.0)
+            z = point.get("z", 0.0)
+            
+            predicted_z = model["slope_x"] * x + model["slope_y"] * y + model["intercept"]
+            error = abs(predicted_z - z)
+            
+            if error > tolerance:
+                # Korrigiere Z-Wert
+                corrected_z = round(predicted_z / CM_PRECISION) * CM_PRECISION
+                corrected.append({"x": x, "y": y, "z": corrected_z})
+                invalid_fields.append((i, "z"))
+                corrections.append((i, error, z, corrected_z))
             else:
-                try:
-                    float_value = float(value)
-                    found = False
-                    for p in valid_points:
-                        if p["index"] == i:
-                            idx_in_valid = valid_indices.index(i)
-                            if deviations[idx_in_valid] > PLANAR_VALIDATION_TOLERANCE:
-                                invalid_fields.append((i, rigid_axis))
-                            found = True
-                            break
-                    if not found:
-                        invalid_fields.append((i, rigid_axis))
-                except (ValueError, TypeError):
-                    invalid_fields.append((i, rigid_axis))
-        
-        is_valid = len(invalid_fields) == 0
-        return is_valid, invalid_fields
+                corrected.append({"x": x, "y": y, "z": z})
     
-    # Für schräge Flächen: Prüfe ob die Punkte einer planaren Funktion folgen
-    # (Die starre Achse sollte aus den anderen beiden Achsen berechenbar sein)
-    else:  # orientation == "sloped" or None
-        # Versuche planares Modell zu erstellen
-        if rigid_axis == "z":
-            # Z = f(X, Y)
-            # Für schräge Flächen: Immer versuchen, ein planares Modell zu erstellen
-            xs = np.array([p["x"] for p in valid_points])
-            ys = np.array([p["y"] for p in valid_points])
-            zs = np.array([p["z"] for p in valid_points])
-            
-            # Versuche zuerst derive_surface_plane
-            all_points_dict = [
-                {"x": p["x"], "y": p["y"], "z": p["z"]}
-                for p in valid_points
-            ]
-            model, error = derive_surface_plane(all_points_dict, tol=PLANAR_VALIDATION_TOLERANCE)
-            
-            # Wenn kein Modell, verwende immer Least-Squares-Fitting (funktioniert immer für 3+ Punkte)
-            if model is None:
-                model = _fit_planar_surface(xs, ys, zs)
-            
-            if model is not None:
-                # Prüfe ob alle Punkte der planaren Fläche folgen
-                # Verwende größere Toleranz für Validierung (berücksichtigt Rundungsfehler)
-                invalid_fields = []
-                max_error = 0.0
-                for p in valid_points:
-                    predicted_z = evaluate_surface_plane(model, p["x"], p["y"])
-                    actual_z = p["z"]
-                    error = abs(predicted_z - actual_z)
-                    max_error = max(max_error, error)
-                    
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields.append((p["index"], rigid_axis))
-                        logger.debug(
-                            f"Punkt {p['index']} weicht ab: Z={actual_z:.4f}m, "
-                            f"vorhergesagt={predicted_z:.4f}m, Fehler={error*100:.2f}cm"
-                        )
-                
-                # Prüfe auch Punkte mit None-Werten
-                for i, point in enumerate(points):
-                    if point.get(rigid_axis) is None:
-                        invalid_fields.append((i, rigid_axis))
-                
-                is_valid = len(invalid_fields) == 0
-                if is_valid:
-                    logger.debug(
-                        f"Schräge Fläche (Z-Achse) gültig: Alle {len(valid_points)} Punkte planar "
-                        f"(max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                else:
-                    logger.debug(
-                        f"Schräge Fläche (Z-Achse): {len(invalid_fields)} von {len(valid_points)} Punkten "
-                        f"abweichend (max Fehler: {max_error*100:.2f}cm, Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                return is_valid, invalid_fields
-            else:
-                # Fallback: Wenn kein planares Modell erstellt werden konnte (z.B. degenerierte Punkte),
-                # prüfe ob die Punkte wenigstens annähernd planar sind durch einfache Abweichungsprüfung
-                logger.debug(
-                    f"Kann kein planares Modell erstellen für {len(valid_points)} Punkte "
-                    f"(möglicherweise degeneriert), verwende Fallback-Validierung"
-                )
-                # Verwende einfache Abweichungsprüfung als Fallback
-                axis_values = []
-                valid_indices = []
-                for p in valid_points:
-                    value = p[rigid_axis]
-                    axis_values.append(value)
-                    valid_indices.append(p["index"])
-                
-                if len(axis_values) >= 2:
-                    axis_array = np.array(axis_values)
-                    mean_value = float(np.mean(axis_array))
-                    deviations = np.abs(axis_array - mean_value)
-                    max_deviation = float(np.max(deviations))
-                    
-                    # Wenn maximale Abweichung innerhalb Toleranz, ist die Fläche gültig
-                    if max_deviation <= PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields = []
-                        for i, point in enumerate(points):
-                            if point.get(rigid_axis) is None:
-                                invalid_fields.append((i, rigid_axis))
-                        return len(invalid_fields) == 0, invalid_fields
-                
-                # Wenn auch das fehlschlägt, alle Punkte als ungültig markieren
-                invalid_fields = [(i, rigid_axis) for i in range(len(points))]
-                return False, invalid_fields
-        
-        elif rigid_axis == "x":
-            # X = f(Y, Z)
-            ys = np.array([p["y"] for p in valid_points])
-            zs = np.array([p["z"] for p in valid_points])
-            xs = np.array([p["x"] for p in valid_points])
-            
-            # Versuche zuerst derive_surface_plane
-            all_points_dict = [
-                {"x": p["y"], "y": p["z"], "z": p["x"]}
-                for p in valid_points
-            ]
-            model, error = derive_surface_plane(all_points_dict, tol=PLANAR_VALIDATION_TOLERANCE)
-            
-            # Wenn kein Modell, verwende immer Least-Squares-Fitting
-            if model is None:
-                model = _fit_planar_surface(ys, zs, xs)
-            
-            if model is not None:
-                invalid_fields = []
-                # Für X = f(Y, Z): x = slope_x*y + slope_y*z + intercept
-                # (slope_x ist hier der Koeffizient für Y, slope_y für Z!)
-                slope_x = model.get("slope_x", 0.0)  # Tatsächlich Koeffizient für Y
-                slope_y = model.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-                intercept = model.get("intercept", 0.0)
-                for p in valid_points:
-                    # Berechne X direkt: x = slope_x*y + slope_y*z + intercept
-                    predicted_x = slope_x * p["y"] + slope_y * p["z"] + intercept
-                    actual_x = p["x"]
-                    error = abs(predicted_x - actual_x)
-                    
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields.append((p["index"], rigid_axis))
-                        logger.debug(
-                            f"Punkt {p['index']} weicht ab: X={actual_x:.4f}m, "
-                            f"vorhergesagt={predicted_x:.4f}m, Fehler={error*100:.2f}cm"
-                        )
-                
-                for i, point in enumerate(points):
-                    if point.get(rigid_axis) is None:
-                        invalid_fields.append((i, rigid_axis))
-                
-                is_valid = len(invalid_fields) == 0
-                if not is_valid:
-                    logger.debug(
-                        f"Schräge Fläche (X-Achse): {len(invalid_fields)} von {len(valid_points)} Punkten "
-                        f"abweichend (Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                return is_valid, invalid_fields
-            else:
-                # Fallback für X-Achse
-                logger.debug(
-                    f"Kann kein planares Modell erstellen für {len(valid_points)} Punkte (X-Achse), "
-                    f"verwende Fallback-Validierung"
-                )
-                axis_values = []
-                valid_indices = []
-                for p in valid_points:
-                    value = p[rigid_axis]
-                    axis_values.append(value)
-                    valid_indices.append(p["index"])
-                
-                if len(axis_values) >= 2:
-                    axis_array = np.array(axis_values)
-                    mean_value = float(np.mean(axis_array))
-                    deviations = np.abs(axis_array - mean_value)
-                    max_deviation = float(np.max(deviations))
-                    
-                    if max_deviation <= PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields = []
-                        for i, point in enumerate(points):
-                            if point.get(rigid_axis) is None:
-                                invalid_fields.append((i, rigid_axis))
-                        return len(invalid_fields) == 0, invalid_fields
-                
-                invalid_fields = [(i, rigid_axis) for i in range(len(points))]
-                return False, invalid_fields
-        
-        else:  # rigid_axis == "y"
-            # Y = f(X, Z)
-            xs = np.array([p["x"] for p in valid_points])
-            zs = np.array([p["z"] for p in valid_points])
-            ys = np.array([p["y"] for p in valid_points])
-            
-            # Versuche zuerst derive_surface_plane
-            all_points_dict = [
-                {"x": p["x"], "y": p["z"], "z": p["y"]}
-                for p in valid_points
-            ]
-            model, error = derive_surface_plane(all_points_dict, tol=PLANAR_VALIDATION_TOLERANCE)
-            
-            # Wenn kein Modell, verwende immer Least-Squares-Fitting
-            if model is None:
-                model = _fit_planar_surface(xs, zs, ys)
-            
-            if model is not None:
-                invalid_fields = []
-                # Für Y = f(X, Z): y = slope_x*x + slope_y*z + intercept
-                # (slope_y ist hier der Koeffizient für Z, nicht für Y!)
-                slope_x = model.get("slope_x", 0.0)
-                slope_y = model.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-                intercept = model.get("intercept", 0.0)
-                for p in valid_points:
-                    # Berechne Y direkt: y = slope_x*x + slope_y*z + intercept
-                    predicted_y = slope_x * p["x"] + slope_y * p["z"] + intercept
-                    actual_y = p["y"]
-                    error = abs(predicted_y - actual_y)
-                    
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields.append((p["index"], rigid_axis))
-                        logger.debug(
-                            f"Punkt {p['index']} weicht ab: Y={actual_y:.4f}m, "
-                            f"vorhergesagt={predicted_y:.4f}m, Fehler={error*100:.2f}cm"
-                        )
-                
-                for i, point in enumerate(points):
-                    if point.get(rigid_axis) is None:
-                        invalid_fields.append((i, rigid_axis))
-                
-                is_valid = len(invalid_fields) == 0
-                if not is_valid:
-                    logger.debug(
-                        f"Schräge Fläche (Y-Achse): {len(invalid_fields)} von {len(valid_points)} Punkten "
-                        f"abweichend (Toleranz: {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm)"
-                    )
-                return is_valid, invalid_fields
-            else:
-                # Fallback für X-Achse
-                logger.debug(
-                    f"Kann kein planares Modell erstellen für {len(valid_points)} Punkte (X-Achse), "
-                    f"verwende Fallback-Validierung"
-                )
-                axis_values = []
-                valid_indices = []
-                for p in valid_points:
-                    value = p[rigid_axis]
-                    axis_values.append(value)
-                    valid_indices.append(p["index"])
-                
-                if len(axis_values) >= 2:
-                    axis_array = np.array(axis_values)
-                    mean_value = float(np.mean(axis_array))
-                    deviations = np.abs(axis_array - mean_value)
-                    max_deviation = float(np.max(deviations))
-                    
-                    if max_deviation <= PLANAR_VALIDATION_TOLERANCE:
-                        invalid_fields = []
-                        for i, point in enumerate(points):
-                            if point.get(rigid_axis) is None:
-                                invalid_fields.append((i, rigid_axis))
-                        return len(invalid_fields) == 0, invalid_fields
-                
-                invalid_fields = [(i, rigid_axis) for i in range(len(points))]
-                return False, invalid_fields
-
-
-def _fix_rigid_axis_outliers(
-    points: List[Dict[str, float]],
-    rigid_axis: Literal["x", "y", "z"],
-) -> List[Dict[str, float]]:
-    """
-    Passt abweichende Werte der starren Achse an, sodass alle Punkte eine planare Fläche bilden.
-    
-    Strategie:
-    - Versuche eine planare Fläche aus ALLEN Punkten zu erstellen
-    - Prüfe welche Punkte von dieser Fläche abweichen
-    - Korrigiere abweichende Punkte, sodass sie auf der planaren Fläche liegen
-    
-    Args:
-        points: Liste von Punkten
-        rigid_axis: Die starre Achse ("x", "y" oder "z")
-        
-    Returns:
-        Liste mit angepassten Punkten
-    """
-    if len(points) < 3:
-        return points
-    
-    # Erstelle Kopie der Punkte
-    fixed_points = [dict(p) for p in points]
-    
-    if rigid_axis == "z":
-        # Für Z-Achse: Versuche planare Fläche Z = f(X, Y) aus ALLEN Punkten zu erstellen
-        # Sammle alle Punkte mit gültigen X, Y, Z
-        valid_points = []
+    elif model["type"] == "y":
+        # Y = ax + bz + c
         for i, point in enumerate(points):
-            x_val = point.get("x")
-            y_val = point.get("y")
-            z_val = point.get("z")
-            if x_val is not None and y_val is not None and z_val is not None:
-                try:
-                    valid_points.append({
-                        "index": i,
-                        "x": float(x_val),
-                        "y": float(y_val),
-                        "z": float(z_val),
-                    })
-                except (ValueError, TypeError):
-                    pass
-        
-        if len(valid_points) >= 3:
-            # Versuche planares Modell aus ALLEN Punkten zu erstellen
-            # Verwende eine weniger strikte Toleranz, damit auch leicht nicht-planare Flächen erkannt werden
-            all_points_dict = [
-                {"x": p["x"], "y": p["y"], "z": p["z"]}
-                for p in valid_points
-            ]
-            # Versuche zuerst mit strikter Toleranz
-            model, error = derive_surface_plane(all_points_dict, tol=1e-4)
+            x = point.get("x", 0.0)
+            y = point.get("y", 0.0)
+            z = point.get("z", 0.0)
             
-            # Wenn kein Modell gefunden, versuche mit weniger strikter Toleranz
-            if model is None:
-                model, error = derive_surface_plane(all_points_dict, tol=RIGID_AXIS_TOLERANCE * 10)
+            predicted_y = model["slope_x"] * x + model["slope_z"] * z + model["intercept"]
+            error = abs(predicted_y - y)
             
-            # Wenn immer noch kein Modell, erstelle ein Modell durch Least-Squares-Fitting
-            if model is None:
-                # Erstelle ein planares Modell durch Least-Squares-Fitting
-                xs = np.array([p["x"] for p in valid_points])
-                ys = np.array([p["y"] for p in valid_points])
-                zs = np.array([p["z"] for p in valid_points])
-                plane_model = _fit_planar_surface(xs, ys, zs)
-                if plane_model is not None:
-                    model = plane_model
-                    logger.debug("Planares Modell durch Least-Squares-Fitting erstellt (Z-Achse)")
-            
-            if model is not None:
-                # Prüfe welche Punkte von der planaren Fläche abweichen und korrigiere sie
-                outliers = []
-                adjustments = []
-                for p in valid_points:
-                    predicted_z = evaluate_surface_plane(model, p["x"], p["y"])
-                    actual_z = p["z"]
-                    error = abs(predicted_z - actual_z)
-                    
-                    if error > RIGID_AXIS_TOLERANCE:
-                        # Punkt weicht ab - korrigiere ihn
-                        old_value = fixed_points[p["index"]][rigid_axis]
-                        # Runde den korrigierten Wert auf cm genau
-                        corrected_value = round(predicted_z / CM_PRECISION) * CM_PRECISION
-                        fixed_points[p["index"]][rigid_axis] = corrected_value
-                        outliers.append(p["index"])
-                        adjustments.append({
-                            "index": p["index"],
-                            "old": old_value,
-                            "new": corrected_value,
-                            "error": error,
-                            "coords": (p["x"], p["y"], p["z"])
-                        })
-                
-                if outliers:
-                    logger.info(
-                        f"Planare Fläche erstellt (Z-Achse): {len(outliers)} Ausreißer korrigiert "
-                        f"(von {len(valid_points)} Punkten)"
-                    )
-                    for adj in adjustments:
-                        logger.info(
-                            f"  Punkt {adj['index']}: Z={adj['old']:.4f}m → {adj['new']:.4f}m "
-                            f"(Abweichung: {adj['error']*100:.2f}cm, Koords: X={adj['coords'][0]:.3f}m, Y={adj['coords'][1]:.3f}m)"
-                        )
-                    return fixed_points
-                else:
-                    logger.debug(
-                        f"Planare Fläche erstellt (Z-Achse): Alle {len(valid_points)} Punkte sind bereits konsistent"
-                    )
-                    return fixed_points
+            if error > tolerance:
+                # Korrigiere Y-Wert
+                corrected_y = round(predicted_y / CM_PRECISION) * CM_PRECISION
+                corrected.append({"x": x, "y": corrected_y, "z": z})
+                invalid_fields.append((i, "y"))
+                corrections.append((i, error, y, corrected_y))
             else:
-                logger.debug(
-                    f"Planare Fläche konnte nicht erstellt werden (Z-Achse): {error if error else 'Unbekannter Fehler'}"
-                )
+                corrected.append({"x": x, "y": y, "z": z})
     
-    elif rigid_axis == "x":
-        # Für X-Achse: Versuche planare Fläche X = f(Y, Z) aus ALLEN Punkten zu erstellen
-        # Sammle alle Punkte mit gültigen X, Y, Z
-        valid_points = []
+    elif model["type"] == "x":
+        # X = ay + bz + c
         for i, point in enumerate(points):
-            x_val = point.get("x")
-            y_val = point.get("y")
-            z_val = point.get("z")
-            if x_val is not None and y_val is not None and z_val is not None:
-                try:
-                    valid_points.append({
-                        "index": i,
-                        "x": float(x_val),
-                        "y": float(y_val),
-                        "z": float(z_val),
-                    })
-                except (ValueError, TypeError):
-                    pass
-        
-        if len(valid_points) >= 3:
-            # Versuche planares Modell X = f(Y, Z) zu erstellen
-            # Verwende Y und Z als Eingabe, X als Ausgabe
-            all_points_dict = [
-                {"x": p["y"], "y": p["z"], "z": p["x"]}  # Vertausche für X = f(Y, Z)
-                for p in valid_points
-            ]
-            # Versuche zuerst mit strikter Toleranz
-            model, error = derive_surface_plane(all_points_dict, tol=1e-4)
+            x = point.get("x", 0.0)
+            y = point.get("y", 0.0)
+            z = point.get("z", 0.0)
             
-            # Wenn kein Modell gefunden, versuche mit weniger strikter Toleranz
-            if model is None:
-                model, error = derive_surface_plane(all_points_dict, tol=RIGID_AXIS_TOLERANCE * 10)
+            predicted_x = model["slope_y"] * y + model["slope_z"] * z + model["intercept"]
+            error = abs(predicted_x - x)
             
-            # Wenn immer noch kein Modell, erstelle ein Modell durch Least-Squares-Fitting
-            if model is None:
-                # Erstelle ein planares Modell durch Least-Squares-Fitting
-                ys = np.array([p["y"] for p in valid_points])
-                zs = np.array([p["z"] for p in valid_points])
-                xs = np.array([p["x"] for p in valid_points])
-                plane_model = _fit_planar_surface(ys, zs, xs)  # X = f(Y, Z)
-                if plane_model is not None:
-                    model = plane_model
-                    logger.debug("Planares Modell durch Least-Squares-Fitting erstellt (X-Achse)")
-            
-            if model is not None:
-                # Prüfe welche Punkte von der planaren Fläche abweichen und korrigiere sie
-                outliers = []
-                adjustments = []
-                # Für X = f(Y, Z): x = slope_x*y + slope_y*z + intercept
-                slope_x = model.get("slope_x", 0.0)  # Tatsächlich Koeffizient für Y
-                slope_y = model.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-                intercept = model.get("intercept", 0.0)
-                for p in valid_points:
-                    # Berechne X direkt: x = slope_x*y + slope_y*z + intercept
-                    predicted_x = slope_x * p["y"] + slope_y * p["z"] + intercept
-                    actual_x = p["x"]
-                    error = abs(predicted_x - actual_x)
-                    
-                    if error > RIGID_AXIS_TOLERANCE:
-                        # Punkt weicht ab - korrigiere ihn
-                        old_value = fixed_points[p["index"]][rigid_axis]
-                        # Runde den korrigierten Wert auf cm genau
-                        corrected_value = round(predicted_x / CM_PRECISION) * CM_PRECISION
-                        fixed_points[p["index"]][rigid_axis] = corrected_value
-                        outliers.append(p["index"])
-                        adjustments.append({
-                            "index": p["index"],
-                            "old": old_value,
-                            "new": corrected_value,
-                            "error": error,
-                            "coords": (p["x"], p["y"], p["z"])
-                        })
-                
-                if outliers:
-                    logger.info(
-                        f"Planare Fläche erstellt (X-Achse): {len(outliers)} Ausreißer korrigiert "
-                        f"(von {len(valid_points)} Punkten)"
-                    )
-                    for adj in adjustments:
-                        logger.info(
-                            f"  Punkt {adj['index']}: X={adj['old']:.4f}m → {adj['new']:.4f}m "
-                            f"(Abweichung: {adj['error']*100:.2f}cm, Koords: Y={adj['coords'][1]:.3f}m, Z={adj['coords'][2]:.3f}m)"
-                        )
-                    return fixed_points
-                else:
-                    logger.debug(
-                        f"Planare Fläche erstellt (X-Achse): Alle {len(valid_points)} Punkte sind bereits konsistent"
-                    )
-                    return fixed_points
+            if error > tolerance:
+                # Korrigiere X-Wert
+                corrected_x = round(predicted_x / CM_PRECISION) * CM_PRECISION
+                corrected.append({"x": corrected_x, "y": y, "z": z})
+                invalid_fields.append((i, "x"))
+                corrections.append((i, error, x, corrected_x))
             else:
-                logger.debug(
-                    f"Planare Fläche konnte nicht erstellt werden (X-Achse): {error if error else 'Unbekannter Fehler'}"
-                )
+                corrected.append({"x": x, "y": y, "z": z})
     
-    elif rigid_axis == "y":
-        # Für Y-Achse: Versuche planare Fläche Y = f(X, Z) aus ALLEN Punkten zu erstellen
-        # Sammle alle Punkte mit gültigen X, Y, Z
-        valid_points = []
-        for i, point in enumerate(points):
-            x_val = point.get("x")
-            y_val = point.get("y")
-            z_val = point.get("z")
-            if x_val is not None and y_val is not None and z_val is not None:
-                try:
-                    valid_points.append({
-                        "index": i,
-                        "x": float(x_val),
-                        "y": float(y_val),
-                        "z": float(z_val),
-                    })
-                except (ValueError, TypeError):
-                    pass
-        
-        if len(valid_points) >= 3:
-            # Versuche planares Modell Y = f(X, Z) zu erstellen
-            # Verwende X und Z als Eingabe, Y als Ausgabe
-            all_points_dict = [
-                {"x": p["x"], "y": p["z"], "z": p["y"]}  # Vertausche für Y = f(X, Z)
-                for p in valid_points
-            ]
-            # Versuche zuerst mit strikter Toleranz
-            model, error = derive_surface_plane(all_points_dict, tol=1e-4)
-            
-            # Wenn kein Modell gefunden, versuche mit weniger strikter Toleranz
-            if model is None:
-                model, error = derive_surface_plane(all_points_dict, tol=RIGID_AXIS_TOLERANCE * 10)
-            
-            # Wenn immer noch kein Modell, erstelle ein Modell durch Least-Squares-Fitting
-            if model is None:
-                # Erstelle ein planares Modell durch Least-Squares-Fitting
-                xs = np.array([p["x"] for p in valid_points])
-                zs = np.array([p["z"] for p in valid_points])
-                ys = np.array([p["y"] for p in valid_points])
-                plane_model = _fit_planar_surface(xs, zs, ys)  # Y = f(X, Z)
-                if plane_model is not None:
-                    model = plane_model
-                    logger.debug("Planares Modell durch Least-Squares-Fitting erstellt (Y-Achse)")
-            
-            if model is not None:
-                # Prüfe welche Punkte von der planaren Fläche abweichen und korrigiere sie
-                outliers = []
-                adjustments = []
-                # Für Y = f(X, Z): y = slope_x*x + slope_y*z + intercept
-                slope_x = model.get("slope_x", 0.0)
-                slope_y = model.get("slope_y", 0.0)  # Tatsächlich Koeffizient für Z
-                intercept = model.get("intercept", 0.0)
-                for p in valid_points:
-                    # Berechne Y direkt: y = slope_x*x + slope_y*z + intercept
-                    predicted_y = slope_x * p["x"] + slope_y * p["z"] + intercept
-                    actual_y = p["y"]
-                    error = abs(predicted_y - actual_y)
-                    
-                    # Verwende PLANAR_VALIDATION_TOLERANCE für die Optimierung (nicht RIGID_AXIS_TOLERANCE)
-                    if error > PLANAR_VALIDATION_TOLERANCE:
-                        # Punkt weicht ab - korrigiere ihn
-                        old_value = fixed_points[p["index"]][rigid_axis]
-                        # Runde den korrigierten Wert auf cm genau
-                        corrected_value = round(predicted_y / CM_PRECISION) * CM_PRECISION
-                        fixed_points[p["index"]][rigid_axis] = corrected_value
-                        outliers.append(p["index"])
-                        adjustments.append({
-                            "index": p["index"],
-                            "old": old_value,
-                            "new": corrected_value,
-                            "error": error,
-                            "coords": (p["x"], p["y"], p["z"])
-                        })
-                
-                if outliers:
-                    logger.info(
-                        f"Planare Fläche erstellt (Y-Achse): {len(outliers)} Ausreißer korrigiert "
-                        f"(von {len(valid_points)} Punkten)"
-                    )
-                    for adj in adjustments:
-                        logger.info(
-                            f"  Punkt {adj['index']}: Y={adj['old']:.4f}m → {adj['new']:.4f}m "
-                            f"(Abweichung: {adj['error']*100:.2f}cm, Koords: X={adj['coords'][0]:.3f}m, Z={adj['coords'][2]:.3f}m)"
-                        )
-                    return fixed_points
-                else:
-                    logger.debug(
-                        f"Planare Fläche erstellt (Y-Achse): Alle {len(valid_points)} Punkte sind bereits konsistent"
-                    )
-                    return fixed_points
-            else:
-                logger.debug(
-                    f"Planare Fläche konnte nicht erstellt werden (Y-Achse): {error if error else 'Unbekannter Fehler'}"
-                )
-    
-    # Fallback: Wenn keine planare Fläche erstellt werden konnte, verwende Durchschnitt
-    # Sammle gültige Werte der starren Achse
-    axis_values = []
-    valid_indices = []
-    for i, point in enumerate(points):
-        value = point.get(rigid_axis)
-        if value is not None:
-            try:
-                axis_values.append(float(value))
-                valid_indices.append(i)
-            except (ValueError, TypeError):
-                pass
-    
-    if len(axis_values) < 2:
-        logger.debug(
-            f"Fallback (Durchschnitt): Zu wenige gültige Werte ({len(axis_values)}) für {rigid_axis.upper()}-Achse"
-        )
-        return fixed_points
-    
-    # Berechne Mittelwert und Abweichungen
-    axis_array = np.array(axis_values)
-    mean_value = float(np.mean(axis_array))
-    deviations = np.abs(axis_array - mean_value)
-    
-    # Finde abweichende Werte (> Toleranz)
-    outlier_indices = []
-    for idx_in_valid, deviation in enumerate(deviations):
-        if deviation > RIGID_AXIS_TOLERANCE:
-            outlier_indices.append(valid_indices[idx_in_valid])
-    
-    if not outlier_indices:
-        logger.debug(
-            f"Fallback (Durchschnitt): Keine Ausreißer gefunden für {rigid_axis.upper()}-Achse "
-            f"(Mittelwert: {mean_value:.4f}m, max Abweichung: {np.max(deviations)*100:.2f}cm)"
-        )
-        return fixed_points
-    
-    # Berechne Durchschnitt nur aus nicht-abweichenden Werten
-    non_outlier_values = [
-        axis_values[valid_indices.index(i)]
-        for i in valid_indices
-        if i not in outlier_indices
-    ]
-    
-    if len(non_outlier_values) >= 2:
-        target_value = float(np.mean(non_outlier_values))
-    elif len(non_outlier_values) == 1:
-        target_value = non_outlier_values[0]
-    else:
-        target_value = mean_value
-    
-    # Setze abweichende Werte auf Zielwert (gerundet auf cm)
-    adjustments = []
-    target_value_rounded = round(target_value / CM_PRECISION) * CM_PRECISION
-    for outlier_idx in outlier_indices:
-        old_value = fixed_points[outlier_idx].get(rigid_axis)
-        fixed_points[outlier_idx][rigid_axis] = target_value_rounded
-        adjustments.append({
-            "index": outlier_idx,
-            "old": old_value,
-            "new": target_value_rounded,
-        })
-    
-    logger.info(
-        f"Fallback (Durchschnitt): {len(outlier_indices)} Ausreißer auf {target_value_rounded:.4f}m gesetzt "
-        f"(von {len(axis_values)} gültigen Werten, {len(non_outlier_values)} nicht-abweichende Werte)"
-    )
-    for adj in adjustments:
-        logger.debug(
-            f"  Punkt {adj['index']}: {rigid_axis.upper()}={adj['old']:.4f}m -> {adj['new']:.4f}m"
-        )
-    
-    return fixed_points
-
-
-def validate_and_optimize_surface(
-    surface: SurfaceDefinition,
-    *,
-    round_to_cm: bool = True,
-    remove_redundant: bool = True,
-    optimize_invalid: bool = True,
-) -> SurfaceValidationResult:
-    """
-    Validiert und optimiert eine Surface-Definition basierend auf starrer Achse.
-    
-    Neue Validierungslogik:
-    1. Bestimmt Orientierung der Fläche (horizontal, vertikal, schräg)
-    2. Definiert starre Achse (X, Y oder Z)
-    3. Prüft ob alle Werte der starren Achse konsistent sind
-    4. Passt abweichende Werte an, sodass alle Punkte eine planare Fläche bilden
-    
-    Args:
-        surface: Die zu validierende Surface-Definition
-        round_to_cm: Ob Koordinaten auf cm genau gerundet werden sollen
-        remove_redundant: Ob redundante Punkte entfernt werden sollen
-        optimize_invalid: Ob ungültige Surfaces optimiert werden sollen
-        
-    Returns:
-        SurfaceValidationResult mit validierten/optimierten Punkten und starre Achse Info
-    """
-    points = list(surface.points)
-    original_count = len(points)
-    
-    if len(points) < 3:
-        return SurfaceValidationResult(
-            is_valid=False,
-            optimized_points=points,
-            removed_points_count=0,
-            rounded_points_count=0,
-            error_message=f"Surface hat nur {len(points)} Punkte, mindestens 3 erforderlich",
-            rigid_axis=None,
-            orientation=None,
-            invalid_fields=[],
-        )
-    
-    # Schritt 1: Entferne redundante Punkte (VOR Rundung, um präzise Vergleiche zu ermöglichen)
-    removed_redundant = 0
-    if remove_redundant:
-        logger.debug(f"Entferne redundante Punkte von Surface '{surface.name}' ({surface.surface_id})...")
-        original_point_count = len(points)
-        points, removed_redundant = _remove_redundant_points(points)
-        if removed_redundant > 0:
-            logger.debug(f"  {removed_redundant} redundante Punkt(e) entfernt ({original_point_count} → {len(points)})")
-    
-    # Schritt 2: Bestimme Orientierung und starre Achse (VOR Rundung, um präzise Planaritätsprüfung zu ermöglichen)
-    logger.info(f"Bestimme Orientierung für Surface '{surface.name}' ({surface.surface_id}) mit {len(points)} Punkten...")
-    rigid_axis, orientation = determine_surface_orientation(points)
-    
-    if rigid_axis is None:
-        # Runde auch bei Fehler, wenn gewünscht
-        if round_to_cm:
-            points = _round_points_to_cm(points)
-        return SurfaceValidationResult(
-            is_valid=False,
-            optimized_points=points,
-            removed_points_count=removed_redundant,
-            rounded_points_count=len(points) if round_to_cm else 0,
-            error_message="Konnte Orientierung der Fläche nicht bestimmen",
-            rigid_axis=None,
-            orientation=None,
-            invalid_fields=[],
-        )
-    
-    # Schritt 4: Prüfe ob starre Achse konsistent ist
-    logger.info(
-        f"Validiere Surface '{surface.name}' ({surface.surface_id}): "
-        f"Orientierung={orientation}, Starre Achse={rigid_axis.upper()}"
-    )
-    is_valid, invalid_fields = check_rigid_axis_validity(points, rigid_axis, orientation)
-    
-    if is_valid:
-        logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist gültig")
-    else:
-        logger.info(
-            f"✗ Surface '{surface.name}' ({surface.surface_id}) ist ungültig: "
-            f"{len(invalid_fields)} Punkt(e) haben Abweichungen > {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm"
-        )
-    
-    # Schritt 5: Wenn ungültig und optimize_invalid=True, passe abweichende Werte an
-    if not is_valid and optimize_invalid:
-        logger.info(
-            f"Optimiere Surface '{surface.name}' ({surface.surface_id}): "
-            f"{len(invalid_fields)} Punkt(e) müssen korrigiert werden (Starre Achse: {rigid_axis.upper()})"
-        )
-        points = _fix_rigid_axis_outliers(points, rigid_axis)
-        # Prüfe erneut nach Anpassung (VOR Rundung)
-        logger.info(f"Validiere Surface '{surface.name}' ({surface.surface_id}) nach Optimierung...")
-        is_valid, invalid_fields = check_rigid_axis_validity(points, rigid_axis, orientation)
-        if is_valid:
-            logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist nach Optimierung gültig")
-        else:
-            logger.warning(
-                f"✗ Surface '{surface.name}' ({surface.surface_id}) ist nach Optimierung immer noch ungültig: "
-                f"{len(invalid_fields)} Punkt(e) haben Abweichungen > {PLANAR_VALIDATION_TOLERANCE*100:.1f}cm"
+    if corrections:
+        logger.info(f"Korrigiert {len(corrections)} Punkt(e):")
+        for idx, error, old_val, new_val in corrections:
+            coord_name = {"x": "X", "y": "Y", "z": "Z"}[model["type"]]
+            logger.info(
+                f"  Punkt {idx}: {coord_name}={old_val:.4f}m → {new_val:.4f}m "
+                f"(Abweichung: {error*100:.2f}cm)"
             )
     
-    # Schritt 6: Rundung auf cm genau (NACH Validierung und Optimierung)
-    rounded_count = 0
-    if round_to_cm:
-        logger.debug(f"Runde Surface '{surface.name}' ({surface.surface_id}) auf cm genau...")
-        points = _round_points_to_cm(points)
-        rounded_count = len(points)
-        
-        # Nach dem Runden: Prüfe erneut, ob die Fläche noch gültig ist
-        # (Rundung kann kleine Abweichungen verursachen, aber sollte innerhalb Toleranz bleiben)
-        if is_valid:
-            logger.debug(f"Validiere Surface '{surface.name}' ({surface.surface_id}) nach Rundung...")
-            is_valid_after_rounding, invalid_fields_after_rounding = check_rigid_axis_validity(points, rigid_axis, orientation)
-            if not is_valid_after_rounding:
-                # Wenn nach Rundung ungültig, aber Fehler sind klein, akzeptiere trotzdem
-                # (Rundungsfehler sind erwartbar und akzeptabel)
-                max_rounding_error = 0.0
-                for idx, _ in invalid_fields_after_rounding:
-                    # Berechne Fehler für diesen Punkt
-                    point = points[idx]
-                    if point.get("x") is not None and point.get("y") is not None and point.get("z") is not None:
-                        if rigid_axis == "z":
-                            xs = np.array([p["x"] for p in points if p.get("x") is not None and p.get("y") is not None and p.get("z") is not None])
-                            ys = np.array([p["y"] for p in points if p.get("x") is not None and p.get("y") is not None and p.get("z") is not None])
-                            zs = np.array([p["z"] for p in points if p.get("x") is not None and p.get("y") is not None and p.get("z") is not None])
-                            if len(xs) >= 3:
-                                model = _fit_planar_surface(xs, ys, zs)
-                                if model:
-                                    predicted = evaluate_surface_plane(model, point["x"], point["y"])
-                                    error = abs(predicted - point["z"])
-                                    max_rounding_error = max(max_rounding_error, error)
-                        # Ähnlich für X und Y...
-                
-                # Wenn Rundungsfehler < 1cm, akzeptiere die Fläche trotzdem
-                if max_rounding_error < 0.01:
-                    logger.debug(
-                        f"Surface '{surface.name}' ({surface.surface_id}) nach Rundung leicht abweichend "
-                        f"(max Fehler: {max_rounding_error*100:.2f}cm), aber akzeptabel - als gültig markiert"
-                    )
-                    is_valid = True
-                    invalid_fields = []
-                else:
-                    logger.debug(
-                        f"Surface '{surface.name}' ({surface.surface_id}) nach Rundung ungültig "
-                        f"(max Fehler: {max_rounding_error*100:.2f}cm)"
-                    )
-    
-    error_msg = None
-    if not is_valid:
-        axis_name = {"x": "X", "y": "Y", "z": "Z"}[rigid_axis]
-        # Verwende die richtige Toleranz je nach Orientierung
-        tolerance = PLANAR_VALIDATION_TOLERANCE if orientation == "sloped" or orientation is None else RIGID_AXIS_TOLERANCE
-        error_msg = (
-            f"Starre {axis_name}-Achse ist nicht konsistent. "
-            f"{len(invalid_fields)} Punkt(e) haben Abweichungen > {tolerance*100:.1f}cm"
-        )
-    
-    if removed_redundant > 0 or rounded_count > 0:
-        logger.info(
-            f"Surface '{surface.name}' ({surface.surface_id}): "
-            f"{rounded_count} Punkte gerundet, {removed_redundant} Punkte entfernt, "
-            f"Orientierung: {orientation}, Starre Achse: {rigid_axis.upper()}"
-        )
-    
-    return SurfaceValidationResult(
-        is_valid=is_valid,
-        optimized_points=points,
-        removed_points_count=removed_redundant,
-        rounded_points_count=rounded_count,
-        error_message=error_msg,
-        rigid_axis=rigid_axis,
-        orientation=orientation,
-        invalid_fields=invalid_fields,
-    )
+    return corrected, invalid_fields
 
 
 def _round_points_to_cm(points: List[Dict[str, float]]) -> List[Dict[str, float]]:
-    """
-    Rundet alle Koordinaten auf cm genau (0.01m).
-    
-    Args:
-        points: Liste von Punkten mit 'x', 'y', 'z'
-        
-    Returns:
-        Liste mit gerundeten Punkten
-    """
+    """Rundet alle Koordinaten auf cm genau"""
     rounded = []
     for point in points:
         rounded.append({
@@ -1311,41 +322,28 @@ def _round_points_to_cm(points: List[Dict[str, float]]) -> List[Dict[str, float]
 def _remove_redundant_points(
     points: List[Dict[str, float]],
 ) -> Tuple[List[Dict[str, float]], int]:
-    """
-    Entfernt redundante Punkte (duplizierte oder sehr nahe beieinander liegende).
-    
-    Args:
-        points: Liste von Punkten
-        
-    Returns:
-        (bereinigte Punkte, Anzahl entfernte Punkte)
-    """
+    """Entfernt redundante Punkte"""
     if len(points) < 2:
         return points, 0
     
-    # Konvertiere zu numpy Array für effiziente Berechnung
     coords = np.array([
         [p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)]
         for p in points
     ], dtype=float)
     
-    # Prüfe ob Polygon geschlossen ist (erster und letzter Punkt identisch)
-    # Bei geschlossenen Polygonen entfernen wir den letzten Punkt, da er redundant ist
+    # Prüfe ob Polygon geschlossen ist
     is_closed = False
     if len(points) > 0:
-        first_original = coords[0]
-        last_original = coords[-1]
-        dist_closed = np.sqrt(np.sum((first_original - last_original) ** 2))
-        is_closed = dist_closed <= REDUNDANT_POINT_TOLERANCE
+        first = coords[0]
+        last = coords[-1]
+        dist = np.sqrt(np.sum((first - last) ** 2))
+        is_closed = dist <= REDUNDANT_POINT_TOLERANCE
     
-    # Finde eindeutige Punkte (basierend auf Distanz)
-    # Bei geschlossenen Polygonen überspringe den letzten Punkt (wird immer entfernt)
     end_idx = len(coords) - 1 if is_closed else len(coords)
-    unique_indices = [0]  # Erster Punkt ist immer eindeutig
+    unique_indices = [0]
     removed_count = 0
     
     for i in range(1, end_idx):
-        # Berechne minimale Distanz zu bereits hinzugefügten Punkten
         prev_coords = coords[unique_indices]
         distances = np.sqrt(np.sum((prev_coords - coords[i]) ** 2, axis=1))
         min_distance = np.min(distances)
@@ -1355,13 +353,167 @@ def _remove_redundant_points(
         else:
             removed_count += 1
     
-    # Bei geschlossenen Polygonen: Zähle den letzten Punkt als entfernt (da redundant)
     if is_closed:
         removed_count += 1
     
     unique_points = [points[i] for i in unique_indices]
-    
     return unique_points, removed_count
+
+
+def validate_and_optimize_surface(
+    surface: SurfaceDefinition,
+    *,
+    round_to_cm: bool = True,
+    remove_redundant: bool = True,
+    optimize_invalid: bool = True,
+) -> SurfaceValidationResult:
+    """
+    Einfache Validierung: Prüft ob Punkte planar sind und korrigiert abweichende Punkte.
+    
+    Strategie:
+    1. Entferne redundante Punkte
+    2. Prüfe ob Punkte planar sind (geometrisch)
+    3. Wenn nicht planar, finde beste Ebene (Least-Squares)
+    4. Korrigiere abweichende Punkte
+    5. Runde auf cm genau
+    """
+    points = list(surface.points)
+    
+    if len(points) < 3:
+        return SurfaceValidationResult(
+            is_valid=False,
+            optimized_points=points,
+            removed_points_count=0,
+            rounded_points_count=0,
+            error_message=f"Surface hat nur {len(points)} Punkte, mindestens 3 erforderlich",
+        )
+    
+    # Schritt 1: Entferne redundante Punkte
+    removed_redundant = 0
+    if remove_redundant:
+        logger.debug(f"Entferne redundante Punkte von Surface '{surface.name}' ({surface.surface_id})...")
+        original_count = len(points)
+        points, removed_redundant = _remove_redundant_points(points)
+        if removed_redundant > 0:
+            logger.debug(f"  {removed_redundant} redundante Punkt(e) entfernt ({original_count} → {len(points)})")
+    
+    # Schritt 2: Sammle gültige Punkte
+    valid_points = []
+    for p in points:
+        x = p.get("x")
+        y = p.get("y")
+        z = p.get("z")
+        if x is not None and y is not None and z is not None:
+            try:
+                valid_points.append({
+                    "x": float(x),
+                    "y": float(y),
+                    "z": float(z),
+                })
+            except (ValueError, TypeError):
+                pass
+    
+    if len(valid_points) < 3:
+        return SurfaceValidationResult(
+            is_valid=False,
+            optimized_points=points,
+            removed_points_count=removed_redundant,
+            rounded_points_count=0,
+            error_message="Zu wenige gültige Punkte (mindestens 3 erforderlich)",
+        )
+    
+    # Schritt 3: Prüfe Planarität
+    points_array = np.array([
+        [p["x"], p["y"], p["z"]]
+        for p in valid_points
+    ])
+    
+    # Schritt 4: Finde beste Ebene durch Least-Squares (immer, für robuste Prüfung)
+    model = _fit_plane_least_squares(points_array)
+    
+    # Bestimme rigid_axis und orientation für UI-Kompatibilität
+    rigid_axis, orientation = determine_surface_orientation(valid_points)
+    
+    if model is None:
+        # Fallback: Geometrische Prüfung
+        is_planar, max_distance = _check_planarity_geometric(points_array)
+        if is_planar:
+            logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist planar (max Abstand: {max_distance*100:.2f}cm)")
+            is_valid = True
+            invalid_fields = []
+            corrected_points = points
+        else:
+            return SurfaceValidationResult(
+                is_valid=False,
+                optimized_points=points,
+                removed_points_count=removed_redundant,
+                rounded_points_count=0,
+                error_message="Konnte keine Ebene durch die Punkte legen",
+                rigid_axis=rigid_axis,
+                orientation=orientation,
+            )
+    else:
+        # Aktualisiere rigid_axis basierend auf Modell
+        if rigid_axis is None:
+            rigid_axis = model["type"]
+            orientation = "sloped"
+        
+        # Prüfe ob Punkte innerhalb Toleranz sind
+        if model["max_error"] < PLANAR_TOLERANCE:
+            logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist planar (max Fehler: {model['max_error']*100:.2f}cm)")
+            is_valid = True
+            invalid_fields = []
+            corrected_points = points
+        else:
+            # Schritt 5: Korrigiere abweichende Punkte
+            logger.info(f"Surface '{surface.name}' ({surface.surface_id}) ist nicht planar (max Fehler: {model['max_error']*100:.2f}cm), korrigiere...")
+            
+            if optimize_invalid:
+                corrected_points, invalid_fields = _correct_points_to_plane(points, model, tolerance=PLANAR_TOLERANCE)
+                
+                # Prüfe erneut nach Korrektur (mit Least-Squares, nicht geometrisch)
+                corrected_array = np.array([
+                    [p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)]
+                    for p in corrected_points
+                ])
+                corrected_model = _fit_plane_least_squares(corrected_array)
+                
+                if corrected_model and corrected_model["max_error"] < PLANAR_TOLERANCE:
+                    is_valid = True
+                    logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist nach Korrektur gültig (max Fehler: {corrected_model['max_error']*100:.2f}cm)")
+                else:
+                    is_valid = False
+                    logger.warning(
+                        f"✗ Surface '{surface.name}' ({surface.surface_id}) hat nach Korrektur noch "
+                        f"{len(invalid_fields)} ungültige Punkt(e)"
+                    )
+            else:
+                # Prüfe ohne Korrektur
+                _, invalid_fields = _correct_points_to_plane(points, model, tolerance=PLANAR_TOLERANCE)
+                is_valid = len(invalid_fields) == 0
+                corrected_points = points
+    
+    # Schritt 6: Rundung auf cm genau (NACH Korrektur)
+    rounded_count = 0
+    if round_to_cm:
+        logger.debug(f"Runde Surface '{surface.name}' ({surface.surface_id}) auf cm genau...")
+        corrected_points = _round_points_to_cm(corrected_points)
+        rounded_count = len(corrected_points)
+    
+    error_msg = None
+    if not is_valid:
+        error_msg = f"{len(invalid_fields)} Punkt(e) weichen von der planaren Fläche ab (Toleranz: {PLANAR_TOLERANCE*100:.1f}cm)"
+    
+    return SurfaceValidationResult(
+        is_valid=is_valid,
+        optimized_points=corrected_points,
+        removed_points_count=removed_redundant,
+        rounded_points_count=rounded_count,
+        error_message=error_msg,
+        rigid_axis=rigid_axis,
+        orientation=orientation,
+        invalid_fields=invalid_fields,
+    )
 
 
 def validate_surface_dict(
@@ -1371,26 +523,13 @@ def validate_surface_dict(
     remove_redundant: bool = True,
     optimize_invalid: bool = True,
 ) -> Dict:
-    """
-    Validiert und optimiert eine Surface-Definition als Dictionary.
-    
-    Args:
-        surface_dict: Dictionary mit Surface-Daten (kann SurfaceDefinition oder Dict sein)
-        round_to_cm: Ob Koordinaten auf cm genau gerundet werden sollen
-        remove_redundant: Ob redundante Punkte entfernt werden sollen
-        optimize_invalid: Ob ungültige Surfaces optimiert werden sollen
-        
-    Returns:
-        Optimiertes Dictionary mit aktualisierten Punkten
-    """
-    # Konvertiere zu SurfaceDefinition falls nötig
+    """Validiert eine Surface-Definition als Dictionary"""
     if isinstance(surface_dict, SurfaceDefinition):
         surface = surface_dict
     else:
         surface_id = surface_dict.get("surface_id", "unknown")
         surface = SurfaceDefinition.from_dict(surface_id, surface_dict)
     
-    # Validiere und optimiere
     result = validate_and_optimize_surface(
         surface,
         round_to_cm=round_to_cm,
@@ -1398,7 +537,6 @@ def validate_surface_dict(
         optimize_invalid=optimize_invalid,
     )
     
-    # Aktualisiere Punkte im Dictionary
     if isinstance(surface_dict, SurfaceDefinition):
         surface_dict.points = result.optimized_points
         return surface_dict
@@ -1414,18 +552,7 @@ def validate_surfaces_dict(
     remove_redundant: bool = True,
     optimize_invalid: bool = True,
 ) -> Dict[str, Dict]:
-    """
-    Validiert und optimiert mehrere Surfaces.
-    
-    Args:
-        surfaces: Dictionary von Surface-Definitionen {surface_id: surface_dict}
-        round_to_cm: Ob Koordinaten auf cm genau gerundet werden sollen
-        remove_redundant: Ob redundante Punkte entfernt werden sollen
-        optimize_invalid: Ob ungültige Surfaces optimiert werden sollen
-        
-    Returns:
-        Dictionary mit optimierten Surfaces
-    """
+    """Validiert mehrere Surfaces"""
     validated = {}
     
     for surface_id, surface_data in surfaces.items():
@@ -1441,8 +568,159 @@ def validate_surfaces_dict(
                 f"Fehler beim Validieren von Surface '{surface_id}': {e}",
                 exc_info=True,
             )
-            # Bei Fehler: Surface unverändert übernehmen
             validated[surface_id] = surface_data
     
     return validated
+
+
+# Kompatibilitätsfunktionen für UI
+def determine_surface_orientation(
+    points: List[Dict[str, float]],
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Bestimmt die Orientierung der Fläche (für UI-Kompatibilität).
+    Verwendet die einfache Planaritätsprüfung.
+    
+    Returns:
+        (rigid_axis, orientation) - rigid_axis: "x", "y" oder "z", orientation: Beschreibung
+    """
+    if len(points) < 3:
+        return None, None
+    
+    # Sammle gültige Punkte
+    valid_points = []
+    for p in points:
+        x = p.get("x")
+        y = p.get("y")
+        z = p.get("z")
+        if x is not None and y is not None and z is not None:
+            try:
+                valid_points.append({
+                    "x": float(x),
+                    "y": float(y),
+                    "z": float(z),
+                })
+            except (ValueError, TypeError):
+                pass
+    
+    if len(valid_points) < 3:
+        return None, None
+    
+    points_array = np.array([
+        [p["x"], p["y"], p["z"]]
+        for p in valid_points
+    ])
+    
+    # Finde beste Ebene
+    model = _fit_plane_least_squares(points_array)
+    if model is None:
+        return None, None
+    
+    # Bestimme Orientierung basierend auf Modell
+    if model["type"] == "z":
+        # Prüfe ob horizontal (Z konstant)
+        z_vals = points_array[:, 2]
+        if np.ptp(z_vals) < 0.01:  # 1cm Toleranz
+            return "z", "horizontal"
+        else:
+            return "z", "sloped"
+    elif model["type"] == "y":
+        # Prüfe ob vertikal Y
+        y_vals = points_array[:, 1]
+        if np.ptp(y_vals) < 0.01:  # 1cm Toleranz
+            return "y", "vertical_y"
+        else:
+            return "y", "sloped"
+    elif model["type"] == "x":
+        # Prüfe ob vertikal X
+        x_vals = points_array[:, 0]
+        if np.ptp(x_vals) < 0.01:  # 1cm Toleranz
+            return "x", "vertical_x"
+        else:
+            return "x", "sloped"
+    
+    return None, None
+
+
+def check_rigid_axis_validity(
+    points: List[Dict[str, float]],
+    rigid_axis: str,
+    orientation: Optional[str] = None,
+) -> Tuple[bool, List[Tuple[int, str]]]:
+    """
+    Prüft ob alle Punkte planar sind (für UI-Kompatibilität).
+    
+    Returns:
+        (is_valid, invalid_fields)
+    """
+    if len(points) < 3:
+        return False, []
+    
+    # Sammle gültige Punkte
+    valid_points = []
+    for i, p in enumerate(points):
+        x = p.get("x")
+        y = p.get("y")
+        z = p.get("z")
+        if x is not None and y is not None and z is not None:
+            try:
+                valid_points.append({
+                    "index": i,
+                    "x": float(x),
+                    "y": float(y),
+                    "z": float(z),
+                })
+            except (ValueError, TypeError):
+                pass
+    
+    if len(valid_points) < 3:
+        invalid_fields = [(i, rigid_axis) for i in range(len(points)) if points[i].get(rigid_axis) is None]
+        return False, invalid_fields
+    
+    points_array = np.array([
+        [p["x"], p["y"], p["z"]]
+        for p in valid_points
+    ])
+    
+    # Prüfe Planarität
+    is_planar, max_distance = _check_planarity_geometric(points_array)
+    
+    if is_planar:
+        # Prüfe auch None-Werte
+        invalid_fields = []
+        for i, point in enumerate(points):
+            if point.get(rigid_axis) is None:
+                invalid_fields.append((i, rigid_axis))
+        return len(invalid_fields) == 0, invalid_fields
+    else:
+        # Finde beste Ebene und prüfe Abweichungen
+        model = _fit_plane_least_squares(points_array)
+        if model is None:
+            invalid_fields = [(i, rigid_axis) for i in range(len(points))]
+            return False, invalid_fields
+        
+        # Prüfe Abweichungen
+        invalid_fields = []
+        for p in valid_points:
+            if model["type"] == "z":
+                predicted = model["slope_x"] * p["x"] + model["slope_y"] * p["y"] + model["intercept"]
+                error = abs(predicted - p["z"])
+            elif model["type"] == "y":
+                predicted = model["slope_x"] * p["x"] + model["slope_z"] * p["z"] + model["intercept"]
+                error = abs(predicted - p["y"])
+            elif model["type"] == "x":
+                predicted = model["slope_y"] * p["y"] + model["slope_z"] * p["z"] + model["intercept"]
+                error = abs(predicted - p["x"])
+            else:
+                error = PLANAR_TOLERANCE + 1.0  # Immer ungültig
+            
+            if error > PLANAR_TOLERANCE:
+                invalid_fields.append((p["index"], rigid_axis))
+        
+        # Prüfe auch None-Werte
+        for i, point in enumerate(points):
+            if point.get(rigid_axis) is None:
+                invalid_fields.append((i, rigid_axis))
+        
+        return len(invalid_fields) == 0, invalid_fields
 
