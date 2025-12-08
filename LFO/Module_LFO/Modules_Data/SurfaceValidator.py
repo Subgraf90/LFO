@@ -283,10 +283,11 @@ def _identify_outliers(
         errors.sort(key=lambda x: x[1], reverse=True)
         
         # Bestimme maximale Anzahl möglicher Ausreißer:
-        # Bei 5 Punkten: max 2 Ausreißer
-        # Bei 6 Punkten: max 2 Ausreißer
-        # Bei 7+ Punkten: max 3 Ausreißer (oder mehr, je nach Gesamtzahl)
-        max_outliers = min(2, len(points) - 3) if len(points) <= 6 else min(3, len(points) - 3)
+        # Mindestens 3 Punkte müssen korrekt sein (für eine Ebene)
+        # Bei 5 Punkten: max 2 Ausreißer (3 korrekte)
+        # Bei 6 Punkten: max 3 Ausreißer (3 korrekte)
+        # Bei 7+ Punkten: max (n-3) Ausreißer (mindestens 3 korrekte)
+        max_outliers = len(points) - 3
         
         # Identifiziere Ausreißer: Die Punkte mit den größten Abweichungen
         # (nur wenn Abweichung > Toleranz)
@@ -294,6 +295,12 @@ def _identify_outliers(
         for i, error in errors[:max_outliers]:
             if error > tolerance:
                 outliers.append(i)
+        
+        logger.debug(
+            f"Ausreißererkennung: {len(points)} Punkte, "
+            f"max {max_outliers} Ausreißer möglich, "
+            f"{len(outliers)} Ausreißer identifiziert"
+        )
         
         return outliers
 
@@ -350,7 +357,8 @@ def _correct_points_to_plane(
             predicted_y = model["slope_x"] * x + model["slope_z"] * z + model["intercept"]
             error = abs(predicted_y - y)
             
-            if error > tolerance:
+            # Korrigiere nur wenn Ausreißer ODER (bei ≤4 Punkten) wenn Abweichung > Toleranz
+            if i in outlier_set or (len(points) <= 4 and error > tolerance):
                 # Korrigiere Y-Wert
                 corrected_y = round(predicted_y / CM_PRECISION) * CM_PRECISION
                 corrected.append({"x": x, "y": corrected_y, "z": z})
@@ -369,7 +377,8 @@ def _correct_points_to_plane(
             predicted_x = model["slope_y"] * y + model["slope_z"] * z + model["intercept"]
             error = abs(predicted_x - x)
             
-            if error > tolerance:
+            # Korrigiere nur wenn Ausreißer ODER (bei ≤4 Punkten) wenn Abweichung > Toleranz
+            if i in outlier_set or (len(points) <= 4 and error > tolerance):
                 # Korrigiere X-Wert
                 corrected_x = round(predicted_x / CM_PRECISION) * CM_PRECISION
                 corrected.append({"x": corrected_x, "y": y, "z": z})
