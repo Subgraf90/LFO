@@ -168,6 +168,8 @@ class Ui_MainWindow(object):
         self.menuWindow.setObjectName("menuWindow")
         self.menuCalculation = QtWidgets.QMenu(self.menubar)
         self.menuCalculation.setObjectName("menuCalculation")
+        self.menuHelp = QtWidgets.QMenu(self.menubar)
+        self.menuHelp.setObjectName("menuHelp")
 
         MainWindow.setMenuBar(self.menubar)
 
@@ -203,6 +205,8 @@ class Ui_MainWindow(object):
         self.actionPlotMode_Phase.setObjectName("actionPlotMode_Phase")
         self.actionPlotMode_Time = QtWidgets.QAction(MainWindow)
         self.actionPlotMode_Time.setObjectName("actionPlotMode_Time")
+        self.actionHelp = QtWidgets.QAction(MainWindow)
+        self.actionHelp.setObjectName("actionHelp")
 
         # Aktionen zu den Menüs hinzufügen
         self.menuFile.addAction(self.actionNew)
@@ -254,10 +258,14 @@ class Ui_MainWindow(object):
         self.menuSettings.addSeparator()
         self.menuSettings.addAction(self.actionManage_Speaker)
 
+        # Help-Menü
+        self.menuHelp.addAction(self.actionHelp)
+
         self.menubar.addAction(self.menuFile.menuAction())
         self.menubar.addAction(self.menuSettings.menuAction())
         self.menubar.addAction(self.menuWindow.menuAction())
         self.menubar.addAction(self.menuCalculation.menuAction())
+        self.menubar.addAction(self.menuHelp.menuAction())
 
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
@@ -269,6 +277,7 @@ class Ui_MainWindow(object):
         self.menuSettings.setTitle(_translate("MainWindow", "Setup"))
         self.menuWindow.setTitle(_translate("MainWindow", "Window"))
         self.menuCalculation.setTitle(_translate("MainWindow", "Calculation"))
+        self.menuHelp.setTitle(_translate("MainWindow", "Help"))
         self.actionLoad.setText(_translate("MainWindow", "Open"))
         self.actionLoad.setShortcut(_translate("MainWindow", "Ctrl+O"))
         self.actionSave.setText(_translate("MainWindow", "Save"))
@@ -311,3 +320,7 @@ class Ui_MainWindow(object):
         # Text und Shortcut für Manage Speaker
         self.actionManage_Speaker.setText(_translate("MainWindow", "Manage Speaker"))
         self.actionManage_Speaker.setShortcut(QtGui.QKeySequence("Ctrl+Alt+M"))
+        
+        # Text und Shortcut für Help
+        self.actionHelp.setText(_translate("MainWindow", "User Manual"))
+        self.actionHelp.setShortcut(_translate("MainWindow", "F1"))

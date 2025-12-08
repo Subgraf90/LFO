@@ -48,6 +48,7 @@ from Module_LFO.Modules_Data.settings_state import Settings
 from Module_LFO.Modules_Window.WindowPlotsMainwindow import DrawPlotsMainwindow
 from Module_LFO.Modules_Window.WindowWidgets import DrawWidgets
 from Module_LFO.Modules_Window.WindowSnapshotWidget import SnapshotWidget
+from Module_LFO.Modules_Window.HelpWindow import HelpWindow
 
 "to Dos"
 
@@ -138,6 +139,9 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # zeige speakerspecs window
         self.ui.actionSpeakerSpecs_Window.triggered.connect(self.show_sources_dock_widget)
+
+        # Help-Window
+        self.ui.actionHelp.triggered.connect(self.show_help_window)
 
         # Verbinden Sie den Button mit der starte_skript-Methode
         self.ui.StartSkript.clicked.connect(self.starte_skript)
@@ -1002,6 +1006,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # 🎯 initialize_empty_scene() setzt jetzt korrekt _last_surfaces_state zurück,
         # daher wird die Surface automatisch beim nächsten update_overlays() gezeichnet.
         # Keine zusätzliche update_overlays() Aufruf nötig, um doppelte Zeichnung zu vermeiden.
+
+    def show_help_window(self):
+        """
+        Öffnet das Help-Window mit dem Handbuch.
+        """
+        if not hasattr(self, '_help_window') or self._help_window is None:
+            self._help_window = HelpWindow(self)
+        self._help_window.show()
+        self._help_window.raise_()
+        self._help_window.activateWindow()
 
 
 # ---- HELP METHODEN ----

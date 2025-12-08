@@ -16,6 +16,13 @@ from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
     SurfaceGroup,
+    derive_surface_plane,
+    evaluate_surface_plane,
+)
+from Module_LFO.Modules_Data.SurfaceValidator import (
+    validate_and_optimize_surface,
+    determine_surface_orientation,
+    check_rigid_axis_validity,
 )
 import logging
 
@@ -663,6 +670,41 @@ class UISurfaceManager(ModuleBase):
         
         logger = logging.getLogger(__name__)
         
+        # Validiere und optimiere alle Surfaces vor dem Laden
+        from Module_LFO.Modules_Data.SurfaceValidator import validate_surfaces_dict
+        
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        if surface_store:
+            try:
+                # Konvertiere zu Dictionary-Format für Validierung
+                surfaces_dict = {}
+                for surface_id, surface in surface_store.items():
+                    if isinstance(surface, SurfaceDefinition):
+                        surfaces_dict[surface_id] = surface.to_dict()
+                    else:
+                        surfaces_dict[surface_id] = surface
+                
+                # Validiere und optimiere
+                validated_surfaces = validate_surfaces_dict(
+                    surfaces_dict,
+                    round_to_cm=True,
+                    remove_redundant=True,
+                    optimize_invalid=True,
+                )
+                
+                # Aktualisiere Surface-Definitionen mit optimierten Punkten
+                for surface_id, validated_surface in validated_surfaces.items():
+                    if surface_id in surface_store:
+                        if isinstance(surface_store[surface_id], SurfaceDefinition):
+                            surface_store[surface_id].points = validated_surface.get('points', [])
+                        else:
+                            surface_store[surface_id]['points'] = validated_surface.get('points', [])
+                
+                logger.info(f"Surfaces validiert: {len(validated_surfaces)} Surfaces geprüft")
+            except Exception as e:
+                logger.warning(f"Fehler beim Validieren der Surfaces: {e}", exc_info=True)
+                # Bei Fehler: Weiter mit unveränderten Surfaces
+        
         # Speichere aktuellen Expand-Zustand vor dem Neuaufbau
         expand_state = self._save_expand_state()
         
@@ -674,7 +716,6 @@ class UISurfaceManager(ModuleBase):
         
         # Hole Default-Fläche ID
         default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
-        surface_store = getattr(self.settings, 'surface_definitions', {})
         root_group_id = self._group_controller.root_group_id
 
         logger.debug(
@@ -878,6 +919,7 @@ class UISurfaceManager(ModuleBase):
             if surface:
                 surface_item = self._create_surface_item(surface_id, surface)
                 group_item.insertChild(0, surface_item)
+                # ensure_surface_checkboxes prüft automatisch, ob Surface in Gruppe ist und entfernt Checkboxen
                 self.ensure_surface_checkboxes(surface_item)
         
         # Expand-Zustand wird später durch _restore_expand_state() wiederhergestellt
@@ -1125,7 +1167,23 @@ class UISurfaceManager(ModuleBase):
                     pass
     
     def ensure_surface_checkboxes(self, item):
-        """Stellt sicher, dass Checkboxen für ein Surface-Item existieren"""
+        """
+        Stellt sicher, dass Checkboxen für ein Surface-Item existieren.
+        Wenn das Surface in einer Gruppe ist, werden die Checkboxen entfernt.
+        """
+        # Prüfe, ob das Surface in einer Gruppe ist
+        parent = item.parent()
+        is_in_group = parent is not None and parent.data(0, Qt.UserRole + 1) == "group"
+        
+        if is_in_group:
+            # Surface ist in einer Gruppe: Entferne alle Checkboxen
+            for column in [1, 2, 3]:
+                widget = self.surface_tree_widget.itemWidget(item, column)
+                if widget:
+                    self.surface_tree_widget.removeItemWidget(item, column)
+            return
+        
+        # Surface ist nicht in einer Gruppe: Stelle sicher, dass Checkboxen existieren
         # Enable Checkbox (Spalte 1)
         if self.surface_tree_widget.itemWidget(item, 1) is None:
             enable_checkbox = self.create_checkbox()
@@ -1200,7 +1258,8 @@ class UISurfaceManager(ModuleBase):
             # Lade aktuellen Enable-Status
             group = self._group_controller.get_group(group_id)
             if group:
-                enable_checkbox.setChecked(group.enabled)
+                # Verwende setCheckState für tristate-Checkboxen
+                enable_checkbox.setCheckState(Qt.Checked if group.enabled else Qt.Unchecked)
             
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
@@ -1218,7 +1277,8 @@ class UISurfaceManager(ModuleBase):
             # Lade aktuellen Hide-Status
             group = self._group_controller.get_group(group_id)
             if group:
-                hide_checkbox.setChecked(group.hidden)
+                # Verwende setCheckState für tristate-Checkboxen
+                hide_checkbox.setCheckState(Qt.Checked if group.hidden else Qt.Unchecked)
             
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 2)
@@ -1231,14 +1291,17 @@ class UISurfaceManager(ModuleBase):
         # XY Checkbox (Spalte 3) - mit Tristate für teilweise aktivierte Gruppen
         if self.surface_tree_widget.itemWidget(item, 3) is None:
             xy_checkbox = self.create_checkbox(tristate=True)
-            xy_checkbox.setChecked(True)  # Per Default aktiv
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen XY-Status (falls vorhanden)
             group = self._group_controller.get_group(group_id)
             if group:
                 xy_enabled = getattr(group, 'xy_enabled', True)
-                xy_checkbox.setChecked(xy_enabled)
+                # Verwende setCheckState für tristate-Checkboxen
+                xy_checkbox.setCheckState(Qt.Checked if xy_enabled else Qt.Unchecked)
+            else:
+                # Per Default aktiv
+                xy_checkbox.setCheckState(Qt.Checked)
             
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 3)
@@ -1269,54 +1332,56 @@ class UISurfaceManager(ModuleBase):
             checkbox = self.surface_tree_widget.itemWidget(child, column)
             
             if child_type == "surface":
-                # Surface: Aktualisiere Checkbox
+                # Surface: Aktualisiere direkt die Surface-Daten (auch wenn keine Checkbox sichtbar ist)
                 surface_id_data = child.data(0, Qt.UserRole)
                 if isinstance(surface_id_data, dict):
                     surface_id = surface_id_data.get("id")
                 else:
                     surface_id = surface_id_data
                 
+                # Wenn Checkbox vorhanden ist, aktualisiere sie (für den Fall, dass Surface später aus Gruppe entfernt wird)
                 if surface_id and checkbox:
                     checkbox.blockSignals(True)
                     # Verwende setCheckState für tristate-Checkboxen
                     checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                     checkbox.blockSignals(False)
-                    
-                    # Aktualisiere Surface-Daten durch Aufruf des entsprechenden Handlers
-                    if update_data:
-                        state = Qt.Checked if checked else Qt.Unchecked
-                        if column == 1:  # Enable
-                            self.on_surface_enable_changed(surface_id, state, skip_calculations=skip_calculations)
-                        elif column == 2:  # Hide
-                            self.on_surface_hide_changed(surface_id, state, skip_calculations=skip_calculations)
-                        elif column == 3:  # XY
-                            self.on_surface_xy_changed(surface_id, state, skip_calculations=skip_calculations)
+                
+                # Aktualisiere Surface-Daten durch Aufruf des entsprechenden Handlers
+                # (wird auch ausgeführt, wenn keine Checkbox vorhanden ist, da Surface in Gruppe ist)
+                if update_data and surface_id:
+                    state = Qt.Checked if checked else Qt.Unchecked
+                    if column == 1:  # Enable
+                        self.on_surface_enable_changed(surface_id, state, skip_calculations=skip_calculations)
+                    elif column == 2:  # Hide
+                        self.on_surface_hide_changed(surface_id, state, skip_calculations=skip_calculations)
+                    elif column == 3:  # XY
+                        self.on_surface_xy_changed(surface_id, state, skip_calculations=skip_calculations)
             elif child_type == "group":
-                # Gruppe: Aktualisiere Checkbox
+                # Gruppe: Aktualisiere Checkbox (Gruppen behalten immer ihre Checkboxen)
                 if checkbox:
                     checkbox.blockSignals(True)
                     # Verwende setCheckState für tristate-Checkboxen
                     checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                     checkbox.blockSignals(False)
                 
-                # Rekursiv für Untergruppen (ohne Daten-Update, um Rekursion zu vermeiden)
-                self._update_group_child_checkboxes(child, column, checked, update_data=False, skip_calculations=skip_calculations, skip_state_update=skip_state_update)
-                
                 # Aktualisiere Gruppen-Daten durch Aufruf des entsprechenden Handlers
+                # (übergeordnete Gruppe kann untergeordnete Gruppe steuern)
                 if update_data:
                     state = Qt.Checked if checked else Qt.Unchecked
                     if column == 1:  # Enable
-                        # Vermeide Rekursion: Handler ruft bereits _update_group_child_checkboxes auf
-                        # Daher nur Gruppen-Daten aktualisieren, nicht erneut Childs
                         group_id_data = child.data(0, Qt.UserRole)
                         if isinstance(group_id_data, dict):
                             group_id = group_id_data.get("id")
                         else:
                             group_id = group_id_data
                         if group_id:
+                            # Setze Gruppen-Status
                             self._group_controller.set_surface_group_enabled(group_id, checked)
                             if group_id in self.surface_groups:
                                 self.surface_groups[group_id]['enabled'] = checked
+                            # Aktualisiere auch alle Childs der untergeordneten Gruppe
+                            # (rekursiv, damit auch Surfaces in der untergeordneten Gruppe aktualisiert werden)
+                            self._update_group_child_checkboxes(child, column, checked, update_data=True, skip_calculations=skip_calculations, skip_state_update=skip_state_update)
                     elif column == 2:  # Hide
                         group_id_data = child.data(0, Qt.UserRole)
                         if isinstance(group_id_data, dict):
@@ -1324,18 +1389,27 @@ class UISurfaceManager(ModuleBase):
                         else:
                             group_id = group_id_data
                         if group_id:
+                            # Setze Gruppen-Status
                             self._group_controller.set_surface_group_hidden(group_id, checked)
                             if group_id in self.surface_groups:
                                 self.surface_groups[group_id]['hidden'] = checked
+                            # Aktualisiere auch alle Childs der untergeordneten Gruppe
+                            self._update_group_child_checkboxes(child, column, checked, update_data=True, skip_calculations=skip_calculations, skip_state_update=skip_state_update)
                     elif column == 3:  # XY
-                        # XY-Handler ruft bereits _update_group_child_checkboxes auf
-                        # Daher nur Gruppen-Daten aktualisieren
-                        group_id = child.data(0, Qt.UserRole)
-                        group = self._group_controller.get_group(group_id)
-                        if group:
-                            group.xy_enabled = checked
-                        if group_id in self.surface_groups:
-                            self.surface_groups[group_id]['xy_enabled'] = checked
+                        group_id_data = child.data(0, Qt.UserRole)
+                        if isinstance(group_id_data, dict):
+                            group_id = group_id_data.get("id")
+                        else:
+                            group_id = group_id_data
+                        if group_id:
+                            # Setze Gruppen-Status
+                            group = self._group_controller.get_group(group_id)
+                            if group:
+                                group.xy_enabled = checked
+                            if group_id in self.surface_groups:
+                                self.surface_groups[group_id]['xy_enabled'] = checked
+                            # Aktualisiere auch alle Childs der untergeordneten Gruppe
+                            self._update_group_child_checkboxes(child, column, checked, update_data=True, skip_calculations=skip_calculations, skip_state_update=skip_state_update)
         
         # Aktualisiere Gruppen-Checkbox-Zustand nach Änderung der Child-Items
         # WICHTIG: Dies wird NACH dem Update aller Childs aufgerufen, daher sollte der Zustand korrekt sein
@@ -1347,6 +1421,7 @@ class UISurfaceManager(ModuleBase):
         """
         Aktualisiert den Zustand einer Gruppen-Checkbox basierend auf den Child-Items.
         Setzt PartiallyChecked (Klammer), wenn einige Child-Items checked und andere unchecked sind.
+        Berücksichtigt auch Surfaces ohne Checkboxen (die in Gruppen sind).
         
         Args:
             group_item: Das Gruppen-Item
@@ -1359,7 +1434,7 @@ class UISurfaceManager(ModuleBase):
         if not checkbox:
             return
         
-        # Sammle alle Child-Checkboxen (rekursiv)
+        # Sammle alle Child-Checkboxen und Surface-Daten (rekursiv)
         checked_count = 0
         unchecked_count = 0
         total_count = 0
@@ -1371,15 +1446,58 @@ class UISurfaceManager(ModuleBase):
                 child_type = child.data(0, Qt.UserRole + 1)
                 child_checkbox = self.surface_tree_widget.itemWidget(child, column)
                 
-                if child_checkbox:
-                    total_count += 1
-                    if child_checkbox.isChecked():
-                        checked_count += 1
+                if child_type == "surface":
+                    # Surface: Prüfe Checkbox oder Surface-Daten
+                    if child_checkbox:
+                        # Surface hat Checkbox (nicht in Gruppe)
+                        total_count += 1
+                        if child_checkbox.isChecked():
+                            checked_count += 1
+                        else:
+                            unchecked_count += 1
                     else:
-                        unchecked_count += 1
-                
-                # Rekursiv für Untergruppen
-                if child_type == "group":
+                        # Surface hat keine Checkbox (in Gruppe) - prüfe Surface-Daten
+                        surface_id_data = child.data(0, Qt.UserRole)
+                        if isinstance(surface_id_data, dict):
+                            surface_id = surface_id_data.get("id")
+                        else:
+                            surface_id = surface_id_data
+                        
+                        if surface_id:
+                            surface = self._get_surface(surface_id)
+                            if surface:
+                                total_count += 1
+                                is_checked = False
+                                if column == 1:  # Enable
+                                    if isinstance(surface, SurfaceDefinition):
+                                        is_checked = surface.enabled
+                                    else:
+                                        is_checked = surface.get('enabled', False)
+                                elif column == 2:  # Hide
+                                    if isinstance(surface, SurfaceDefinition):
+                                        is_checked = surface.hidden
+                                    else:
+                                        is_checked = surface.get('hidden', False)
+                                elif column == 3:  # XY
+                                    if isinstance(surface, SurfaceDefinition):
+                                        is_checked = getattr(surface, 'xy_enabled', True)
+                                    else:
+                                        is_checked = surface.get('xy_enabled', True)
+                                
+                                if is_checked:
+                                    checked_count += 1
+                                else:
+                                    unchecked_count += 1
+                elif child_type == "group":
+                    # Gruppe: Prüfe Checkbox
+                    if child_checkbox:
+                        total_count += 1
+                        if child_checkbox.isChecked():
+                            checked_count += 1
+                        else:
+                            unchecked_count += 1
+                    
+                    # Rekursiv für Untergruppen
                     count_child_checkboxes(child)
         
         count_child_checkboxes(group_item)
@@ -1387,8 +1505,26 @@ class UISurfaceManager(ModuleBase):
         # Setze Checkbox-Zustand basierend auf Child-Items
         checkbox.blockSignals(True)
         if total_count == 0:
-            # Keine Child-Items: Zustand bleibt unverändert
-            pass
+            # Keine Child-Items: Verwende Gruppen-Daten als Fallback
+            group_id_data = group_item.data(0, Qt.UserRole)
+            if isinstance(group_id_data, dict):
+                group_id = group_id_data.get("id")
+            else:
+                group_id = group_id_data
+            
+            if group_id:
+                group = self._group_controller.get_group(group_id)
+                if group:
+                    is_checked = False
+                    if column == 1:  # Enable
+                        is_checked = group.enabled
+                    elif column == 2:  # Hide
+                        is_checked = group.hidden
+                    elif column == 3:  # XY
+                        is_checked = getattr(group, 'xy_enabled', True)
+                    
+                    checkbox.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
+                # Wenn keine Gruppe gefunden, Zustand bleibt unverändert
         elif checked_count == total_count:
             # Alle Child-Items sind checked
             checkbox.setCheckState(Qt.Checked)
@@ -2129,10 +2265,12 @@ class UISurfaceManager(ModuleBase):
                     
                     # Aktualisiere alle Child-Checkboxen (ohne Berechnungen, bis alle Zustände gespeichert sind)
                     # skip_state_update=True: Überspringe _update_group_checkbox_state, da wir die Checkbox bereits explizit gesetzt haben
-                    self._update_group_child_checkboxes(group, 1, enable_value, skip_calculations=True, skip_state_update=True)
+                    # update_data=True: WICHTIG - aktualisiere die tatsächlichen Surface-Daten
+                    self._update_group_child_checkboxes(group, 1, enable_value, update_data=True, skip_calculations=True, skip_state_update=True)
                     
                     # Aktualisiere Gruppen-Checkbox-Zustand explizit NACH allen Child-Updates
                     # (um sicherzustellen, dass der Zustand korrekt ist, auch wenn alle Childs aktualisiert wurden)
+                    # WICHTIG: Dies muss NACH der Datenaktualisierung erfolgen, damit der korrekte Zustand gelesen wird
                     self._update_group_checkbox_state(group, 1)
                     
                     # Aktualisiere Parent-Gruppen rekursiv
@@ -2196,7 +2334,8 @@ class UISurfaceManager(ModuleBase):
                     
                     # Aktualisiere alle Child-Checkboxen (ohne Berechnungen, bis alle Zustände gespeichert sind)
                     # skip_state_update=True: Überspringe _update_group_checkbox_state, da wir die Checkbox bereits explizit gesetzt haben
-                    self._update_group_child_checkboxes(group, 2, hide_value, skip_calculations=True, skip_state_update=True)
+                    # update_data=True: WICHTIG - aktualisiere die tatsächlichen Surface-Daten
+                    self._update_group_child_checkboxes(group, 2, hide_value, update_data=True, skip_calculations=True, skip_state_update=True)
                     
                     # Aktualisiere Gruppen-Checkbox-Zustand explizit NACH allen Child-Updates
                     # (um sicherzustellen, dass der Zustand korrekt ist, auch wenn alle Childs aktualisiert wurden)
@@ -2244,7 +2383,8 @@ class UISurfaceManager(ModuleBase):
         
         # Aktualisiere alle Child-Checkboxen (ohne Berechnungen, bis alle Zustände gespeichert sind)
         # skip_state_update=True: Überspringe _update_group_checkbox_state, da wir die Checkbox bereits explizit gesetzt haben
-        self._update_group_child_checkboxes(group_item, 3, checked, skip_calculations=True, skip_state_update=True)
+        # update_data=True: WICHTIG - aktualisiere die tatsächlichen Surface-Daten
+        self._update_group_child_checkboxes(group_item, 3, checked, update_data=True, skip_calculations=True, skip_state_update=True)
         
         # Aktualisiere Gruppen-Checkbox-Zustand explizit NACH allen Child-Updates
         # (um sicherzustellen, dass der Zustand korrekt ist, auch wenn alle Childs aktualisiert wurden)
@@ -2358,7 +2498,24 @@ class UISurfaceManager(ModuleBase):
         
         # TreeWidget für Koordinaten
         self.points_tree = QTreeWidget()
-        self.points_tree.setHeaderLabels(["Point", "X (m)", "Y (m)", "Z (m)", ""])
+        
+        # Bestimme starre Achse für Header-Labels
+        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+        rigid_axis, _ = determine_surface_orientation(points) if len(points) >= 3 else (None, None)
+        
+        # Erstelle Header-Labels mit Markierung der starren Achse
+        header_labels = ["Point"]
+        if rigid_axis == "x":
+            header_labels.extend(["X (m) [calc]", "Y (m)", "Z (m)"])
+        elif rigid_axis == "y":
+            header_labels.extend(["X (m)", "Y (m) [calc]", "Z (m)"])
+        elif rigid_axis == "z":
+            header_labels.extend(["X (m)", "Y (m)", "Z (m) [calc]"])
+        else:
+            header_labels.extend(["X (m)", "Y (m)", "Z (m)"])
+        header_labels.append("")  # Leere Spalte am Ende
+        
+        self.points_tree.setHeaderLabels(header_labels)
         self.points_tree.setRootIsDecorated(False)
         self.points_tree.setAlternatingRowColors(True)
         self.points_tree.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -2392,6 +2549,14 @@ class UISurfaceManager(ModuleBase):
         self.points_tree.blockSignals(True)
         self.points_tree.clear()
         
+        # Validiere Surface um ungültige Felder zu bestimmen
+        validation_result = validate_and_optimize_surface(
+            surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
+            round_to_cm=False,
+            remove_redundant=False,
+        )
+        invalid_fields_set = {(idx, coord) for idx, coord in (validation_result.invalid_fields or [])}
+        
         for index, point in enumerate(points):
             item = QTreeWidgetItem(self.points_tree)
             item.setFlags(
@@ -2404,8 +2569,8 @@ class UISurfaceManager(ModuleBase):
             y_val = point.get('y', 0.0)
             z_val = point.get('z', 0.0)
             
-            item.setText(1, f"{float(x_val):.2f}")
-            item.setText(2, f"{float(y_val):.2f}")
+            item.setText(1, f"{float(x_val):.2f}" if x_val is not None else "")
+            item.setText(2, f"{float(y_val):.2f}" if y_val is not None else "")
             item.setText(3, f"{float(z_val):.2f}" if z_val is not None else "")
             
             # Erstelle Editoren für X, Y, Z
@@ -2574,6 +2739,7 @@ class UISurfaceManager(ModuleBase):
         editor.editingFinished.connect(
             lambda: self._on_point_editor_finished(surface_id, point_index, coord_name, editor)
         )
+        
         self.points_tree.setItemWidget(item, column, editor)
     
     def _on_point_editor_finished(self, surface_id, point_index, coord_name, editor):
@@ -2602,11 +2768,54 @@ class UISurfaceManager(ModuleBase):
         if surface:
             points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
             if 0 <= point_index < len(points):
+                old_value = points[point_index].get(coord_name)
                 points[point_index][coord_name] = value
                 
                 # Aktualisiere Anzeige
                 formatted = f"{value:.2f}"
                 editor.setText(formatted)
+                
+                # NEUE LOGIK: Wenn manueller Wert geändert wurde, bestimme starre Achse und lösche starre Werte
+                # Prüfe ob Wert tatsächlich geändert wurde (berücksichtige None)
+                if old_value is None:
+                    value_changed = True  # War None, jetzt hat einen Wert
+                else:
+                    try:
+                        old_value_float = float(old_value)
+                        value_changed = abs(value - old_value_float) > 0.001
+                    except (ValueError, TypeError):
+                        value_changed = True  # Konnte nicht konvertiert werden, behandele als geändert
+                if value_changed:  # Wert wurde tatsächlich geändert oder war None
+                    # Bestimme Orientierung und starre Achse mit den aktualisierten Punkten
+                    rigid_axis, orientation = determine_surface_orientation(points)
+                    
+                    if rigid_axis:
+                        # Wenn geänderte Koordinate die starre Achse ist, lösche alle anderen Werte der starren Achse
+                        if coord_name == rigid_axis:
+                            # Lösche alle Werte der starren Achse (außer dem gerade geänderten)
+                            for i, point in enumerate(points):
+                                if i != point_index:
+                                    # Setze Wert auf None (wird in UI als leeres Feld angezeigt)
+                                    point[rigid_axis] = None
+                        
+                        # Prüfe ob genug Werte vorhanden sind, um fehlende zu berechnen
+                        # Zähle vorhandene Werte der starren Achse
+                        available_count = sum(
+                            1 for p in points 
+                            if p.get(rigid_axis) is not None
+                        )
+                        
+                        # Wenn mindestens 2 Werte vorhanden, versuche fehlende zu berechnen
+                        if available_count >= 2:
+                            calculated = self._calculate_missing_rigid_axis_values(points, rigid_axis)
+                            if calculated:
+                                # Werte wurden berechnet, aktualisiere UI
+                                self._loading_points = True
+                                self.create_surface_parameter_tab(surface_id)
+                                self._loading_points = False
+                        
+                        # Aktualisiere UI: Markiere ungültige Felder
+                        self._update_surface_validation_ui(surface_id)
                 
                 # Prüfe ob Surface versteckt ist - wenn ja, keine Calc/Plot Aktualisierung
                 if isinstance(surface, SurfaceDefinition):
@@ -2614,10 +2823,196 @@ class UISurfaceManager(ModuleBase):
                 else:
                     hidden = surface.get('hidden', False)
                 
-                if not hidden:
-                    # Aktualisiere Berechnungen nur wenn Surface nicht versteckt ist
-                    if hasattr(self.main_window, 'update_speaker_array_calculations'):
-                        self.main_window.update_speaker_array_calculations()
+                # Validiere Surface
+                validation_result = validate_and_optimize_surface(
+                    surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
+                    round_to_cm=False,  # Keine automatische Rundung beim manuellen Editieren
+                    remove_redundant=False,  # Keine automatische Entfernung beim manuellen Editieren
+                )
+                
+                # Nur plotten wenn Surface gültig ist UND alle Werte eingetragen sind
+                if not hidden and validation_result.is_valid:
+                    # Prüfe ob alle Werte der starren Achse vorhanden sind
+                    if validation_result.rigid_axis:
+                        all_values_present = all(
+                            p.get(validation_result.rigid_axis) is not None
+                            for p in points
+                        )
+                        if all_values_present:
+                            # Alle Werte vorhanden und gültig - aktualisiere Berechnungen/Plot
+                            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                                self.main_window.update_speaker_array_calculations()
+    
+    def _calculate_missing_rigid_axis_values(
+        self,
+        points: List[Dict[str, float]],
+        rigid_axis: str,
+    ) -> bool:
+        """
+        Berechnet fehlende Werte der starren Achse basierend auf vorhandenen Werten.
+        
+        Args:
+            points: Liste von Punkten
+            rigid_axis: Die starre Achse ("x", "y" oder "z")
+            
+        Returns:
+            True wenn Werte berechnet wurden, False wenn nicht genug Daten vorhanden
+        """
+        # Zähle vorhandene Werte der starren Achse
+        available_values = []
+        available_indices = []
+        
+        for i, point in enumerate(points):
+            value = point.get(rigid_axis)
+            if value is not None:
+                try:
+                    available_values.append(float(value))
+                    available_indices.append(i)
+                except (ValueError, TypeError):
+                    pass
+        
+        # Wenn weniger als 2 Werte vorhanden, kann nicht berechnet werden
+        if len(available_values) < 2:
+            return False
+        
+        # Wenn alle Werte vorhanden, nichts zu berechnen
+        if len(available_values) == len(points):
+            return False
+        
+        # Berechne fehlende Werte basierend auf dem Typ der starren Achse
+        if rigid_axis == "z":
+            # Für Z-Achse: Versuche planares Modell zu erstellen
+            # Sammle alle Punkte mit gültigen X, Y, Z
+            valid_points = []
+            for i, point in enumerate(points):
+                x_val = point.get("x")
+                y_val = point.get("y")
+                z_val = point.get("z")
+                if x_val is not None and y_val is not None and z_val is not None:
+                    try:
+                        valid_points.append({
+                            "x": float(x_val),
+                            "y": float(y_val),
+                            "z": float(z_val),
+                        })
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Wenn mindestens 2 Punkte mit vollständigen Koordinaten, versuche Modell
+            if len(valid_points) >= 2:
+                model, error = derive_surface_plane(valid_points, tol=1e-4)
+                if model is not None:
+                    # Berechne fehlende Z-Werte
+                    calculated_count = 0
+                    for i, point in enumerate(points):
+                        if point.get("z") is None:
+                            x_val = point.get("x")
+                            y_val = point.get("y")
+                            if x_val is not None and y_val is not None:
+                                try:
+                                    z_calculated = evaluate_surface_plane(
+                                        model, float(x_val), float(y_val)
+                                    )
+                                    point["z"] = z_calculated
+                                    calculated_count += 1
+                                except (ValueError, TypeError):
+                                    pass
+                    return calculated_count > 0
+            
+            # Fallback: Wenn alle vorhandenen Z-Werte gleich sind, verwende diesen Wert
+            if len(available_values) >= 2:
+                z_span = float(np.ptp(available_values))
+                if z_span <= 0.01:  # Alle Werte innerhalb 1cm
+                    z_mean = float(np.mean(available_values))
+                    calculated_count = 0
+                    for i, point in enumerate(points):
+                        if point.get("z") is None:
+                            point["z"] = z_mean
+                            calculated_count += 1
+                    return calculated_count > 0
+        
+        elif rigid_axis == "x":
+            # Für X-Achse: Wenn alle vorhandenen X-Werte gleich sind, verwende diesen Wert
+            if len(available_values) >= 2:
+                x_span = float(np.ptp(available_values))
+                if x_span <= 0.01:  # Alle Werte innerhalb 1cm
+                    x_mean = float(np.mean(available_values))
+                    calculated_count = 0
+                    for i, point in enumerate(points):
+                        if point.get("x") is None:
+                            point["x"] = x_mean
+                            calculated_count += 1
+                    return calculated_count > 0
+        
+        elif rigid_axis == "y":
+            # Für Y-Achse: Wenn alle vorhandenen Y-Werte gleich sind, verwende diesen Wert
+            if len(available_values) >= 2:
+                y_span = float(np.ptp(available_values))
+                if y_span <= 0.01:  # Alle Werte innerhalb 1cm
+                    y_mean = float(np.mean(available_values))
+                    calculated_count = 0
+                    for i, point in enumerate(points):
+                        if point.get("y") is None:
+                            point["y"] = y_mean
+                            calculated_count += 1
+                    return calculated_count > 0
+        
+        return False
+    
+    def _update_surface_validation_ui(self, surface_id):
+        """Aktualisiert die UI basierend auf Validierungsergebnissen"""
+        surface = self._get_surface(surface_id)
+        if not surface:
+            return
+        
+        # Validiere Surface
+        validation_result = validate_and_optimize_surface(
+            surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
+            round_to_cm=False,
+            remove_redundant=False,
+        )
+        
+        # Erstelle Set von ungültigen Feldern für schnellen Lookup
+        invalid_fields_set = {(idx, coord) for idx, coord in (validation_result.invalid_fields or [])}
+        
+        # Aktualisiere Header-Labels mit starre Achse Markierung
+        if hasattr(self, 'points_tree'):
+            points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+            rigid_axis = validation_result.rigid_axis
+            
+            # Erstelle Header-Labels mit Markierung der starren Achse
+            header_labels = ["Point"]
+            if rigid_axis == "x":
+                header_labels.extend(["X (m) [calc]", "Y (m)", "Z (m)"])
+            elif rigid_axis == "y":
+                header_labels.extend(["X (m)", "Y (m) [calc]", "Z (m)"])
+            elif rigid_axis == "z":
+                header_labels.extend(["X (m)", "Y (m)", "Z (m) [calc]"])
+            else:
+                header_labels.extend(["X (m)", "Y (m)", "Z (m)"])
+            header_labels.append("")  # Leere Spalte am Ende
+            
+            self.points_tree.setHeaderLabels(header_labels)
+        
+        # Aktualisiere alle Editoren im Points Tree
+        if hasattr(self, 'points_tree'):
+            for idx in range(self.points_tree.topLevelItemCount()):
+                item = self.points_tree.topLevelItem(idx)
+                if item:
+                    point_index = item.data(0, Qt.UserRole)
+                    if isinstance(point_index, int):
+                        # Aktualisiere X, Y, Z Editoren
+                        for col, coord_name in [(1, 'x'), (2, 'y'), (3, 'z')]:
+                            editor = self.points_tree.itemWidget(item, col)
+                            if editor:
+                                # Wenn Wert None, zeige leeres Feld
+                                points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                                if 0 <= point_index < len(points):
+                                    point_value = points[point_index].get(coord_name)
+                                    if point_value is None:
+                                        editor.setText("")
+                                    else:
+                                        editor.setText(f"{float(point_value):.2f}")
     
     def _handle_add_point(self, surface_id):
         """Fügt einen neuen Punkt zum Surface hinzu"""

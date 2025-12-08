@@ -13,6 +13,7 @@ from Module_LFO.Modules_Calculate.WindowingCalculator import WindowingCalculator
 from Module_LFO.Modules_Calculate.BeamSteering import BeamSteering
 from Module_LFO.Modules_Plot.PlotBeamsteering import BeamsteeringPlot    
 from Module_LFO.Modules_Plot.PlotWindowing import WindowingPlot
+from Module_LFO.Modules_Window.HelpWindow import HelpWindow
 
 import time
 import functools
@@ -53,6 +54,7 @@ class Sources(ModuleBase, QObject):
         self.create_beamsteering_tab()
         self.windowing_plot = None
         self.create_windowing_tab()
+        self.create_help_tab()
         
         # Debug-Schalter für Signalhandler
         self.debug_signals = False
@@ -472,7 +474,8 @@ class Sources(ModuleBase, QObject):
             # Erstelle die Tabs
             self.create_speaker_tab_stack()  # Wichtig: Hier wird der Speaker Tab erstellt
             self.create_beamsteering_tab()
-            self.create_windowing_tab()   
+            self.create_windowing_tab()
+            self.create_help_tab()   
             
             # Füge TabWidget zum rechten Widget hinzu
             right_layout = QVBoxLayout(self.right_side_widget)
@@ -1190,6 +1193,65 @@ class Sources(ModuleBase, QObject):
         main_layout.setSpacing(5)
 
         self.tab_widget.addTab(beamsteering_tab, "Beamsteering")
+
+    def create_help_tab(self):
+        """Creates the Help tab with the user manual."""
+        help_tab = QWidget()
+        help_layout = QVBoxLayout(help_tab)
+        help_layout.setContentsMargins(0, 0, 0, 0)
+        help_layout.setSpacing(0)
+        
+        # Create HelpWindow widget (but as a widget, not a dialog)
+        # We need to extract the text browser from HelpWindow
+        from Module_LFO.Modules_Window.HelpWindow import HelpWindow
+        from PyQt5.QtWidgets import QTextBrowser
+        from PyQt5.QtCore import QUrl
+        import os
+        from pathlib import Path
+        
+        # Create text browser directly
+        text_browser = QTextBrowser(help_tab)
+        text_browser.setOpenExternalLinks(True)
+        text_browser.setStyleSheet("""
+            QTextBrowser {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+                font-size: 11pt;
+                background-color: white;
+                padding: 15px;
+            }
+        """)
+        
+        # Load manual
+        current_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        help_dir = current_dir.parent.parent / "Modules_Help"
+        manual_path = help_dir / "manual_de.html"
+        
+        if manual_path.exists():
+            url = QUrl.fromLocalFile(str(manual_path))
+            text_browser.setSource(url)
+            base_url = QUrl.fromLocalFile(str(manual_path.parent) + os.sep)
+            text_browser.document().setBaseUrl(base_url)
+        else:
+            placeholder_html = """
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; padding: 20px; }
+                    h1 { color: #2c3e50; }
+                    p { line-height: 1.6; }
+                </style>
+            </head>
+            <body>
+                <h1>LFO User Manual</h1>
+                <p>Loading manual...</p>
+                <p><em>Note: The file manual_de.html was not found.</em></p>
+            </body>
+            </html>
+            """
+            text_browser.setHtml(placeholder_html)
+        
+        help_layout.addWidget(text_browser)
+        self.tab_widget.addTab(help_tab, "Help")
 
 
 
@@ -3345,6 +3407,7 @@ class Sources(ModuleBase, QObject):
         self.create_speaker_tab_stack()
         self.create_beamsteering_tab()
         self.create_windowing_tab()
+        self.create_help_tab()
 
         # Erstelle neue Array-ID
         array_id = 1
@@ -3431,6 +3494,7 @@ class Sources(ModuleBase, QObject):
         self.create_speaker_tab_flown()
         self.create_beamsteering_tab()
         self.create_windowing_tab()
+        self.create_help_tab()
 
         # Erstelle neue Array-ID
         array_id = 1

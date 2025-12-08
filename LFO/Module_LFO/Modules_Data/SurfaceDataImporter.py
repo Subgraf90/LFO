@@ -483,6 +483,7 @@ class SurfaceDataImporter:
 
     def _store_surfaces(self, surfaces: Dict[str, SurfaceDefinition]) -> int:
         from Module_LFO.Modules_Init.Progress import ProgressCancelled
+        from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface
         
         imported = 0
         for surface_id, surface in surfaces.items():
@@ -490,6 +491,31 @@ class SurfaceDataImporter:
             if self.main_window and hasattr(self.main_window, '_current_progress_session') and self.main_window._current_progress_session:
                 if self.main_window._current_progress_session.is_cancelled():
                     raise ProgressCancelled("Import cancelled by user")
+            
+            # Validiere und optimiere Surface vor dem Speichern
+            try:
+                validation_result = validate_and_optimize_surface(
+                    surface,
+                    round_to_cm=True,
+                    remove_redundant=True,
+                    optimize_invalid=True,
+                )
+                # Aktualisiere Punkte mit optimierten Werten
+                surface.points = validation_result.optimized_points
+                
+                if not validation_result.is_valid:
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"Surface '{surface.name}' ({surface_id}) ist nach Optimierung immer noch ungültig: "
+                        f"{validation_result.error_message}"
+                    )
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Fehler beim Validieren von Surface '{surface.name}' ({surface_id}): {e}",
+                    exc_info=True,
+                )
+                # Bei Fehler: Surface unverändert übernehmen
             
             # Stelle sicher, dass imported Surfaces immer enabled=False haben
             surface.enabled = False

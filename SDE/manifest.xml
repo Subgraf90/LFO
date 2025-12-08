@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PackageManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="manifest.xsd">
+  <UserAgent product="ArrayCalc V12" version="12.4.1" systemInformation="macOS Sequoia (15.6)" platform="arm64" comment=""/>
+  <Files>
+    <File>
+      <Name>Back.mtl</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Back.obj</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Floor.mtl</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Floor.obj</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Left Corner.mtl</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Left Corner.obj</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Left.mtl</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Left.obj</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>manifest.xml</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Right Corner.mtl</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Right Corner.obj</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Right.mtl</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>Right.obj</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>SoundSystem.xml</Name>
+      <Encrypted>false</Encrypted>
+    </File>
+    <File>
+      <Name>V-SUB.bal</Name>
+      <Encrypted>true</Encrypted>
+    </File>
+    <File>
+      <Name>V12.bal</Name>
+      <Encrypted>true</Encrypted>
+    </File>
+    <File>
+      <Name>V8.bal</Name>
+      <Encrypted>true</Encrypted>
+    </File>
+    <File>
+      <Name>Y10P_110x40.bal</Name>
+      <Encrypted>true</Encrypted>
+    </File>
+  </Files>
+  <EncryptionKeys exportingSoftwareId="dbaudio">
+    <KeyForImportingSoftware>
+      <ImportingSoftwareID>SoundPLAN</ImportingSoftwareID>
+      <EncryptedKeyFile>SoundPLAN.enc</EncryptedKeyFile>
+    </KeyForImportingSoftware>
+  </EncryptionKeys>
+</PackageManifest>

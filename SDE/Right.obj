@@ -1,0 +1,19 @@
+# File produced by Open Asset Import Library (http://www.assimp.sf.net)
+# (assimp v5.4.0)
+
+mtllib Right.mtl
+
+# 4 vertex positions
+v -20 0 54.6102104
+v -45 7 54.6102104
+v -45 7 2.18978834
+v -20 0 2.18978834
+
+# 0 UV coordinates
+
+# 0 vertex normals
+
+# Mesh '' with 1 faces
+usemtl $Material_0
+f  1/ 2/ 3/ 4/
+

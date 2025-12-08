@@ -1,0 +1,37 @@
+# File produced by Open Asset Import Library (http://www.assimp.sf.net)
+# (assimp v5.4.0)
+
+mtllib Right Corner.mtl
+
+# 10 vertex positions
+v -20 0 55
+v -20 7 80
+v -29.5670853 7 78.0969849
+v -20 0 55
+v -29.5670853 7 78.0969849
+v -37.6776695 7 72.6776733
+v -37.6776695 7 72.6776733
+v -43.0969887 7 64.5670853
+v -43.0969887 7 64.5670853
+v -45 7 55
+
+# 0 UV coordinates
+
+# 0 vertex normals
+
+# Mesh '' with 1 faces
+usemtl $Material_0
+f  1/ 2/ 3/ 4/
+
+# Mesh '' with 1 faces
+usemtl $Material_0
+f  1/ 5/ 6/ 4/
+
+# Mesh '' with 1 faces
+usemtl $Material_0
+f  1/ 7/ 8/ 4/
+
+# Mesh '' with 1 faces
+usemtl $Material_0
+f  1/ 9/ 10/ 4/
+
