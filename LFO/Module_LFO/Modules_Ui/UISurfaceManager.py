@@ -670,39 +670,41 @@ class UISurfaceManager(ModuleBase):
         
         logger = logging.getLogger(__name__)
         
-        # Validiere und optimiere alle Surfaces vor dem Laden
-        from Module_LFO.Modules_Data.SurfaceValidator import validate_surfaces_dict
-        
+        # Nur Validierung (keine Korrektur) beim Laden
         surface_store = getattr(self.settings, 'surface_definitions', {})
         if surface_store:
             try:
-                # Konvertiere zu Dictionary-Format für Validierung
+                from Module_LFO.Modules_Data.SurfaceValidator import validate_surface_geometry
+
                 surfaces_dict = {}
                 for surface_id, surface in surface_store.items():
                     if isinstance(surface, SurfaceDefinition):
                         surfaces_dict[surface_id] = surface.to_dict()
                     else:
                         surfaces_dict[surface_id] = surface
-                
-                # Validiere und optimiere
-                validated_surfaces = validate_surfaces_dict(
-                    surfaces_dict,
-                    round_to_cm=True,
-                    remove_redundant=True,
-                    optimize_invalid=True,
-                )
-                
-                # Aktualisiere Surface-Definitionen mit optimierten Punkten
-                for surface_id, validated_surface in validated_surfaces.items():
-                    if surface_id in surface_store:
-                        if isinstance(surface_store[surface_id], SurfaceDefinition):
-                            surface_store[surface_id].points = validated_surface.get('points', [])
-                        else:
-                            surface_store[surface_id]['points'] = validated_surface.get('points', [])
-                
-                logger.info(f"Surfaces validiert: {len(validated_surfaces)} Surfaces geprüft")
+
+                for surface_id, surface_data in surfaces_dict.items():
+                    try:
+                        surface_obj = SurfaceDefinition.from_dict(surface_id, surface_data)
+                        validation_result = validate_surface_geometry(
+                            surface_obj,
+                            round_to_cm=False,
+                            remove_redundant=True,
+                        )
+                        if not validation_result.is_valid:
+                            logger.warning(
+                                f"Surface '{surface_obj.name}' ({surface_id}) ist ungültig beim Laden: "
+                                f"{validation_result.error_message}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Fehler bei der Validierung von Surface '{surface_id}': {e}",
+                            exc_info=True,
+                        )
+
+                logger.debug(f"Surfaces geladen: {len(surfaces_dict)} Surfaces")
             except Exception as e:
-                logger.warning(f"Fehler beim Validieren der Surfaces: {e}", exc_info=True)
+                logger.warning(f"Fehler beim Laden der Surfaces: {e}", exc_info=True)
                 # Bei Fehler: Weiter mit unveränderten Surfaces
         
         # Speichere aktuellen Expand-Zustand vor dem Neuaufbau

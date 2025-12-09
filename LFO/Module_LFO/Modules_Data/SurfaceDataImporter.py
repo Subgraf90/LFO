@@ -7,11 +7,55 @@ from dataclasses import dataclass
 from collections import Counter
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
+from Module_LFO.Modules_Data.SurfaceValidator import (
+    validate_surface_geometry,
+    triangulate_points,
+)
+
+
+def _strip_closing_point(points: List[Dict[str, float]], tol: float = 1e-6) -> List[Dict[str, float]]:
+    """Entfernt den letzten Punkt, falls er (nahezu) identisch mit dem ersten ist."""
+    if len(points) < 2:
+        return points
+    first = points[0]
+    last = points[-1]
+    dx = (last.get("x", 0.0) - first.get("x", 0.0))
+    dy = (last.get("y", 0.0) - first.get("y", 0.0))
+    dz = (last.get("z", 0.0) - first.get("z", 0.0))
+    if dx * dx + dy * dy + dz * dz <= tol * tol:
+        return points[:-1]
+    return points
+
+
+def _fan_triangulate(points: List[Dict[str, float]]) -> List[List[Dict[str, float]]]:
+    """
+    Einfache Fan-Triangulation (setzt voraus, dass Punkte in sinnvoller Reihenfolge vorliegen).
+    Gibt Liste von Dreiecks-Punktlisten zurück.
+    """
+    if len(points) < 3:
+        return []
+    tris: List[List[Dict[str, float]]] = []
+    anchor = points[0]
+    for i in range(1, len(points) - 1):
+        tris.append([anchor, points[i], points[i + 1]])
+    return tris
+
+
+def _make_unique_surface_id(existing: Dict[str, SurfaceDefinition], base_id: str) -> str:
+    """Erzeuge eindeutige Surface-ID, falls bereits vorhanden."""
+    if base_id not in existing:
+        return base_id
+    counter = 1
+    while True:
+        candidate = f"{base_id}_{counter}"
+        if candidate not in existing:
+            return candidate
+        counter += 1
 
 
 @dataclass(frozen=True)
@@ -483,7 +527,6 @@ class SurfaceDataImporter:
 
     def _store_surfaces(self, surfaces: Dict[str, SurfaceDefinition]) -> int:
         from Module_LFO.Modules_Init.Progress import ProgressCancelled
-        from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface
         
         imported = 0
         for surface_id, surface in surfaces.items():
@@ -492,53 +535,108 @@ class SurfaceDataImporter:
                 if self.main_window._current_progress_session.is_cancelled():
                     raise ProgressCancelled("Import cancelled by user")
             
-            # Validiere und optimiere Surface vor dem Speichern
+            # Abschließenden redundanten Punkt entfernen (Polygon wird automatisch geschlossen)
+            surface.points = _strip_closing_point(surface.points)
+            
+            # Nur validieren (keine Korrektur) beim Import
             try:
-                validation_result = validate_and_optimize_surface(
+                validation_result = validate_surface_geometry(
                     surface,
-                    round_to_cm=True,
+                    round_to_cm=False,
                     remove_redundant=True,
-                    optimize_invalid=True,
                 )
-                # Aktualisiere Punkte mit optimierten Werten
-                surface.points = validation_result.optimized_points
-                
+                logger = logging.getLogger(__name__)
+                if validation_result.invalid_fields:
+                    outlier_info = ", ".join(
+                        f"{idx}:{axis}" for idx, axis in validation_result.invalid_fields
+                    )
+                else:
+                    outlier_info = "none"
+                logger.info(
+                    f"[Import Validation] Surface '{surface.name}' ({surface_id}) "
+                    f"valid={validation_result.is_valid}, outliers={outlier_info}, "
+                    f"message={validation_result.error_message or 'OK'}"
+                )
                 if not validation_result.is_valid:
-                    logger = logging.getLogger(__name__)
                     logger.warning(
-                        f"Surface '{surface.name}' ({surface_id}) ist nach Optimierung immer noch ungültig: "
+                        f"Surface '{surface.name}' ({surface_id}) ist ungültig beim Import: "
                         f"{validation_result.error_message}"
                     )
             except Exception as e:
                 logger = logging.getLogger(__name__)
                 logger.warning(
-                    f"Fehler beim Validieren von Surface '{surface.name}' ({surface_id}): {e}",
+                    f"Fehler bei der Validierung von Surface '{surface.name}' ({surface_id}): {e}",
                     exc_info=True,
                 )
                 # Bei Fehler: Surface unverändert übernehmen
-            
+
             # Stelle sicher, dass imported Surfaces immer enabled=False haben
             surface.enabled = False
             
-            if hasattr(self.settings, "add_surface_definition"):
-                self.settings.add_surface_definition(surface_id, surface, make_active=False)
-            else:
-                surface_store = getattr(self.settings, "surface_definitions", None)
-                if not isinstance(surface_store, dict):
-                    surface_store = {}
-                surface_store[surface_id] = surface
-                setattr(self.settings, "surface_definitions", surface_store)
-            imported += 1
-
-            # Weise Surface direkt einer Gruppe zu (inkl. Erstellung)
-            if self.group_manager:
-                group_id = getattr(surface, "group_id", None)
-                if group_id:
-                    self.group_manager.assign_surface_to_group(
+            # Trianguliere bei >4 Punkten oder bei 4 Punkten, wenn nicht planar
+            target_surfaces: List[Tuple[str, SurfaceDefinition]] = []
+            triangulate_needed = len(surface.points) > 4 or (
+                len(surface.points) == 4 and not validation_result.is_valid
+            )
+            if triangulate_needed:
+                tris = triangulate_points(surface.points)
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "[Import Triangulation] Surface '%s' (%s): Punkte=%d, needed=%s, tris=%d",
+                    surface.name,
+                    surface_id,
+                    len(surface.points),
+                    triangulate_needed,
+                    len(tris),
+                )
+                base_name = surface.name or surface_id
+                if tris:
+                    for idx, tri_pts in enumerate(tris):
+                        tri_id = f"{surface_id}_tri{idx+1}"
+                        tri_surface = SurfaceDefinition(
+                            surface_id=tri_id,
+                            name=f"{base_name} (Tri {idx+1})",
+                            points=tri_pts,
+                            color=surface.color,
+                            enabled=False,
+                            hidden=surface.hidden,
+                            locked=surface.locked,
+                            group_id=surface.group_id,
+                        )
+                        target_surfaces.append((tri_id, tri_surface))
+                else:
+                    # Triangulation fehlgeschlagen -> Original übernehmen
+                    logger.warning(
+                        "[Import Triangulation] Surface '%s' (%s): Triangulation fehlgeschlagen, Original übernommen",
+                        surface.name,
                         surface_id,
-                        group_id,
-                        create_missing=True,
                     )
+                    target_surfaces.append((surface_id, surface))
+            else:
+                target_surfaces.append((surface_id, surface))
+
+            if not hasattr(self.settings, "surface_definitions") or not isinstance(
+                self.settings.surface_definitions, dict
+            ):
+                self.settings.surface_definitions = {}
+
+            for sid, sdef in target_surfaces:
+                sid_unique = _make_unique_surface_id(self.settings.surface_definitions, sid)
+                if hasattr(self.settings, "add_surface_definition"):
+                    self.settings.add_surface_definition(sid_unique, sdef, make_active=False)
+                else:
+                    self.settings.surface_definitions[sid_unique] = sdef
+                imported += 1
+
+                # Weise Surface direkt einer Gruppe zu (inkl. Erstellung)
+                if self.group_manager:
+                    group_id = getattr(sdef, "group_id", None)
+                    if group_id:
+                        self.group_manager.assign_surface_to_group(
+                            sid_unique,
+                            group_id,
+                            create_missing=True,
+                        )
         if self.group_manager:
             # Struktur nur einmal am Ende sicherstellen
             self.group_manager.ensure_surface_group_structure()
