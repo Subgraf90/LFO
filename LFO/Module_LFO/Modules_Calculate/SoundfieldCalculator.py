@@ -1297,7 +1297,7 @@ class SoundFieldCalculator(ModuleBase):
                         "enabled": getattr(gdef, "enabled", True),
                         "hidden": getattr(gdef, "hidden", False),
                     }
-
+        
         enabled = []
         for surface_id, surface_def in self.settings.surface_definitions.items():
             if hasattr(surface_def, "to_dict"):

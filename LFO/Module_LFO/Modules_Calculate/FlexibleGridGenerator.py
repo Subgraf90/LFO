@@ -2520,7 +2520,7 @@ class FlexibleGridGenerator(ModuleBase):
                       f"{points_in_surface}/{total_points} Punkte, Resolution: {actual_resolution:.3f} m")
         
         return surface_grids
-
+    
     def generate_single_surface_grid(
         self,
         surface_id: str,
