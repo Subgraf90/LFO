@@ -1254,7 +1254,7 @@ class UISurfaceManager(ModuleBase):
         """Stellt sicher, dass Checkboxen für ein Gruppen-Item existieren"""
         # Enable Checkbox (Spalte 1) - mit Tristate für teilweise aktivierte Gruppen
         if self.surface_tree_widget.itemWidget(item, 1) is None:
-            enable_checkbox = self.create_checkbox(tristate=True)
+            enable_checkbox = self.create_checkbox(tristate=False)
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen Enable-Status
@@ -1273,7 +1273,7 @@ class UISurfaceManager(ModuleBase):
         
         # Hide Checkbox (Spalte 2) - mit Tristate für teilweise aktivierte Gruppen
         if self.surface_tree_widget.itemWidget(item, 2) is None:
-            hide_checkbox = self.create_checkbox(tristate=True)
+            hide_checkbox = self.create_checkbox(tristate=False)
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen Hide-Status
@@ -1292,7 +1292,7 @@ class UISurfaceManager(ModuleBase):
         
         # XY Checkbox (Spalte 3) - mit Tristate für teilweise aktivierte Gruppen
         if self.surface_tree_widget.itemWidget(item, 3) is None:
-            xy_checkbox = self.create_checkbox(tristate=True)
+            xy_checkbox = self.create_checkbox(tristate=False)
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen XY-Status (falls vorhanden)
@@ -1530,12 +1530,9 @@ class UISurfaceManager(ModuleBase):
         elif checked_count == total_count:
             # Alle Child-Items sind checked
             checkbox.setCheckState(Qt.Checked)
-        elif unchecked_count == total_count:
-            # Alle Child-Items sind unchecked
-            checkbox.setCheckState(Qt.Unchecked)
         else:
-            # Gemischter Zustand: PartiallyChecked (Klammer)
-            checkbox.setCheckState(Qt.PartiallyChecked)
+            # Mindestens ein Child ist unchecked -> gesamter Zustand unchecked
+            checkbox.setCheckState(Qt.Unchecked)
         checkbox.blockSignals(False)
     
     def create_checkbox(self, checked=False, tristate=False):

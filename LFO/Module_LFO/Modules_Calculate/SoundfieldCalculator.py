@@ -159,37 +159,38 @@ class SoundFieldCalculator(ModuleBase):
         # Hole aktivierte Surfaces
         enabled_surfaces = self._get_enabled_surfaces()
         
-        # 🎯 NEU: Grid pro Surface - Erstelle für jede Surface ein eigenes Grid
+        # 🎯 NEU: Grid pro Gruppe (oder ungruppierte Surface) – nutzt FlexibleGridGenerator.generate_per_group
         print(f"[DEBUG Grid-Erstellung] ════════════════════════════════════════════════════════")
-        print(f"[DEBUG Grid-Erstellung] Starte Grid-Generierung PRO SURFACE mit FlexibleGridGenerator")
+        print(f"[DEBUG Grid-Erstellung] Starte Grid-Generierung PRO GRUPPE mit FlexibleGridGenerator")
         print(f"[DEBUG Grid-Erstellung] Anzahl enabled Surfaces: {len(enabled_surfaces)}")
         print(f"[DEBUG Grid-Erstellung] Resolution: {self.settings.resolution} m")
         print(f"[DEBUG Grid-Erstellung] Mindestanzahl Punkte: 3×3 = 9 Punkte pro Surface")
         
-        # Erstelle Grid pro Surface
-        surface_grids: Dict[str, SurfaceGrid] = self._grid_generator.generate_per_surface(
+        surface_grids_grouped: Dict[str, SurfaceGrid] = self._grid_generator.generate_per_group(
             enabled_surfaces,
             resolution=self.settings.resolution,
             min_points_per_dimension=3  # Mindestens 3×3 = 9 Punkte
         )
         
-        # Debug: Zeige Grid-Informationen pro Surface
+        # Debug: Zeige Grid-Informationen pro Gruppe/Surface
         total_points_all = 0
-        for surface_id, grid in surface_grids.items():
+        for gid, grid in surface_grids_grouped.items():
             total_points = int(grid.X_grid.size)
             active_points = int(np.count_nonzero(grid.surface_mask))
-            print(f"[DEBUG Grid-Erstellung] Surface '{surface_id}': "
+            print(f"[DEBUG Grid-Erstellung] Gruppe '{gid}': "
                   f"Grid-Shape={grid.X_grid.shape}, Active={active_points}/{total_points}, "
                   f"Resolution={grid.resolution:.3f} m")
             total_points_all += active_points
         
-        print(f"[DEBUG Grid-Erstellung] ✅ Gesamt: {len(surface_grids)} Surface-Grids erstellt, "
+        print(f"[DEBUG Grid-Erstellung] ✅ Gesamt: {len(surface_grids_grouped)} Gruppen, "
               f"{total_points_all} aktive Punkte insgesamt")
         print(f"[DEBUG Grid-Erstellung] ════════════════════════════════════════════════════════")
         
-        if not surface_grids:
-            # Keine Surfaces → Leere Arrays zurückgeben
+        if not surface_grids_grouped:
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
+
+        # Flache Sicht: key = group_id (ein Grid pro Gruppe)
+        surface_grids: Dict[str, SurfaceGrid] = dict(surface_grids_grouped)
         
         # ============================================================
         # SCHRITT 2: Berechne Physikalische Konstanten (EINMALIG)
@@ -358,29 +359,24 @@ class SoundFieldCalculator(ModuleBase):
         print(f"[DEBUG Berechnung] ════════════════════════════════════════════════════════")
         
         # ============================================================
-        # SCHRITT 4: Randpunkte generieren (1cm Auflösung entlang Kanten)
+        # SCHRITT 4: Randpunkte (deaktiviert, da teuer)
         # ============================================================
-        # Füge Randpunkte zu surface_results hinzu (separate Arrays)
-        # Werte werden per Nearest Neighbor interpoliert (keine neue Berechnung)
-        for surface_id, result in surface_results.items():
-            if surface_id not in surface_grids:
-                    continue
-            grid = surface_grids[surface_id]
-            
-            # Generiere Randpunkte
-            edge_points = self._generate_edge_points_for_surface(
-                grid=grid,
-                spl_values=result['sound_field_p'],
-                edge_resolution=0.01  # 1cm
-            )
-            
-            # Füge zu Ergebnissen hinzu
-            if edge_points:
-                result['edge_points_x'] = edge_points['x']
-                result['edge_points_y'] = edge_points['y']
-                result['edge_points_z'] = edge_points['z']
-                result['edge_points_spl'] = edge_points['spl']
-                print(f"[DEBUG Randpunkte] '{surface_id}': {len(edge_points['x'])} Randpunkte generiert")
+        # Falls Randpunkte wieder benötigt werden, hier aktivieren.
+        # for surface_id, result in surface_results.items():
+        #     if surface_id not in surface_grids:
+        #             continue
+        #     grid = surface_grids[surface_id]
+        #     edge_points = self._generate_edge_points_for_surface(
+        #         grid=grid,
+        #         spl_values=result['sound_field_p'],
+        #         edge_resolution=0.01  # 1cm
+        #     )
+        #     if edge_points:
+        #         result['edge_points_x'] = edge_points['x']
+        #         result['edge_points_y'] = edge_points['y']
+        #         result['edge_points_z'] = edge_points['z']
+        #         result['edge_points_spl'] = edge_points['spl']
+        #         print(f"[DEBUG Randpunkte] '{surface_id}': {len(edge_points['x'])} Randpunkte generiert")
         
         # ============================================================
         # SCHRITT 5: Kombiniere Ergebnisse für Rückwärtskompatibilität
@@ -1277,20 +1273,31 @@ class SoundFieldCalculator(ModuleBase):
         """
         Gibt alle aktivierten Surfaces zurück, die für die Berechnung verwendet werden sollen.
         
-        Filtert Surfaces nach:
-        - enabled=True: Surface ist aktiviert
-        - hidden=False: Surface ist nicht versteckt
+        Filter:
+        - Surface: enabled=True und hidden=False
+        - Gruppe (falls vorhanden): enabled=True und hidden=False
         
-        Nur Surfaces, die beide Bedingungen erfüllen, werden in die Berechnung einbezogen.
-        Die Koordination (wann Empty Plot, wann Berechnung) erfolgt über
-        WindowPlotsMainwindow.update_plots_for_surface_state().
-        
-        Returns:
-            Liste von Tupeln (surface_id, surface_definition) - nur enabled + nicht-hidden Surfaces
+        Nur Surfaces, die beide Bedingungen erfüllen, werden einbezogen.
         """
         if not hasattr(self.settings, 'surface_definitions'):
             return []
         
+        # Hole Gruppenstatus (optional)
+        groups = getattr(self.settings, "surface_groups", {}) or {}
+        groups_dict: Dict[str, Dict[str, Any]] = {}
+        if isinstance(groups, dict):
+            for gid, gdef in groups.items():
+                if hasattr(gdef, "to_dict"):
+                    groups_dict[gid] = gdef.to_dict()
+                elif isinstance(gdef, dict):
+                    groups_dict[gid] = gdef
+                else:
+                    # generischer Fallback
+                    groups_dict[gid] = {
+                        "enabled": getattr(gdef, "enabled", True),
+                        "hidden": getattr(gdef, "hidden", False),
+                    }
+
         enabled = []
         for surface_id, surface_def in self.settings.surface_definitions.items():
             if hasattr(surface_def, "to_dict"):
@@ -1305,8 +1312,25 @@ class SoundFieldCalculator(ModuleBase):
                     "points": getattr(surface_def, "points", []),
                     "name": getattr(surface_def, "name", surface_id),
                 }
-            if surface_data.get('enabled', False) and not surface_data.get('hidden', False):
+            # Gruppe prüfen
+            group_ok = True
+            group_id = surface_data.get("group_id") or surface_data.get("group_name")
+            if group_id and group_id in groups_dict:
+                g = groups_dict[group_id]
+                group_ok = bool(g.get("enabled", True)) and not bool(g.get("hidden", False))
+
+            if surface_data.get('enabled', False) and not surface_data.get('hidden', False) and group_ok:
                 enabled.append((surface_id, surface_data))
+            else:
+                if DEBUG_SOUNDFIELD:
+                    reason = []
+                    if not surface_data.get('enabled', False):
+                        reason.append("surface disabled")
+                    if surface_data.get('hidden', False):
+                        reason.append("surface hidden")
+                    if not group_ok:
+                        reason.append(f"group '{group_id}' disabled/hidden")
+                    print(f"[DEBUG Grid-Erstellung] Skip Surface '{surface_id}': {', '.join(reason) or 'unknown reason'}")
         
         return enabled
 

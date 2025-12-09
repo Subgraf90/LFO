@@ -2520,6 +2520,174 @@ class FlexibleGridGenerator(ModuleBase):
                       f"{points_in_surface}/{total_points} Punkte, Resolution: {actual_resolution:.3f} m")
         
         return surface_grids
+
+    def generate_single_surface_grid(
+        self,
+        surface_id: str,
+        surface_def: Dict,
+        resolution: Optional[float] = None,
+        min_points_per_dimension: int = 6,
+    ) -> Optional[SurfaceGrid]:
+        """
+        Erstellt ein SurfaceGrid für genau eine Surface.
+        """
+        if resolution is None:
+            resolution = self.settings.resolution
+
+        geometries = self.analyzer.analyze_surfaces([(surface_id, surface_def)])
+        if not geometries:
+            return None
+
+        geom = geometries[0]
+        (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = \
+            self.builder.build_single_surface_grid(
+                geometry=geom,
+                resolution=resolution,
+                min_points_per_dimension=min_points_per_dimension
+            )
+
+        ny, nx = X_grid.shape
+        if len(sound_field_x) > 1 and len(sound_field_y) > 1:
+            actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
+            actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
+            actual_resolution = (actual_resolution_x + actual_resolution_y) / 2.0
+        else:
+            actual_resolution = resolution
+
+        return SurfaceGrid(
+            surface_id=geom.surface_id,
+            sound_field_x=sound_field_x,
+            sound_field_y=sound_field_y,
+            X_grid=X_grid,
+            Y_grid=Y_grid,
+            Z_grid=Z_grid,
+            surface_mask=surface_mask,
+            resolution=actual_resolution,
+            geometry=geom,
+        )
+
+    def generate_per_group(
+        self,
+        enabled_surfaces: List[Tuple[str, Dict]],
+        resolution: Optional[float] = None,
+        min_points_per_dimension: int = 6,
+    ) -> Dict[str, SurfaceGrid]:
+        """
+        Erzeugt EIN Grid pro aktiver Gruppe (oder ungruppierter Surface).
+        Alle Surfaces der Gruppe werden in einem gemeinsamen Grid zusammengeführt.
+        """
+        if resolution is None:
+            resolution = self.settings.resolution
+
+        if not enabled_surfaces:
+            return {}
+
+        # Gruppiere Surfaces nach group_id (fallback "__ungrouped__")
+        grouped: Dict[str, List[Tuple[str, Dict]]] = {}
+        for sid, sdef in enabled_surfaces:
+            gid = sdef.get("group_id") or sdef.get("group_name") or "__ungrouped__"
+            grouped.setdefault(gid, []).append((sid, sdef))
+
+        result: Dict[str, SurfaceGrid] = {}
+
+        for gid, surfaces in grouped.items():
+            # Analysiere Surfaces der Gruppe
+            geometries = self.analyzer.analyze_surfaces(surfaces)
+            if not geometries:
+                continue
+
+            # Bounding-Box über alle Surfaces
+            all_x = []
+            all_y = []
+            for geom in geometries:
+                pts = geom.points
+                all_x.extend([p.get("x", 0.0) for p in pts])
+                all_y.extend([p.get("y", 0.0) for p in pts])
+            if not all_x or not all_y:
+                continue
+
+            min_x, max_x = min(all_x), max(all_x)
+            min_y, max_y = min(all_y), max(all_y)
+
+            # Stelle sicher, dass wir mindestens min_points_per_dimension abdecken
+            if resolution <= 0:
+                resolution = self.settings.resolution or 1.0
+            nx_target = max(min_points_per_dimension, int(np.ceil((max_x - min_x) / resolution)) + 1)
+            ny_target = max(min_points_per_dimension, int(np.ceil((max_y - min_y) / resolution)) + 1)
+            sound_field_x = np.linspace(min_x, max_x, nx_target)
+            sound_field_y = np.linspace(min_y, max_y, ny_target)
+            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing="xy")
+
+            # Union-Maske und Z-Akkumulation
+            mask_union = np.zeros_like(X_grid, dtype=bool)
+            Z_accum = np.zeros_like(X_grid, dtype=float)
+            Z_count = np.zeros_like(X_grid, dtype=float)
+
+            for geom in geometries:
+                pts = geom.points
+                if len(pts) < 3:
+                    continue
+                poly_x = np.array([p.get("x", 0.0) for p in pts], dtype=float)
+                poly_y = np.array([p.get("y", 0.0) for p in pts], dtype=float)
+                try:
+                    from matplotlib.path import Path
+                    path = Path(np.column_stack((poly_x, poly_y)))
+                    inside = path.contains_points(np.column_stack((X_grid.ravel(), Y_grid.ravel())))
+                    mask = inside.reshape(X_grid.shape)
+                except Exception:
+                    mask = np.zeros_like(X_grid, dtype=bool)
+                if not np.any(mask):
+                    continue
+
+                # Z-Werte auf Ebene projizieren
+                if geom.plane_model:
+                    Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                    Z_accum[mask] += Z_surface[mask]
+                    Z_count[mask] += 1.0
+                else:
+                    # keine Ebene: Z=0
+                    Z_count[mask] += 1.0
+
+                mask_union |= mask
+
+            if not np.any(mask_union):
+                continue
+
+            Z_grid = np.zeros_like(X_grid, dtype=float)
+            valid = Z_count > 0
+            Z_grid[valid] = Z_accum[valid] / Z_count[valid]
+
+            # SurfaceGeometry Platzhalter für Gruppe
+            geom_group = SurfaceGeometry(
+                surface_id=str(gid),
+                name=str(gid),
+                points=[],  # nicht benötigt im Plot
+                plane_model=None,
+                orientation="planar",
+                bbox=(min_x, max_x, min_y, max_y),
+            )
+
+            # Effektive Auflösung
+            if len(sound_field_x) > 1 and len(sound_field_y) > 1:
+                actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
+                actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
+                actual_resolution = (actual_resolution_x + actual_resolution_y) / 2.0
+            else:
+                actual_resolution = resolution
+
+            result[gid] = SurfaceGrid(
+                surface_id=str(gid),
+                sound_field_x=sound_field_x,
+                sound_field_y=sound_field_y,
+                X_grid=X_grid,
+                Y_grid=Y_grid,
+                Z_grid=Z_grid,
+                surface_mask=mask_union,
+                resolution=actual_resolution,
+                geometry=geom_group,
+            )
+
+        return result
     
     def _create_cache_hash(
         self,

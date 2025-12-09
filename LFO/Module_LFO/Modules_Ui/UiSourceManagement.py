@@ -5491,7 +5491,7 @@ class Sources(ModuleBase, QObject):
         
         # Erstelle Checkboxen, falls sie nicht existieren
         if not mute_checkbox:
-            mute_checkbox = self.create_checkbox(False, tristate=True)
+            mute_checkbox = self.create_checkbox(False, tristate=False)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
             mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
@@ -5499,13 +5499,13 @@ class Sources(ModuleBase, QObject):
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             mute_checkbox.setFixedSize(18, 18)
-            if not mute_checkbox.isTristate():
-                mute_checkbox.setTristate(True)
+            if mute_checkbox.isTristate():
+                mute_checkbox.setTristate(False)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
         
         if not hide_checkbox:
-            hide_checkbox = self.create_checkbox(False, tristate=True)
+            hide_checkbox = self.create_checkbox(False, tristate=False)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 2)
             hide_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_hide_changed(g_item, state))
@@ -5513,8 +5513,8 @@ class Sources(ModuleBase, QObject):
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             hide_checkbox.setFixedSize(18, 18)
-            if not hide_checkbox.isTristate():
-                hide_checkbox.setTristate(True)
+            if hide_checkbox.isTristate():
+                hide_checkbox.setTristate(False)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 2)
     
@@ -5597,7 +5597,7 @@ class Sources(ModuleBase, QObject):
     def _update_group_checkbox_state(self, group_item, column):
         """
         Aktualisiert den Zustand einer Gruppen-Checkbox basierend auf den Child-Items.
-        Setzt PartiallyChecked (Klammer), wenn einige Child-Items checked und andere unchecked sind.
+        Zeigt nur Checked oder Unchecked; gemischte Zustände werden als Unchecked dargestellt.
         Rekursiv für Untergruppen.
         
         Args:
@@ -5644,12 +5644,9 @@ class Sources(ModuleBase, QObject):
         elif checked_count == total_count:
             # Alle Child-Items sind checked
             checkbox.setCheckState(Qt.Checked)
-        elif unchecked_count == total_count:
-            # Alle Child-Items sind unchecked
-            checkbox.setCheckState(Qt.Unchecked)
         else:
-            # Gemischter Zustand: PartiallyChecked (Klammer)
-            checkbox.setCheckState(Qt.PartiallyChecked)
+            # Gemischter Zustand oder mindestens ein unchecked -> Unchecked
+            checkbox.setCheckState(Qt.Unchecked)
         checkbox.blockSignals(False)
     
     def validate_all_checkboxes(self):
