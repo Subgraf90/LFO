@@ -1,10 +1,4 @@
 """
-⚠️ AUSKOMMENTIERT: SurfaceGridCalculator - Wird durch FlexibleGridGenerator ersetzt
-
-Dieses Modul wurde durch den neuen FlexibleGridGenerator (Hybrid-Ansatz) ersetzt.
-Alle Code-Teile sind auskommentiert, damit sie sichtbar bleiben für Referenz.
-
-Original-Kommentar:
 SurfaceGridCalculator: Erstellt Berechnungs-Grids basierend auf enabled Surfaces.
 
 Dieses Modul kapselt die gesamte Logik zur Grid-Erstellung für Soundfield-Berechnungen:

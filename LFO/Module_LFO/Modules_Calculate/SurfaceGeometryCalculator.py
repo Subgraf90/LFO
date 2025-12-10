@@ -572,7 +572,7 @@ def build_surface_mesh(
 
     # Rendere nur Zellen, die vollständig innerhalb der Surface liegen
     # 🎯 STRENGE CLIPPING: Alle vier Eckpunkte müssen in der Maske sein
-    # Die Maske wurde bereits erweitert, daher sollten Randpunkte enthalten sein
+    # Die Maske wurde bereits erweitert
     total_cells = (ny - 1) * (nx - 1)
     rendered_cells = 0
     for j in range(ny - 1):
@@ -1590,7 +1590,7 @@ def _recompute_z_coordinates_in_plot_grid(
     Z_grid[inside_mask] = Z_sum[inside_mask] / Z_count[inside_mask]
 
     # ------------------------------------------------------------
-    # Zweite Runde: Fülle Z-Werte für Randpunkte iterativ
+    # Zweite Runde: Fülle Z-Werte iterativ
     # (Punkte in point_mask, die noch Z==0 haben, aber an befüllte
     # Nachbarn angrenzen). Das glättet Kanten ohne die Fläche zu
     # verlassen.

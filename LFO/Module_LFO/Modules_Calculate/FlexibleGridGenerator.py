@@ -1814,13 +1814,13 @@ class GridBuilder(ModuleBase):
             print(f"  └─ Punkte AUSSERHALB Surface (erweitert): {points_outside_surface}")
             
             # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
-            # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Randpunkte
+            # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
             if Z_grid is None or np.all(Z_grid == 0):
                 Z_grid = np.zeros_like(X_grid, dtype=float)
             
             if geometry.plane_model:
                 # Berechne Z-Werte für ALLE Punkte im Grid (linear interpoliert gemäß Plane-Model)
-                # Dies ermöglicht erweiterte Randpunkte außerhalb der Surface-Grenze
+                # Dies ermöglicht erweiterte Punkte außerhalb der Surface-Grenze
                 Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
                 Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
                 print(f"  └─ Z-Werte berechnet für ALLE {total_grid_points} Punkte (auch außerhalb Surface)")

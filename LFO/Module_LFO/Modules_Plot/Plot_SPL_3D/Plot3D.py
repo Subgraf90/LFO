@@ -58,12 +58,13 @@ PYVISTA_AA_MODE = "ssaa"
 try:  # pragma: no cover - optional Abhängigkeit
     import pyvista as pv
     from pyvistaqt import QtInteractor
+    _PYVISTA_AVAILABLE = True
+    _PYVISTA_IMPORT_ERROR = None
 except Exception as exc:  # noqa: BLE001
     pv = None  # type: ignore[assignment]
     QtInteractor = None  # type: ignore[assignment]
+    _PYVISTA_AVAILABLE = False
     _PYVISTA_IMPORT_ERROR = exc
-else:  # pragma: no cover
-    _PYVISTA_IMPORT_ERROR = None
 
 
 class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHandler, SPL3DViewControls, SPL3DHelpers, ModuleBase, QtCore.QObject):
@@ -2237,6 +2238,11 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
 
 
 
+
+# 🎯 Setze DrawSPLPlot3D auf None, wenn PyVista nicht verfügbar ist
+# Damit kann WindowPlotsMainwindow.py prüfen: if DrawSPLPlot3D is None
+if not _PYVISTA_AVAILABLE:
+    DrawSPLPlot3D = None  # type: ignore[assignment, misc]
 
 __all__ = ['DrawSPLPlot3D']
 

@@ -152,7 +152,6 @@ class UISurfaceManager(ModuleBase):
                 'resolution': grid.resolution,
             }
             
-            # Berechne Randpunkte (falls vorhanden)
             result = {
                 'sound_field_p': sound_field_p_surface,
                 'sound_field_x': grid.sound_field_x,
@@ -163,37 +162,12 @@ class UISurfaceManager(ModuleBase):
                 'surface_mask': grid.surface_mask,
             }
             
-            # Berechne Randpunkte (falls vorhanden)
-            try:
-                edge_points = calculator._generate_edge_points_for_surface(
-                    grid=grid,
-                    spl_values=sound_field_p_surface,
-                    edge_resolution=0.01  # 1cm
-                )
-                if edge_points:
-                    result['edge_points_x'] = edge_points['x']
-                    result['edge_points_y'] = edge_points['y']
-                    result['edge_points_z'] = edge_points['z']
-                    result['edge_points_spl'] = edge_points['spl']
-            except Exception:
-                pass  # Randpunkte sind optional
-            
             # Speichere Ergebnis (konvertiere zu Listen für JSON-Kompatibilität)
             sound_field_p_complex = result['sound_field_p']
             self.container.calculation_spl['surface_results'][surface_id] = {
                 'sound_field_p': np.array(sound_field_p_complex).tolist(),
                 'sound_field_p_magnitude': np.abs(sound_field_p_complex).tolist(),
             }
-            
-            # Füge Randpunkte hinzu (falls vorhanden)
-            if 'edge_points_x' in result:
-                edge_spl_complex = np.array(result['edge_points_spl'], dtype=complex)
-                self.container.calculation_spl['surface_results'][surface_id]['edge_points_x'] = np.array(result['edge_points_x']).tolist()
-                self.container.calculation_spl['surface_results'][surface_id]['edge_points_y'] = np.array(result['edge_points_y']).tolist()
-                self.container.calculation_spl['surface_results'][surface_id]['edge_points_z'] = np.array(result['edge_points_z']).tolist()
-                self.container.calculation_spl['surface_results'][surface_id]['edge_points_spl'] = [
-                    [float(np.real(val)), float(np.imag(val))] for val in edge_spl_complex
-                ]
             
             # Aktualisiere auch orientation in surface_grids
             if hasattr(grid, 'geometry') and hasattr(grid.geometry, 'orientation'):

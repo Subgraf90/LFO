@@ -157,9 +157,15 @@ class DrawPlotsMainwindow(ModuleBase):
 
     def _initialize_spl_plotter(self):
         if DrawSPLPlot3D is None:
-            raise ImportError(
-                "PyVista und PyVistaQt sind nicht verfügbar. Bitte installieren, um den 3D-SPL-Plot zu verwenden."
+            # PyVista nicht verfügbar - setze plotter auf None und gib Warnung aus
+            import warnings
+            warnings.warn(
+                "PyVista und PyVistaQt sind nicht verfügbar. 3D-SPL-Plot wird deaktiviert. "
+                "Bitte installieren mit: pip install pyvista pyvistaqt",
+                ImportWarning
             )
+            self.draw_spl_plotter = None
+            return
         self.draw_spl_plotter = DrawSPLPlot3D(self.main_window.ui.SPLPlot, self.settings, self.colorbar_ax)
         # Setze main_window-Referenz für Mouse-Position-Tracking
         if self.draw_spl_plotter:
