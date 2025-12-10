@@ -1,10 +1,4 @@
 """
-⚠️ AUSKOMMENTIERT: SurfaceGridCalculator - Wird durch FlexibleGridGenerator ersetzt
-
-Dieses Modul wurde durch den neuen FlexibleGridGenerator (Hybrid-Ansatz) ersetzt.
-Alle Code-Teile sind auskommentiert, damit sie sichtbar bleiben für Referenz.
-
-Original-Kommentar:
 SurfaceGridCalculator: Erstellt Berechnungs-Grids basierend auf enabled Surfaces.
 
 Dieses Modul kapselt die gesamte Logik zur Grid-Erstellung für Soundfield-Berechnungen:
@@ -125,7 +119,7 @@ class SurfaceGridCalculator(ModuleBase):
         # ============================================================
         if enabled_surfaces:
             min_x, max_x, min_y, max_y = self._calculate_bounding_box(enabled_surfaces)
-            # Füge Padding hinzu
+            # Füge Padding hinzu, damit Randpunkte nicht abgeschnitten werden
             padding = resolution * padding_factor
             min_x -= padding
             max_x += padding
@@ -173,7 +167,7 @@ class SurfaceGridCalculator(ModuleBase):
         # SCHRITT 5: Surface-Maske erstellen (ERWEITERT für Berechnung)
         # ============================================================
         if enabled_surfaces:
-            # 🎯 ERWEITERTE MASKE: Erfasst auch erweiterte Punkte für vollständige Berechnung
+            # 🎯 ERWEITERTE MASKE: Erfasst auch Randpunkte für vollständige Berechnung
             surface_mask = self._create_surface_mask(X_grid, Y_grid, enabled_surfaces, include_edges=True)
         else:
             # Keine Surfaces → alle Punkte sind gültig
@@ -215,6 +209,52 @@ class SurfaceGridCalculator(ModuleBase):
                 f"  TOTAL            : {total_ms:7.2f} ms"
             )
         return sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask
+
+    def create_calculation_grid_per_group(
+        self,
+        enabled_surfaces: List[Tuple[str, Dict]],
+        resolution: Optional[float] = None,
+        padding_factor: float = 0.5,
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Erstellt pro Surface-Gruppe (group_id / group_name) ein eigenes Grid.
+
+        Args:
+            enabled_surfaces: Liste von (surface_id, surface_definition)
+            resolution: Grid-Auflösung (None -> settings.resolution)
+            padding_factor: Padding-Faktor um die Bounding-Box
+
+        Returns:
+            Dict[group_id, (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask)]
+        """
+        if resolution is None:
+            resolution = self.settings.resolution
+
+        if not enabled_surfaces:
+            return {}
+
+        # Gruppiere Surfaces nach group_id / group_name (Fallback "__ungrouped__")
+        grouped: Dict[str, List[Tuple[str, Dict]]] = {}
+        for sid, sdef in enabled_surfaces:
+            gid = sdef.get("group_id") or sdef.get("group_name") or "__ungrouped__"
+            grouped.setdefault(gid, []).append((sid, sdef))
+
+        result: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+        for gid, surfaces in grouped.items():
+            try:
+                grid_tuple = self.create_calculation_grid(
+                    surfaces,
+                    resolution=resolution,
+                    padding_factor=padding_factor,
+                )
+                result[str(gid)] = grid_tuple
+            except Exception as exc:
+                if DEBUG_SURFACE_GRID_TIMING:
+                    print(f"[SurfaceGridCalculator] create_calculation_grid_per_group failed for group '{gid}': {exc}")
+                # Fehlerhafte Gruppe überspringen
+                continue
+
+        return result
 
     def get_surface_meshes(self) -> List[SurfaceGridMesh]:
         return self._last_surface_meshes
@@ -445,7 +485,7 @@ class SurfaceGridCalculator(ModuleBase):
                             'bbox_center': (ref_x, ref_y)
                         }
         
-        # 🎯 ERWEITERE MASKE FÜR BERECHNUNG: Erfasse auch erweiterte Punkte
+        # 🎯 ERWEITERE MASKE FÜR BERECHNUNG: Erfasse auch Randpunkte
         if include_edges:
             # Morphologische Dilatation: Erweitere die Maske um 1 Pixel in alle Richtungen
             # Dies erfasst auch Punkte, die direkt auf den Rändern liegen

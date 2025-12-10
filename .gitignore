@@ -21,6 +21,10 @@ LFO_with_git.tgz
 # Polar-Daten (große Dateien)
 Modules_Data/PolarData_mag/
 LFO/Module_LFO/Modules_Data/PolarData_mag/
+LFO_bkp37/Module_LFO/Modules_Data/PolarData_mag/
+
+# Backup-Ordner ausschließen
+LFO_bkp37/
 
 # Generische Caches im LFO-Baum
 LFO/**/__pycache__/

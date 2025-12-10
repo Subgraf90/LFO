@@ -554,8 +554,7 @@ class SurfaceAnalyzer(ModuleBase):
         # Normalisiere Gewichte
         total_weight = sum(weights.values())
         if total_weight < 1e-6:
-            # Fallback: Nur Spannen-Analyse
-            combined_score = span_score
+            raise ValueError("Orientierung nicht bestimmbar: keine gültigen Gewichtungen aus Analyse.")
         else:
             for key in weights:
                 weights[key] /= total_weight
@@ -582,16 +581,7 @@ class SurfaceAnalyzer(ModuleBase):
             if pca_dominant_axis:
                 dominant_axis = pca_dominant_axis
             else:
-                # Fallback: Spannen-Analyse
-                if y_span < eps_line and x_span >= eps_line:
-                    dominant_axis = "xz"
-                elif x_span < eps_line and y_span >= eps_line:
-                    dominant_axis = "yz"
-                elif z_span > max(x_span, y_span) * 0.7:
-                    if x_span < y_span * 0.5:
-                        dominant_axis = "yz"
-                    elif y_span < x_span * 0.5:
-                        dominant_axis = "xz"
+                raise ValueError("Vertikale Orientierung erkannt, aber keine dominante Achse bestimmbar.")
         
         if DEBUG_FLEXIBLE_GRID:
             print(f"[DEBUG Ultra-Robust] Score-Analyse:")
@@ -741,8 +731,7 @@ class SurfaceAnalyzer(ModuleBase):
         # Normalisiere Gewichte
         total_weight = sum(weights.values())
         if total_weight < 1e-6:
-            # Fallback: Nur Spannen-Analyse
-            combined_score = span_score
+            raise ValueError("Orientierung nicht bestimmbar (improved): keine Gewichtungen verfügbar.")
         else:
             for key in weights:
                 weights[key] /= total_weight
@@ -773,17 +762,7 @@ class SurfaceAnalyzer(ModuleBase):
             if pca_dominant_axis:
                 dominant_axis = pca_dominant_axis
             else:
-                # Fallback: Spannen-Analyse
-                if y_span < eps_line and x_span >= eps_line:
-                    dominant_axis = "xz"  # X-Z-Wand
-                elif x_span < eps_line and y_span >= eps_line:
-                    dominant_axis = "yz"  # Y-Z-Wand
-                elif z_span > max(x_span, y_span) * 0.7:
-                    # Bestimme welche Achse (X oder Y) weniger variiert
-                    if x_span < y_span * 0.5:
-                        dominant_axis = "yz"
-                    elif y_span < x_span * 0.5:
-                        dominant_axis = "xz"
+                raise ValueError("Vertikale Orientierung (improved), aber keine dominante Achse bestimmbar.")
         
         if DEBUG_FLEXIBLE_GRID:
             print(f"[DEBUG Orientation] Score-Analyse:")
@@ -909,21 +888,11 @@ class GridBuilder(ModuleBase):
                 min_y = min(all_y) - padding
                 max_y = max(all_y) + padding
             else:
-                # Fallback: Verwende Settings-Dimensionen
-                width = getattr(self.settings, 'width', 150.0)
-                length = getattr(self.settings, 'length', 100.0)
-                min_x = -width / 2
-                max_x = width / 2
-                min_y = -length / 2
-                max_y = length / 2
+                # Kein stiller Fallback mehr: ohne Bounding Box sollen Fehler sichtbar sein
+                raise ValueError("Keine gültige Bounding Box aus Surfaces ableitbar – bitte Surfaces prüfen.")
         else:
-            # Keine Surfaces → Fallback
-            width = getattr(self.settings, 'width', 150.0)
-            length = getattr(self.settings, 'length', 100.0)
-            min_x = -width / 2
-            max_x = width / 2
-            min_y = -length / 2
-            max_y = length / 2
+            # Kein Fallback bei fehlenden Surfaces – explizit fehlschlagen
+            raise ValueError("Keine Surfaces übergeben – Grid-Erstellung abgebrochen.")
         
         bbox = (min_x, max_x, min_y, max_y)
         
@@ -1026,18 +995,10 @@ class GridBuilder(ModuleBase):
                     for p in points
                 ]
             else:
-                # Fallback: Verwende normale (x,y)-Prüfung
-                return self._points_in_polygon_batch(X_grid, Y_grid, points)
+                raise ValueError(f"Vertikale Surface '{geometry.surface_id}': keine klare (u,v)-Zuordnung für Maske.")
             
-            # Für vertikale Surfaces müssen wir Z_grid haben, um V_grid zu füllen
-            # Da wir hier nur X_grid und Y_grid haben, müssen wir die Maske später anpassen
-            # Oder: Wir verwenden eine vereinfachte Prüfung basierend auf den Polygon-Grenzen
-            # Für jetzt: Verwende normale Prüfung als Fallback
-            # TODO: Z_grid sollte hier verfügbar sein
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG Vertical Mask] Surface '{geometry.surface_id}': Verwende vereinfachte Maske für vertikale Surface")
-            # Vereinfachte Maske: Alle Punkte im Grid sind aktiv (wird später in build_single_surface_grid angepasst)
-            return np.ones_like(X_grid, dtype=bool)
+            # Für vertikale Surfaces muss Z_grid vorhanden sein; ohne eindeutige Zuordnung brechen wir ab.
+            raise ValueError(f"Vertikale Surface '{geometry.surface_id}': Z_grid/Maske nicht eindeutig ableitbar.")
         
         # Normale (x,y)-Prüfung für planare/schräge Surfaces
         return self._points_in_polygon_batch(X_grid, Y_grid, points)
@@ -1192,49 +1153,7 @@ class GridBuilder(ModuleBase):
                 
                 # Prüfe auf degenerierte Flächen
                 if math.isclose(u_min, u_max) or math.isclose(v_min, v_max):
-                    # Fallback: Verwende normale X-Y-Ebene
-                    print(f"[DEBUG Vertical Grid] ⚠️ Degenerierte X-Z-Wand, verwende Fallback")
-                    if not geometry.bbox:
-                        width = getattr(self.settings, 'width', 150.0)
-                        length = getattr(self.settings, 'length', 100.0)
-                        min_x, max_x = -width / 2, width / 2
-                        min_y, max_y = -length / 2, length / 2
-                    else:
-                        min_x, max_x, min_y, max_y = geometry.bbox
-                    width = max_x - min_x
-                    height = max_y - min_y
-                    nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                    ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                    total_points_base = nx_base * ny_base
-                    min_total_points = min_points_per_dimension ** 2
-                    if total_points_base < min_total_points:
-                        diagonal = np.sqrt(width**2 + height**2)
-                        if diagonal > 0:
-                            adaptive_resolution = diagonal / min_points_per_dimension
-                            adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                            resolution = adaptive_resolution
-                    min_x -= resolution
-                    max_x += resolution
-                    min_y -= resolution
-                    max_y += resolution
-                    sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                    sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                    if len(sound_field_x) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_x)
-                        step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                        if step_x <= 0:
-                            step_x = resolution
-                        additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
-                        sound_field_x = np.concatenate([sound_field_x, additional_x])
-                    if len(sound_field_y) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_y)
-                        step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                        if step_y <= 0:
-                            step_y = resolution
-                        additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
-                        sound_field_y = np.concatenate([sound_field_y, additional_y])
-                    X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                    Z_grid = np.zeros_like(X_grid, dtype=float)
+                    raise ValueError(f"Vertikale Surface '{geometry.surface_id}' degeneriert (X-Z-Wand) – Grid-Erstellung abgebrochen.")
                 else:
                     # 🎯 ALTE LOGIK: Keine Grid-Erweiterung für vertikale Flächen
                     # Erstelle Grid direkt in (u,v)-Ebene OHNE Padding (wie in _build_vertical_surface_samples)
@@ -1242,49 +1161,7 @@ class GridBuilder(ModuleBase):
                     v_axis = np.arange(v_min, v_max + step, step, dtype=float)
                     
                     if u_axis.size < 2 or v_axis.size < 2:
-                        # Fallback: Verwende normale X-Y-Ebene
-                        print(f"[DEBUG Vertical Grid] ⚠️ Zu wenige Punkte in (u,v)-Ebene, verwende Fallback")
-                        if not geometry.bbox:
-                            width = getattr(self.settings, 'width', 150.0)
-                            length = getattr(self.settings, 'length', 100.0)
-                            min_x, max_x = -width / 2, width / 2
-                            min_y, max_y = -length / 2, length / 2
-                        else:
-                            min_x, max_x, min_y, max_y = geometry.bbox
-                        width = max_x - min_x
-                        height = max_y - min_y
-                        nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                        ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                        total_points_base = nx_base * ny_base
-                        min_total_points = min_points_per_dimension ** 2
-                        if total_points_base < min_total_points:
-                            diagonal = np.sqrt(width**2 + height**2)
-                            if diagonal > 0:
-                                adaptive_resolution = diagonal / min_points_per_dimension
-                                adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                                resolution = adaptive_resolution
-                        min_x -= resolution
-                        max_x += resolution
-                        min_y -= resolution
-                        max_y += resolution
-                        sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                        sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                        if len(sound_field_x) < min_points_per_dimension:
-                            n_points_needed = min_points_per_dimension - len(sound_field_x)
-                            step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                            if step_x <= 0:
-                                step_x = resolution
-                            additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
-                            sound_field_x = np.concatenate([sound_field_x, additional_x])
-                        if len(sound_field_y) < min_points_per_dimension:
-                            n_points_needed = min_points_per_dimension - len(sound_field_y)
-                            step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                            if step_y <= 0:
-                                step_y = resolution
-                            additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
-                            sound_field_y = np.concatenate([sound_field_y, additional_y])
-                        X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                        Z_grid = np.zeros_like(X_grid, dtype=float)
+                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (X-Z-Wand) liefert zu wenige Punkte in (u,v)-Ebene.")
                     else:
                         # Erstelle 2D-Meshgrid in (u,v)-Ebene
                         U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
@@ -1313,49 +1190,7 @@ class GridBuilder(ModuleBase):
                 
                 # Prüfe auf degenerierte Flächen
                 if math.isclose(u_min, u_max) or math.isclose(v_min, v_max):
-                    # Fallback: Verwende normale X-Y-Ebene
-                    print(f"[DEBUG Vertical Grid] ⚠️ Degenerierte Y-Z-Wand, verwende Fallback")
-                    if not geometry.bbox:
-                        width = getattr(self.settings, 'width', 150.0)
-                        length = getattr(self.settings, 'length', 100.0)
-                        min_x, max_x = -width / 2, width / 2
-                        min_y, max_y = -length / 2, length / 2
-                    else:
-                        min_x, max_x, min_y, max_y = geometry.bbox
-                    width = max_x - min_x
-                    height = max_y - min_y
-                    nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                    ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                    total_points_base = nx_base * ny_base
-                    min_total_points = min_points_per_dimension ** 2
-                    if total_points_base < min_total_points:
-                        diagonal = np.sqrt(width**2 + height**2)
-                        if diagonal > 0:
-                            adaptive_resolution = diagonal / min_points_per_dimension
-                            adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                            resolution = adaptive_resolution
-                    min_x -= resolution
-                    max_x += resolution
-                    min_y -= resolution
-                    max_y += resolution
-                    sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                    sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                    if len(sound_field_x) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_x)
-                        step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                        if step_x <= 0:
-                            step_x = resolution
-                        additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
-                        sound_field_x = np.concatenate([sound_field_x, additional_x])
-                    if len(sound_field_y) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_y)
-                        step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                        if step_y <= 0:
-                            step_y = resolution
-                        additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
-                        sound_field_y = np.concatenate([sound_field_y, additional_y])
-                    X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                    Z_grid = np.zeros_like(X_grid, dtype=float)
+                    raise ValueError(f"Vertikale Surface '{geometry.surface_id}' degeneriert (Y-Z-Wand) – Grid-Erstellung abgebrochen.")
                 else:
                     # 🎯 ALTE LOGIK: Keine Grid-Erweiterung für vertikale Flächen
                     # Erstelle Grid direkt in (u,v)-Ebene OHNE Padding (wie in _build_vertical_surface_samples)
@@ -1363,49 +1198,7 @@ class GridBuilder(ModuleBase):
                     v_axis = np.arange(v_min, v_max + step, step, dtype=float)
                     
                     if u_axis.size < 2 or v_axis.size < 2:
-                        # Fallback: Verwende normale X-Y-Ebene
-                        print(f"[DEBUG Vertical Grid] ⚠️ Zu wenige Punkte in (u,v)-Ebene, verwende Fallback")
-                        if not geometry.bbox:
-                            width = getattr(self.settings, 'width', 150.0)
-                            length = getattr(self.settings, 'length', 100.0)
-                            min_x, max_x = -width / 2, width / 2
-                            min_y, max_y = -length / 2, length / 2
-                        else:
-                            min_x, max_x, min_y, max_y = geometry.bbox
-                        width = max_x - min_x
-                        height = max_y - min_y
-                        nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                        ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                        total_points_base = nx_base * ny_base
-                        min_total_points = min_points_per_dimension ** 2
-                        if total_points_base < min_total_points:
-                            diagonal = np.sqrt(width**2 + height**2)
-                            if diagonal > 0:
-                                adaptive_resolution = diagonal / min_points_per_dimension
-                                adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                                resolution = adaptive_resolution
-                        min_x -= resolution
-                        max_x += resolution
-                        min_y -= resolution
-                        max_y += resolution
-                        sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                        sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                        if len(sound_field_x) < min_points_per_dimension:
-                            n_points_needed = min_points_per_dimension - len(sound_field_x)
-                            step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                            if step_x <= 0:
-                                step_x = resolution
-                            additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
-                            sound_field_x = np.concatenate([sound_field_x, additional_x])
-                        if len(sound_field_y) < min_points_per_dimension:
-                            n_points_needed = min_points_per_dimension - len(sound_field_y)
-                            step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                            if step_y <= 0:
-                                step_y = resolution
-                            additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
-                            sound_field_y = np.concatenate([sound_field_y, additional_y])
-                        X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                        Z_grid = np.zeros_like(X_grid, dtype=float)
+                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (Y-Z-Wand) liefert zu wenige Punkte in (u,v)-Ebene.")
                     else:
                         # Erstelle 2D-Meshgrid in (u,v)-Ebene
                         U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
@@ -1442,49 +1235,7 @@ class GridBuilder(ModuleBase):
                         v_axis = np.arange(v_min, v_max + step, step, dtype=float)
                         
                         if u_axis.size < 2 or v_axis.size < 2:
-                            # Fallback
-                            print(f"[DEBUG Vertical Grid] ⚠️ Zu wenige Punkte in (y,z)-Ebene, verwende Fallback")
-                            if not geometry.bbox:
-                                width = getattr(self.settings, 'width', 150.0)
-                                length = getattr(self.settings, 'length', 100.0)
-                                min_x, max_x = -width / 2, width / 2
-                                min_y, max_y = -length / 2, length / 2
-                            else:
-                                min_x, max_x, min_y, max_y = geometry.bbox
-                            width = max_x - min_x
-                            height = max_y - min_y
-                            nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                            ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                            total_points_base = nx_base * ny_base
-                            min_total_points = min_points_per_dimension ** 2
-                            if total_points_base < min_total_points:
-                                diagonal = np.sqrt(width**2 + height**2)
-                                if diagonal > 0:
-                                    adaptive_resolution = diagonal / min_points_per_dimension
-                                    adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                                    resolution = adaptive_resolution
-                            min_x -= resolution
-                            max_x += resolution
-                            min_y -= resolution
-                            max_y += resolution
-                            sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                            sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                            if len(sound_field_x) < min_points_per_dimension:
-                                n_points_needed = min_points_per_dimension - len(sound_field_x)
-                                step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                                if step_x <= 0:
-                                    step_x = resolution
-                                additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
-                                sound_field_x = np.concatenate([sound_field_x, additional_x])
-                            if len(sound_field_y) < min_points_per_dimension:
-                                n_points_needed = min_points_per_dimension - len(sound_field_y)
-                                step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                                if step_y <= 0:
-                                    step_y = resolution
-                                additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
-                                sound_field_y = np.concatenate([sound_field_y, additional_y])
-                            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                            Z_grid = np.zeros_like(X_grid, dtype=float)
+                            raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, y-z) liefert zu wenige Punkte in (u,v)-Ebene.")
                         else:
                             # Erstelle 2D-Meshgrid in (u,v)-Ebene = (y,z)-Ebene
                             U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
@@ -1524,136 +1275,41 @@ class GridBuilder(ModuleBase):
                         u_axis = np.arange(u_min, u_max + step, step, dtype=float)
                         v_axis = np.arange(v_min, v_max + step, step, dtype=float)
                         
-                        if u_axis.size < 2 or v_axis.size < 2:
-                            # Fallback
-                            print(f"[DEBUG Vertical Grid] ⚠️ Zu wenige Punkte in (x,z)-Ebene, verwende Fallback")
-                            if not geometry.bbox:
-                                width = getattr(self.settings, 'width', 150.0)
-                                length = getattr(self.settings, 'length', 100.0)
-                                min_x, max_x = -width / 2, width / 2
-                                min_y, max_y = -length / 2, length / 2
-                            else:
-                                min_x, max_x, min_y, max_y = geometry.bbox
-                            width = max_x - min_x
-                            height = max_y - min_y
-                            nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                            ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                            total_points_base = nx_base * ny_base
-                            min_total_points = min_points_per_dimension ** 2
-                            if total_points_base < min_total_points:
-                                diagonal = np.sqrt(width**2 + height**2)
-                                if diagonal > 0:
-                                    adaptive_resolution = diagonal / min_points_per_dimension
-                                    adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                                    resolution = adaptive_resolution
-                            min_x -= resolution
-                            max_x += resolution
-                            min_y -= resolution
-                            max_y += resolution
-                            sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                            sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                            if len(sound_field_x) < min_points_per_dimension:
-                                n_points_needed = min_points_per_dimension - len(sound_field_x)
-                                step_x = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                                if step_x <= 0:
-                                    step_x = resolution
-                                additional_x = np.arange(max_x + step_x, max_x + step_x * n_points_needed, step_x)
-                                sound_field_x = np.concatenate([sound_field_x, additional_x])
-                            if len(sound_field_y) < min_points_per_dimension:
-                                n_points_needed = min_points_per_dimension - len(sound_field_y)
-                                step_y = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                                if step_y <= 0:
-                                    step_y = resolution
-                                additional_y = np.arange(max_y + step_y, max_y + step_y * n_points_needed, step_y)
-                                sound_field_y = np.concatenate([sound_field_y, additional_y])
-                            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                            Z_grid = np.zeros_like(X_grid, dtype=float)
-                        else:
-                            # Erstelle 2D-Meshgrid in (u,v)-Ebene = (x,z)-Ebene
-                            U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
-                            
-                            # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
-                            points_surface = np.column_stack([xs, zs])
-                            points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                            Y_interp = griddata(
-                                points_surface, ys,
-                                points_grid,
-                                method='linear', fill_value=float(np.mean(ys))
-                            )
-                            Y_interp = Y_interp.reshape(U_grid.shape)
-                            
-                            # Transformiere zu (X, Y, Z) Koordinaten
-                            X_grid = U_grid  # u = x
-                            Y_grid = Y_interp  # Y interpoliert
-                            Z_grid = V_grid  # v = z
-                            
-                            # sound_field_x und sound_field_y für Rückgabe
-                            sound_field_x = u_axis  # x-Koordinaten
-                            sound_field_y = v_axis  # z-Koordinaten
-                            
-                            print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
-                            print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                            print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                            print(f"  └─ Y interpoliert: min={Y_interp.min():.3f}, max={Y_interp.max():.3f}")
-                else:
-                    # Fallback: Verwende normale X-Y-Ebene
-                    print(f"[DEBUG Vertical Grid] ⚠️ Keine klare Orientierung, verwende X-Y-Ebene (Fallback)")
-                    if not geometry.bbox:
-                        width = getattr(self.settings, 'width', 150.0)
-                        length = getattr(self.settings, 'length', 100.0)
-                        min_x, max_x = -width / 2, width / 2
-                        min_y, max_y = -length / 2, length / 2
+                    if u_axis.size < 2 or v_axis.size < 2:
+                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, x-z) liefert zu wenige Punkte in (u,v)-Ebene.")
                     else:
-                        min_x, max_x, min_y, max_y = geometry.bbox
-                    
-                    width = max_x - min_x
-                    height = max_y - min_y
-                    nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                    ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                    total_points_base = nx_base * ny_base
-                    min_total_points = min_points_per_dimension ** 2
-                    
-                    if total_points_base < min_total_points:
-                        diagonal = np.sqrt(width**2 + height**2)
-                        if diagonal > 0:
-                            adaptive_resolution = diagonal / min_points_per_dimension
-                            adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                            resolution = adaptive_resolution
-                    
-                    min_x -= resolution
-                    max_x += resolution
-                    min_y -= resolution
-                    max_y += resolution
-                    
-                    sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                    sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                    
-                    if len(sound_field_x) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_x)
-                        step = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                        if step <= 0:
-                            step = resolution
-                        additional_x = np.arange(max_x + step, max_x + step * n_points_needed, step)
-                        sound_field_x = np.concatenate([sound_field_x, additional_x])
-                    
-                    if len(sound_field_y) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_y)
-                        step = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                        if step <= 0:
-                            step = resolution
-                        additional_y = np.arange(max_y + step, max_y + step * n_points_needed, step)
-                        sound_field_y = np.concatenate([sound_field_y, additional_y])
-                    
-                    X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                    Z_grid = np.zeros_like(X_grid, dtype=float)
+                        # Erstelle 2D-Meshgrid in (u,v)-Ebene = (x,z)-Ebene
+                        U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                        
+                        # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
+                        points_surface = np.column_stack([xs, zs])
+                        points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
+                        Y_interp = griddata(
+                            points_surface, ys,
+                            points_grid,
+                            method='linear', fill_value=float(np.mean(ys))
+                        )
+                        Y_interp = Y_interp.reshape(U_grid.shape)
+                        
+                        # Transformiere zu (X, Y, Z) Koordinaten
+                        X_grid = U_grid  # u = x
+                        Y_grid = Y_interp  # Y interpoliert
+                        Z_grid = V_grid  # v = z
+                        
+                        # sound_field_x und sound_field_y für Rückgabe
+                        sound_field_x = u_axis  # x-Koordinaten
+                        sound_field_y = v_axis  # z-Koordinaten
+                        
+                        print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
+                        print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
+                        print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                        print(f"  └─ Y interpoliert: min={Y_interp.min():.3f}, max={Y_interp.max():.3f}")
+                else:
+                    raise ValueError(f"Surface '{geometry.surface_id}': keine klare Orientierung für vertikale Grid-Erzeugung.")
         else:
             # PLANARE/SCHRÄGE SURFACES: Grid in X-Y-Ebene (wie bisher)
             if not geometry.bbox:
-                # Fallback: Verwende Settings-Dimensionen
-                width = getattr(self.settings, 'width', 150.0)
-                length = getattr(self.settings, 'length', 100.0)
-                min_x, max_x = -width / 2, width / 2
-                min_y, max_y = -length / 2, length / 2
+                raise ValueError(f"Surface '{geometry.surface_id}': keine Bounding Box vorhanden.")
             else:
                 min_x, max_x, min_y, max_y = geometry.bbox
             
@@ -1786,9 +1442,7 @@ class GridBuilder(ModuleBase):
                         surface_mask = self._dilate_mask_minimal(surface_mask)
                         print(f"[DEBUG Vertical Mask] X-Z-Wand schräg: Maske in (x,z)-Ebene erstellt")
                 else:
-                    # Fallback: Verwende normale Maske
-                    surface_mask = self._create_surface_mask(X_grid, Y_grid, geometry)
-                    print(f"[DEBUG Vertical Mask] ⚠️ Fallback: Maske in X-Y-Ebene erstellt")
+                    raise ValueError(f"Vertikale Surface '{geometry.surface_id}': keine vertikale Maske ableitbar.")
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
@@ -1825,193 +1479,148 @@ class GridBuilder(ModuleBase):
                 Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
                 print(f"  └─ Z-Werte berechnet für ALLE {total_grid_points} Punkte (auch außerhalb Surface)")
             else:
-                # 🎯 FALLBACK: Lineare Interpolation basierend auf Surface Z-Werten
-                # Wenn kein Plane-Model vorhanden ist, interpoliere Z-Werte von Surface-Punkten
-                if points_in_surface > 0:
-                    # Extrahiere Z-Werte der Surface-Punkte (falls vorhanden)
-                    surface_points = geometry.points
-                    if surface_points and len(surface_points) >= 3:
-                        # Extrahiere Z-Koordinaten aus Surface-Punkten
-                        surface_z = np.array([p.get('z', 0.0) for p in surface_points], dtype=float)
-                        surface_x = np.array([p.get('x', 0.0) for p in surface_points], dtype=float)
-                        surface_y = np.array([p.get('y', 0.0) for p in surface_points], dtype=float)
-                    
-                        # Prüfe ob Z-Werte variieren
-                        z_variation = np.any(np.abs(surface_z - surface_z[0]) > 1e-6)
-                        # 🎯 DEBUG: Immer für vertikale Surfaces
-                        if geometry.orientation == "vertical":
-                            print(f"[DEBUG Z-Interpolation] Surface '{geometry.surface_id}' (VERTIKAL):")
-                            print(f"  └─ Surface-Punkte: {len(surface_points)}")
-                            print(f"  └─ Z-Werte aus Punkten: min={surface_z.min():.3f}, max={surface_z.max():.3f}, span={surface_z.max()-surface_z.min():.3f}")
-                            print(f"  └─ Z-Variation: {z_variation}")
-                            print(f"  └─ X-Werte: min={surface_x.min():.3f}, max={surface_x.max():.3f}, span={surface_x.max()-surface_x.min():.3f}")
-                            print(f"  └─ Y-Werte: min={surface_y.min():.3f}, max={surface_y.max():.3f}, span={surface_y.max()-surface_y.min():.3f}")
-                            if len(surface_points) <= 10:
-                                print(f"  └─ Alle Punkte: {[(p.get('x', 0), p.get('y', 0), p.get('z', 0)) for p in surface_points[:10]]}")
-                        elif DEBUG_FLEXIBLE_GRID:
-                            print(f"[DEBUG Z-Interpolation] Surface '{geometry.surface_id}':")
-                            print(f"  └─ Surface-Punkte: {len(surface_points)}")
-                            print(f"  └─ Z-Werte: min={surface_z.min():.3f}, max={surface_z.max():.3f}, span={surface_z.max()-surface_z.min():.3f}")
-                            print(f"  └─ Z-Variation: {z_variation}")
-                            print(f"  └─ X-Werte: min={surface_x.min():.3f}, max={surface_x.max():.3f}, span={surface_x.max()-surface_x.min():.3f}")
-                            print(f"  └─ Y-Werte: min={surface_y.min():.3f}, max={surface_y.max():.3f}, span={surface_y.max()-surface_y.min():.3f}")
+                # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
+                surface_points = geometry.points or []
+                if not surface_points:
+                    raise ValueError(f"Surface '{geometry.surface_id}': kein Plane-Model und keine Surface-Punkte vorhanden.")
+                
+                surface_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+                surface_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+                surface_z = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
+                z_variation = bool(np.ptp(surface_z) > 1e-9)
+                
+                print(f"  └─ Surface-Punkte: {len(surface_points)}")
+                print(f"  └─ Z-Werte: min={surface_z.min():.3f}, max={surface_z.max():.3f}, span={surface_z.max()-surface_z.min():.3f}")
+                print(f"  └─ Z-Variation: {z_variation}")
+                print(f"  └─ X-Werte: min={surface_x.min():.3f}, max={surface_x.max():.3f}, span={surface_x.max()-surface_x.min():.3f}")
+                print(f"  └─ Y-Werte: min={surface_y.min():.3f}, max={surface_y.max():.3f}, span={surface_y.max()-surface_y.min():.3f}")
+                
+                if z_variation:
+                    # 🎯 VERTIKALE SURFACES: Z_grid ist bereits korrekt gesetzt, überspringe Interpolation
+                    if geometry.orientation == "vertical":
+                        # Z_grid wurde bereits beim Grid-Erstellen korrekt gesetzt (Z_grid = V_grid)
+                        # Keine Interpolation nötig!
+                        print(f"  └─ Z_grid bereits korrekt gesetzt für vertikale Surface (keine Interpolation nötig)")
+                    elif geometry.orientation == "planar" or geometry.orientation == "sloped":
+                        # Für planare/schräge Surfaces: Z-Werte hängen von beiden Koordinaten ab (u, v)
+                        xs = surface_x
+                        ys = surface_y
+                        x_span = float(np.ptp(xs))
+                        y_span = float(np.ptp(ys))
                         
-                        if z_variation:
-                            # 🎯 VERTIKALE SURFACES: Z_grid ist bereits korrekt gesetzt, überspringe Interpolation
-                            if geometry.orientation == "vertical":
-                                # Z_grid wurde bereits beim Grid-Erstellen korrekt gesetzt (Z_grid = V_grid)
-                                # Keine Interpolation nötig!
-                                print(f"  └─ Z_grid bereits korrekt gesetzt für vertikale Surface (keine Interpolation nötig)")
-                            elif geometry.orientation == "planar" or geometry.orientation == "sloped":
-                                # Für planare/schräge Surfaces: Z-Werte hängen von beiden Koordinaten ab (u, v)
-                                xs = surface_x
-                                ys = surface_y
-                                x_span = float(np.ptp(xs))
-                                y_span = float(np.ptp(ys))
+                        eps_line = 1e-6
+                        from scipy.interpolate import griddata
+                        
+                        if y_span < eps_line and x_span >= eps_line:
+                            # X-Z-Wand: y ≈ const, Z hängt von x ab
+                            # Verwende 1D-Interpolation basierend auf x
+                            try:
+                                from scipy.interpolate import interp1d
                                 
-                                eps_line = 1e-6
-                                from scipy.interpolate import griddata
+                                # Sammle alle eindeutigen x-Werte und deren zugehörige Z-Werte
+                                x_z_dict = {}
+                                for x_val, z_val in zip(surface_x, surface_z):
+                                    x_key = float(x_val)
+                                    if x_key not in x_z_dict:
+                                        x_z_dict[x_key] = []
+                                    x_z_dict[x_key].append(float(z_val))
                                 
-                                if y_span < eps_line and x_span >= eps_line:
-                                    # X-Z-Wand: y ≈ const, Z hängt von x ab
-                                    # Verwende 1D-Interpolation basierend auf x
-                                    try:
-                                        from scipy.interpolate import interp1d
-                                        
-                                        # Sammle alle eindeutigen x-Werte und deren zugehörige Z-Werte
-                                        x_z_dict = {}
-                                        for x_val, z_val in zip(surface_x, surface_z):
-                                            x_key = float(x_val)
-                                            if x_key not in x_z_dict:
-                                                x_z_dict[x_key] = []
-                                            x_z_dict[x_key].append(float(z_val))
-                                        
-                                        # Für jeden x-Wert: Verwende den Mittelwert der Z-Werte
-                                        x_unique = np.array(sorted(x_z_dict.keys()))
-                                        z_unique = np.array([np.mean(x_z_dict[x]) for x in x_unique])
-                                        
-                                        if len(x_unique) < 2:
-                                            # Nicht genug eindeutige Punkte
-                                            z_mean = float(np.mean(surface_z))
-                                            Z_grid.fill(z_mean)
-                                            print(f"  └─ ⚠️ Zu wenige eindeutige x-Werte ({len(x_unique)}), verwende konstanten Z-Wert {z_mean:.3f}")
-                                        else:
-                                            # 1D-Interpolation: Z(x)
-                                            interp_func = interp1d(
-                                                x_unique,
-                                                z_unique,
-                                                kind='linear',
-                                                bounds_error=False,
-                                                fill_value=(z_unique[0], z_unique[-1])
-                                            )
-                                            
-                                            # Interpoliere für alle Grid-Punkte
-                                            x_grid_flat = X_grid.ravel()
-                                            z_interp_flat = interp_func(x_grid_flat)
-                                            Z_grid = z_interp_flat.reshape(X_grid.shape)
-                                            
-                                            print(f"  └─ Z-Werte (1D linear, gemittelt) interpoliert für ALLE {total_grid_points} Punkte (X-Z-Wand)")
-                                            print(f"  └─ Eindeutige x-Werte: {len(x_unique)} (von {len(surface_x)} Original-Punkten)")
-                                            print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
-                                    except Exception as e:
-                                        z_mean = float(np.mean(surface_z))
-                                        Z_grid.fill(z_mean)
-                                        print(f"  └─ ⚠️ Z-Interpolation fehlgeschlagen, verwende konstanten Z-Wert {z_mean:.3f}: {e}")
-                                    
-                                elif x_span < eps_line and y_span >= eps_line:
-                                    # Y-Z-Wand: x ≈ const, Z hängt von y ab
-                                    # Problem: Es gibt mehrere Z-Werte für denselben y-Wert
-                                    # Lösung: Verwende 1D-Interpolation basierend auf y, aber berücksichtige alle Z-Werte
-                                    # Für identische y-Werte: Verwende den Mittelwert oder den Bereich
-                                    try:
-                                        from scipy.interpolate import interp1d
-                                        
-                                        # Sammle alle eindeutigen y-Werte und deren zugehörige Z-Werte
-                                        y_z_dict = {}
-                                        for y_val, z_val in zip(surface_y, surface_z):
-                                            y_key = float(y_val)
-                                            if y_key not in y_z_dict:
-                                                y_z_dict[y_key] = []
-                                            y_z_dict[y_key].append(float(z_val))
-                                        
-                                        # Für jeden y-Wert: Verwende den Mittelwert der Z-Werte
-                                        y_unique = np.array(sorted(y_z_dict.keys()))
-                                        z_unique = np.array([np.mean(y_z_dict[y]) for y in y_unique])
-                                        
-                                        if len(y_unique) < 2:
-                                            # Nicht genug eindeutige Punkte
-                                            z_mean = float(np.mean(surface_z))
-                                            Z_grid.fill(z_mean)
-                                            print(f"  └─ ⚠️ Zu wenige eindeutige y-Werte ({len(y_unique)}), verwende konstanten Z-Wert {z_mean:.3f}")
-                                        else:
-                                            # 1D-Interpolation: Z(y)
-                                            interp_func = interp1d(
-                                                y_unique,
-                                                z_unique,
-                                                kind='linear',
-                                                bounds_error=False,
-                                                fill_value=(z_unique[0], z_unique[-1])
-                                            )
-                                            
-                                            # Interpoliere für alle Grid-Punkte
-                                            y_grid_flat = Y_grid.ravel()
-                                            z_interp_flat = interp_func(y_grid_flat)
-                                            Z_grid = z_interp_flat.reshape(X_grid.shape)
-                                            
-                                            print(f"  └─ Z-Werte (1D linear, gemittelt) interpoliert für ALLE {total_grid_points} Punkte (Y-Z-Wand)")
-                                            print(f"  └─ Eindeutige y-Werte: {len(y_unique)} (von {len(surface_y)} Original-Punkten)")
-                                            print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
-                                    except Exception as e:
-                                        z_mean = float(np.mean(surface_z))
-                                        Z_grid.fill(z_mean)
-                                        print(f"  └─ ⚠️ Z-Interpolation fehlgeschlagen, verwende konstanten Z-Wert {z_mean:.3f}: {e}")
+                                # Für jeden x-Wert: Verwende den Mittelwert der Z-Werte
+                                x_unique = np.array(sorted(x_z_dict.keys()))
+                                z_unique = np.array([np.mean(x_z_dict[x]) for x in x_unique])
+                                
+                                if len(x_unique) < 2:
+                                    raise ValueError(f"Surface '{geometry.surface_id}': zu wenige eindeutige x-Werte für Z-Interpolation.")
                                 else:
-                                    # Fallback: Verwende konstanten Z-Wert
-                                    z_mean = float(np.mean(surface_z)) if len(surface_z) > 0 else 0.0
-                                    Z_grid.fill(z_mean)
-                                    print(f"  └─ ⚠️ Keine klare Orientierung: x_span={x_span:.6f}, y_span={y_span:.6f}")
-                                    print(f"  └─ Z-Werte auf konstanten Wert {z_mean:.3f} gesetzt (planare/schräge Surface, Fallback)")
-                            else:
-                                # Normale Surfaces: Lineare Interpolation in (x,y)
-                                from scipy.interpolate import griddata
-                                points_surface = np.column_stack([surface_x, surface_y])
-                                points_grid = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-                                
-                                try:
-                                    Z_interp = griddata(
-                                        points_surface,
-                                        surface_z,
-                                        points_grid,
-                                        method='linear',  # Lineare Interpolation
-                                        fill_value=0.0   # Fallback für Punkte außerhalb
+                                    # 1D-Interpolation: Z(x)
+                                    interp_func = interp1d(
+                                        x_unique,
+                                        z_unique,
+                                        kind='linear',
+                                        bounds_error=False,
+                                        fill_value=(z_unique[0], z_unique[-1])
                                     )
-                                    Z_grid = Z_interp.reshape(X_grid.shape)
-                                    print(f"  └─ Z-Werte linear interpoliert für ALLE {total_grid_points} Punkte (basierend auf Surface-Punkten)")
-                                except Exception as e:
-                                    # Fallback: Nearest Neighbor wenn linear fehlschlägt
-                                    try:
-                                        Z_interp = griddata(
-                                            points_surface,
-                                            surface_z,
-                                            points_grid,
-                                            method='nearest',
-                                            fill_value=0.0
-                                        )
-                                        Z_grid = Z_interp.reshape(X_grid.shape)
-                                        print(f"  └─ Z-Werte (nearest) interpoliert für ALLE {total_grid_points} Punkte (Fallback nach linear-Fehler)")
-                                    except Exception as e2:
-                                        # Letzter Fallback: Konstanter Z-Wert
-                                        z_mean = float(np.mean(surface_z))
-                                        Z_grid.fill(z_mean)
-                                        print(f"  └─ ⚠️ Z-Interpolation fehlgeschlagen, verwende konstanten Z-Wert {z_mean:.3f}: {e2}")
+                                    
+                                    # Interpoliere für alle Grid-Punkte
+                                    x_grid_flat = X_grid.ravel()
+                                    z_interp_flat = interp_func(x_grid_flat)
+                                    Z_grid = z_interp_flat.reshape(X_grid.shape)
+                                    
+                                    print(f"  └─ Z-Werte (1D linear, gemittelt) interpoliert für ALLE {total_grid_points} Punkte (X-Z-Wand)")
+                                    print(f"  └─ Eindeutige x-Werte: {len(x_unique)} (von {len(surface_x)} Original-Punkten)")
+                                    print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
+                            except Exception as e:
+                                raise RuntimeError(f"Surface '{geometry.surface_id}': Z-Interpolation (X-Z-Wand) fehlgeschlagen: {e}")
+                            
+                        elif x_span < eps_line and y_span >= eps_line:
+                            # Y-Z-Wand: x ≈ const, Z hängt von y ab
+                            # Problem: Es gibt mehrere Z-Werte für denselben y-Wert
+                            # Lösung: Verwende 1D-Interpolation basierend auf y, aber berücksichtige alle Z-Werte
+                            # Für identische y-Werte: Verwende den Mittelwert oder den Bereich
+                            try:
+                                from scipy.interpolate import interp1d
+                                
+                                # Sammle alle eindeutigen y-Werte und deren zugehörige Z-Werte
+                                y_z_dict = {}
+                                for y_val, z_val in zip(surface_y, surface_z):
+                                    y_key = float(y_val)
+                                    if y_key not in y_z_dict:
+                                        y_z_dict[y_key] = []
+                                    y_z_dict[y_key].append(float(z_val))
+                                
+                                # Für jeden y-Wert: Verwende den Mittelwert der Z-Werte
+                                y_unique = np.array(sorted(y_z_dict.keys()))
+                                z_unique = np.array([np.mean(y_z_dict[y]) for y in y_unique])
+                                
+                                if len(y_unique) < 2:
+                                    raise ValueError(f"Surface '{geometry.surface_id}': zu wenige eindeutige y-Werte für Z-Interpolation.")
+                                else:
+                                    # 1D-Interpolation: Z(y)
+                                    interp_func = interp1d(
+                                        y_unique,
+                                        z_unique,
+                                        kind='linear',
+                                        bounds_error=False,
+                                        fill_value=(z_unique[0], z_unique[-1])
+                                    )
+                                    
+                                    # Interpoliere für alle Grid-Punkte
+                                    y_grid_flat = Y_grid.ravel()
+                                    z_interp_flat = interp_func(y_grid_flat)
+                                    Z_grid = z_interp_flat.reshape(X_grid.shape)
+                                    
+                                    print(f"  └─ Z-Werte (1D linear, gemittelt) interpoliert für ALLE {total_grid_points} Punkte (Y-Z-Wand)")
+                                    print(f"  └─ Eindeutige y-Werte: {len(y_unique)} (von {len(surface_y)} Original-Punkten)")
+                                    print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
+                            except Exception as e:
+                                raise RuntimeError(f"Surface '{geometry.surface_id}': Z-Interpolation (Y-Z-Wand) fehlgeschlagen: {e}")
                         else:
-                            # Alle Surface-Punkte haben gleichen Z-Wert
-                            Z_grid.fill(surface_z[0])
-                            print(f"  └─ Z-Werte auf konstanten Wert {surface_z[0]:.3f} gesetzt für ALLE {total_grid_points} Punkte")
+                            # Fallback: Verwende konstanten Z-Wert
+                            raise ValueError(f"Surface '{geometry.surface_id}': unklare Orientierung (x_span={x_span:.6f}, y_span={y_span:.6f}) – keine Z-Interpolation.")
                     else:
-                        print(f"  └─ ⚠️ Kein Plane-Model und keine Surface-Punkte vorhanden, Z-Werte bleiben 0")
+                        # Normale Surfaces: Lineare Interpolation in (x,y)
+                        from scipy.interpolate import griddata
+                        points_surface = np.column_stack([surface_x, surface_y])
+                        points_grid = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
+                        
+                        try:
+                            Z_interp = griddata(
+                                points_surface,
+                                surface_z,
+                                points_grid,
+                                method='linear',
+                                fill_value=np.nan  # keine stillen Fallback-Werte
+                            )
+                            if np.isnan(Z_interp).any():
+                                raise ValueError("Z-Interpolation liefert NaN außerhalb des gültigen Polygons.")
+                            Z_grid = Z_interp.reshape(X_grid.shape)
+                            print(f"  └─ Z-Werte linear interpoliert für ALLE {total_grid_points} Punkte (basierend auf Surface-Punkten)")
+                        except Exception as e:
+                            raise RuntimeError(f"Z-Interpolation (linear) fehlgeschlagen: {e}")
                 else:
-                    print(f"  └─ ⚠️ Kein Plane-Model vorhanden, Z-Werte bleiben 0")
+                    # Alle Surface-Punkte haben gleichen Z-Wert
+                    Z_grid.fill(surface_z[0])
+                    print(f"  └─ Z-Werte auf konstanten Wert {surface_z[0]:.3f} gesetzt für ALLE {total_grid_points} Punkte")
         
         if PERF_ENABLED and t_orientation_start is not None:
             duration_ms = (time.perf_counter() - t_orientation_start) * 1000.0

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Calculate.SurfaceGridCalculator import SurfaceGridCalculator
+from Module_LFO.Modules_Calculate.FlexibleGridGenerator import FlexibleGridGenerator
 from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
@@ -28,8 +28,8 @@ class SoundFieldCalculator(ModuleBase):
         self._grid_cache = None    # Gespeichertes Grid
         self._grid_hash = None     # Hash der Grid-Parameter
         
-        # 🎯 GRID-CALCULATOR: Separate Instanz für Grid-Erstellung
-        self._grid_calculator = SurfaceGridCalculator(settings)
+        # 🎯 GRID-GENERATOR: Flexible Grid-Erstellung
+        self._grid_generator = FlexibleGridGenerator(settings)
    
     @measure_time("SoundFieldCalculator.calculate_soundfield_pressure")
     def calculate_soundfield_pressure(self):
@@ -152,15 +152,21 @@ class SoundFieldCalculator(ModuleBase):
         # Hole aktivierte Surfaces
         enabled_surfaces = self._get_enabled_surfaces()
         
-        # 🎯 VERWENDE SURFACE-GRID-CALCULATOR: Erstellt komplettes Grid basierend auf enabled Surfaces
-        (
-            sound_field_x,
-            sound_field_y,
-            X_grid,
-            Y_grid,
-            Z_grid,
-            surface_mask,
-        ) = self._grid_calculator.create_calculation_grid(enabled_surfaces)
+        # 🎯 NEU: Flexible Grid-Erstellung via FlexibleGridGenerator (cartesian)
+        if not enabled_surfaces:
+            return [], np.array([]), np.array([]), ({} if capture_arrays else None)
+        cartesian_grid = self._grid_generator.generate(
+            enabled_surfaces,
+            method='cartesian',
+            resolution=self.settings.resolution,
+        )
+        sound_field_x = cartesian_grid.sound_field_x
+        sound_field_y = cartesian_grid.sound_field_y
+        X_grid = cartesian_grid.X_grid
+        Y_grid = cartesian_grid.Y_grid
+        Z_grid = cartesian_grid.Z_grid
+        surface_mask = cartesian_grid.surface_mask
+        surface_mask_strict = getattr(cartesian_grid, "surface_mask_strict", surface_mask)
         # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
         total_points = int(X_grid.size)
         active_points = int(np.count_nonzero(surface_mask))
@@ -248,8 +254,8 @@ class SoundFieldCalculator(ModuleBase):
                             print(f"    Sample [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
                 else:
                     print(f"    ⚠️  Keine Grid-Punkte innerhalb der Surface gefunden!")
-        surface_meshes = self._grid_calculator.get_surface_meshes()
-        surface_samples = self._grid_calculator.get_surface_sampling_points()
+        surface_meshes = []
+        surface_samples = []
         # Sichtbarkeits-Occluder aus aktuellen Surface-Definitionen ableiten
         # HINWEIS: Occlusion / Schattenbildung vorübergehend deaktiviert
         occluders: List[Dict[str, Any]] = []
@@ -550,7 +556,7 @@ class SoundFieldCalculator(ModuleBase):
         if surface_field_buffers:
             for surface_id, buffer in surface_field_buffers.items():
                 surface_fields[surface_id] = buffer.copy()
-        else:
+        elif surface_samples:
             surface_fields = self._calculate_surface_mesh_fields(sound_field_p, surface_samples)
 
         if surface_point_buffers:
@@ -575,17 +581,8 @@ class SoundFieldCalculator(ModuleBase):
 
         if isinstance(self.calculation_spl, dict):
             self.calculation_spl['sound_field_z'] = Z_grid.tolist()
-            # 🎯 Speichere erweiterte Maske für Berechnung
             self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()
-            # 🎯 Berechne und speichere strikte Maske für Plot (ohne Erweiterung)
-            enabled_surfaces = self._get_enabled_surfaces()
-            if enabled_surfaces:
-                surface_mask_strict = self._grid_calculator._create_surface_mask(
-                    X_grid, Y_grid, enabled_surfaces, include_edges=False
-                )
-                self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
-            else:
-                self.calculation_spl['surface_mask_strict'] = surface_mask.astype(bool).tolist()
+            self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
             if surface_meshes:
                 self.calculation_spl['surface_meshes'] = [
                     mesh.to_payload() for mesh in surface_meshes
@@ -974,13 +971,9 @@ class SoundFieldCalculator(ModuleBase):
             elif isinstance(surface_def, dict):
                 surface_data = surface_def
             else:
-                # Fallback: versuche Attribute direkt zu lesen
-                surface_data = {
-                    "enabled": getattr(surface_def, "enabled", False),
-                    "hidden": getattr(surface_def, "hidden", False),
-                    "points": getattr(surface_def, "points", []),
-                    "name": getattr(surface_def, "name", surface_id),
-                }
+                # Fallback deaktiviert: nicht mehr still Attribute abgreifen,
+                # um fehlerhafte/grenzwertige Surface-Objekte sichtbar zu machen.
+                surface_data = {}
             if surface_data.get('enabled', False) and not surface_data.get('hidden', False):
                 enabled.append((surface_id, surface_data))
         
@@ -1171,19 +1164,15 @@ class SoundFieldCalculator(ModuleBase):
                 continue
 
             # Exakter Polygon-Test im (u,z)-Raum
-            try:
-                if poly_u.size >= 3 and poly_v.size >= 3:
-                    U = u_int[cand_poly].reshape(1, -1)
-                    V = z_int[cand_poly].reshape(1, -1)
-                    poly_mask = _points_in_polygon_batch_uv(U, V, poly_u, poly_v)
-                    if poly_mask is not None:
-                        poly_inside = poly_mask.reshape(-1)
-                        tmp = np.zeros_like(cand_poly, dtype=bool)
-                        tmp[np.where(cand_poly)[0]] = poly_inside
-                        cand_poly = cand_poly & tmp
-            except Exception:
-                # Fallback: nur Bounding-Box verwenden
-                pass
+            if poly_u.size >= 3 and poly_v.size >= 3:
+                U = u_int[cand_poly].reshape(1, -1)
+                V = z_int[cand_poly].reshape(1, -1)
+                poly_mask = _points_in_polygon_batch_uv(U, V, poly_u, poly_v)
+                if poly_mask is not None:
+                    poly_inside = poly_mask.reshape(-1)
+                    tmp = np.zeros_like(cand_poly, dtype=bool)
+                    tmp[np.where(cand_poly)[0]] = poly_inside
+                    cand_poly = cand_poly & tmp
 
             occluded_here = cand_poly
             if np.any(occluded_here):
