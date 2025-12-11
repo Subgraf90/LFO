@@ -252,9 +252,14 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             stack_cached_geometries: Dict[tuple, Dict[int, List[Tuple[Any, Optional[int]]]]] = {}  # Cache für Stack-Gruppen: {stack_group_key: {sp_idx: geometries}}
             stack_groups_processed: set[tuple] = set()  # Welche Stack-Gruppen wurden bereits aus Cache geladen
 
-            if config_lower == 'stack' and len(self._stack_geometry_cache) > 0:
-                # Identifiziere Stack-Gruppen basierend auf Cabinet-Daten
+            # FIX: Identifiziere Stack-Gruppen immer, nicht nur wenn Cache vorhanden ist
+            # Dies stellt sicher, dass alle Stack-Lautsprecher verarbeitet werden
+            stack_groups: Dict[tuple, List[int]] = {}
+            if config_lower == 'stack':
                 stack_groups = self._identify_stack_groups_from_cabinets(speaker_array, array_id, cabinet_lookup)
+
+            if config_lower == 'stack' and len(self._stack_geometry_cache) > 0:
+                # Verarbeite Stack-Cache nur wenn Cache vorhanden ist
 
                 # Prüfe jede Stack-Gruppe
                 for stack_group_key, speaker_indices in stack_groups.items():

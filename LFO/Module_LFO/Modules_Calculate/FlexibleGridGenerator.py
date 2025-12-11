@@ -29,6 +29,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
     _evaluate_plane_on_grid,
 )
+from Module_LFO.Modules_Data.SurfaceValidator import triangulate_points
 
 DEBUG_FLEXIBLE_GRID = bool(int(os.environ.get("LFO_DEBUG_FLEXIBLE_GRID", "0")))
 
@@ -68,6 +69,10 @@ class SurfaceGrid:
     surface_mask: np.ndarray  # 2D-Boolean-Array (Shape: [ny, nx])
     resolution: float  # Tatsächliche Resolution (kann adaptiv sein)
     geometry: 'SurfaceGeometry'  # Surface-Geometrie
+    # 🎯 NEU: Triangulierte Daten für Plotting
+    triangulated_vertices: Optional[np.ndarray] = None  # Shape: (N, 3) - Vertex-Koordinaten
+    triangulated_faces: Optional[np.ndarray] = None  # Shape: (M, 3) - Face-Indices
+    triangulated_success: bool = False  # Ob Triangulation erfolgreich war
 
 
 @dataclass
@@ -581,7 +586,29 @@ class SurfaceAnalyzer(ModuleBase):
             if pca_dominant_axis:
                 dominant_axis = pca_dominant_axis
             else:
-                raise ValueError("Vertikale Orientierung erkannt, aber keine dominante Achse bestimmbar.")
+                # Fallback: Bestimme dominante Achse basierend auf Spannen-Analyse
+                # (kein stiller Fallback - wird verwendet wenn PCA keine Achse liefert)
+                eps_line = 1e-6
+                if y_span < eps_line and x_span >= eps_line:
+                    dominant_axis = "xz"  # X-Z-Wand
+                elif x_span < eps_line and y_span >= eps_line:
+                    dominant_axis = "yz"  # Y-Z-Wand
+                elif z_span > max(x_span, y_span) * 0.7:
+                    # Bestimme welche Achse (X oder Y) weniger variiert
+                    if x_span < y_span * 0.5:
+                        dominant_axis = "yz"
+                    elif y_span < x_span * 0.5:
+                        dominant_axis = "xz"
+                
+                if dominant_axis is None:
+                    # Letzter Fallback: Verwende die Achse mit der kleinsten Spanne
+                    if x_span < y_span:
+                        dominant_axis = "yz"
+                    else:
+                        dominant_axis = "xz"
+                
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Ultra-Robust] ⚠️ PCA lieferte keine dominante Achse, verwende Spannen-Analyse: {dominant_axis}")
         
         if DEBUG_FLEXIBLE_GRID:
             print(f"[DEBUG Ultra-Robust] Score-Analyse:")
@@ -762,7 +789,29 @@ class SurfaceAnalyzer(ModuleBase):
             if pca_dominant_axis:
                 dominant_axis = pca_dominant_axis
             else:
-                raise ValueError("Vertikale Orientierung (improved), aber keine dominante Achse bestimmbar.")
+                # Fallback: Bestimme dominante Achse basierend auf Spannen-Analyse
+                # (kein stiller Fallback - wird verwendet wenn PCA keine Achse liefert)
+                eps_line = 1e-6
+                if y_span < eps_line and x_span >= eps_line:
+                    dominant_axis = "xz"  # X-Z-Wand
+                elif x_span < eps_line and y_span >= eps_line:
+                    dominant_axis = "yz"  # Y-Z-Wand
+                elif z_span > max(x_span, y_span) * 0.7:
+                    # Bestimme welche Achse (X oder Y) weniger variiert
+                    if x_span < y_span * 0.5:
+                        dominant_axis = "yz"
+                    elif y_span < x_span * 0.5:
+                        dominant_axis = "xz"
+                
+                if dominant_axis is None:
+                    # Letzter Fallback: Verwende die Achse mit der kleinsten Spanne
+                    if x_span < y_span:
+                        dominant_axis = "yz"
+                    else:
+                        dominant_axis = "xz"
+                
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Orientation] ⚠️ PCA lieferte keine dominante Achse, verwende Spannen-Analyse: {dominant_axis}")
         
         if DEBUG_FLEXIBLE_GRID:
             print(f"[DEBUG Orientation] Score-Analyse:")
@@ -1243,11 +1292,25 @@ class GridBuilder(ModuleBase):
                             # Interpoliere X-Koordinaten von Surface-Punkten auf (y,z)-Grid
                             points_surface = np.column_stack([ys, zs])
                             points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                            X_interp = griddata(
-                                points_surface, xs,
-                                points_grid,
-                                method='linear', fill_value=float(np.mean(xs))
-                            )
+                            try:
+                                X_interp = griddata(
+                                    points_surface, xs,
+                                    points_grid,
+                                    method='linear', fill_value=float(np.mean(xs))
+                                )
+                            except Exception as e:
+                                # QhullError bei koplanaren Punkten → Fallback auf 'nearest'
+                                print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Linear-Interpolation fehlgeschlagen ({type(e).__name__}), verwende 'nearest' als Fallback")
+                                try:
+                                    X_interp = griddata(
+                                        points_surface, xs,
+                                        points_grid,
+                                        method='nearest', fill_value=float(np.mean(xs))
+                                    )
+                                except Exception as e2:
+                                    # Auch 'nearest' schlägt fehl → verwende konstanten Wert
+                                    print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Auch 'nearest' fehlgeschlagen, verwende konstanten X-Wert: {np.mean(xs):.3f}")
+                                    X_interp = np.full(points_grid.shape[0], float(np.mean(xs)), dtype=float)
                             X_interp = X_interp.reshape(U_grid.shape)
                             
                             # Transformiere zu (X, Y, Z) Koordinaten
@@ -1263,6 +1326,7 @@ class GridBuilder(ModuleBase):
                             print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
                             print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
                             print(f"  └─ X interpoliert: min={X_interp.min():.3f}, max={X_interp.max():.3f}")
+                            print(f"  └─ X_grid nach Zuweisung: min={X_grid.min():.3f}, max={X_grid.max():.3f}, shape={X_grid.shape}")
                     else:
                         # X-Z-Wand schräg: X und Z variieren, Y variiert entlang der Fläche
                         # u = x, v = z
@@ -1284,11 +1348,25 @@ class GridBuilder(ModuleBase):
                         # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
                         points_surface = np.column_stack([xs, zs])
                         points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                        Y_interp = griddata(
-                            points_surface, ys,
-                            points_grid,
-                            method='linear', fill_value=float(np.mean(ys))
-                        )
+                        try:
+                            Y_interp = griddata(
+                                points_surface, ys,
+                                points_grid,
+                                method='linear', fill_value=float(np.mean(ys))
+                            )
+                        except Exception as e:
+                            # QhullError bei koplanaren Punkten → Fallback auf 'nearest'
+                            print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Linear-Interpolation fehlgeschlagen ({type(e).__name__}), verwende 'nearest' als Fallback")
+                            try:
+                                Y_interp = griddata(
+                                    points_surface, ys,
+                                    points_grid,
+                                    method='nearest', fill_value=float(np.mean(ys))
+                                )
+                            except Exception as e2:
+                                # Auch 'nearest' schlägt fehl → verwende konstanten Wert
+                                print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Auch 'nearest' fehlgeschlagen, verwende konstanten Y-Wert: {np.mean(ys):.3f}")
+                                Y_interp = np.full(points_grid.shape[0], float(np.mean(ys)), dtype=float)
                         Y_interp = Y_interp.reshape(U_grid.shape)
                         
                         # Transformiere zu (X, Y, Z) Koordinaten
@@ -1305,7 +1383,52 @@ class GridBuilder(ModuleBase):
                         print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
                         print(f"  └─ Y interpoliert: min={Y_interp.min():.3f}, max={Y_interp.max():.3f}")
                 else:
-                    raise ValueError(f"Surface '{geometry.surface_id}': keine klare Orientierung für vertikale Grid-Erzeugung.")
+                    # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
+                    # → Behandle als planare/schräge Surface und erstelle Grid in X-Y-Ebene
+                    if DEBUG_FLEXIBLE_GRID:
+                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Z-Spanne ({z_span:.3f}) nicht groß genug für vertikale Behandlung.")
+                        print(f"  └─ x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}")
+                        print(f"  └─ Fallback: Behandle als planare/schräge Surface (Grid in X-Y-Ebene)")
+                    # Fallback: Setze orientation auf "planar" damit die planare Maske-Erstellung verwendet wird
+                    geometry.orientation = "planar"
+                    # Fallback: Verwende planare Grid-Erstellung direkt hier
+                    if not geometry.bbox:
+                        raise ValueError(f"Surface '{geometry.surface_id}': keine Bounding Box vorhanden.")
+                    min_x, max_x, min_y, max_y = geometry.bbox
+                    width = max_x - min_x
+                    height = max_y - min_y
+                    nx_base = max(1, int(np.ceil(width / resolution)) + 1)
+                    ny_base = max(1, int(np.ceil(height / resolution)) + 1)
+                    total_points_base = nx_base * ny_base
+                    min_total_points = min_points_per_dimension ** 2
+                    if total_points_base < min_total_points:
+                        diagonal = np.sqrt(width**2 + height**2)
+                        if diagonal > 0:
+                            adaptive_resolution = diagonal / min_points_per_dimension
+                            adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
+                            resolution = adaptive_resolution
+                    min_x -= resolution
+                    max_x += resolution
+                    min_y -= resolution
+                    max_y += resolution
+                    sound_field_x = np.arange(min_x, max_x + resolution, resolution)
+                    sound_field_y = np.arange(min_y, max_y + resolution, resolution)
+                    if len(sound_field_x) < min_points_per_dimension:
+                        n_points_needed = min_points_per_dimension - len(sound_field_x)
+                        step = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
+                        if step <= 0:
+                            step = resolution
+                        additional_x = np.arange(max_x + step, max_x + step * n_points_needed, step)
+                        sound_field_x = np.concatenate([sound_field_x, additional_x])
+                    if len(sound_field_y) < min_points_per_dimension:
+                        n_points_needed = min_points_per_dimension - len(sound_field_y)
+                        step = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
+                        if step <= 0:
+                            step = resolution
+                        additional_y = np.arange(max_y + step, max_y + step * n_points_needed, step)
+                        sound_field_y = np.concatenate([sound_field_y, additional_y])
+                    X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
+                    Z_grid = np.zeros_like(X_grid, dtype=float)
         else:
             # PLANARE/SCHRÄGE SURFACES: Grid in X-Y-Ebene (wie bisher)
             if not geometry.bbox:
@@ -1446,6 +1569,9 @@ class GridBuilder(ModuleBase):
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
+            # Für vertikale Surfaces: surface_mask_strict = surface_mask (beide sind erweitert, aber identisch)
+            # Da vertikale Surfaces bereits erweitert sind, verwenden wir die Maske als "strikt"
+            surface_mask_strict = surface_mask.copy()  # Für vertikale identisch
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
@@ -1456,7 +1582,10 @@ class GridBuilder(ModuleBase):
             print(f"  └─ Z_grid bereits korrekt gesetzt (keine Interpolation nötig)")
         else:
             # PLANARE/SCHRÄGE SURFACES: Normale Maske und Z-Interpolation
-            surface_mask = self._create_surface_mask(X_grid, Y_grid, geometry)
+            surface_mask_strict = self._create_surface_mask(X_grid, Y_grid, geometry)  # Ursprüngliche Maske
+            # 🎯 MASKE ERWEITERN: Damit Rand-Punkte auch aktiv sind und SPL-Werte erhalten
+            # Dies ermöglicht Triangulation bis zum Rand der Surface
+            surface_mask = self._dilate_mask_minimal(surface_mask_strict)  # Erweiterte Maske für SPL-Werte
             
             # 🎯 DEBUG: Grid-Erweiterung (vor Z-Interpolation, damit total_grid_points verfügbar ist)
             total_grid_points = X_grid.size
@@ -1629,7 +1758,14 @@ class GridBuilder(ModuleBase):
                 f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
             )
         
-        return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask)
+        # Für planare/schräge Surfaces: Gebe auch die strikte Maske zurück (ohne Erweiterung)
+        # Für vertikale Surfaces: surface_mask_strict = surface_mask (keine Erweiterung für diese)
+        if geometry.orientation in ("planar", "sloped"):
+            # surface_mask_strict wurde bereits vorher erstellt
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
+        else:
+            # Vertikale Surfaces: keine separate strikte Maske nötig
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask)
 
 
 class GridTransformer(ABC):
@@ -2076,12 +2212,41 @@ class FlexibleGridGenerator(ModuleBase):
         # Erstelle Grid für jede Surface
         surface_grids = {}
         for geom in geometries:
-            (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = \
-                self.builder.build_single_surface_grid(
+            try:
+                result = self.builder.build_single_surface_grid(
                     geometry=geom,
                     resolution=resolution,
                     min_points_per_dimension=min_points_per_dimension
                 )
+                if len(result) == 7:
+                    # Neue Version: Mit strikter Maske
+                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
+                else:
+                    # Alte Version: Ohne strikte Maske (Fallback für vertikale)
+                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
+                    surface_mask_strict = surface_mask  # Für vertikale identisch
+            except (ValueError, Exception) as e:
+                # Fange alle Fehler ab (ValueError, QhullError, etc.) und überspringe die Surface
+                # Kein Fallback - nur die funktionierenden Surfaces werden verwendet
+                error_type = type(e).__name__
+                # Immer Warnung ausgeben, wenn Surface übersprungen wird (auch ohne DEBUG_FLEXIBLE_GRID)
+                print(f"⚠️  [FlexibleGridGenerator] Surface '{geom.surface_id}' übersprungen ({error_type}): {e}")
+                continue
+            
+            # 🛠️ KORREKTUR: Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene berechnen
+            # Falls der Builder ein Z_grid mit 0 (oder None) geliefert hat, ersetze es durch die
+            # evaluierte Ebene aus dem plane_model. So vermeiden wir, dass alle Punkte auf z=25 m landen.
+            if geom.orientation in ("planar", "sloped") and geom.plane_model:
+                try:
+                    Z_eval = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                    if Z_eval is not None and Z_eval.shape == X_grid.shape:
+                        Z_grid = Z_eval
+                        if DEBUG_FLEXIBLE_GRID:
+                            zmin, zmax = float(Z_grid.min()), float(Z_grid.max())
+                            print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Z neu aus Ebene gesetzt (min={zmin:.3f}, max={zmax:.3f})")
+                except Exception as e:
+                    if DEBUG_FLEXIBLE_GRID:
+                        print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
             
             # Berechne tatsächliche Resolution (kann adaptiv sein)
             ny, nx = X_grid.shape
@@ -2092,6 +2257,380 @@ class FlexibleGridGenerator(ModuleBase):
             else:
                 actual_resolution = resolution
             
+            # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
+            # Pro Grid-Punkt werden Vertices verwendet, pro Grid-Quadrat 2 Dreiecke erstellt
+            triangulated_vertices = None
+            triangulated_faces = None
+            triangulated_success = False
+            
+            try:
+                # Verwende Grid-Punkte innerhalb der Surface-Maske als Vertices
+                ny, nx = X_grid.shape
+                mask_flat = surface_mask.ravel()  # Erweiterte Maske (für SPL-Werte)
+                mask_strict_flat = surface_mask_strict.ravel()  # Strikte Maske (für Face-Filterung)
+                
+                if np.any(mask_flat):
+                    print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Starte Grid-basierte Triangulation")
+                    print(f"  └─ Grid-Shape: {X_grid.shape} (ny={ny}, nx={nx})")
+                    print(f"  └─ Aktive Grid-Punkte (erweitert): {np.sum(mask_flat)} / {mask_flat.size}")
+                    print(f"  └─ Aktive Grid-Punkte (strikt): {np.sum(mask_strict_flat)} / {mask_strict_flat.size}")
+                    
+                    # Erstelle Vertex-Koordinaten aus allen Grid-Punkten (auch inaktive für konsistente Indizes)
+                    # Wir brauchen alle Punkte für die strukturierte Triangulation
+                    all_vertices = np.column_stack([
+                        X_grid.ravel(),  # X-Koordinaten
+                        Y_grid.ravel(),  # Y-Koordinaten
+                        Z_grid.ravel()   # Z-Koordinaten
+                    ])  # Shape: (ny * nx, 3)
+                    
+                    # 🎯 ZUSÄTZLICHE VERTICES AN POLYGON-ECKEN HINZUFÜGEN (für höhere Auflösung)
+                    # Dies erhöht die Polygon-Dichte an den Ecken, um Lücken zu vermeiden
+                    additional_vertices = []
+                    if geom.orientation in ("planar", "sloped"):
+                        surface_points = geom.points or []
+                        if len(surface_points) >= 3:
+                            # Extrahiere Polygon-Ecken
+                            polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+                            polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+                            
+                            # Prüfe für jede Polygon-Ecke, ob nahe Grid-Punkte existieren
+                            vertex_threshold = resolution * 0.3  # Wenn Ecke innerhalb 30% der Resolution
+                            existing_vertex_tolerance = resolution * 0.1  # Toleranz für "bereits vorhanden"
+                            
+                            for corner_x, corner_y in zip(polygon_x, polygon_y):
+                                # Prüfe ob bereits ein Vertex sehr nahe an dieser Ecke existiert
+                                distances = np.sqrt((all_vertices[:, 0] - corner_x)**2 + (all_vertices[:, 1] - corner_y)**2)
+                                min_distance = np.min(distances)
+                                
+                                if min_distance > existing_vertex_tolerance:
+                                    # Kein Vertex nahe genug → füge neuen Vertex hinzu
+                                    # Berechne Z-Koordinate für Ecke
+                                    corner_z = 0.0
+                                    if geom.plane_model:
+                                        try:
+                                            z_new = _evaluate_plane_on_grid(
+                                                geom.plane_model,
+                                                np.array([[corner_x]]),
+                                                np.array([[corner_y]])
+                                            )
+                                            if z_new is not None and z_new.size > 0:
+                                                corner_z = float(z_new.flat[0])
+                                        except Exception:
+                                            pass
+                                    
+                                    additional_vertices.append([corner_x, corner_y, corner_z])
+                            
+                            if len(additional_vertices) > 0:
+                                additional_vertices_array = np.array(additional_vertices, dtype=float)
+                                all_vertices = np.vstack([all_vertices, additional_vertices_array])
+                                print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt")
+                    
+                    # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
+                    base_vertex_count = X_grid.size
+                    additional_vertex_start_idx = base_vertex_count
+                    additional_vertices_array = np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+                    
+                    # 🎯 RAND-VERTICES AUF SURFACE-GRENZE PROJIZIEREN
+                    # Für Rand-Vertices (in erweiterter Maske, aber nicht in strikter Maske):
+                    # Verschiebe sie auf die Surface-Grenze, damit Polygone exakt am Rand verlaufen
+                    if geom.orientation in ("planar", "sloped"):
+                        # Berechne Rand-Vertices: in erweitert, aber nicht in strikt
+                        is_on_boundary = mask_flat & (~mask_strict_flat)
+                        boundary_indices = np.where(is_on_boundary)[0]
+                        
+                        if len(boundary_indices) > 0:
+                            # Lade Surface-Polygon für Projektion
+                            surface_points = geom.points or []
+                            if len(surface_points) >= 3:
+                                # Extrahiere Polygon-Koordinaten (für planare/schräge: x,y)
+                                polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+                                polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+                                
+                                # Projiziere jeden Rand-Vertex auf die nächstliegende Polygon-Kante oder Ecke
+                                for idx in boundary_indices:
+                                    v = all_vertices[idx]
+                                    vx, vy = v[0], v[1]
+                                    
+                                    # Finde nächstliegenden Punkt auf Polygon-Rand (Kante oder Ecke)
+                                    min_dist_sq = np.inf
+                                    closest_x, closest_y = vx, vy
+                                    
+                                    n_poly = len(polygon_x)
+                                    
+                                    # 🎯 ZUERST: Prüfe Polygon-Ecken (für bessere Abdeckung an scharfen Ecken)
+                                    corner_threshold = 1e-6  # Sehr kleine Schwellenwert für "nahe an Ecke"
+                                    for i in range(n_poly):
+                                        corner_x, corner_y = polygon_x[i], polygon_y[i]
+                                        dist_sq_to_corner = (vx - corner_x)**2 + (vy - corner_y)**2
+                                        
+                                        # Wenn Vertex sehr nahe an einer Polygon-Ecke ist, projiziere direkt auf Ecke
+                                        if dist_sq_to_corner < corner_threshold:
+                                            closest_x, closest_y = corner_x, corner_y
+                                            min_dist_sq = dist_sq_to_corner
+                                            break  # Direkte Ecken-Projektion hat Priorität
+                                        
+                                        # Wenn noch kein guter Kandidat gefunden, prüfe ob Ecke näher ist als bisher
+                                        if dist_sq_to_corner < min_dist_sq:
+                                            min_dist_sq = dist_sq_to_corner
+                                            closest_x, closest_y = corner_x, corner_y
+                                    
+                                    # Dann: Prüfe alle Polygon-Kanten (kann bessere Projektion als Ecke liefern)
+                                    for i in range(n_poly):
+                                        p1 = np.array([polygon_x[i], polygon_y[i]])
+                                        p2 = np.array([polygon_x[(i + 1) % n_poly], polygon_y[(i + 1) % n_poly]])
+                                        
+                                        # Berechne Projektion von v auf Kante (p1, p2)
+                                        edge = p2 - p1
+                                        edge_len_sq = np.dot(edge, edge)
+                                        if edge_len_sq < 1e-12:
+                                            continue  # Degenerierte Kante
+                                        
+                                        t = np.dot([vx - p1[0], vy - p1[1]], edge) / edge_len_sq
+                                        t = np.clip(t, 0.0, 1.0)  # Clamp auf Kante
+                                        proj = p1 + t * edge
+                                        
+                                        # Berechne Abstand
+                                        dist_sq = (vx - proj[0])**2 + (vy - proj[1])**2
+                                        
+                                        # Verwende Kanten-Projektion nur wenn sie besser ist als Ecken-Projektion
+                                        # (außer wir haben bereits eine sehr nahe Ecken-Projektion gefunden)
+                                        if dist_sq < min_dist_sq or (min_dist_sq >= corner_threshold and dist_sq < min_dist_sq * 1.1):
+                                            min_dist_sq = dist_sq
+                                            closest_x, closest_y = proj[0], proj[1]
+                                    
+                                    # Verschiebe Vertex auf nächstliegenden Punkt auf Surface-Grenze
+                                    all_vertices[idx, 0] = closest_x
+                                    all_vertices[idx, 1] = closest_y
+                                    # Berechne Z-Koordinate neu basierend auf Plane-Model
+                                    if geom.plane_model:
+                                        try:
+                                            # Verwende _evaluate_plane_on_grid für konsistente Z-Berechnung
+                                            z_new = _evaluate_plane_on_grid(
+                                                geom.plane_model,
+                                                np.array([[closest_x]]),
+                                                np.array([[closest_y]])
+                                            )
+                                            if z_new is not None and z_new.size > 0:
+                                                all_vertices[idx, 2] = float(z_new.flat[0])
+                                        except Exception:
+                                            pass  # Falls Berechnung fehlschlägt, behalte alte Z-Koordinate
+                                
+                                if len(boundary_indices) > 0:
+                                    print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert")
+                    
+                    # Erstelle Index-Mapping: (i, j) → linearer Index
+                    # Für ein strukturiertes Grid: index = i * nx + j
+                    
+                    # Erstelle Faces: Pro Grid-Quadrat bis zu 2 Dreiecke
+                    # Ein Quadrat hat Ecken: (i,j), (i,j+1), (i+1,j), (i+1,j+1)
+                    # Dreieck 1: (i,j) → (i,j+1) → (i+1,j)
+                    # Dreieck 2: (i,j+1) → (i+1,j+1) → (i+1,j)
+                    faces_list = []
+                    active_quads = 0
+                    partial_quads = 0  # Quadrate mit 3 aktiven Ecken
+                    filtered_out = 0  # Dreiecke außerhalb der strikten Maske
+                    
+                    for i in range(ny - 1):
+                        for j in range(nx - 1):
+                            idx_tl = i * nx + j           # Top-Left
+                            idx_tr = i * nx + (j + 1)     # Top-Right
+                            idx_bl = (i + 1) * nx + j     # Bottom-Left
+                            idx_br = (i + 1) * nx + (j + 1)  # Bottom-Right
+                            
+                            # Prüfe mit erweiterter Maske (für SPL-Werte)
+                            tl_active = mask_flat[idx_tl]
+                            tr_active = mask_flat[idx_tr]
+                            bl_active = mask_flat[idx_bl]
+                            br_active = mask_flat[idx_br]
+                            
+                            # Prüfe mit strikter Maske (für Face-Filterung)
+                            tl_in_strict = mask_strict_flat[idx_tl]
+                            tr_in_strict = mask_strict_flat[idx_tr]
+                            bl_in_strict = mask_strict_flat[idx_bl]
+                            br_in_strict = mask_strict_flat[idx_br]
+                            
+                            active_count = sum([tl_active, tr_active, bl_active, br_active])
+                            strict_count = sum([tl_in_strict, tr_in_strict, bl_in_strict, br_in_strict])
+                            
+                            # Nur Quadrate verarbeiten, wenn mindestens eine Ecke aktiv ist (erweiterte Maske)
+                            # Nach Projektion der Rand-Vertices können wir alle aktiven Dreiecke erstellen
+                            if active_count == 0:
+                                # Alle Ecken inaktiv → überspringe komplett
+                                continue
+                            
+                            # Hilfsfunktion: Prüft ob ein Dreieck erstellt werden soll
+                            # Nach Projektion der Rand-Vertices auf die Surface-Grenze können wir
+                            # alle Dreiecke erstellen, die mindestens einen aktiven Vertex haben
+                            # (entweder in strikter Maske oder projizierter Rand-Vertex)
+                            def should_create_triangle(v1_in_strict, v2_in_strict, v3_in_strict, v1_active, v2_active, v3_active):
+                                strict_vertices = sum([v1_in_strict, v2_in_strict, v3_in_strict])
+                                active_vertices = sum([v1_active, v2_active, v3_active])
+                                # Erstelle Dreieck wenn mindestens 1 aktiver Vertex vorhanden ist
+                                # (nach Projektion liegen Rand-Vertices auf der Surface-Grenze)
+                                return active_vertices >= 1
+                            
+                            # Fall 1: Alle 4 Ecken aktiv → 2 Dreiecke
+                            if active_count == 4:
+                                # Dreieck 1: Top-Left → Top-Right → Bottom-Left
+                                if should_create_triangle(tl_in_strict, tr_in_strict, bl_in_strict, tl_active, tr_active, bl_active):
+                                    faces_list.extend([3, idx_tl, idx_tr, idx_bl])
+                                else:
+                                    filtered_out += 1
+                                # Dreieck 2: Top-Right → Bottom-Right → Bottom-Left
+                                if should_create_triangle(tr_in_strict, br_in_strict, bl_in_strict, tr_active, br_active, bl_active):
+                                    faces_list.extend([3, idx_tr, idx_br, idx_bl])
+                                else:
+                                    filtered_out += 1
+                                active_quads += 1
+                            
+                            # Fall 2: Genau 3 Ecken aktiv → 1 Dreieck (bis zum Rand)
+                            elif active_count == 3:
+                                # Bestimme welche Ecke fehlt und erstelle 1 Dreieck mit den 3 aktiven Ecken
+                                # Diese Dreiecke füllen die Fläche bis zum Rand
+                                if not tl_active:
+                                    # Fehlende Ecke: Top-Left → Dreieck mit tr, bl, br
+                                    if should_create_triangle(tr_in_strict, bl_in_strict, br_in_strict, tr_active, bl_active, br_active):
+                                        faces_list.extend([3, idx_tr, idx_br, idx_bl])
+                                    else:
+                                        filtered_out += 1
+                                elif not tr_active:
+                                    # Fehlende Ecke: Top-Right → Dreieck mit tl, bl, br
+                                    if should_create_triangle(tl_in_strict, bl_in_strict, br_in_strict, tl_active, bl_active, br_active):
+                                        faces_list.extend([3, idx_tl, idx_bl, idx_br])
+                                    else:
+                                        filtered_out += 1
+                                elif not bl_active:
+                                    # Fehlende Ecke: Bottom-Left → Dreieck mit tl, tr, br
+                                    if should_create_triangle(tl_in_strict, tr_in_strict, br_in_strict, tl_active, tr_active, br_active):
+                                        faces_list.extend([3, idx_tl, idx_tr, idx_br])
+                                    else:
+                                        filtered_out += 1
+                                else:  # not br_active
+                                    # Fehlende Ecke: Bottom-Right → Dreieck mit tl, tr, bl
+                                    if should_create_triangle(tl_in_strict, tr_in_strict, bl_in_strict, tl_active, tr_active, bl_active):
+                                        faces_list.extend([3, idx_tl, idx_tr, idx_bl])
+                                    else:
+                                        filtered_out += 1
+                                partial_quads += 1
+                            
+                            # 🎯 ZUSÄTZLICHE DREIECKE MIT POLYGON-ECKEN-VERTICES
+                            # Erstelle Dreiecke, die zusätzliche Ecken-Vertices verwenden (für höhere Auflösung)
+                            if len(additional_vertices) > 0 and active_count >= 1:
+                                # Prüfe für jeden zusätzlichen Ecken-Vertex, ob er nahe genug an diesem Quadrat ist
+                                for corner_idx, corner_vertex in enumerate(additional_vertices_array):
+                                    corner_vertex_idx = additional_vertex_start_idx + corner_idx
+                                    corner_x, corner_y = corner_vertex[0], corner_vertex[1]
+                                    
+                                    # Prüfe ob Ecken-Vertex innerhalb oder nahe diesem Quadrat ist
+                                    x_min, x_max = X_grid[0, j], X_grid[0, j+1] if j+1 < nx else X_grid[0, j]
+                                    y_min, y_max = Y_grid[i, 0], Y_grid[i+1, 0] if i+1 < ny else Y_grid[i, 0]
+                                    
+                                    # Erweitere Bereich um eine Resolution (für nahe Vertices)
+                                    tolerance = resolution * 1.5
+                                    if (x_min - tolerance <= corner_x <= x_max + tolerance and
+                                        y_min - tolerance <= corner_y <= y_max + tolerance):
+                                        
+                                        # Erstelle Dreiecke mit Ecken-Vertex + 2 aktive Grid-Ecken
+                                        active_corners = []
+                                        if tl_active:
+                                            active_corners.append((idx_tl, tl_in_strict))
+                                        if tr_active:
+                                            active_corners.append((idx_tr, tr_in_strict))
+                                        if bl_active:
+                                            active_corners.append((idx_bl, bl_in_strict))
+                                        if br_active:
+                                            active_corners.append((idx_br, br_in_strict))
+                                        
+                                        # Erstelle Dreiecke: Ecken-Vertex + 2 benachbarte aktive Ecken
+                                        if len(active_corners) >= 2:
+                                            for k in range(len(active_corners) - 1):
+                                                idx1, strict1 = active_corners[k]
+                                                idx2, strict2 = active_corners[k + 1]
+                                                # Ecken-Vertex ist immer aktiv (wird als aktiv betrachtet)
+                                                if should_create_triangle(True, strict1, strict2, True, True, True):
+                                                    faces_list.extend([3, corner_vertex_idx, idx1, idx2])
+                            
+                            # Fall 3: 2 Ecken aktiv → versuche Dreieck zu erstellen, wenn Ecken benachbart sind
+                            # Dies hilft, Ecken-Lücken zu füllen
+                            elif active_count == 2:
+                                # Finde die 2 aktiven Ecken
+                                active_corners = []
+                                if tl_active:
+                                    active_corners.append(('tl', idx_tl, tl_in_strict, tl_active))
+                                if tr_active:
+                                    active_corners.append(('tr', idx_tr, tr_in_strict, tr_active))
+                                if bl_active:
+                                    active_corners.append(('bl', idx_bl, bl_in_strict, bl_active))
+                                if br_active:
+                                    active_corners.append(('br', idx_br, br_in_strict, br_active))
+                                
+                                if len(active_corners) == 2:
+                                    corner1_name, corner1_idx, corner1_strict, corner1_active = active_corners[0]
+                                    corner2_name, corner2_idx, corner2_strict, corner2_active = active_corners[1]
+                                    
+                                    # Prüfe ob Ecken benachbart sind (können ein Dreieck mit Rand bilden)
+                                    # Benachbart: (tl,tr), (tl,bl), (tr,br), (bl,br)
+                                    adjacent_pairs = {
+                                        ('tl', 'tr'): [('bl', idx_bl), ('br', idx_br)],
+                                        ('tl', 'bl'): [('tr', idx_tr), ('br', idx_br)],
+                                        ('tr', 'br'): [('tl', idx_tl), ('bl', idx_bl)],
+                                        ('bl', 'br'): [('tl', idx_tl), ('tr', idx_tr)]
+                                    }
+                                    
+                                    # Normalisiere Reihenfolge
+                                    pair_key = tuple(sorted([corner1_name, corner2_name]))
+                                    
+                                    # Prüfe alle Kombinationen
+                                    if pair_key in adjacent_pairs:
+                                        # Versuche beide möglichen dritten Ecken
+                                        for diag_name, diag_idx in adjacent_pairs[pair_key]:
+                                            diag_active = mask_flat[diag_idx]
+                                            diag_strict = mask_strict_flat[diag_idx]
+                                            
+                                            # Erstelle Dreieck wenn dritte Ecke auch aktiv ist (projiziert)
+                                            if diag_active:
+                                                if should_create_triangle(corner1_strict, corner2_strict, diag_strict, corner1_active, corner2_active, diag_active):
+                                                    faces_list.extend([3, corner1_idx, corner2_idx, diag_idx])
+                                                    partial_quads += 1
+                                                    break  # Ein Dreieck reicht für benachbarte Ecken
+                    
+                    if len(faces_list) > 0:
+                        triangulated_vertices = all_vertices  # Alle Grid-Punkte als Vertices
+                        triangulated_faces = np.array(faces_list, dtype=np.int64)
+                        triangulated_success = True
+                        
+                        n_faces = len(faces_list) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
+                        n_vertices_used = len(np.unique(triangulated_faces[1::4]))  # Eindeutige Vertex-Indizes
+                        expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
+                        
+                        # 🎯 DEBUG: Detaillierte Ausgabe
+                        print(f"[DEBUG Triangulation] ✅ Surface '{geom.surface_id}': Grid-basierte Triangulation erfolgreich")
+                        print(f"  └─ Anzahl Grid-Punkte (Vertices): {len(all_vertices)}")
+                        print(f"  └─ Volle Quadrate (4 aktive Ecken): {active_quads}")
+                        print(f"  └─ Rand-Quadrate (3 aktive Ecken): {partial_quads}")
+                        print(f"  └─ Gefilterte Dreiecke (außerhalb strikte Maske): {filtered_out}")
+                        print(f"  └─ Anzahl Dreiecke (Faces): {n_faces} (erwartet: {expected_faces}, gefiltert: {filtered_out})")
+                        print(f"  └─ Verwendete Vertices: {n_vertices_used}")
+                        print(f"  └─ Vertices pro Grid-Punkt (Ø): {n_vertices_used / np.sum(mask_flat):.2f}")
+                        print(f"  └─ Vertices X-Range: [{all_vertices[:, 0].min():.3f}, {all_vertices[:, 0].max():.3f}]")
+                        print(f"  └─ Vertices Y-Range: [{all_vertices[:, 1].min():.3f}, {all_vertices[:, 1].max():.3f}]")
+                        print(f"  └─ Vertices Z-Range: [{all_vertices[:, 2].min():.3f}, {all_vertices[:, 2].max():.3f}]")
+                        
+                        # Prüfe auf NaN oder Inf
+                        if np.any(np.isnan(all_vertices)) or np.any(np.isinf(all_vertices)):
+                            print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
+                        else:
+                            print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
+                    else:
+                        print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Quadrate für Triangulation")
+                else:
+                    print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Grid-Punkte")
+            except Exception as e:
+                print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Fehler bei Triangulation: {e}")
+                import traceback
+                print(f"  └─ Traceback: {traceback.format_exc()}")
+                triangulated_success = False
+            
             surface_grids[geom.surface_id] = SurfaceGrid(
                 surface_id=geom.surface_id,
                 sound_field_x=sound_field_x,
@@ -2101,7 +2640,10 @@ class FlexibleGridGenerator(ModuleBase):
                 Z_grid=Z_grid,
                 surface_mask=surface_mask,
                 resolution=actual_resolution,
-                geometry=geom
+                geometry=geom,
+                triangulated_vertices=triangulated_vertices,
+                triangulated_faces=triangulated_faces,
+                triangulated_success=triangulated_success,
             )
             
             points_in_surface = int(np.sum(surface_mask))
@@ -2121,9 +2663,14 @@ class FlexibleGridGenerator(ModuleBase):
                 print(f"  └─ Punkte in Surface: {points_in_surface}/{total_points}")
                 print(f"  └─ Resolution: {actual_resolution:.3f} m")
                 print(f"  └─ Koordinaten-Spannen: X={x_span:.3f}, Y={y_span:.3f}, Z={z_span:.3f}")
-                print(f"  └─ X-Range: [{xs.min():.3f}, {xs.max():.3f}]")
-                print(f"  └─ Y-Range: [{ys.min():.3f}, {ys.max():.3f}]")
-                print(f"  └─ Z-Range: [{zs.min():.3f}, {zs.max():.3f}]")
+                print(f"  └─ X-Range: [{xs.min():.3f}, {xs.max():.3f}] (aus X_grid)")
+                print(f"  └─ Y-Range: [{ys.min():.3f}, {ys.max():.3f}] (aus Y_grid)")
+                print(f"  └─ Z-Range: [{zs.min():.3f}, {zs.max():.3f}] (aus Z_grid)")
+                # 🎯 DEBUG: Prüfe X_grid für Y-Z-Wände schräg
+                if geom.orientation == "vertical" and hasattr(geom, 'dominant_axis') and geom.dominant_axis == "yz":
+                    print(f"  └─ [DEBUG YZ-Wand] X_grid.shape={X_grid.shape}, X_grid.min()={X_grid.min():.3f}, X_grid.max()={X_grid.max():.3f}")
+                    print(f"  └─ [DEBUG YZ-Wand] sound_field_x (Y-Koordinaten): min={sound_field_x.min():.3f}, max={sound_field_x.max():.3f}")
+                    print(f"  └─ [DEBUG YZ-Wand] sound_field_y (Z-Koordinaten): min={sound_field_y.min():.3f}, max={sound_field_y.max():.3f}")
             else:
                 print(f"[DEBUG Grid pro Surface] '{geom.surface_id}': "
                       f"{points_in_surface}/{total_points} Punkte, Resolution: {actual_resolution:.3f} m")
@@ -2155,6 +2702,19 @@ class FlexibleGridGenerator(ModuleBase):
                 min_points_per_dimension=min_points_per_dimension
             )
 
+        # 🛠️ KORREKTUR: Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene berechnen
+        if geom.orientation in ("planar", "sloped") and geom.plane_model:
+            try:
+                Z_eval = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                if Z_eval is not None and Z_eval.shape == X_grid.shape:
+                    Z_grid = Z_eval
+                    if DEBUG_FLEXIBLE_GRID:
+                        zmin, zmax = float(Z_grid.min()), float(Z_grid.max())
+                        print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Z neu aus Ebene gesetzt (min={zmin:.3f}, max={zmax:.3f})")
+            except Exception as e:
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
+        
         ny, nx = X_grid.shape
         if len(sound_field_x) > 1 and len(sound_field_y) > 1:
             actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
@@ -2163,6 +2723,54 @@ class FlexibleGridGenerator(ModuleBase):
         else:
             actual_resolution = resolution
 
+        # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
+        # Pro Grid-Punkt werden Vertices verwendet, pro Grid-Quadrat 2 Dreiecke erstellt
+        triangulated_vertices = None
+        triangulated_faces = None
+        triangulated_success = False
+        
+        try:
+            mask_flat = surface_mask.ravel()
+            
+            if np.any(mask_flat):
+                # Erstelle Vertex-Koordinaten aus allen Grid-Punkten
+                all_vertices = np.column_stack([
+                    X_grid.ravel(),
+                    Y_grid.ravel(),
+                    Z_grid.ravel()
+                ])
+                
+                # Erstelle Faces: Pro aktives Grid-Quadrat 2 Dreiecke
+                faces_list = []
+                active_quads = 0
+                
+                for i in range(ny - 1):
+                    for j in range(nx - 1):
+                        idx_tl = i * nx + j
+                        idx_tr = i * nx + (j + 1)
+                        idx_bl = (i + 1) * nx + j
+                        idx_br = (i + 1) * nx + (j + 1)
+                        
+                        if (mask_flat[idx_tl] and mask_flat[idx_tr] and 
+                            mask_flat[idx_bl] and mask_flat[idx_br]):
+                            
+                            faces_list.extend([3, idx_tl, idx_tr, idx_bl])
+                            faces_list.extend([3, idx_tr, idx_br, idx_bl])
+                            active_quads += 1
+                
+                if len(faces_list) > 0:
+                    triangulated_vertices = all_vertices
+                    triangulated_faces = np.array(faces_list, dtype=np.int64)
+                    triangulated_success = True
+                    
+                    if DEBUG_FLEXIBLE_GRID:
+                        n_faces = len(faces_list) // 4
+                        print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': {n_faces} Dreiecke, {len(all_vertices)} Vertices, {active_quads} aktive Quadrate")
+        except Exception as e:
+            if DEBUG_FLEXIBLE_GRID:
+                print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Fehler bei Triangulation: {e}")
+            triangulated_success = False
+        
         return SurfaceGrid(
             surface_id=geom.surface_id,
             sound_field_x=sound_field_x,
@@ -2173,6 +2781,9 @@ class FlexibleGridGenerator(ModuleBase):
             surface_mask=surface_mask,
             resolution=actual_resolution,
             geometry=geom,
+            triangulated_vertices=triangulated_vertices,
+            triangulated_faces=triangulated_faces,
+            triangulated_success=triangulated_success,
         )
 
     def generate_per_group(
@@ -2284,6 +2895,75 @@ class FlexibleGridGenerator(ModuleBase):
             else:
                 actual_resolution = resolution
 
+            # 🎯 TRIANGULATION: Für Gruppen kombinieren wir alle Surfaces
+            triangulated_vertices = None
+            triangulated_faces = None
+            triangulated_success = False
+            
+            try:
+                # Kombiniere alle Surface-Punkte für Triangulation
+                all_points = []
+                for geom in geometries:
+                    all_points.extend(geom.points)
+                
+                # 🎯 DEBUG: Zeige Eingabe-Punkte für Gruppe
+                print(f"[DEBUG Triangulation] Gruppe '{gid}': Starte Triangulation")
+                print(f"  └─ Anzahl Surfaces in Gruppe: {len(geometries)}")
+                print(f"  └─ Kombinierte Punkte: {len(all_points)}")
+                for i, geom in enumerate(geometries):
+                    print(f"      └─ Surface {i+1} '{geom.surface_id}': {len(geom.points)} Punkte")
+                
+                if len(all_points) >= 3:
+                    pts_array = np.array([[p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)] for p in all_points])
+                    print(f"  └─ Kombinierte X-Range: [{pts_array[:, 0].min():.3f}, {pts_array[:, 0].max():.3f}]")
+                    print(f"  └─ Kombinierte Y-Range: [{pts_array[:, 1].min():.3f}, {pts_array[:, 1].max():.3f}]")
+                    print(f"  └─ Kombinierte Z-Range: [{pts_array[:, 2].min():.3f}, {pts_array[:, 2].max():.3f}]")
+                    
+                    tris = triangulate_points(all_points)
+                    if tris and len(tris) > 0:
+                        # Konvertiere Triangulation zu Vertices und Faces
+                        verts_list = []
+                        for tri in tris:
+                            for p in tri:
+                                verts_list.append([p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)])
+                        
+                        verts = np.array(verts_list, dtype=float)
+                        faces_list = []
+                        vertex_offset = 0
+                        for _ in tris:
+                            faces_list.extend([3, vertex_offset, vertex_offset + 1, vertex_offset + 2])
+                            vertex_offset += 3
+                        
+                        triangulated_vertices = verts
+                        triangulated_faces = np.array(faces_list, dtype=np.int64)
+                        triangulated_success = True
+                        
+                        # 🎯 DEBUG: Detaillierte Ausgabe der Triangulation für Gruppe
+                        print(f"[DEBUG Triangulation] ✅ Gruppe '{gid}': Triangulation erfolgreich")
+                        print(f"  └─ Anzahl Dreiecke: {len(tris)}")
+                        print(f"  └─ Anzahl Vertices: {len(verts)} (erwartet: {len(tris) * 3})")
+                        print(f"  └─ Anzahl Faces: {len(faces_list)//4} (Format: [n, v1, v2, v3, ...])")
+                        print(f"  └─ Vertices Shape: {verts.shape}")
+                        print(f"  └─ Faces Shape: {triangulated_faces.shape}")
+                        print(f"  └─ Vertices X-Range: [{verts[:, 0].min():.3f}, {verts[:, 0].max():.3f}]")
+                        print(f"  └─ Vertices Y-Range: [{verts[:, 1].min():.3f}, {verts[:, 1].max():.3f}]")
+                        print(f"  └─ Vertices Z-Range: [{verts[:, 2].min():.3f}, {verts[:, 2].max():.3f}]")
+                        
+                        # Prüfe auf NaN oder Inf
+                        if np.any(np.isnan(verts)) or np.any(np.isinf(verts)):
+                            print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
+                        else:
+                            print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
+                    else:
+                        print(f"[DEBUG Triangulation] ❌ Gruppe '{gid}': Keine Dreiecke erstellt (tris={tris})")
+                else:
+                    print(f"[DEBUG Triangulation] ❌ Gruppe '{gid}': Zu wenige Punkte ({len(all_points)} < 3)")
+            except Exception as e:
+                print(f"[DEBUG Triangulation] ❌ Gruppe '{gid}': Fehler bei Triangulation: {e}")
+                import traceback
+                print(f"  └─ Traceback: {traceback.format_exc()}")
+                triangulated_success = False
+            
             result[gid] = SurfaceGrid(
                 surface_id=str(gid),
                 sound_field_x=sound_field_x,
@@ -2294,6 +2974,9 @@ class FlexibleGridGenerator(ModuleBase):
                 surface_mask=mask_union,
                 resolution=actual_resolution,
                 geometry=geom_group,
+                triangulated_vertices=triangulated_vertices,
+                triangulated_faces=triangulated_faces,
+                triangulated_success=triangulated_success,
             )
 
         return result

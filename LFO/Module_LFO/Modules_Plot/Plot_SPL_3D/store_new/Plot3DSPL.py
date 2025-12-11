@@ -1,3 +1,6 @@
+""""neue variante"""
+
+
 from __future__ import annotations
 
 import hashlib
@@ -998,22 +1001,25 @@ class SPL3DPlotRenderer:
                         print(f"  └─ Gültige Werte: {np.sum(np.isfinite(p_db))}/{len(p_db)}")
                 
                 # Konvertiere zu SPL in dB
+                # 🎯 FIX: Kein Clipping hier - Originale Werte so lange wie möglich erhalten
+                # Clipping nur für Visualisierung am Ende, damit ColorbarManager korrekt arbeitet
                 if time_mode:
                     # Für Zeit-Modus: Direkt verwenden
                     spl_values = np.real(sound_field_p_complex)
                     spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
-                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                    # Clipping nur für Visualisierung am Ende, nicht hier
                 elif phase_mode:
                     # Für Phase-Modus: Phase extrahieren
                     spl_values = np.angle(sound_field_p_complex)
                     spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
-                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                    # Clipping nur für Visualisierung am Ende, nicht hier
                 else:
                     # Für SPL-Modus: Betrag zu dB
                     pressure_magnitude = np.abs(sound_field_p_complex)
-                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)  # Nur für Division durch Null
                     spl_values = self.functions.mag2db(pressure_magnitude)
                     spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                    # 🎯 FIX: Originale dB-Werte erhalten - Clipping nur für Visualisierung am Ende
                 
                 # 🎯 DEBUG: Zeige originale SPL-Werte (vor Quantisierung)
                 if DEBUG_PLOT3D_TIMING:
@@ -1110,7 +1116,9 @@ class SPL3DPlotRenderer:
                     x_plot = sound_field_x
                     y_plot = sound_field_y
                 
-                # Color step: Clipping + Quantisierung
+                # Color step: Quantisierung (ohne vorheriges Clipping)
+                # 🎯 FIX: Quantisierung OHNE vorheriges Clipping - Originale dB-Werte erhalten
+                # ColorbarManager verwendet cbar_min/cbar_max/cbar_step - Werte müssen nicht vorher geclippt werden
                 if is_step_mode:
                     # 🎯 DEBUG: Zeige Werte vor Quantisierung
                     if DEBUG_PLOT3D_TIMING:
@@ -1121,13 +1129,14 @@ class SPL3DPlotRenderer:
                             print(f"  └─ SPL min: {np.min(spl_valid_plot):.2f} dB")
                             print(f"  └─ SPL max: {np.max(spl_valid_plot):.2f} dB")
                             print(f"  └─ SPL mean: {np.mean(spl_valid_plot):.2f} dB")
+                            print(f"  └─ Colorbar Range: [{cbar_min:.2f}, {cbar_max:.2f}] dB, Step: {cbar_step:.2f} dB")
                             # Zeige Beispielwerte vor Quantisierung
                             sample_indices = np.linspace(0, spl_valid_plot.size-1, min(10, spl_valid_plot.size), dtype=int)
                             sample_values = spl_valid_plot[sample_indices]
                             print(f"  └─ Beispielwerte vor Quantisierung: {sample_values[:5]}")
-                    # Clipping vor der Quantisierung, um Ausreißer außerhalb der Colorbar zu verhindern
-                    spl_plot = np.clip(spl_plot, cbar_min, cbar_max)
+                    # 🎯 FIX: Quantisierung OHNE vorheriges Clipping - Originale Werte erhalten
                     scalars = self._quantize_to_steps(spl_plot, cbar_step)
+                    # Clipping nur für Visualisierung am Ende (nicht hier)
                     
                     # 🎯 DEBUG: Zeige quantisierte Werte
                     if DEBUG_PLOT3D_TIMING:
@@ -1229,11 +1238,9 @@ class SPL3DPlotRenderer:
                                         if is_step_mode:
                                             # Verwende originale Grid-Koordinaten (nicht upgescalte)
                                             points_orig = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-                                            # 🎯 WICHTIG: Begrenze Werte auf cbar_min/cbar_max VOR Quantisierung!
-                                            # So stellen wir sicher, dass keine Werte außerhalb des Colorbar-Bereichs quantisiert werden
-                                            spl_values_clipped = np.clip(spl_values.ravel(), cbar_min, cbar_max)
-                                            # Quantisiere die begrenzten SPL-Werte VOR der Interpolation
-                                            spl_orig_quantized = self._quantize_to_steps(spl_values_clipped, cbar_step)
+                                            # 🎯 FIX: Quantisierung OHNE vorheriges Clipping - Originale dB-Werte erhalten
+                                            # ColorbarManager verwendet cbar_min/cbar_max/cbar_step - Werte müssen nicht vorher geclippt werden
+                                            spl_orig_quantized = self._quantize_to_steps(spl_values.ravel(), cbar_step)
                                             
                                             # 🎯 DEBUG: Zeige verwendete Grid-Daten
                                             if DEBUG_PLOT3D_TIMING and sid == surfaces_to_triangulate[0][0]:  # Nur für erste Surface
@@ -1337,7 +1344,8 @@ class SPL3DPlotRenderer:
                             combined_verts = np.vstack(all_verts)
                             combined_faces = np.array(all_faces, dtype=np.int64)
                             combined_scalars = np.concatenate(all_scalars)
-                            # Clipping auf Colorbar-Bereich vor Übergabe an PyVista
+                            # 🎯 FIX: Clipping nur für Visualisierung (PyVista) - Originale Werte wurden bereits quantisiert
+                            # ColorbarManager verwendet cbar_min/cbar_max - Clipping hier ist OK für Darstellung
                             combined_scalars = np.clip(combined_scalars, cbar_min, cbar_max)
                             
                             # 🎯 DEBUG: Zeige finale Mesh-Daten
@@ -1393,6 +1401,8 @@ class SPL3DPlotRenderer:
                             if is_step_mode:
                                 unique_fallback = np.unique(valid_scalars_fallback)
                                 print(f"  └─ Eindeutige Scalars: {unique_fallback[:10] if len(unique_fallback) <= 10 else np.concatenate([unique_fallback[:5], unique_fallback[-5:]])}")
+                    # 🎯 FIX: Clipping nur für Visualisierung (vor build_surface_mesh)
+                    # ColorbarManager verwendet cbar_min/cbar_max - Clipping hier ist OK für Darstellung
                     scalars_for_mesh = np.clip(scalars, cbar_min, cbar_max)
                     mesh = build_surface_mesh(
                         x_plot,
@@ -1420,6 +1430,8 @@ class SPL3DPlotRenderer:
                     if DEBUG_PLOT3D_TIMING:
                         print(f"[DEBUG Plot] ⚠️ Fallback auf Raster-Mesh für Surface '{surface_id}'")
                     # Fallback wenn keine Triangulation möglich
+                    # 🎯 FIX: Clipping nur für Visualisierung (vor build_surface_mesh)
+                    # ColorbarManager verwendet cbar_min/cbar_max - Clipping hier ist OK für Darstellung
                     scalars_for_mesh = np.clip(scalars, cbar_min, cbar_max)
                     mesh = build_surface_mesh(
                         x_plot,
@@ -1919,19 +1931,22 @@ class SPL3DPlotRenderer:
                 sound_field_p_complex = np.array(result_data['sound_field_p'], dtype=complex)
                 
                 # Konvertiere zu SPL in dB (identisch zu horizontalen Flächen)
+                # 🎯 FIX: Kein Clipping hier - Originale Werte so lange wie möglich erhalten
+                # Clipping nur für Visualisierung am Ende, damit ColorbarManager korrekt arbeitet
                 if time_mode:
                     spl_values = np.real(sound_field_p_complex)
                     spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
-                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                    # Clipping nur für Visualisierung am Ende, nicht hier
                 elif phase_mode:
                     spl_values = np.angle(sound_field_p_complex)
                     spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
-                    spl_values = np.clip(spl_values, cbar_min, cbar_max)
+                    # Clipping nur für Visualisierung am Ende, nicht hier
                 else:
                     pressure_magnitude = np.abs(sound_field_p_complex)
-                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)  # Nur für Division durch Null
                     spl_values = self.functions.mag2db(pressure_magnitude)
                     spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                    # 🎯 FIX: Originale dB-Werte erhalten - Clipping nur für Visualisierung am Ende
                 
                 ny, nx = X_grid.shape
                 
@@ -2473,10 +2488,12 @@ class SPL3DPlotRenderer:
                             print(f"  └─ SPL min: {np.min(spl_valid_plot):.2f} dB")
                             print(f"  └─ SPL max: {np.max(spl_valid_plot):.2f} dB")
                             print(f"  └─ SPL mean: {np.mean(spl_valid_plot):.2f} dB")
+                            print(f"  └─ Colorbar Range: [{cbar_min:.2f}, {cbar_max:.2f}] dB, Step: {cbar_step:.2f} dB")
                     
-                    # Clipping vor der Quantisierung, um Ausreißer außerhalb der Colorbar zu verhindern
-                    spl_plot = np.clip(spl_plot, cbar_min, cbar_max)
+                    # 🎯 FIX: Quantisierung OHNE vorheriges Clipping - Originale dB-Werte erhalten
+                    # ColorbarManager verwendet cbar_min/cbar_max/cbar_step - Werte müssen nicht vorher geclippt werden
                     scalars = self._quantize_to_steps(spl_plot, cbar_step)
+                    # Clipping nur für Visualisierung am Ende (nicht hier)
                     
                     # 🎯 DEBUG: Zeige quantisierte Werte (vertikale Surfaces)
                     if DEBUG_PLOT3D_TIMING:

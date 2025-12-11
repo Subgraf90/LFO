@@ -647,12 +647,20 @@ def triangulate_points(points: List[Dict[str, float]]) -> List[List[Dict[str, fl
                 for a, b, c in valid_triangles:
                     triangles.append([points[a], points[b], points[c]])
                 
+                # 🎯 DEBUG: Ausgabe welche Triangulation verwendet wurde
+                print(f"[DEBUG Triangulation] ✅ DELAUNAY verwendet: {len(triangles)} Dreiecke (erwartet: {expected_tris})")
+                print(f"  └─ Eingabe: {len(points)} Punkte")
+                print(f"  └─ Delaunay-Dreiecke (vor Filterung): {len(triangles_delaunay)}")
+                print(f"  └─ Gültige Dreiecke (nach Filterung): {len(valid_triangles)}")
+                print(f"  └─ Ausgabe: {len(triangles)} Dreiecke")
+                
                 if len(triangles) < expected_tris:
                     logger.warning(
                         "Triangulation: Weniger Dreiecke als erwartet (got=%d, expected=%d)",
                         len(triangles),
                         expected_tris,
                     )
+                    print(f"  ⚠️  WARNUNG: Weniger Dreiecke als erwartet!")
                 else:
                     logger.debug("Triangulation: Delaunay erfolgreich, %d Dreiecke", len(triangles))
                 
@@ -696,6 +704,12 @@ def triangulate_points(points: List[Dict[str, float]]) -> List[List[Dict[str, fl
         len(filtered_order),
         expected_tris,
     )
+    
+    # 🎯 DEBUG: Ausgabe welche Triangulation verwendet wurde
+    print(f"[DEBUG Triangulation] ✅ FAN-TRIANGULATION verwendet (Fallback): {len(tris_idx)} Dreiecke (erwartet: {expected_tris})")
+    print(f"  └─ Eingabe: {len(points)} Punkte")
+    print(f"  └─ Nach Filterung: {len(filtered_order)} Punkte")
+    print(f"  └─ Ausgabe: {len(tris_idx)} Dreiecke")
     
     triangles: List[List[Dict[str, float]]] = []
     for a, b, c in tris_idx:

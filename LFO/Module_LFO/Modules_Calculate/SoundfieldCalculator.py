@@ -152,21 +152,140 @@ class SoundFieldCalculator(ModuleBase):
         # Hole aktivierte Surfaces
         enabled_surfaces = self._get_enabled_surfaces()
         
-        # 🎯 NEU: Flexible Grid-Erstellung via FlexibleGridGenerator (cartesian)
+        # 🎯 NEU: Flexible Grid-Erstellung via FlexibleGridGenerator (pro Group/Surface)
         if not enabled_surfaces:
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
-        cartesian_grid = self._grid_generator.generate(
+        
+        # Verwende generate_per_surface() um pro Surface Grids zu bekommen (nicht pro Gruppe)
+        surface_grids_grouped: Dict[str, Any] = self._grid_generator.generate_per_surface(
             enabled_surfaces,
-            method='cartesian',
             resolution=self.settings.resolution,
+            min_points_per_dimension=3
         )
-        sound_field_x = cartesian_grid.sound_field_x
-        sound_field_y = cartesian_grid.sound_field_y
-        X_grid = cartesian_grid.X_grid
-        Y_grid = cartesian_grid.Y_grid
-        Z_grid = cartesian_grid.Z_grid
-        surface_mask = cartesian_grid.surface_mask
-        surface_mask_strict = getattr(cartesian_grid, "surface_mask_strict", surface_mask)
+        
+        # Prüfe, welche Surfaces fehlen
+        enabled_ids = {sid for sid, _ in enabled_surfaces}
+        generated_ids = set(surface_grids_grouped.keys())
+        missing_ids = enabled_ids - generated_ids
+        if missing_ids:
+            print(f"⚠️  [SoundFieldCalculator] {len(missing_ids)} Surface(s) wurden beim Grid-Generieren übersprungen: {sorted(missing_ids)}")
+        
+        if not surface_grids_grouped:
+            return [], np.array([]), np.array([]), ({} if capture_arrays else None)
+        
+        # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul
+        surface_grids_data = {}
+        surface_results_data = {}
+        
+        # Kombiniere alle Grids zu einem gemeinsamen Grid für Rückwärtskompatibilität
+        all_x = []
+        all_y = []
+        for grid in surface_grids_grouped.values():
+            all_x.extend(grid.sound_field_x.tolist())
+            all_y.extend(grid.sound_field_y.tolist())
+        
+        if all_x and all_y:
+            unique_x = np.unique(np.array(all_x))
+            unique_y = np.unique(np.array(all_y))
+            unique_x.sort()
+            unique_y.sort()
+            
+            # Erstelle kombiniertes Grid für Rückwärtskompatibilität
+            X_grid_combined, Y_grid_combined = np.meshgrid(unique_x, unique_y, indexing='xy')
+            Z_grid_combined = np.zeros_like(X_grid_combined, dtype=float)
+            surface_mask_combined = np.zeros_like(X_grid_combined, dtype=bool)
+        else:
+            return [], np.array([]), np.array([]), ({} if capture_arrays else None)
+        
+        # 🎯 ALTE GRID-POSITIONEN AUSKOMMENTIERT - Verwende nur neue Grids
+        # sound_field_x = cartesian_grid.sound_field_x  # ALT
+        # sound_field_y = cartesian_grid.sound_field_y  # ALT
+        sound_field_x = unique_x  # NEU: Aus kombinierten Surface-Grids
+        sound_field_y = unique_y  # NEU: Aus kombinierten Surface-Grids
+        X_grid = X_grid_combined  # NEU: Kombiniertes Grid
+        Y_grid = Y_grid_combined  # NEU: Kombiniertes Grid
+        
+        # 🐛 DEBUG: Zeige verwendete Koordinatenachsen (kompakt)
+        try:
+            def _axis_summary(name: str, arr: np.ndarray) -> None:
+                arr = np.asarray(arr, dtype=float)
+                n = arr.size
+                amin = float(arr.min()) if n else 0.0
+                amax = float(arr.max()) if n else 0.0
+                # zeige erste/letzte 5 Werte, um Datenflut zu vermeiden
+                head = ", ".join(f"{v:.2f}" for v in arr[:5])
+                tail = ", ".join(f"{v:.2f}" for v in arr[-5:]) if n > 5 else ""
+                mid = " ... " if n > 10 else (" | " if n > 5 else "")
+                print(f"[DEBUG GRID AXIS] {name}: len={n}, min={amin:.2f}, max={amax:.2f}")
+                if n > 0:
+                    print(f"  {name} values: {head}{mid}{tail}")
+
+            _axis_summary("sound_field_x", sound_field_x)
+            _axis_summary("sound_field_y", sound_field_y)
+        except Exception as e:
+            print(f"[DEBUG GRID AXIS] Ausgabe fehlgeschlagen: {e}")
+        
+        # Kombiniere Z-Grids und Masken aus einzelnen Surface-Grids
+        from scipy.interpolate import griddata
+        for surface_id, grid in surface_grids_grouped.items():
+            # Vertikale Flächen nicht ins kombinierte Z-Grid mischen (Plots sind deaktiviert)
+            if getattr(grid.geometry, "orientation", None) == "vertical":
+                continue
+            # Interpoliere Z-Grid
+            points_orig = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
+            z_orig = grid.Z_grid.ravel()
+            mask_orig = grid.surface_mask.ravel()
+            
+            points_new = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
+            
+            # Interpoliere Z-Werte
+            if np.any(mask_orig):
+                z_interp = griddata(
+                    points_orig[mask_orig],
+                    z_orig[mask_orig],
+                    points_new,
+                    method='nearest',
+                    fill_value=0.0
+                )
+                Z_grid_combined = np.maximum(Z_grid_combined, z_interp.reshape(X_grid.shape))
+            
+            # Kombiniere Masken
+            mask_interp = griddata(
+                points_orig,
+                mask_orig.astype(float),
+                points_new,
+                method='nearest',
+                fill_value=0.0
+            )
+            surface_mask_combined = surface_mask_combined | (mask_interp.reshape(X_grid.shape) > 0.5)
+            
+            # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul
+            # 🎯 NEU: Füge triangulierte Daten hinzu
+            grid_data = {
+                'sound_field_x': grid.sound_field_x.tolist(),
+                'sound_field_y': grid.sound_field_y.tolist(),
+                'X_grid': grid.X_grid.tolist(),
+                'Y_grid': grid.Y_grid.tolist(),
+                'Z_grid': grid.Z_grid.tolist(),
+                'surface_mask': grid.surface_mask.astype(bool).tolist(),
+                'resolution': grid.resolution,
+                'orientation': grid.geometry.orientation,
+                'dominant_axis': getattr(grid.geometry, 'dominant_axis', None),
+            }
+            
+            # 🎯 TRIANGULATION: Füge triangulierte Vertices und Faces hinzu
+            if hasattr(grid, 'triangulated_vertices') and grid.triangulated_vertices is not None:
+                grid_data['triangulated_vertices'] = grid.triangulated_vertices.tolist()
+            if hasattr(grid, 'triangulated_faces') and grid.triangulated_faces is not None:
+                grid_data['triangulated_faces'] = grid.triangulated_faces.tolist()
+            if hasattr(grid, 'triangulated_success'):
+                grid_data['triangulated_success'] = grid.triangulated_success
+            
+            surface_grids_data[surface_id] = grid_data
+        
+        Z_grid = Z_grid_combined
+        surface_mask = surface_mask_combined
+        surface_mask_strict = surface_mask_combined.copy()
         # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
         total_points = int(X_grid.size)
         active_points = int(np.count_nonzero(surface_mask))
@@ -278,6 +397,9 @@ class SoundFieldCalculator(ModuleBase):
 
         surface_field_buffers: Dict[str, np.ndarray] = {}
         surface_point_buffers: Dict[str, np.ndarray] = {}
+        # 🎯 NEU: Pufferspeicher für direkt berechnete Surface-Grids (ohne Interpolation)
+        surface_results_buffers: Dict[str, np.ndarray] = {}
+        surface_grid_cache: Dict[str, Dict[str, Any]] = {}
         if surface_samples:
             for sample in surface_samples:
                 # Planare Flächen: Feldwerte direkt aus dem globalen Grid
@@ -295,6 +417,26 @@ class SoundFieldCalculator(ModuleBase):
                         sample_coords.reshape(-1, 3).shape[0],
                         dtype=complex,
                     )
+        # Lege pro Surface einen eigenen Grid-Puffer an, um SPL direkt dort zu berechnen
+        if surface_grids_grouped:
+            for sid, grid in surface_grids_grouped.items():
+                try:
+                    Xg = np.asarray(grid.X_grid, dtype=float)
+                    Yg = np.asarray(grid.Y_grid, dtype=float)
+                    Zg = np.asarray(grid.Z_grid, dtype=float)
+                    if Xg.size == 0 or Yg.size == 0 or Zg.size == 0:
+                        continue
+                    surface_results_buffers[sid] = np.zeros_like(Zg, dtype=complex)
+                    surface_grid_cache[sid] = {
+                        "X": Xg,
+                        "Y": Yg,
+                        "Z": Zg,
+                        "points": np.stack((Xg, Yg, Zg), axis=-1).reshape(-1, 3),
+                        "mask_flat": np.asarray(grid.surface_mask, dtype=bool).reshape(-1),
+                    }
+                except Exception:
+                    # Wenn etwas schiefgeht, einfach keinen Buffer anlegen
+                    continue
         
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
@@ -482,6 +624,67 @@ class SoundFieldCalculator(ModuleBase):
                     # Addiere die Welle dieses Lautsprechers zum Gesamt-Schallfeld
                     # Komplexe Addition → Automatische Interferenz (konstruktiv/destruktiv)
                     sound_field_p += wave
+                    # 🎯 NEU: Berechne das Schallfeld direkt auf jedem Surface-Grid
+                    if surface_results_buffers:
+                        for sid, cache in surface_grid_cache.items():
+                            try:
+                                Xg = cache["X"]
+                                Yg = cache["Y"]
+                                Zg = cache["Z"]
+                                points_surface = cache["points"]
+                                mask_flat_surface = cache.get("mask_flat")
+
+                                x_dist_s = Xg - source_position_x[isrc]
+                                y_dist_s = Yg - source_position_y[isrc]
+                                horizontal_s = np.sqrt(x_dist_s**2 + y_dist_s**2)
+                                z_dist_s = Zg - source_position_z[isrc]
+                                source_dists_s = np.sqrt(horizontal_s**2 + z_dist_s**2)
+
+                                azimuths_s = np.arctan2(y_dist_s, x_dist_s)
+                                azimuths_s = (np.degrees(azimuths_s) + np.degrees(source_azimuth[isrc])) % 360
+                                azimuths_s = (360 - azimuths_s) % 360
+                                azimuths_s = (azimuths_s + 90) % 360
+                                elevations_s = np.degrees(np.arctan2(z_dist_s, horizontal_s))
+
+                                gains_s, phases_s = self.get_balloon_data_batch(
+                                    speaker_name,
+                                    azimuths_s,
+                                    elevations_s,
+                                )
+                                if gains_s is None or phases_s is None:
+                                    continue
+
+                                magnitude_linear_s = 10 ** (gains_s / 20)
+                                polar_phase_rad_s = np.radians(phases_s)
+
+                                source_props_surface = {
+                                    "magnitude_linear": magnitude_linear_s.reshape(-1),
+                                    "polar_phase_rad": polar_phase_rad_s.reshape(-1),
+                                    "source_level": source_level[isrc],
+                                    "a_source_pa": a_source_pa,
+                                    "wave_number": wave_number,
+                                    "frequency": calculate_frequency,
+                                    "source_time": source_time[isrc],
+                                    "polarity": polarity_flag,
+                                    "distances": source_dists_s.reshape(-1),
+                                }
+
+                                mask_options_surface = {
+                                    "min_distance": 0.001,
+                                }
+                                if mask_flat_surface is not None:
+                                    mask_options_surface["additional_mask"] = mask_flat_surface
+
+                                wave_flat_surface = self._compute_wave_for_points(
+                                    points_surface,
+                                    source_position,
+                                    source_props_surface,
+                                    mask_options_surface,
+                                )
+                                surface_results_buffers[sid] += wave_flat_surface.reshape(Xg.shape)
+                            except Exception:
+                                # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
+                                continue
                     if surface_field_buffers:
                         for sample in surface_samples:
                             # Nur planare Surfaces nutzen die (row,col)-Indizes
@@ -579,10 +782,53 @@ class SoundFieldCalculator(ModuleBase):
                     }
                 )
 
+        # 🎯 NEU: Verwende direkt berechnete Surface-Grids, fallback auf Interpolation
+        if surface_results_buffers:
+            for surface_id, buffer in surface_results_buffers.items():
+                surface_results_data[surface_id] = {
+                    'sound_field_p': np.array(buffer, dtype=complex).tolist(),
+                }
+        else:
+            # Fallback: Interpolation aus dem globalen Grid
+            from scipy.interpolate import griddata
+            for surface_id, grid in surface_grids_grouped.items():
+                if surface_id not in surface_grids_data:
+                    continue
+                
+                # Interpoliere sound_field_p auf das Surface-Grid
+                points_orig = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
+                values_orig = sound_field_p.ravel()
+                points_new = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
+                
+                # Interpoliere komplexe Werte (Real- und Imaginärteil separat)
+                if np.any(values_orig != 0):
+                    real_interp = griddata(
+                        points_orig,
+                        np.real(values_orig),
+                        points_new,
+                        method='linear',
+                        fill_value=0.0
+                    )
+                    imag_interp = griddata(
+                        points_orig,
+                        np.imag(values_orig),
+                        points_new,
+                        method='linear',
+                        fill_value=0.0
+                    )
+                    sound_field_p_surface = (real_interp + 1j * imag_interp).reshape(grid.X_grid.shape)
+                else:
+                    sound_field_p_surface = np.zeros_like(grid.X_grid, dtype=complex)
+                
+                surface_results_data[surface_id] = {
+                    'sound_field_p': np.array(sound_field_p_surface).tolist(),
+                }
+        
         if isinstance(self.calculation_spl, dict):
-            self.calculation_spl['sound_field_z'] = Z_grid.tolist()
-            self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()
-            self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()
+            # 🎯 ALTE DATEN AUSKOMMENTIERT - Verwende nur neue Struktur
+            # self.calculation_spl['sound_field_z'] = Z_grid.tolist()  # ALT
+            # self.calculation_spl['surface_mask'] = surface_mask.astype(bool).tolist()  # ALT
+            # self.calculation_spl['surface_mask_strict'] = surface_mask_strict.astype(bool).tolist()  # ALT
             if surface_meshes:
                 self.calculation_spl['surface_meshes'] = [
                     mesh.to_payload() for mesh in surface_meshes
@@ -592,6 +838,10 @@ class SoundFieldCalculator(ModuleBase):
                 surface_id: values.tolist()
                 for surface_id, values in surface_fields.items()
             }
+            
+            # 🎯 NEU: Speichere surface_grids_data und surface_results_data für Plot-Modul
+            self.calculation_spl['surface_grids'] = surface_grids_data
+            self.calculation_spl['surface_results'] = surface_results_data
 
         return sound_field_p, sound_field_x, sound_field_y, array_fields
     

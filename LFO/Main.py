@@ -50,19 +50,6 @@ from Module_LFO.Modules_Window.WindowWidgets import DrawWidgets
 from Module_LFO.Modules_Window.WindowSnapshotWidget import SnapshotWidget
 from Module_LFO.Modules_Window.HelpWindow import HelpWindow
 
-"to Dos"
-
-"Logik"
-"Autosafe"
-
-"UI"
-"source window: bild generieren"
-
-"Layout"
-
-"Funktionalität"
-"Image Source noch nicht fertig"
-
 
 logger = logging.getLogger("lfo.main")
 
