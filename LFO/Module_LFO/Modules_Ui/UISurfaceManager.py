@@ -1017,9 +1017,6 @@ class UISurfaceManager(ModuleBase):
         item.setText(0, group.name)
         item.setData(0, Qt.UserRole, group.group_id)
         item.setData(0, Qt.UserRole + 1, "group")
-        bold_font = item.font(0)
-        bold_font.setBold(True)
-        item.setFont(0, bold_font)
         
         # Erhöhe Item-Höhe für mehr Abstand zwischen Gruppen
         from PyQt5.QtCore import QSize
@@ -2576,8 +2573,20 @@ class UISurfaceManager(ModuleBase):
     
     def show_surfaces_tab(self):
         """Zeigt den Surface-Parameter-Tab basierend auf der Auswahl"""
+        # Verwende currentItem(), falls nicht verfügbar, nimm das erste ausgewählte Item
         selected_item = self.surface_tree_widget.currentItem()
         if not selected_item:
+            selected_items = self.surface_tree_widget.selectedItems()
+            if selected_items:
+                selected_item = selected_items[0]
+                # Setze currentItem explizit
+                self.surface_tree_widget.setCurrentItem(selected_item)
+        
+        # Wenn kein Item ausgewählt ist, entferne alle Tabs
+        if not selected_item:
+            if hasattr(self, 'tab_widget') and self.tab_widget is not None:
+                while self.tab_widget.count() > 0:
+                    self.tab_widget.removeTab(0)
             return
         
         item_type = selected_item.data(0, Qt.UserRole + 1)
@@ -2937,6 +2946,35 @@ class UISurfaceManager(ModuleBase):
                             self.main_window.plot_spl(update_axes=False)
                     else:
                         # Keine laufende Berechnung - normale Verarbeitung
+                        # 🎯 WICHTIG: Stelle sicher, dass Surface-Definitionen in self.settings aktualisiert sind
+                        # bevor die Achsen berechnet werden (die Achsen verwenden self.settings.surface_definitions)
+                        # Da surface direkt aus _get_surface() kommt und die Punkte direkt modifiziert werden,
+                        # sollte die Referenz in settings bereits aktualisiert sein. Aber wir stellen sicher,
+                        # dass die Surface-Definitionen explizit in settings gespeichert werden.
+                        if hasattr(self.settings, 'surface_definitions'):
+                            surface_store = self.settings.surface_definitions
+                            if surface_store is None:
+                                surface_store = {}
+                            
+                            # Stelle sicher, dass die aktualisierte Surface-Definition in settings gespeichert wird
+                            if isinstance(surface, SurfaceDefinition):
+                                surface_store[surface_id] = surface
+                            else:
+                                # Surface ist ein Dict - konvertiere zu SurfaceDefinition und aktualisiere
+                                surface_obj = SurfaceDefinition.from_dict(surface_id, surface)
+                                surface_store[surface_id] = surface_obj
+                            
+                            self.settings.surface_definitions = surface_store
+                        
+                        # 🎯 Achsen ZUERST neu berechnen, da Surface-Koordinaten geändert wurden
+                        # (muss vor update_speaker_array_calculations erfolgen, damit aktualisierte Koordinaten verwendet werden)
+                        print(f"[DEBUG UISurfaceManager] Surface '{surface_id}' Koordinaten geändert - rufe calculate_axes() auf")
+                        if hasattr(self.main_window, 'calculate_axes'):
+                            print(f"[DEBUG UISurfaceManager] calculate_axes() wird aufgerufen mit update_plot=True")
+                            self.main_window.calculate_axes(update_plot=True)
+                        else:
+                            print(f"[DEBUG UISurfaceManager] FEHLER: main_window hat kein calculate_axes()")
+                        
                         if is_valid_for_spl:
                             # Surface ist gültig - aktualisiere Berechnungen/Plot
                             if hasattr(self.main_window, 'update_speaker_array_calculations'):
@@ -2947,6 +2985,10 @@ class UISurfaceManager(ModuleBase):
                             # Aktualisiere Plot (zeigt nur graue Fläche, keine SPL-Daten)
                             if hasattr(self.main_window, 'plot_spl'):
                                 self.main_window.plot_spl(update_axes=False)
+                            # 🎯 Achsen neu berechnen, da Surface-Koordinaten geändert wurden
+                            # (auch bei ungültigen Surfaces müssen Achsen neu berechnet werden)
+                            if hasattr(self.main_window, 'calculate_axes'):
+                                self.main_window.calculate_axes(update_plot=True)
     
     def _remove_spl_data_for_surface(self, surface_id: str) -> None:
         """
@@ -3384,6 +3426,11 @@ class UISurfaceManager(ModuleBase):
                     has_groups = True
                 else:
                     has_surfaces = True
+            
+            # Add-Optionen am Anfang
+            add_surface_action = menu.addAction("Add Surface")
+            add_group_action = menu.addAction("Add Group")
+            menu.addSeparator()
             
             # Einheitliche Reihenfolge: Duplicate, Rename, ---, Delete
             duplicate_action = menu.addAction("Duplicate")

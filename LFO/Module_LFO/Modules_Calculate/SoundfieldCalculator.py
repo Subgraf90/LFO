@@ -1319,7 +1319,7 @@ class SoundFieldCalculator(ModuleBase):
                 
                 # Nur gültige Surfaces hinzufügen
                 if is_valid_for_spl:
-                    enabled.append((surface_id, surface_data))
+                enabled.append((surface_id, surface_data))
                 else:
                     if DEBUG_SOUNDFIELD:
                         print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' wird übersprungen (ungültig)")

@@ -824,6 +824,7 @@ class MainWindow(QtWidgets.QMainWindow):
             include_y: Ob die Y-Achse per Superposition berechnet werden soll
             update_plot: Ob die Plots aktualisiert werden sollen
         """
+        print(f"[DEBUG Main.calculate_axes] Aufgerufen mit include_x={include_x}, include_y={include_y}, update_plot={update_plot}")
         if not include_x and not include_y:
             self._set_axes_show_flag(False)
             return
@@ -831,20 +832,41 @@ class MainWindow(QtWidgets.QMainWindow):
         performed = False
 
         if include_x:
+            print(f"[DEBUG Main.calculate_axes] Berechne X-Achse...")
             calculator_x = SoundFieldCalculatorXaxis(self.settings, self.container.data, self.container.calculation_spl)
             calculator_x.set_data_container(self.container)  # 🚀 ERFORDERLICH für optimierte Balloon-Daten!
             calculator_x.calculateXAxis()
             self.container.set_calculation_axes(calculator_x.calculation_spl)
+            # 🎯 Stelle sicher, dass show_in_plot auf True gesetzt ist, wenn Daten vorhanden sind
+            aktuelle_simulation = self.container.calculation_axes.get("aktuelle_simulation", {})
+            x_data = aktuelle_simulation.get("x_data_xaxis", [])
+            y_data = aktuelle_simulation.get("y_data_xaxis", [])
+            print(f"[DEBUG Main.calculate_axes] X-Achse Daten: x_data len={len(x_data) if x_data is not None else 0}, y_data len={len(y_data) if y_data is not None else 0}, show_in_plot={aktuelle_simulation.get('show_in_plot', 'NICHT GESETZT')}")
+            if x_data is not None and len(x_data) > 0:
+                aktuelle_simulation["show_in_plot"] = True
+                self.container.calculation_axes["aktuelle_simulation"] = aktuelle_simulation
+                print(f"[DEBUG Main.calculate_axes] X-Achse: show_in_plot auf True gesetzt")
             performed = True
 
         if include_y:
+            print(f"[DEBUG Main.calculate_axes] Berechne Y-Achse...")
             calculator_y = SoundFieldCalculatorYaxis(self.settings, self.container.data, self.container.calculation_spl)
             calculator_y.set_data_container(self.container)  # 🚀 ERFORDERLICH für optimierte Balloon-Daten!
             calculator_y.calculateYAxis()
             self.container.set_calculation_axes(calculator_y.calculation_spl)
+            # 🎯 Stelle sicher, dass show_in_plot auf True gesetzt ist, wenn Daten vorhanden sind
+            aktuelle_simulation = self.container.calculation_axes.get("aktuelle_simulation", {})
+            x_data = aktuelle_simulation.get("x_data_yaxis", [])
+            y_data = aktuelle_simulation.get("y_data_yaxis", [])
+            print(f"[DEBUG Main.calculate_axes] Y-Achse Daten: x_data len={len(x_data) if x_data is not None else 0}, y_data len={len(y_data) if y_data is not None else 0}, show_in_plot={aktuelle_simulation.get('show_in_plot', 'NICHT GESETZT')}")
+            if x_data is not None and len(x_data) > 0:
+                aktuelle_simulation["show_in_plot"] = True
+                self.container.calculation_axes["aktuelle_simulation"] = aktuelle_simulation
+                print(f"[DEBUG Main.calculate_axes] Y-Achse: show_in_plot auf True gesetzt")
             performed = True
 
         if not performed:
+            print(f"[DEBUG Main.calculate_axes] Keine Berechnung durchgeführt")
             self._set_axes_show_flag(False)
             if update_plot:
                 self.draw_plots.show_empty_axes()
@@ -853,10 +875,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_axes_show_flag(True)
 
         if update_plot:
+            print(f"[DEBUG Main.calculate_axes] Aktualisiere Plots...")
             if include_x:
+                print(f"[DEBUG Main.calculate_axes] Rufe plot_xaxis() auf...")
                 self.plot_xaxis()
             if include_y:
+                print(f"[DEBUG Main.calculate_axes] Rufe plot_yaxis() auf...")
                 self.plot_yaxis()
+        else:
+            print(f"[DEBUG Main.calculate_axes] update_plot=False - Plots werden NICHT aktualisiert")
         
     @measure_time("Main.calculate_polar")
     def calculate_polar(self, update_plot: bool = True):

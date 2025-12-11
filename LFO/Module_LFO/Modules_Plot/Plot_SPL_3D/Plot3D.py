@@ -53,7 +53,7 @@ DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
 #   - "none" / "off" / "" : Anti-Aliasing komplett deaktivieren
 #
 # Diese Variable kann bei Bedarf direkt angepasst werden, ohne weiteren Code zu ändern.
-PYVISTA_AA_MODE = "ssaa"
+PYVISTA_AA_MODE = "msaa"  # Multi-Sample Anti-Aliasing für schärfere Plots
 
 try:  # pragma: no cover - optional Abhängigkeit
     import pyvista as pv

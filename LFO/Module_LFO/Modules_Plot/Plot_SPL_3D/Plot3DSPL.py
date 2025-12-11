@@ -686,6 +686,10 @@ class SPL3DPlotRenderer:
         # Optionales Feintiming für diesen Pfad
         t_textures_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
 
+        # 🎯 DEBUG: Zeige aufgerufen
+        print(f"[DEBUG Plot Triangulation] _render_surfaces_textured aufgerufen")
+        print(f"  └─ surface_overrides vorhanden: {bool(surface_overrides)}, Anzahl: {len(surface_overrides) if surface_overrides else 0}")
+
         # 🎯 Nur mit per-Surface-Overrides arbeiten (keine globalen Positionen mehr)
         if not surface_overrides:
             return
@@ -791,7 +795,10 @@ class SPL3DPlotRenderer:
                 # 🚀 TEXTUR-CACHE: Auch Cache-Eintrag entfernen
                 self._surface_texture_cache.pop(sid, None)
 
-        if not enabled_surfaces:
+        # 🎯 WICHTIG: Wenn keine enabled_surfaces vorhanden sind, aber surface_overrides existieren,
+        # sollten wir trotzdem fortfahren, um vertikale Flächen zu plotten
+        if not enabled_surfaces and not surface_overrides:
+            print(f"[DEBUG Plot Triangulation] Keine enabled_surfaces und keine surface_overrides - beende _render_surfaces_textured")
             return
 
         # Versuche, aus der Plot-Geometrie einen effektiven Upscaling-Faktor zu rekonstruieren.
@@ -953,8 +960,9 @@ class SPL3DPlotRenderer:
         
         # 🎯 ERWEITERE surfaces_to_process: Füge Surfaces hinzu, die Overrides haben, aber nicht in enabled_surfaces sind
         # Dies ermöglicht das Plotten von vertikalen Flächen, die zwar Grids/Results haben, aber nicht aktiviert sind
-        override_surface_ids = set(surface_overrides.keys())
-        enabled_surface_ids = {sid for sid, _, _ in enabled_surfaces}
+        # WICHTIG: Dies funktioniert auch, wenn enabled_surfaces leer ist (keine Surfaces aktiviert)
+        override_surface_ids = set(surface_overrides.keys()) if surface_overrides else set()
+        enabled_surface_ids = {sid for sid, _, _ in enabled_surfaces} if enabled_surfaces else set()
         additional_surface_ids = override_surface_ids - enabled_surface_ids
         
         if additional_surface_ids and isinstance(surface_grids_data, dict):
@@ -972,6 +980,34 @@ class SPL3DPlotRenderer:
                             surfaces_to_process.append((sid, points, surface_def))
                             if DEBUG_PLOT3D_TIMING:
                                 print(f"[DEBUG Plot Overrides] Surface '{sid}' zu surfaces_to_process hinzugefügt (hat Override, aber nicht aktiviert)")
+                    else:
+                        # 🎯 FALLBACK: Wenn keine Surface-Definition vorhanden ist, versuche Punkte aus Grid-Daten zu extrahieren
+                        # Dies ist wichtig für vertikale Flächen, die möglicherweise keine explizite Definition haben
+                        grid_data = surface_grids_data.get(sid)
+                        if grid_data:
+                            X_grid = np.array(grid_data.get('X_grid', []), dtype=float)
+                            Y_grid = np.array(grid_data.get('Y_grid', []), dtype=float)
+                            Z_grid = np.array(grid_data.get('Z_grid', []), dtype=float)
+                            if X_grid.ndim == 2 and Y_grid.ndim == 2 and Z_grid.ndim == 2:
+                                # Extrahiere Eckpunkte aus dem Grid
+                                # Nimm die 4 Ecken des Grids
+                                ny, nx = X_grid.shape
+                                if ny >= 2 and nx >= 2:
+                                    points = [
+                                        {"x": float(X_grid[0, 0]), "y": float(Y_grid[0, 0]), "z": float(Z_grid[0, 0])},
+                                        {"x": float(X_grid[0, -1]), "y": float(Y_grid[0, -1]), "z": float(Z_grid[0, -1])},
+                                        {"x": float(X_grid[-1, -1]), "y": float(Y_grid[-1, -1]), "z": float(Z_grid[-1, -1])},
+                                        {"x": float(X_grid[-1, 0]), "y": float(Y_grid[-1, 0]), "z": float(Z_grid[-1, 0])},
+                                    ]
+                                    if len(points) >= 3:
+                                        surfaces_to_process.append((sid, points, None))
+                                        if DEBUG_PLOT3D_TIMING:
+                                            print(f"[DEBUG Plot Overrides] Surface '{sid}' zu surfaces_to_process hinzugefügt (Punkte aus Grid extrahiert, hat Override, aber nicht aktiviert)")
+        
+        # 🎯 DEBUG: Zeige alle Surfaces, die verarbeitet werden sollen
+        print(f"[DEBUG Plot Triangulation] surfaces_to_process: {len(surfaces_to_process)} Surfaces")
+        for sid, pts, obj in surfaces_to_process:
+            print(f"  └─ Surface '{sid}': {len(pts) if pts else 0} Punkte, Override vorhanden: {sid in surface_overrides if surface_overrides else False}")
         
         # Sequenzielle Verarbeitung
         for surface_id, points, surface_obj in surfaces_to_process:
@@ -1031,6 +1067,68 @@ class SPL3DPlotRenderer:
                                 print(f"      └─ Vertices X-Range: [{triangulated_vertices[:, 0].min():.3f}, {triangulated_vertices[:, 0].max():.3f}]")
                                 print(f"      └─ Vertices Y-Range: [{triangulated_vertices[:, 1].min():.3f}, {triangulated_vertices[:, 1].max():.3f}]")
                                 print(f"      └─ Vertices Z-Range: [{triangulated_vertices[:, 2].min():.3f}, {triangulated_vertices[:, 2].max():.3f}]")
+                                
+                                # 🎯 VERGLEICH: Surface-Punkte vs. Grid-Koordinaten
+                                surface_points = None
+                                if geometry_obj and hasattr(geometry_obj, 'points') and geometry_obj.points:
+                                    surface_points = geometry_obj.points
+                                elif hasattr(self.settings, 'surface_definitions'):
+                                    surface_def = self.settings.surface_definitions.get(surface_id)
+                                    if surface_def and hasattr(surface_def, 'points'):
+                                        surface_points = surface_def.points
+                                
+                                if surface_points:
+                                    print(f"  └─ [POSITION CHECK] Surface-Punkte vs. Vertices:")
+                                    print(f"      └─ Surface hat {len(surface_points)} Punkte")
+                                    for i, sp in enumerate(surface_points[:4]):  # Zeige erste 4 Punkte
+                                        if isinstance(sp, dict):
+                                            sx, sy, sz = sp.get('x', 0), sp.get('y', 0), sp.get('z', 0)
+                                        else:
+                                            # Falls es ein Array/Tuple ist
+                                            sx, sy, sz = float(sp[0]), float(sp[1]), float(sp[2]) if len(sp) > 2 else 0.0
+                                        # Finde nächstliegenden Vertex
+                                        if len(triangulated_vertices) > 0:
+                                            dists = np.sqrt(
+                                                (triangulated_vertices[:, 0] - sx)**2 +
+                                                (triangulated_vertices[:, 1] - sy)**2 +
+                                                (triangulated_vertices[:, 2] - sz)**2
+                                            )
+                                            min_idx = np.argmin(dists)
+                                            min_dist = dists[min_idx]
+                                            closest_v = triangulated_vertices[min_idx]
+                                            print(f"          Punkt {i}: Surface=({sx:.3f}, {sy:.3f}, {sz:.3f}) -> Nächster Vertex=({closest_v[0]:.3f}, {closest_v[1]:.3f}, {closest_v[2]:.3f}), Distanz={min_dist:.3f} m")
+                                
+                                # 🎯 VERGLEICH: Grid-Koordinaten vs. Vertices
+                                # Lade Grid-Daten für Vergleich
+                                Xg_check = np.asarray(grid_data.get("X_grid", []))
+                                Yg_check = np.asarray(grid_data.get("Y_grid", []))
+                                if Xg_check.size > 0 and Yg_check.size > 0:
+                                    Zg_check = np.asarray(grid_data.get("Z_grid", np.zeros_like(Xg_check)))
+                                    if Zg_check.shape != Xg_check.shape:
+                                        Zg_check = np.zeros_like(Xg_check)
+                                    grid_vertices = np.column_stack([Xg_check.ravel(), Yg_check.ravel(), Zg_check.ravel()])
+                                    print(f"  └─ [POSITION CHECK] Grid-Koordinaten vs. Vertices:")
+                                    print(f"      └─ Grid hat {len(grid_vertices)} Punkte")
+                                    if len(grid_vertices) > 0 and len(triangulated_vertices) > 0:
+                                        # Vergleiche erste/last Grid-Punkte mit Vertices
+                                        first_grid = grid_vertices[0]
+                                        last_grid = grid_vertices[-1]
+                                        first_vertex = triangulated_vertices[0]
+                                        last_vertex = triangulated_vertices[-1]
+                                        print(f"          Grid[0]: ({first_grid[0]:.3f}, {first_grid[1]:.3f}, {first_grid[2]:.3f}) vs Vertex[0]: ({first_vertex[0]:.3f}, {first_vertex[1]:.3f}, {first_vertex[2]:.3f})")
+                                        print(f"          Grid[-1]: ({last_grid[0]:.3f}, {last_grid[1]:.3f}, {last_grid[2]:.3f}) vs Vertex[-1]: ({last_vertex[0]:.3f}, {last_vertex[1]:.3f}, {last_vertex[2]:.3f})")
+                                        diff_first = np.linalg.norm(first_grid - first_vertex)
+                                        diff_last = np.linalg.norm(last_grid - last_vertex)
+                                        print(f"          Differenz[0]: {diff_first:.6f} m, Differenz[-1]: {diff_last:.6f} m")
+                                        
+                                        # Prüfe ob alle Vertices mit Grid übereinstimmen
+                                        if len(grid_vertices) == len(triangulated_vertices):
+                                            all_diffs = np.linalg.norm(grid_vertices - triangulated_vertices, axis=1)
+                                            max_diff = np.max(all_diffs)
+                                            mean_diff = np.mean(all_diffs)
+                                            print(f"          Max. Differenz: {max_diff:.6f} m, Mittel: {mean_diff:.6f} m")
+                                            if max_diff > 0.01:  # > 1cm
+                                                print(f"          ⚠️  WARNUNG: Große Differenzen zwischen Grid und Vertices!")
                                 
                                 # 🎯 Für schräge Flächen: Prüfe Z-Variation
                                 if surface_orientation == "sloped":
@@ -1278,11 +1376,17 @@ class SPL3DPlotRenderer:
                                 if np.isclose(cbar_min_local, cbar_max_local):
                                     cbar_min_local -= 1.0
                                     cbar_max_local += 1.0
+                                print(f"  └─ [DEBUG Colorbar] SPL-Range: [{debug_min:.1f}, {debug_max:.1f}] dB, Colorbar-Range: [{cbar_min:.1f}, {cbar_max:.1f}] dB")
+                                print(f"  └─ [DEBUG Colorbar] Lokale Colorbar-Range: [{cbar_min_local:.1f}, {cbar_max_local:.1f}] dB")
                             except Exception:
                                 pass
                             
                             # Clipping nur für Visualisierung
+                            spl_at_verts_before_clip = spl_at_verts.copy()
                             spl_at_verts = np.clip(spl_at_verts, cbar_min_local, cbar_max_local)
+                            clipped_count = np.sum((spl_at_verts_before_clip < cbar_min_local) | (spl_at_verts_before_clip > cbar_max_local))
+                            if clipped_count > 0:
+                                print(f"  └─ [DEBUG Colorbar] ⚠️  {clipped_count} Werte wurden geclippt (außerhalb [{cbar_min_local:.1f}, {cbar_max_local:.1f}] dB)")
                             
                             # 🎯 SUBDIVISION: Unterteile jedes Dreieck in 4 kleinere für schärfere Plots
                             # Dies erhöht die visuelle Auflösung ohne die Berechnungszeit zu erhöhen
@@ -1330,8 +1434,20 @@ class SPL3DPlotRenderer:
                                     except Exception:
                                         pass
                             
+                            # 🎯 DEBUG: Prüfe Mesh-Daten vor dem Plotten
+                            print(f"[DEBUG Plot Actor] Surface '{surface_id}': Prüfe Mesh vor Plot-Erstellung")
+                            print(f"  └─ Mesh n_points: {mesh.n_points}, n_cells: {mesh.n_cells}")
+                            print(f"  └─ Scalars vorhanden: {'plot_scalars' in mesh.array_names}")
+                            if 'plot_scalars' in mesh.array_names:
+                                scalars_array = mesh['plot_scalars']
+                                print(f"  └─ Scalars Shape: {scalars_array.shape}, Range=[{np.nanmin(scalars_array):.1f}, {np.nanmax(scalars_array):.1f}] dB")
+                                print(f"  └─ Gültige Scalars: {np.sum(np.isfinite(scalars_array))}/{len(scalars_array)}")
+                            print(f"  └─ Mesh Bounds: {mesh.bounds}")
+                            print(f"  └─ Colorbar Range: [{cbar_min:.1f}, {cbar_max:.1f}] dB")
+                            
                             # Füge trianguliertes Mesh hinzu
                             actor_name = f"{self.SURFACE_NAME}_tri_{surface_id}"
+                            print(f"[DEBUG Plot Actor] Surface '{surface_id}': Füge Actor '{actor_name}' hinzu")
                             actor = self.plotter.add_mesh(
                                 mesh,
                                 name=actor_name,
@@ -1343,6 +1459,31 @@ class SPL3DPlotRenderer:
                                 reset_camera=False,
                                 interpolate_before_map=False,  # Keine Interpolation - verwende exakte Vertex-Werte
                             )
+                            
+                            # 🎯 DEBUG: Prüfe ob Actor erfolgreich erstellt wurde
+                            print(f"[DEBUG Plot Actor] Surface '{surface_id}': Actor erstellt")
+                            print(f"  └─ Actor Type: {type(actor)}")
+                            print(f"  └─ Actor Name: {actor_name}")
+                            
+                            # Prüfe ob Actor im Plotter vorhanden ist
+                            if hasattr(self, 'plotter') and self.plotter is not None:
+                                actor_in_plotter = self.plotter.renderer.actors.get(actor_name)
+                                if actor_in_plotter is not None:
+                                    print(f"  └─ ✅ Actor '{actor_name}' im Plotter gefunden")
+                                    # Prüfe Actor-Eigenschaften
+                                    if hasattr(actor_in_plotter, 'GetVisibility'):
+                                        visibility = actor_in_plotter.GetVisibility()
+                                        print(f"  └─ Actor Visibility: {visibility}")
+                                    if hasattr(actor_in_plotter, 'GetMapper'):
+                                        mapper = actor_in_plotter.GetMapper()
+                                        if mapper is not None:
+                                            if hasattr(mapper, 'GetScalarRange'):
+                                                scalar_range = mapper.GetScalarRange()
+                                                print(f"  └─ Mapper ScalarRange: [{scalar_range[0]:.1f}, {scalar_range[1]:.1f}]")
+                                else:
+                                    print(f"  └─ ⚠️  WARNUNG: Actor '{actor_name}' NICHT im Plotter gefunden!")
+                            else:
+                                print(f"  └─ ⚠️  WARNUNG: Plotter nicht verfügbar!")
                             
                             # 🎯 Für schärfere Plots: Deaktiviere Interpolation (auch außerhalb step_mode)
                             # Nach Subdivision haben wir bereits mehr Polygone, daher keine zusätzliche Interpolation nötig
@@ -1465,10 +1606,10 @@ class SPL3DPlotRenderer:
         colorization_mode: str = "Gradient",
     ):
         """Aktualisiert die SPL-Fläche."""
-        t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+        # 🎯 UNBEDINGTE Debug-Meldung, um zu prüfen, ob die Funktion aufgerufen wird
+        print(f"[DEBUG Plot Overrides] update_spl_plot aufgerufen (DEBUG_PLOT3D_TIMING={DEBUG_PLOT3D_TIMING})")
         
-        if DEBUG_PLOT3D_TIMING:
-            print(f"[DEBUG Plot Overrides] update_spl_plot aufgerufen")
+        t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
 
         camera_state = self._camera_state or self._capture_camera()
 
@@ -1482,18 +1623,18 @@ class SPL3DPlotRenderer:
             surface_grids_data = calc_spl.get("surface_grids", {}) or {}
             surface_results_data = calc_spl.get("surface_results", {}) or {}
         
-        if DEBUG_PLOT3D_TIMING:
-            print(f"[DEBUG Plot Overrides] surface_grids_data vorhanden: {bool(surface_grids_data)}, Anzahl: {len(surface_grids_data) if isinstance(surface_grids_data, dict) else 0}")
-            print(f"[DEBUG Plot Overrides] surface_results_data vorhanden: {bool(surface_results_data)}, Anzahl: {len(surface_results_data) if isinstance(surface_results_data, dict) else 0}")
-            if isinstance(surface_grids_data, dict):
-                print(f"[DEBUG Plot Overrides] surface_grids_data Keys: {list(surface_grids_data.keys())}")
-            if isinstance(surface_results_data, dict):
-                print(f"[DEBUG Plot Overrides] surface_results_data Keys: {list(surface_results_data.keys())}")
+        # 🎯 UNBEDINGTE Debug-Meldungen
+        print(f"[DEBUG Plot Overrides] surface_grids_data vorhanden: {bool(surface_grids_data)}, Anzahl: {len(surface_grids_data) if isinstance(surface_grids_data, dict) else 0}")
+        print(f"[DEBUG Plot Overrides] surface_results_data vorhanden: {bool(surface_results_data)}, Anzahl: {len(surface_results_data) if isinstance(surface_results_data, dict) else 0}")
+        if isinstance(surface_grids_data, dict):
+            print(f"[DEBUG Plot Overrides] surface_grids_data Keys: {list(surface_grids_data.keys())}")
+        if isinstance(surface_results_data, dict):
+            print(f"[DEBUG Plot Overrides] surface_results_data Keys: {list(surface_results_data.keys())}")
         
         if isinstance(surface_grids_data, dict) and surface_grids_data and isinstance(surface_results_data, dict) and surface_results_data:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_grids_data: {list(surface_grids_data.keys())[:10]}")
-                print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_results_data: {list(surface_results_data.keys())[:10]}")
+            # 🎯 UNBEDINGTE Debug-Meldungen
+            print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_grids_data: {list(surface_grids_data.keys())[:10]}")
+            print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_results_data: {list(surface_results_data.keys())[:10]}")
             for sid, grid_data in surface_grids_data.items():
                 orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
                 if sid not in surface_results_data:
@@ -1537,9 +1678,9 @@ class SPL3DPlotRenderer:
                         "source_y": np.asarray(gy, dtype=float),
                         "values": spl_values_db,  # Direkt die berechneten Werte verwenden
                     }
-                    if DEBUG_PLOT3D_TIMING:
-                        orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
-                        print(f"[DEBUG Plot Overrides] Override erstellt für Surface '{sid}' (orientation={orientation}): X={len(gx)} pts, Y={len(gy)} pts, Values={spl_values_db.shape}, SPL-Range=[{np.nanmin(spl_values_db):.1f}, {np.nanmax(spl_values_db):.1f}] dB")
+                    # 🎯 UNBEDINGTE Debug-Meldung
+                    orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
+                    print(f"[DEBUG Plot Overrides] Override erstellt für Surface '{sid}' (orientation={orientation}): X={len(gx)} pts, Y={len(gy)} pts, Values={spl_values_db.shape}, SPL-Range=[{np.nanmin(spl_values_db):.1f}, {np.nanmax(spl_values_db):.1f}] dB")
                 except Exception as e:
                     # Wenn etwas schiefgeht, einfach ohne Override weiterarbeiten
                     if DEBUG_PLOT3D_TIMING:
@@ -1550,12 +1691,15 @@ class SPL3DPlotRenderer:
         # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
         # ABER: Wenn surface_overrides vorhanden sind, müssen wir trotzdem plotten!
         has_surface_overrides = bool(surface_overrides)
-        if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
+        print(f"[DEBUG Plot Overrides] has_surface_overrides={has_surface_overrides}, Anzahl Overrides: {len(surface_overrides)}")
+        is_valid_global_data = self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure)
+        print(f"[DEBUG Plot Overrides] is_valid_global_data={is_valid_global_data}")
+        if not is_valid_global_data:
             if not has_surface_overrides:
+                print(f"[DEBUG Plot Overrides] Keine gültigen globalen SPL-Daten und keine Overrides - beende update_spl_plot")
                 return
             # Wenn nur surface_overrides vorhanden sind, verwende Dummy-Daten für globale Plot-Geometrie
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[DEBUG Plot Overrides] Keine gültigen globalen SPL-Daten, aber {len(surface_overrides)} Surface-Overrides vorhanden - verwende Dummy-Daten")
+            print(f"[DEBUG Plot Overrides] Keine gültigen globalen SPL-Daten, aber {len(surface_overrides)} Surface-Overrides vorhanden - verwende Dummy-Daten")
             # Erstelle minimale Dummy-Daten für die globale Plot-Geometrie
             sound_field_x = np.array([-1.0, 1.0])
             sound_field_y = np.array([-1.0, 1.0])
@@ -1660,11 +1804,20 @@ class SPL3DPlotRenderer:
         self._cached_original_plot_values = original_plot_values
         
         # 🎯 Validierung: Stelle sicher, dass original_plot_values die korrekte Shape hat
+        print(f"[DEBUG Plot Overrides] Prüfe original_plot_values Shape: {original_plot_values.shape}, erwartet: ({len(y)}, {len(x)})")
         if original_plot_values.shape != (len(y), len(x)):
-            raise ValueError(
-                f"original_plot_values Shape stimmt nicht überein: "
-                f"erhalten {original_plot_values.shape}, erwartet ({len(y)}, {len(x)})"
-            )
+            print(f"[DEBUG Plot Overrides] ⚠️  Shape-Mismatch! Aber wir haben surface_overrides, daher verwenden wir Dummy-Geometrie")
+            # Wenn surface_overrides vorhanden sind, erstelle eine Dummy-Geometrie
+            if has_surface_overrides:
+                # Erstelle minimale Dummy-Geometrie für die Validierung
+                original_plot_values = np.zeros((len(y), len(x)), dtype=float)
+                plot_values = np.zeros((len(y), len(x)), dtype=float)
+                print(f"[DEBUG Plot Overrides] Dummy-Geometrie erstellt: {original_plot_values.shape}")
+            else:
+                raise ValueError(
+                    f"original_plot_values Shape stimmt nicht überein: "
+                    f"erhalten {original_plot_values.shape}, erwartet ({len(y)}, {len(x)})"
+                )
 
         # Clipping nur für Visualisierung (nicht für Sampling)
         if time_mode:
@@ -1681,19 +1834,94 @@ class SPL3DPlotRenderer:
         # Verwende normales Upscaling für beide Modi (Performance)
         upscale_factor = self.UPSCALE_FACTOR
         
-        try:
-            geometry = prepare_plot_geometry(
-                x,
-                y,
-                plot_values,
-                settings=self.settings,
-                container=self.container,
-                default_upscale=upscale_factor,
-            )
-        except RuntimeError as exc:
-            # Fehler bei der Geometrie-Erzeugung → keine Szene leeren, nur SPL-Update abbrechen
-            # Vertikale SPL-Flächen werden ebenfalls nicht angepasst.
-            return
+        # 🎯 PRÜFE: Gibt es horizontale Surfaces, die eine Maske benötigen?
+        # Vertikale Flächen haben ihre eigenen Masken in surface_grids_data und benötigen keine globale Geometrie
+        has_horizontal_surfaces = False
+        if isinstance(surface_grids_data, dict):
+            for sid, grid_data in surface_grids_data.items():
+                orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
+                if orientation in ("planar", "sloped"):
+                    has_horizontal_surfaces = True
+                    break
+        
+        # Wenn nur vertikale Flächen vorhanden sind, erstelle direkt Dummy-Geometrie
+        if has_surface_overrides and not has_horizontal_surfaces:
+            print(f"[DEBUG Plot Overrides] Nur vertikale Flächen vorhanden - erstelle Dummy-Geometrie (keine globale Maske nötig)")
+            try:
+                from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import PlotSurfaceGeometry
+                dummy_x = np.array([-1.0, 1.0])
+                dummy_y = np.array([-1.0, 1.0])
+                dummy_values = np.array([[0.0, 0.0], [0.0, 0.0]])
+                dummy_mask = np.ones_like(dummy_values, dtype=bool)
+                dummy_z = np.zeros_like(dummy_values)
+                
+                geometry = PlotSurfaceGeometry(
+                    plot_x=dummy_x,
+                    plot_y=dummy_y,
+                    plot_values=dummy_values,
+                    z_coords=dummy_z,
+                    surface_mask=dummy_mask,
+                    source_x=dummy_x,
+                    source_y=dummy_y,
+                    requires_resample=False,
+                    was_upscaled=False,
+                )
+                print(f"[DEBUG Plot Overrides] ✅ Dummy-Geometrie erstellt (nur vertikale Flächen)")
+            except Exception as e_dummy:
+                print(f"[DEBUG Plot Overrides] ❌ Dummy-Geometrie fehlgeschlagen: {e_dummy}")
+                import traceback
+                print(f"  └─ Traceback: {traceback.format_exc()}")
+                return
+        else:
+            # Normale Geometrie-Erzeugung für horizontale Surfaces
+            try:
+                print(f"[DEBUG Plot Overrides] Erstelle Plot-Geometrie (x={len(x)}, y={len(y)}, plot_values.shape={plot_values.shape})")
+                geometry = prepare_plot_geometry(
+                    x,
+                    y,
+                    plot_values,
+                    settings=self.settings,
+                    container=self.container,
+                    default_upscale=upscale_factor,
+                )
+                print(f"[DEBUG Plot Overrides] ✅ Plot-Geometrie erfolgreich erstellt")
+            except RuntimeError as exc:
+                # Fehler bei der Geometrie-Erzeugung → keine Szene leeren, nur SPL-Update abbrechen
+                # Vertikale SPL-Flächen werden ebenfalls nicht angepasst.
+                print(f"[DEBUG Plot Overrides] ❌ Fehler bei Geometrie-Erzeugung: {exc}")
+                if has_surface_overrides:
+                    print(f"[DEBUG Plot Overrides] ⚠️  Aber wir haben surface_overrides, daher erstelle Dummy-Geometrie")
+                    # Erstelle minimale Dummy-Geometrie für surface_overrides
+                    # WICHTIG: prepare_plot_geometry benötigt eine surface_mask, die bei Dummy-Daten nicht existiert
+                    # Daher erstellen wir die Geometrie direkt ohne prepare_plot_geometry
+                    try:
+                        from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import PlotSurfaceGeometry
+                        # Erstelle minimale gültige Dummy-Daten mit surface_mask
+                        dummy_x = np.array([-1.0, 1.0])
+                        dummy_y = np.array([-1.0, 1.0])
+                        dummy_values = np.array([[0.0, 0.0], [0.0, 0.0]])
+                        dummy_mask = np.ones_like(dummy_values, dtype=bool)  # Alle Punkte aktiv
+                        dummy_z = np.zeros_like(dummy_values)
+                        
+                        geometry = PlotSurfaceGeometry(
+                            plot_x=dummy_x,
+                            plot_y=dummy_y,
+                            plot_values=dummy_values,
+                            z_coords=dummy_z,
+                            surface_mask=dummy_mask,
+                            source_x=dummy_x,
+                            source_y=dummy_y,
+                            requires_resample=False,
+                            was_upscaled=False,
+                        )
+                        print(f"[DEBUG Plot Overrides] ✅ Dummy-Geometrie erstellt (mit surface_mask)")
+                    except Exception as e_dummy:
+                        print(f"[DEBUG Plot Overrides] ❌ Auch Dummy-Geometrie fehlgeschlagen: {e_dummy}")
+                        import traceback
+                        print(f"  └─ Traceback: {traceback.format_exc()}")
+                        return
+                else:
+                    return
 
         if DEBUG_PLOT3D_TIMING:
             t_after_geom = time.perf_counter()
@@ -1781,6 +2009,10 @@ class SPL3DPlotRenderer:
                 pass
 
         # Zeichne alle aktiven Surfaces als Texturflächen
+        print(f"[DEBUG Plot Triangulation] ✅ Code erreicht Zeile 1900 - rufe _render_surfaces_textured auf")
+        print(f"[DEBUG Plot Triangulation] surface_overrides: {len(surface_overrides) if surface_overrides else 0} Overrides")
+        print(f"[DEBUG Plot Triangulation] geometry vorhanden: {geometry is not None}")
+        print(f"[DEBUG Plot Triangulation] original_plot_values Shape: {original_plot_values.shape if hasattr(original_plot_values, 'shape') else 'N/A'}")
         self._render_surfaces_textured(
             geometry,
             original_plot_values,
@@ -1793,6 +2025,10 @@ class SPL3DPlotRenderer:
             phase_mode=phase_mode,
             time_mode=time_mode,
         )
+        print(f"[DEBUG Plot Triangulation] _render_surfaces_textured zurückgekehrt")
+        
+        # 🎯 DEBUG: Zeige ob wir am Ende von update_spl_plot angekommen sind
+        print(f"[DEBUG Plot Triangulation] ✅ update_spl_plot erreicht Ende (nach _render_surfaces_textured)")
         
         if DEBUG_PLOT3D_TIMING:
             t_after_textures = time.perf_counter()
@@ -1906,6 +2142,33 @@ class SPL3DPlotRenderer:
         if DEBUG_PLOT3D_TIMING:
             self._validate_surface_plotting()
 
+        # 🎯 DEBUG: Prüfe alle erstellten Actors nach dem Plotten
+        print(f"[DEBUG Plot Actor] Prüfe alle erstellten Actors nach dem Plotten:")
+        if hasattr(self, '_surface_actors') and self._surface_actors:
+            print(f"  └─ _surface_actors: {list(self._surface_actors.keys())}")
+            for sid, actor in self._surface_actors.items():
+                actor_name = f"{self.SURFACE_NAME}_tri_{sid}"
+                if hasattr(self, 'plotter') and self.plotter is not None:
+                    actor_in_plotter = self.plotter.renderer.actors.get(actor_name)
+                    if actor_in_plotter is not None:
+                        print(f"  └─ ✅ Surface '{sid}': Actor '{actor_name}' im Plotter vorhanden")
+                        if hasattr(actor_in_plotter, 'GetVisibility'):
+                            visibility = actor_in_plotter.GetVisibility()
+                            print(f"      └─ Visibility: {visibility}")
+                        if hasattr(actor_in_plotter, 'GetBounds'):
+                            bounds = actor_in_plotter.GetBounds()
+                            print(f"      └─ Bounds: X=[{bounds[0]:.2f}, {bounds[1]:.2f}], Y=[{bounds[2]:.2f}, {bounds[3]:.2f}], Z=[{bounds[4]:.2f}, {bounds[5]:.2f}]")
+                    else:
+                        print(f"  └─ ❌ Surface '{sid}': Actor '{actor_name}' NICHT im Plotter gefunden!")
+        else:
+            print(f"  └─ ⚠️  _surface_actors ist leer oder nicht vorhanden")
+        
+        # Prüfe alle Actors im Plotter, die mit "spl_surface_tri_" beginnen
+        if hasattr(self, 'plotter') and self.plotter is not None:
+            all_actor_names = list(self.plotter.renderer.actors.keys())
+            tri_actors = [name for name in all_actor_names if name.startswith(f"{self.SURFACE_NAME}_tri_")]
+            print(f"  └─ Alle Triangulation-Actors im Plotter: {tri_actors}")
+
         if DEBUG_PLOT3D_TIMING:
             t_after_vertical = time.perf_counter()
 
@@ -1939,7 +2202,37 @@ class SPL3DPlotRenderer:
         if not self._has_plotted_data:
             self._maximize_camera_view(add_padding=True)
             self._has_plotted_data = True
+        
+        # 🎯 DEBUG: Prüfe Actors VOR render()
+        print(f"[DEBUG Plot Actor] Prüfe Actors VOR render():")
+        if hasattr(self, '_surface_actors') and self._surface_actors:
+            for sid in self._surface_actors.keys():
+                actor_name = f"{self.SURFACE_NAME}_tri_{sid}"
+                if hasattr(self, 'plotter') and self.plotter is not None:
+                    actor_in_plotter = self.plotter.renderer.actors.get(actor_name)
+                    if actor_in_plotter is not None:
+                        print(f"  └─ ✅ Surface '{sid}': Actor '{actor_name}' vorhanden VOR render()")
+                    else:
+                        print(f"  └─ ❌ Surface '{sid}': Actor '{actor_name}' NICHT vorhanden VOR render()")
+        
         self.render()
+        
+        # 🎯 DEBUG: Prüfe Actors NACH render()
+        print(f"[DEBUG Plot Actor] Prüfe Actors NACH render():")
+        if hasattr(self, '_surface_actors') and self._surface_actors:
+            for sid in self._surface_actors.keys():
+                actor_name = f"{self.SURFACE_NAME}_tri_{sid}"
+                if hasattr(self, 'plotter') and self.plotter is not None:
+                    actor_in_plotter = self.plotter.renderer.actors.get(actor_name)
+                    if actor_in_plotter is not None:
+                        print(f"  └─ ✅ Surface '{sid}': Actor '{actor_name}' vorhanden NACH render()")
+                        # Prüfe Camera-Bounds vs Actor-Bounds
+                        if hasattr(actor_in_plotter, 'GetBounds'):
+                            actor_bounds = actor_in_plotter.GetBounds()
+                            print(f"      └─ Actor Bounds: X=[{actor_bounds[0]:.2f}, {actor_bounds[1]:.2f}], Y=[{actor_bounds[2]:.2f}, {actor_bounds[3]:.2f}], Z=[{actor_bounds[4]:.2f}, {actor_bounds[5]:.2f}]")
+                    else:
+                        print(f"  └─ ❌ Surface '{sid}': Actor '{actor_name}' NICHT vorhanden NACH render()")
+        
         self._save_camera_state()
         self.colorbar_manager.set_override(None)
 
@@ -3230,6 +3523,7 @@ class SPL3DPlotRenderer:
                     # Planare Surfaces: "spl_surface_tex_{surface_id}" oder "spl_surface_tri_{surface_id}" (Triangulation)
                     # Vertikale Surfaces: "vertical_spl_{surface_id}"
                     has_actor = False
+                    actor_name = None  # 🎯 Initialisiere actor_name, damit es immer definiert ist
                     if hasattr(self, 'plotter') and self.plotter is not None:
                         try:
                             actor_names = []
@@ -3290,7 +3584,10 @@ class SPL3DPlotRenderer:
                     elif not has_actor:
                         status = "⚠️"
                         status_text = "WARNUNG (kein Actor)"
-                        issues.append(f"Actor '{actor_name}' nicht gefunden")
+                        if actor_name:
+                            issues.append(f"Actor '{actor_name}' nicht gefunden")
+                        else:
+                            issues.append("Kein Actor gefunden (keine Actor-Namen übereinstimmten)")
                         error_count += 1
                     else:
                         plotted_count += 1

@@ -276,25 +276,30 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         
         for surface_id, surface in active_surfaces:
             # Prüfe nochmal, ob Surface noch aktiv ist (könnte sich während der Berechnung geändert haben)
+            # 🎯 WICHTIG: Verwende aktualisierte Surface-Definitionen aus settings
             surface_store = getattr(self.settings, 'surface_definitions', {})
             current_surface = surface_store.get(surface_id)
-            if current_surface:
-                if isinstance(current_surface, SurfaceDefinition):
-                    xy_enabled = getattr(current_surface, 'xy_enabled', True)
-                    enabled = current_surface.enabled
-                    hidden = current_surface.hidden
+            
+            # Verwende aktualisierte Surface-Definition, falls vorhanden
+            surface_to_use = current_surface if current_surface is not None else surface
+            
+            if surface_to_use:
+                if isinstance(surface_to_use, SurfaceDefinition):
+                    xy_enabled = getattr(surface_to_use, 'xy_enabled', True)
+                    enabled = surface_to_use.enabled
+                    hidden = surface_to_use.hidden
+                    surface_name = surface_to_use.name
                 else:
-                    xy_enabled = current_surface.get('xy_enabled', True)
-                    enabled = current_surface.get('enabled', False)
-                    hidden = current_surface.get('hidden', False)
+                    xy_enabled = surface_to_use.get('xy_enabled', True)
+                    enabled = surface_to_use.get('enabled', False)
+                    hidden = surface_to_use.get('hidden', False)
+                    surface_name = surface_to_use.get('name', surface_id)
                 
                 if not (xy_enabled and enabled and not hidden):
-                    surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', surface_id)
                     continue
             
-            surface_name = surface.name if isinstance(surface, SurfaceDefinition) else surface.get('name', surface_id)
-            if self._line_intersects_surface_yz(position_x, surface):
-                y_coords, z_coords = self._get_surface_intersection_points_yz(position_x, surface)
+            if self._line_intersects_surface_yz(position_x, surface_to_use):
+                y_coords, z_coords = self._get_surface_intersection_points_yz(position_x, surface_to_use)
                 if y_coords is not None and z_coords is not None:
                     # Sammle alle Punkte von allen geschnittenen Surfaces
                     all_y_coords.append(y_coords)

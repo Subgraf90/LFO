@@ -54,7 +54,6 @@ class Sources(ModuleBase, QObject):
         self.create_beamsteering_tab()
         self.windowing_plot = None
         self.create_windowing_tab()
-        self.create_help_tab()
         
         # Debug-Schalter für Signalhandler
         self.debug_signals = False
@@ -436,31 +435,39 @@ class Sources(ModuleBase, QObject):
             # Füge das TreeWidget zum Layout hinzu mit Stretch-Faktor
             left_side_layout.addWidget(self.sources_tree_widget, 1)  # Stretch-Faktor 1
     
-            # Buttons zum Hinzufügen und Löschen von Arrays
+            # Button zum Hinzufügen mit Menü
             buttons_layout = QHBoxLayout()
             buttons_layout.setContentsMargins(0, 0, 0, 0)
             buttons_layout.setSpacing(5)
             buttons_layout.setAlignment(Qt.AlignLeft)
-            self.pushbutton_add_stack = QPushButton("Stack")
-            self.pushbutton_add_stack.setFixedWidth(120)  # Gleiche Breite wie Surface UI Buttons
-            self.pushbutton_add_flown = QPushButton("Flown")
-            self.pushbutton_add_flown.setFixedWidth(120)  # Gleiche Breite wie Surface UI Buttons
-            self.pushbutton_add_flown.setEnabled(True)  # Aktiviere den Flown-Button
-            # Buttons: Schriftgröße und Höhe
+            
+            self.pushbutton_add = QPushButton("Add")
+            self.pushbutton_add.setFixedWidth(120)  # Gleiche Breite wie Surface UI Buttons
+            # Button: Schriftgröße und Höhe
             btn_font = QtGui.QFont()
             btn_font.setPointSize(11)
-            self.pushbutton_add_stack.setFont(btn_font)
-            self.pushbutton_add_flown.setFont(btn_font)
-            self.pushbutton_add_stack.setFixedHeight(24)
-            self.pushbutton_add_flown.setFixedHeight(24)
-            buttons_layout.addWidget(self.pushbutton_add_stack)
-            buttons_layout.addWidget(self.pushbutton_add_flown)
+            self.pushbutton_add.setFont(btn_font)
+            self.pushbutton_add.setFixedHeight(24)
+            buttons_layout.addWidget(self.pushbutton_add)
+            
             buttons_layout.addStretch(1)
     
             left_side_layout.addLayout(buttons_layout)
     
-            self.pushbutton_add_stack.clicked.connect(self.add_stack)
-            self.pushbutton_add_flown.clicked.connect(self.add_flown)
+            # Erstelle Menü für Add-Button
+            add_menu = QMenu(self.sources_dockWidget)
+            add_stack_action = add_menu.addAction("Add Horizontal Array")
+            add_flown_action = add_menu.addAction("Add Vertical Array")
+            add_menu.addSeparator()
+            add_group_action = add_menu.addAction("Add Group")
+            
+            # Verbinde Aktionen
+            add_stack_action.triggered.connect(self.add_stack)
+            add_flown_action.triggered.connect(self.add_flown)
+            add_group_action.triggered.connect(self.create_group)
+            
+            # Setze Menü für Button
+            self.pushbutton_add.setMenu(add_menu)
             
             # Rechte Seite für TabWidget
             self.right_side_widget = QWidget()
@@ -474,8 +481,7 @@ class Sources(ModuleBase, QObject):
             # Erstelle die Tabs
             self.create_speaker_tab_stack()  # Wichtig: Hier wird der Speaker Tab erstellt
             self.create_beamsteering_tab()
-            self.create_windowing_tab()
-            self.create_help_tab()   
+            self.create_windowing_tab()   
             
             # Füge TabWidget zum rechten Widget hinzu
             right_layout = QVBoxLayout(self.right_side_widget)
@@ -2732,6 +2738,12 @@ class Sources(ModuleBase, QObject):
         if not speaker_array:
             print(f"Kein gültiges Lautsprecherarray mit ID {speaker_array_id} gefunden")
             return
+        
+        # Entferne alle vorhandenen Tabs (insbesondere Group Settings Tab)
+        # bevor Array-Tabs erstellt werden
+        if hasattr(self, 'tab_widget') and self.tab_widget is not None:
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
             
         # Prüfe, ob das Array eine Konfiguration hat (Stack oder Flown)
         if hasattr(speaker_array, 'configuration'):
@@ -3407,7 +3419,6 @@ class Sources(ModuleBase, QObject):
         self.create_speaker_tab_stack()
         self.create_beamsteering_tab()
         self.create_windowing_tab()
-        self.create_help_tab()
 
         # Erstelle neue Array-ID
         array_id = 1
@@ -5440,14 +5451,14 @@ class Sources(ModuleBase, QObject):
                     rename_action.triggered.connect(lambda: self.sources_tree_widget.editItem(item))
         else:
             # Kontextmenü für leeren Bereich
-            create_group_action = context_menu.addAction("Create Group")
+            create_stack_action = context_menu.addAction("Add Horizontal Array")
+            create_flown_action = context_menu.addAction("Add Vertical Array")
             context_menu.addSeparator()
-            create_stack_action = context_menu.addAction("Create Stacked Array")
-            create_flown_action = context_menu.addAction("Create Flown Array")
+            add_group_action = context_menu.addAction("Add Group")
             
-            create_group_action.triggered.connect(lambda: self.create_group())
             create_stack_action.triggered.connect(lambda: self.add_stack())
             create_flown_action.triggered.connect(lambda: self.add_flown())
+            add_group_action.triggered.connect(lambda: self.create_group())
         
         # Zeige Menü an Mausposition
         context_menu.exec_(self.sources_tree_widget.viewport().mapToGlobal(position))
@@ -5716,10 +5727,6 @@ class Sources(ModuleBase, QObject):
         """Setzt gemeinsame Formatierung für Gruppen-Items."""
         if not item:
             return
-        font = item.font(0)
-        if not font.bold():
-            font.setBold(True)
-        item.setFont(0, font)
         # Erhöhe Item-Höhe für mehr Abstand zwischen Gruppen
         from PyQt5.QtCore import QSize
         item.setSizeHint(0, QSize(0, 32))  # Standard ist ~24px, erhöht auf 32px
@@ -5989,13 +5996,15 @@ class Sources(ModuleBase, QObject):
             if child_type == "array":
                 # Array: Aktualisiere Checkbox und Array-Daten
                 array_id = child.data(0, Qt.UserRole)
-                if array_id is not None and checkbox:
-                    checkbox.blockSignals(True)
-                    # Verwende setCheckState für tristate-Checkboxen
-                    checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-                    checkbox.blockSignals(False)
+                if array_id is not None:
+                    # Aktualisiere Checkbox, falls vorhanden
+                    if checkbox:
+                        checkbox.blockSignals(True)
+                        # Verwende setCheckState für tristate-Checkboxen
+                        checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                        checkbox.blockSignals(False)
                     
-                    # Aktualisiere Array-Daten
+                    # Aktualisiere Array-Daten (immer, auch wenn keine Checkbox vorhanden ist)
                     speaker_array = self.settings.get_speaker_array(array_id)
                     if speaker_array:
                         if column == 1:  # Mute
