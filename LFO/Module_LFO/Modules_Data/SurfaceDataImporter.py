@@ -573,11 +573,9 @@ class SurfaceDataImporter:
             # Stelle sicher, dass imported Surfaces immer enabled=False haben
             surface.enabled = False
             
-            # Trianguliere bei >4 Punkten oder bei 4 Punkten, wenn nicht planar
+            # Trianguliere grundsätzlich alle Flächen mit mindestens 3 Punkten
             target_surfaces: List[Tuple[str, SurfaceDefinition]] = []
-            triangulate_needed = len(surface.points) > 4 or (
-                len(surface.points) == 4 and not validation_result.is_valid
-            )
+            triangulate_needed = len(surface.points) >= 3
             if triangulate_needed:
                 tris = triangulate_points(surface.points)
                 logger = logging.getLogger(__name__)

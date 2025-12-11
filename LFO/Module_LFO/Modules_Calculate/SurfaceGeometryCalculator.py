@@ -214,6 +214,30 @@ def derive_surface_plane(
     # Prüfe Steigung entlang X: Alle Punkte mit gleichem X benötigen identisches Z
     if _is_axis_planar(x_vals, z_vals, tol):
         slope, intercept = _fit_linear_relation(x_vals, z_vals)
+        # Berechne Residuen der linearen Anpassung entlang X
+        predicted_x = slope * x_vals + intercept
+        residuals_x = z_vals - predicted_x
+        max_err_x = float(np.max(np.abs(residuals_x)))
+        
+        # Wenn Slope nahe 0 trotz Z-Spanne ODER Residuen groß → versuche allgemeine Ebene
+        if (abs(slope) < 1e-6 and z_span > tol) or (max_err_x > tol * 10 and z_span > tol):
+            # Versuche allgemeine Ebene zu fitten
+            plane_model = _fit_planar_surface(x_vals, y_vals, z_vals)
+            if plane_model is not None:
+                predicted_xy = (
+                    plane_model["slope_x"] * x_vals
+                    + plane_model["slope_y"] * y_vals
+                    + plane_model["intercept"]
+                )
+                max_err_xy = float(np.max(np.abs(z_vals - predicted_xy)))
+                # Wenn allgemeine Ebene deutlich besser passt, verwende sie
+                if max_err_xy < max_err_x * 0.5 or max_err_xy <= tol:
+                    return plane_model, None
+            # Fallback: Verwende mode=x mit intercept
+            if abs(slope) < 1e-6:
+                print(f"[DEBUG derive_surface_plane] ⚠️  mode=x mit slope≈0 ({slope:.6f}) trotz Z-Spanne={z_span:.3f} m - verwende intercept")
+            elif max_err_x > tol * 10:
+                print(f"[DEBUG derive_surface_plane] ⚠️  mode=x mit großen Residuen (max_err={max_err_x:.6f} m) trotz Z-Spanne={z_span:.3f} m - verwende intercept")
         return (
             {
                 "mode": "x",
@@ -227,6 +251,30 @@ def derive_surface_plane(
     # Prüfe Steigung entlang Y: Alle Punkte mit gleichem Y benötigen identisches Z
     if _is_axis_planar(y_vals, z_vals, tol):
         slope, intercept = _fit_linear_relation(y_vals, z_vals)
+        # Berechne Residuen der linearen Anpassung entlang Y
+        predicted_y = slope * y_vals + intercept
+        residuals_y = z_vals - predicted_y
+        max_err_y = float(np.max(np.abs(residuals_y)))
+        
+        # Wenn Slope nahe 0 trotz Z-Spanne ODER Residuen groß → versuche allgemeine Ebene
+        if (abs(slope) < 1e-6 and z_span > tol) or (max_err_y > tol * 10 and z_span > tol):
+            # Versuche allgemeine Ebene zu fitten
+            plane_model = _fit_planar_surface(x_vals, y_vals, z_vals)
+            if plane_model is not None:
+                predicted_xy = (
+                    plane_model["slope_x"] * x_vals
+                    + plane_model["slope_y"] * y_vals
+                    + plane_model["intercept"]
+                )
+                max_err_xy = float(np.max(np.abs(z_vals - predicted_xy)))
+                # Wenn allgemeine Ebene deutlich besser passt, verwende sie
+                if max_err_xy < max_err_y * 0.5 or max_err_xy <= tol:
+                    return plane_model, None
+            # Fallback: Verwende mode=y mit intercept
+            if abs(slope) < 1e-6:
+                print(f"[DEBUG derive_surface_plane] ⚠️  mode=y mit slope≈0 ({slope:.6f}) trotz Z-Spanne={z_span:.3f} m - verwende intercept")
+            elif max_err_y > tol * 10:
+                print(f"[DEBUG derive_surface_plane] ⚠️  mode=y mit großen Residuen (max_err={max_err_y:.6f} m) trotz Z-Spanne={z_span:.3f} m - verwende intercept")
         return (
             {
                 "mode": "y",

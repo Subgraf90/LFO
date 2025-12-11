@@ -7,7 +7,9 @@ from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     _points_in_polygon_batch_uv,
+    SurfaceDefinition,
 )
+from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
 from typing import List, Dict, Tuple, Optional, Any
 
 DEBUG_SOUNDFIELD = bool(int(__import__("os").environ.get("LFO_DEBUG_SOUNDFIELD", "1")))
@@ -170,6 +172,13 @@ class SoundFieldCalculator(ModuleBase):
         if missing_ids:
             print(f"⚠️  [SoundFieldCalculator] {len(missing_ids)} Surface(s) wurden beim Grid-Generieren übersprungen: {sorted(missing_ids)}")
         
+        # Debug: Zeige Orientierungen der generierten Grids
+        if DEBUG_SOUNDFIELD:
+            print(f"[DEBUG SoundFieldCalculator] Generierte Grids: {len(surface_grids_grouped)}")
+            for sid, grid in surface_grids_grouped.items():
+                orientation = getattr(grid.geometry, "orientation", None) if hasattr(grid, 'geometry') else None
+                print(f"  └─ {sid}: orientation={orientation}, shape={grid.X_grid.shape if hasattr(grid, 'X_grid') else 'N/A'}")
+        
         if not surface_grids_grouped:
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
@@ -228,38 +237,39 @@ class SoundFieldCalculator(ModuleBase):
         # Kombiniere Z-Grids und Masken aus einzelnen Surface-Grids
         from scipy.interpolate import griddata
         for surface_id, grid in surface_grids_grouped.items():
-            # Vertikale Flächen nicht ins kombinierte Z-Grid mischen (Plots sind deaktiviert)
-            if getattr(grid.geometry, "orientation", None) == "vertical":
-                continue
-            # Interpoliere Z-Grid
-            points_orig = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
-            z_orig = grid.Z_grid.ravel()
-            mask_orig = grid.surface_mask.ravel()
+            is_vertical = getattr(grid.geometry, "orientation", None) == "vertical"
             
-            points_new = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-            
-            # Interpoliere Z-Werte
-            if np.any(mask_orig):
-                z_interp = griddata(
-                    points_orig[mask_orig],
-                    z_orig[mask_orig],
+            # Vertikale Flächen nicht ins kombinierte Z-Grid mischen (werden separat geplottet)
+            if not is_vertical:
+                # Interpoliere Z-Grid
+                points_orig = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
+                z_orig = grid.Z_grid.ravel()
+                mask_orig = grid.surface_mask.ravel()
+                
+                points_new = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
+                
+                # Interpoliere Z-Werte
+                if np.any(mask_orig):
+                    z_interp = griddata(
+                        points_orig[mask_orig],
+                        z_orig[mask_orig],
+                        points_new,
+                        method='nearest',
+                        fill_value=0.0
+                    )
+                    Z_grid_combined = np.maximum(Z_grid_combined, z_interp.reshape(X_grid.shape))
+                
+                # Kombiniere Masken
+                mask_interp = griddata(
+                    points_orig,
+                    mask_orig.astype(float),
                     points_new,
                     method='nearest',
                     fill_value=0.0
                 )
-                Z_grid_combined = np.maximum(Z_grid_combined, z_interp.reshape(X_grid.shape))
+                surface_mask_combined = surface_mask_combined | (mask_interp.reshape(X_grid.shape) > 0.5)
             
-            # Kombiniere Masken
-            mask_interp = griddata(
-                points_orig,
-                mask_orig.astype(float),
-                points_new,
-                method='nearest',
-                fill_value=0.0
-            )
-            surface_mask_combined = surface_mask_combined | (mask_interp.reshape(X_grid.shape) > 0.5)
-            
-            # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul
+            # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul (für ALLE Flächen, auch vertikale)
             # 🎯 NEU: Füge triangulierte Daten hinzu
             grid_data = {
                 'sound_field_x': grid.sound_field_x.tolist(),
@@ -311,6 +321,12 @@ class SoundFieldCalculator(ModuleBase):
             
             # Prüfe Z-Koordinaten für schräge Flächen
             for surface_id, surface_def in enabled_surfaces:
+                # Überspringe vertikale Flächen (sie sind nicht im kombinierten Grid)
+                if surface_id in surface_grids_grouped:
+                    grid = surface_grids_grouped[surface_id]
+                    if getattr(grid.geometry, "orientation", None) == "vertical":
+                        continue
+                
                 points = surface_def.get("points", [])
                 if len(points) < 3:
                     continue
@@ -784,9 +800,19 @@ class SoundFieldCalculator(ModuleBase):
 
         # 🎯 NEU: Verwende direkt berechnete Surface-Grids, fallback auf Interpolation
         if surface_results_buffers:
+            if DEBUG_SOUNDFIELD:
+                print(f"[DEBUG surface_results] surface_results_buffers: {list(surface_results_buffers.keys())}")
             for surface_id, buffer in surface_results_buffers.items():
+                # Prüfe ob Buffer nicht leer ist
+                buffer_array = np.array(buffer, dtype=complex)
+                if DEBUG_SOUNDFIELD:
+                    orientation = None
+                    if surface_id in surface_grids_grouped:
+                        orientation = getattr(surface_grids_grouped[surface_id].geometry, "orientation", None)
+                    non_zero_count = np.count_nonzero(np.abs(buffer_array))
+                    print(f"[DEBUG surface_results] Surface '{surface_id}' (orientation={orientation}): Buffer shape={buffer_array.shape}, non-zero values={non_zero_count}/{buffer_array.size}")
                 surface_results_data[surface_id] = {
-                    'sound_field_p': np.array(buffer, dtype=complex).tolist(),
+                    'sound_field_p': buffer_array.tolist(),
                 }
         else:
             # Fallback: Interpolation aus dem globalen Grid
@@ -1203,13 +1229,14 @@ class SoundFieldCalculator(ModuleBase):
         Filtert Surfaces nach:
         - enabled=True: Surface ist aktiviert
         - hidden=False: Surface ist nicht versteckt
+        - valid=True: Surface ist gültig (Validierung + Triangulation für 4+ Punkte)
         
-        Nur Surfaces, die beide Bedingungen erfüllen, werden in die Berechnung einbezogen.
+        Nur Surfaces, die alle Bedingungen erfüllen, werden in die Berechnung einbezogen.
         Die Koordination (wann Empty Plot, wann Berechnung) erfolgt über
         WindowPlotsMainwindow.update_plots_for_surface_state().
         
         Returns:
-            Liste von Tupeln (surface_id, surface_definition) - nur enabled + nicht-hidden Surfaces
+            Liste von Tupeln (surface_id, surface_definition) - nur enabled + nicht-hidden + gültige Surfaces
         """
         if not hasattr(self.settings, 'surface_definitions'):
             return []
@@ -1224,8 +1251,83 @@ class SoundFieldCalculator(ModuleBase):
                 # Fallback deaktiviert: nicht mehr still Attribute abgreifen,
                 # um fehlerhafte/grenzwertige Surface-Objekte sichtbar zu machen.
                 surface_data = {}
-            if surface_data.get('enabled', False) and not surface_data.get('hidden', False):
-                enabled.append((surface_id, surface_data))
+            
+            # Prüfe enabled und hidden
+            if not (surface_data.get('enabled', False) and not surface_data.get('hidden', False)):
+                continue
+            
+            # 🎯 VALIDIERUNG: Prüfe ob Surface für SPL-Berechnung verwendet werden kann
+            try:
+                # Erstelle SurfaceDefinition-Objekt für Validierung
+                if isinstance(surface_def, SurfaceDefinition):
+                    surface_obj = surface_def
+                else:
+                    surface_obj = SurfaceDefinition.from_dict(str(surface_id), surface_data)
+                
+                # Validiere Surface
+                validation_result = validate_and_optimize_surface(
+                    surface_obj,
+                    round_to_cm=False,
+                    remove_redundant=False,
+                )
+                
+                is_valid_for_spl = validation_result.is_valid
+                
+                # 🎯 ZUSÄTZLICHE PRÜFUNG: Prüfe ob Triangulation möglich ist
+                points = surface_data.get('points', [])
+                
+                # Prüfe ob bereits Grids existieren und ob Grid-Triangulation erfolgreich war
+                grid_triangulation_failed = False
+                if hasattr(self, 'calculation_spl') and isinstance(self.calculation_spl, dict):
+                    surface_grids = self.calculation_spl.get('surface_grids', {})
+                    if surface_id in surface_grids:
+                        grid = surface_grids[surface_id]
+                        # Prüfe triangulated_success aus dem Grid
+                        if hasattr(grid, 'triangulated_success'):
+                            if not grid.triangulated_success:
+                                grid_triangulation_failed = True
+                                if DEBUG_SOUNDFIELD:
+                                    print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}': Grid-Triangulation fehlgeschlagen (triangulated_success=False)")
+                        # Prüfe auch, ob aktive Grid-Punkte vorhanden sind
+                        if hasattr(grid, 'surface_mask'):
+                            active_points = np.sum(grid.surface_mask)
+                            if active_points == 0:
+                                grid_triangulation_failed = True
+                                if DEBUG_SOUNDFIELD:
+                                    print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}': Keine aktiven Grid-Punkte (0 aktive Punkte)")
+                
+                # Prüfe Punkt-basierte Triangulation (für alle Surfaces mit 3+ Punkten)
+                # WICHTIG: Auch wenn Grids existieren, sollte die Punkt-Triangulation funktionieren
+                if is_valid_for_spl and not grid_triangulation_failed and len(points) >= 3:
+                    try:
+                        # Versuche Triangulation
+                        triangles = triangulate_points(points)
+                        if not triangles or len(triangles) == 0:
+                            # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
+                            is_valid_for_spl = False
+                            if DEBUG_SOUNDFIELD:
+                                print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' mit {len(points)} Punkten: Punkt-Triangulation fehlgeschlagen (keine Dreiecke)")
+                    except Exception as e:
+                        # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
+                        is_valid_for_spl = False
+                        if DEBUG_SOUNDFIELD:
+                            print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' mit {len(points)} Punkten: Punkt-Triangulation fehlgeschlagen ({e})")
+                
+                # Wenn Grid-Triangulation fehlgeschlagen ist, Surface als ungültig markieren
+                if grid_triangulation_failed:
+                    is_valid_for_spl = False
+                
+                # Nur gültige Surfaces hinzufügen
+                if is_valid_for_spl:
+                    enabled.append((surface_id, surface_data))
+                else:
+                    if DEBUG_SOUNDFIELD:
+                        print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' wird übersprungen (ungültig)")
+            except Exception as e:
+                # Bei Fehler in Validierung: Surface überspringen
+                if DEBUG_SOUNDFIELD:
+                    print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' wird übersprungen (Validierungsfehler: {e})")
+                continue
         
         return enabled
 

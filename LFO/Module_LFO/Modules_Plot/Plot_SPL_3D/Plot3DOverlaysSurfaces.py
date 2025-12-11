@@ -10,6 +10,7 @@ import numpy as np
 
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DOverlaysBase import SPL3DOverlayBase
+from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
 
 DEBUG_OVERLAY_PERF = bool(int(os.environ.get("LFO_DEBUG_OVERLAY_PERF", "1")))
 
@@ -189,6 +190,10 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         inactive_surface_enabled = []
         disabled_surface_ids = []
         disabled_surface_points = []
+        # 🎯 NEU: Listen für ungültige enabled Surfaces (grau hinterlegen)
+        invalid_enabled_points_list = []
+        invalid_enabled_faces_list = []
+        invalid_enabled_lines_list = []
         
         tolerance = 1e-6
         
@@ -200,16 +205,51 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 enabled = bool(getattr(surface_def, 'enabled', False))
                 hidden = bool(getattr(surface_def, 'hidden', False))
                 points = getattr(surface_def, 'points', []) or []
+                surface_obj = surface_def
             else:
                 enabled = surface_def.get('enabled', False)
                 hidden = surface_def.get('hidden', False)
                 points = surface_def.get('points', [])
+                # Erstelle SurfaceDefinition-Objekt für Validierung
+                try:
+                    surface_obj = SurfaceDefinition.from_dict(str(surface_id), surface_def)
+                except Exception:
+                    surface_obj = None
             
             if hidden:
                 continue
             
             if len(points) < 3:
                 continue
+            
+            # 🎯 VALIDIERUNG: Prüfe ob enabled Surface für SPL-Berechnung verwendet werden kann
+            is_valid_for_spl = True
+            if enabled and surface_obj is not None:
+                try:
+                    validation_result = validate_and_optimize_surface(
+                        surface_obj,
+                        round_to_cm=False,
+                        remove_redundant=False,
+                    )
+                    is_valid_for_spl = validation_result.is_valid
+                    
+                    # 🎯 ZUSÄTZLICHE PRÜFUNG: Für Surfaces mit 4 oder mehr Punkten prüfe ob Triangulation möglich ist
+                    # (auch 4 Punkte müssen trianguliert werden können, wenn sie nicht planar sind)
+                    if is_valid_for_spl and len(points) >= 4:
+                        try:
+                            # Versuche Triangulation
+                            triangles = triangulate_points(points)
+                            if not triangles or len(triangles) == 0:
+                                # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
+                                is_valid_for_spl = False
+                                print(f"[DEBUG draw_surfaces] Surface '{surface_id}' mit {len(points)} Punkten: Triangulation fehlgeschlagen (keine Dreiecke)")
+                        except Exception as e:
+                            # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
+                            is_valid_for_spl = False
+                            print(f"[DEBUG draw_surfaces] Surface '{surface_id}' mit {len(points)} Punkten: Triangulation fehlgeschlagen ({e})")
+                except Exception:
+                    # Bei Fehler in Validierung: als ungültig behandeln
+                    is_valid_for_spl = False
             
             if enabled:
                 enabled_count += 1
@@ -218,7 +258,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             
             is_active = (str(surface_id) in active_ids_set)
             if is_active:
-                print(f"[DEBUG draw_surfaces] Surface {surface_id} is ACTIVE (enabled={enabled}, hidden={hidden})")
+                print(f"[DEBUG draw_surfaces] Surface {surface_id} is ACTIVE (enabled={enabled}, hidden={hidden}, valid_for_spl={is_valid_for_spl})")
             
             try:
                 point_coords = []
@@ -230,6 +270,11 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 
                 if len(point_coords) < 3:
                     continue
+                
+                # 🎯 DEBUG: Zeige Z-Koordinaten für ungültige Surfaces
+                if enabled and not is_valid_for_spl:
+                    z_values = [p[2] - z_offset for p in point_coords]
+                    print(f"[DEBUG draw_surfaces] Ungültige Surface '{surface_id}': Z-Werte = {z_values}")
                 
                 first_point = point_coords[0]
                 last_point = point_coords[-1]
@@ -247,6 +292,11 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 n_points = len(closed_coords)
                 closed_coords_array = np.array(closed_coords, dtype=float)
                 
+                # 🎯 DEBUG: Zeige Koordinaten-Array für ungültige Surfaces
+                if enabled and not is_valid_for_spl:
+                    print(f"[DEBUG draw_surfaces] Ungültige Surface '{surface_id}': closed_coords_array shape = {closed_coords_array.shape}")
+                    print(f"[DEBUG draw_surfaces] Ungültige Surface '{surface_id}': Z-Min = {closed_coords_array[:, 2].min():.2f}, Z-Max = {closed_coords_array[:, 2].max():.2f}")
+                
                 if not enabled:
                     disabled_surface_ids.append(str(surface_id))
                     disabled_surface_points.append(closed_coords_array)
@@ -260,14 +310,31 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         inactive_surface_ids.append(str(surface_id))
                         inactive_surface_enabled.append(False)
                 else:
-                    if is_active:
-                        active_enabled_points_list.append(closed_coords_array)
-                        active_enabled_lines_list.append(n_points)
+                    # 🎯 Enabled Surface: Prüfe ob gültig für SPL
+                    if not is_valid_for_spl:
+                        # Ungültige enabled Surface: grau hinterlegen, aber Rahmen trotzdem zeichnen
+                        invalid_enabled_points_list.append(closed_coords_array)
+                        invalid_enabled_faces_list.append(n_points)
+                        invalid_enabled_lines_list.append(n_points)
+                        # Rahmen wird separat gezeichnet (wie bei gültigen Surfaces)
+                        if is_active:
+                            active_enabled_points_list.append(closed_coords_array)
+                            active_enabled_lines_list.append(n_points)
+                        else:
+                            inactive_points_list.append(closed_coords_array)
+                            inactive_lines_list.append(n_points)
+                            inactive_surface_ids.append(str(surface_id))
+                            inactive_surface_enabled.append(True)
                     else:
-                        inactive_points_list.append(closed_coords_array)
-                        inactive_lines_list.append(n_points)
-                        inactive_surface_ids.append(str(surface_id))
-                        inactive_surface_enabled.append(True)
+                        # Gültige enabled Surface: normal behandeln
+                        if is_active:
+                            active_enabled_points_list.append(closed_coords_array)
+                            active_enabled_lines_list.append(n_points)
+                        else:
+                            inactive_points_list.append(closed_coords_array)
+                            inactive_lines_list.append(n_points)
+                            inactive_surface_ids.append(str(surface_id))
+                            inactive_surface_enabled.append(True)
                 
                 surfaces_drawn += 1
             except (ValueError, TypeError, AttributeError, Exception):
@@ -442,6 +509,102 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         self._category_actors['surfaces'].remove('surface_enabled_empty_plot_batch')
             except Exception:
                 pass
+        
+        # 🎯 NEU: Zeichne ungültige enabled Surfaces grau hinterlegt (immer, auch wenn SPL-Daten vorhanden)
+        if invalid_enabled_points_list:
+            try:
+                all_invalid_points = []
+                all_invalid_faces = []
+                point_offset = 0
+                
+                for points_array in invalid_enabled_points_list:
+                    # Sammle alle Punkte zuerst
+                    n_pts = len(points_array)
+                    all_invalid_points.append(points_array)
+                    
+                    # 🎯 Trianguliere für nicht-planare Flächen
+                    # Konvertiere numpy array zurück zu Dict-Format für triangulate_points
+                    points_dict = []
+                    for pt in points_array:
+                        # Entferne z_offset für Validierung
+                        z_original = pt[2] - z_offset
+                        points_dict.append({
+                            'x': float(pt[0]),
+                            'y': float(pt[1]),
+                            'z': float(z_original)
+                        })
+                    
+                    # Versuche Triangulation
+                    triangles = triangulate_points(points_dict)
+                    
+                    triangulation_success = False
+                    if triangles and len(triangles) > 0:
+                        # Triangulation erfolgreich: Verwende Dreiecke
+                        print(f"[DEBUG draw_surfaces] Trianguliere ungültige Surface: {len(triangles)} Dreiecke")
+                        for tri in triangles:
+                            # Finde Indizes der Punkte im points_array
+                            tri_indices = []
+                            for tri_pt in tri:
+                                # Suche passenden Punkt im points_array
+                                found = False
+                                for idx, pt in enumerate(points_array):
+                                    if (abs(pt[0] - tri_pt['x']) < tolerance and
+                                        abs(pt[1] - tri_pt['y']) < tolerance and
+                                        abs(pt[2] - (tri_pt['z'] + z_offset)) < tolerance):
+                                        tri_indices.append(point_offset + idx)
+                                        found = True
+                                        break
+                                if not found:
+                                    # Punkt nicht gefunden - verwende Polygon statt Triangulation
+                                    tri_indices = None
+                                    break
+                            
+                            if tri_indices and len(tri_indices) == 3:
+                                # Füge Dreieck hinzu (Format: [3, idx1, idx2, idx3])
+                                all_invalid_faces.extend([3] + tri_indices)
+                                triangulation_success = True
+                            else:
+                                # Triangulation fehlgeschlagen: Verwende Polygon
+                                triangulation_success = False
+                                break
+                    
+                    if not triangulation_success:
+                        # Keine Triangulation möglich oder fehlgeschlagen: Verwende Polygon
+                        face = [n_pts] + [point_offset + i for i in range(n_pts)]
+                        all_invalid_faces.extend(face)
+                    
+                    point_offset += n_pts
+                
+                if all_invalid_points and all_invalid_faces:
+                    all_points = np.vstack(all_invalid_points)
+                    invalid_polygon_mesh = self.pv.PolyData(all_points)
+                    invalid_polygon_mesh.faces = all_invalid_faces
+                    
+                    actor_name = "surface_invalid_enabled_batch"
+                    actor = self.plotter.add_mesh(
+                        invalid_polygon_mesh,
+                        name=actor_name,
+                        color='#808080',  # Grau
+                        opacity=0.6,
+                        smooth_shading=False,
+                        show_scalar_bar=False,
+                        reset_camera=False,
+                        show_edges=False,
+                    )
+                    try:
+                        if actor is not None and hasattr(actor, "SetPickable"):
+                            actor.SetPickable(False)
+                    except Exception:
+                        pass
+                    
+                    if actor_name not in self.overlay_actor_names:
+                        self.overlay_actor_names.append(actor_name)
+                    self._category_actors.setdefault('surfaces', []).append(actor_name)
+                    print(f"[DEBUG draw_surfaces] Ungültige enabled Surfaces gezeichnet: {len(invalid_enabled_points_list)} Flächen, {len(all_invalid_faces) // 4 if all_invalid_faces else 0} Faces")
+            except Exception as e:
+                print(f"[DEBUG draw_surfaces] ERROR drawing invalid enabled surfaces: {e}")
+                import traceback
+                traceback.print_exc()
         
         old_inactive_actors = [
             name for name in self.overlay_actor_names

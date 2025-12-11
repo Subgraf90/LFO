@@ -1471,9 +1471,30 @@ class GridBuilder(ModuleBase):
             min_y -= resolution
             max_y += resolution
             
-            # Erstelle 1D-Koordinaten-Arrays
-            sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-            sound_field_y = np.arange(min_y, max_y + resolution, resolution)
+            # 🎯 ADAPTIVE RESOLUTION: Höhere Dichte am Rand für schärfere Plots
+            # Erstelle feineres Grid am Rand (z.B. halbe Resolution) für bessere Detailwiedergabe
+            edge_resolution_factor = 0.5  # Halbe Resolution am Rand = doppelte Dichte
+            edge_resolution = resolution * edge_resolution_factor
+            edge_width = resolution * 2.0  # Randbereich: 2x Resolution (ca. 2m bei 1m Resolution)
+            
+            # Erstelle Basis-Grid mit normaler Resolution
+            sound_field_x_coarse = np.arange(min_x, max_x + resolution, resolution)
+            sound_field_y_coarse = np.arange(min_y, max_y + resolution, resolution)
+            
+            # Erstelle feineres Grid am Rand
+            # Links/Rechts: Von min_x bis min_x+edge_width und von max_x-edge_width bis max_x
+            x_fine_left = np.arange(min_x, min_x + edge_width + edge_resolution, edge_resolution)
+            x_fine_right = np.arange(max_x - edge_width, max_x + edge_resolution, edge_resolution)
+            x_middle = np.arange(min_x + edge_width, max_x - edge_width + resolution, resolution)
+            
+            # Oben/Unten: Von min_y bis min_y+edge_width und von max_y-edge_width bis max_y
+            y_fine_bottom = np.arange(min_y, min_y + edge_width + edge_resolution, edge_resolution)
+            y_fine_top = np.arange(max_y - edge_width, max_y + edge_resolution, edge_resolution)
+            y_middle = np.arange(min_y + edge_width, max_y - edge_width + resolution, resolution)
+            
+            # Kombiniere: Entferne Duplikate (wenn edge_width < resolution könnte es Überschneidungen geben)
+            sound_field_x = np.unique(np.concatenate([x_fine_left, x_middle, x_fine_right]))
+            sound_field_y = np.unique(np.concatenate([y_fine_bottom, y_middle, y_fine_top]))
             
             # Sicherstellen: Mindestens min_points_per_dimension Punkte
             if len(sound_field_x) < min_points_per_dimension:
@@ -1606,7 +1627,11 @@ class GridBuilder(ModuleBase):
                 # Dies ermöglicht erweiterte Punkte außerhalb der Surface-Grenze
                 Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
                 Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
-                print(f"  └─ Z-Werte berechnet für ALLE {total_grid_points} Punkte (auch außerhalb Surface)")
+                z_span_grid = float(np.max(Z_grid)) - float(np.min(Z_grid))
+                # Nur Warnung ausgeben, wenn Problem erkannt wird
+                if geometry.orientation == "sloped" and z_span_grid < 0.01:
+                    plane_mode = geometry.plane_model.get('mode', 'unknown')
+                    print(f"[DEBUG Z-Grid] ⚠️  Surface '{geometry.surface_id}' (sloped): Z-Grid-Spanne={z_span_grid:.3f} m <0.01 m (mode={plane_mode})!")
             else:
                 # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
                 surface_points = geometry.points or []
@@ -2212,12 +2237,37 @@ class FlexibleGridGenerator(ModuleBase):
         # Erstelle Grid für jede Surface
         surface_grids = {}
         for geom in geometries:
+            # 🛠️ VORBEREITUNG: Für "sloped" Flächen plane_model aus Punkten ableiten, BEVOR Grid erstellt wird
+            # Dies stellt sicher, dass build_single_surface_grid das korrekte plane_model verwendet
+            if geom.orientation == "sloped":
+                if geom.points:
+                    try:
+                        # Extrahiere Z-Werte aus Punkten zur Validierung
+                        points_z = np.array([p.get('z', 0.0) for p in geom.points], dtype=float)
+                        z_span_points = float(np.ptp(points_z)) if len(points_z) > 0 else 0.0
+                        
+                        plane_model_new, error_msg = derive_surface_plane(geom.points)
+                        if plane_model_new is not None:
+                            geom.plane_model = plane_model_new
+                            mode = plane_model_new.get('mode', 'unknown')
+                            # Nur Warnungen ausgeben, wenn Probleme erkannt werden
+                            if mode == "constant":
+                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model ist 'constant' trotz Z-Spanne={z_span_points:.3f} m!")
+                            elif mode in ("x", "y") and abs(plane_model_new.get('slope', 0.0)) < 1e-6:
+                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model hat slope≈0 (mode={mode}) trotz Z-Spanne={z_span_points:.3f} m!")
+                        else:
+                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model-Ableitung ergab None!")
+                    except Exception as e:
+                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model-Ableitung fehlgeschlagen: {e}")
+                else:
+                    print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Keine Punkte verfügbar!")
+            
             try:
                 result = self.builder.build_single_surface_grid(
-                    geometry=geom,
-                    resolution=resolution,
-                    min_points_per_dimension=min_points_per_dimension
-                )
+                        geometry=geom,
+                        resolution=resolution,
+                        min_points_per_dimension=min_points_per_dimension
+                    )
                 if len(result) == 7:
                     # Neue Version: Mit strikter Maske
                     (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
@@ -2234,19 +2284,49 @@ class FlexibleGridGenerator(ModuleBase):
                 continue
             
             # 🛠️ KORREKTUR: Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene berechnen
-            # Falls der Builder ein Z_grid mit 0 (oder None) geliefert hat, ersetze es durch die
-            # evaluierte Ebene aus dem plane_model. So vermeiden wir, dass alle Punkte auf z=25 m landen.
-            if geom.orientation in ("planar", "sloped") and geom.plane_model:
-                try:
-                    Z_eval = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
-                    if Z_eval is not None and Z_eval.shape == X_grid.shape:
-                        Z_grid = Z_eval
-                        if DEBUG_FLEXIBLE_GRID:
+            # Falls plane_model fehlt oder nahezu flache Z-Spanne ergibt, versuche Neu-Bestimmung aus den Punkten.
+            if geom.orientation in ("planar", "sloped"):
+                plane_model_local = geom.plane_model
+                # Für "sloped" Flächen: IMMER plane_model aus Punkten ableiten, wenn nicht vorhanden ODER wenn vorhanden aber falsch
+                # Für "planar" Flächen: Nur ableiten, wenn nicht vorhanden
+                if geom.orientation == "sloped":
+                    # Für schräge Flächen: Immer aus Punkten ableiten, um sicherzustellen, dass es korrekt ist
+                    if geom.points:
+                        try:
+                            plane_model_local, _ = derive_surface_plane(geom.points)
+                            geom.plane_model = plane_model_local
+                        except Exception as e:
+                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model konnte nicht abgeleitet werden: {e}")
+                            # Fallback: Verwende vorhandenes plane_model, falls vorhanden
+                            if plane_model_local is None:
+                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Kein plane_model verfügbar!")
+                    else:
+                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Keine Punkte verfügbar!")
+                else:
+                    # Für planare Flächen: Nur ableiten, wenn nicht vorhanden
+                    if plane_model_local is None and geom.points:
+                        try:
+                            plane_model_local, _ = derive_surface_plane(geom.points)
+                            geom.plane_model = plane_model_local
+                        except Exception as e:
+                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (planar): plane_model konnte nicht abgeleitet werden: {e}")
+                
+                if plane_model_local:
+                    try:
+                        z_old_span = float(Z_grid.max()) - float(Z_grid.min())
+                        Z_eval = _evaluate_plane_on_grid(plane_model_local, X_grid, Y_grid)
+                        if Z_eval is not None and Z_eval.shape == X_grid.shape:
+                            Z_grid = Z_eval
                             zmin, zmax = float(Z_grid.min()), float(Z_grid.max())
-                            print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Z neu aus Ebene gesetzt (min={zmin:.3f}, max={zmax:.3f})")
-                except Exception as e:
-                    if DEBUG_FLEXIBLE_GRID:
-                        print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
+                            z_span = zmax - zmin
+                            # Nur Warnung ausgeben, wenn Problem erkannt wird
+                            if geom.orientation == "sloped" and z_span < 0.01:
+                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Z-Spanne={z_span:.3f} m <0.01 m (vorher: {z_old_span:.3f} m)")
+                    except Exception as e:
+                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
+                else:
+                    if geom.orientation == "sloped":
+                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Kein plane_model verfügbar!")
             
             # Berechne tatsächliche Resolution (kann adaptiv sein)
             ny, nx = X_grid.shape
@@ -2714,7 +2794,7 @@ class FlexibleGridGenerator(ModuleBase):
             except Exception as e:
                 if DEBUG_FLEXIBLE_GRID:
                     print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
-        
+
         ny, nx = X_grid.shape
         if len(sound_field_x) > 1 and len(sound_field_y) > 1:
             actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
@@ -2770,7 +2850,7 @@ class FlexibleGridGenerator(ModuleBase):
             if DEBUG_FLEXIBLE_GRID:
                 print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Fehler bei Triangulation: {e}")
             triangulated_success = False
-        
+
         return SurfaceGrid(
             surface_id=geom.surface_id,
             sound_field_x=sound_field_x,
@@ -2963,7 +3043,7 @@ class FlexibleGridGenerator(ModuleBase):
                 import traceback
                 print(f"  └─ Traceback: {traceback.format_exc()}")
                 triangulated_success = False
-            
+
             result[gid] = SurfaceGrid(
                 surface_id=str(gid),
                 sound_field_x=sound_field_x,

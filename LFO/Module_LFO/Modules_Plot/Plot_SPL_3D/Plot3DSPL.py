@@ -36,6 +36,13 @@ from Module_LFO.Modules_Plot.Plot_SPL_3D.ColorbarManager import PHASE_CMAP
 
 DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
 
+# 🎯 Plot-Subdivision-Level: Anzahl Subdivision-Schritte für schärfere Plots
+# 0 = keine Subdivision (Original-Polygone)
+# 1 = 4x mehr Faces (jedes Dreieck → 4)
+# 2 = 16x mehr Faces (jedes Dreieck → 4 → 16)
+# 3 = 64x mehr Faces (jedes Dreieck → 4 → 16 → 64)
+PLOT_SUBDIVISION_LEVEL = 2
+
 
 class SPL3DPlotRenderer:
     """
@@ -213,6 +220,90 @@ class SPL3DPlotRenderer:
         result = vals[idx_y, idx_x]
         return result
 
+    @staticmethod
+    @staticmethod
+    def _subdivide_triangles(
+        vertices: np.ndarray,
+        faces: np.ndarray,
+        scalars: np.ndarray
+    ) -> tuple:
+        """
+        Unterteilt jedes Dreieck in 4 kleinere Dreiecke für schärfere Plots.
+        
+        Jedes Dreieck (A, B, C) wird zu 4 Dreiecken:
+        1. (A, M_AB, M_AC) - Mitte von AB, Mitte von AC
+        2. (M_AB, B, M_BC) - Mitte von AB, B, Mitte von BC
+        3. (M_AC, M_BC, C) - Mitte von AC, Mitte von BC, C
+        4. (M_AB, M_BC, M_AC) - Zentrum-Dreieck
+        
+        Args:
+            vertices: Array der Vertex-Koordinaten (Shape: N, 3)
+            faces: Array der Face-Indizes im PyVista-Format [n, i1, i2, i3, n, i4, i5, i6, ...]
+            scalars: Array der Skalar-Werte pro Vertex (Shape: N,)
+            
+        Returns:
+            Tuple von (neue_vertices, neue_faces, neue_scalars)
+        """
+        # Parse faces im PyVista-Format [n, v1, v2, v3, n, v4, v5, v6, ...]
+        n_faces = len(faces) // 4  # 4 Elemente pro Face
+        original_faces_list = []
+        for i in range(n_faces):
+            idx = i * 4
+            if faces[idx] == 3:  # Dreieck
+                v1, v2, v3 = faces[idx + 1], faces[idx + 2], faces[idx + 3]
+                original_faces_list.append((v1, v2, v3))
+        
+        if len(original_faces_list) == 0:
+            return vertices, faces, scalars
+        
+        # Verwende Dictionary für Kanten-Mittelpunkte (Cache für gemeinsame Kanten)
+        edge_midpoints = {}  # (min_idx, max_idx) -> midpoint_vertex_idx
+        
+        def get_edge_midpoint(v1_idx: int, v2_idx: int, vertex_counter: int) -> tuple[int, int]:
+            """Gibt Index des Kanten-Mittelpunkts zurück, erstellt ihn falls nötig."""
+            edge_key = (min(v1_idx, v2_idx), max(v1_idx, v2_idx))
+            if edge_key not in edge_midpoints:
+                # Berechne Mittelpunkt
+                mid_coord = (vertices[v1_idx] + vertices[v2_idx]) / 2.0
+                mid_scalar = (scalars[v1_idx] + scalars[v2_idx]) / 2.0
+                new_vertices.append(mid_coord)
+                new_scalars.append(mid_scalar)
+                edge_midpoints[edge_key] = vertex_counter
+                vertex_counter += 1
+            return edge_midpoints[edge_key], vertex_counter
+        
+        # Neue Vertices und Scalars (starte mit Original-Vertices)
+        new_vertices = [v.copy() for v in vertices]
+        new_scalars = [s for s in scalars]
+        vertex_counter = len(vertices)
+        
+        # Neue Faces
+        new_faces_list = []
+        
+        # Verarbeite jedes Original-Dreieck
+        for v1_idx, v2_idx, v3_idx in original_faces_list:
+            # Berechne Mittelpunkte der 3 Kanten
+            m12_idx, vertex_counter = get_edge_midpoint(v1_idx, v2_idx, vertex_counter)
+            m23_idx, vertex_counter = get_edge_midpoint(v2_idx, v3_idx, vertex_counter)
+            m13_idx, vertex_counter = get_edge_midpoint(v1_idx, v3_idx, vertex_counter)
+            
+            # Erstelle 4 neue Dreiecke
+            # 1. (v1, m12, m13)
+            new_faces_list.extend([3, v1_idx, m12_idx, m13_idx])
+            # 2. (m12, v2, m23)
+            new_faces_list.extend([3, m12_idx, v2_idx, m23_idx])
+            # 3. (m13, m23, v3)
+            new_faces_list.extend([3, m13_idx, m23_idx, v3_idx])
+            # 4. (m12, m23, m13) - Zentrum-Dreieck
+            new_faces_list.extend([3, m12_idx, m23_idx, m13_idx])
+        
+        # Konvertiere zu NumPy-Arrays
+        new_vertices_array = np.array(new_vertices, dtype=float)
+        new_scalars_array = np.array(new_scalars, dtype=float)
+        new_faces_array = np.array(new_faces_list, dtype=np.int64)
+        
+        return new_vertices_array, new_faces_array, new_scalars_array
+    
     @staticmethod
     def _interpolate_grid_3d(
         source_x: np.ndarray,
@@ -860,6 +951,28 @@ class SPL3DPlotRenderer:
         surface_grids_data = calc_spl.get("surface_grids", {}) or {} if isinstance(calc_spl, dict) else {}
         surface_results_data = calc_spl.get("surface_results", {}) or {} if isinstance(calc_spl, dict) else {}
         
+        # 🎯 ERWEITERE surfaces_to_process: Füge Surfaces hinzu, die Overrides haben, aber nicht in enabled_surfaces sind
+        # Dies ermöglicht das Plotten von vertikalen Flächen, die zwar Grids/Results haben, aber nicht aktiviert sind
+        override_surface_ids = set(surface_overrides.keys())
+        enabled_surface_ids = {sid for sid, _, _ in enabled_surfaces}
+        additional_surface_ids = override_surface_ids - enabled_surface_ids
+        
+        if additional_surface_ids and isinstance(surface_grids_data, dict):
+            surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
+            for sid in additional_surface_ids:
+                if sid in surface_grids_data:
+                    # Hole Surface-Definition für zusätzliche Surfaces
+                    surface_def = surface_definitions.get(sid)
+                    if surface_def:
+                        if isinstance(surface_def, SurfaceDefinition):
+                            points = getattr(surface_def, "points", []) or []
+                        else:
+                            points = surface_def.get("points", []) or []
+                        if len(points) >= 3:
+                            surfaces_to_process.append((sid, points, surface_def))
+                            if DEBUG_PLOT3D_TIMING:
+                                print(f"[DEBUG Plot Overrides] Surface '{sid}' zu surfaces_to_process hinzugefügt (hat Override, aber nicht aktiviert)")
+        
         # Sequenzielle Verarbeitung
         for surface_id, points, surface_obj in surfaces_to_process:
             try:
@@ -882,12 +995,8 @@ class SPL3DPlotRenderer:
                 
                 if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
                     grid_data = surface_grids_data[surface_id]
-                    # 🚫 Vertikale Flächen hier nicht doppelt rendern (werden separat als Vertical Mesh geplottet)
+                    # ✅ Vertikale Flächen können auch über Triangulation geplottet werden
                     orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
-                    if orientation == "vertical":
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG Plot Triangulation] Surface '{surface_id}': vertikal -> Triangulationspfad übersprungen (wird im Vertical-Renderer geplottet)")
-                        continue
                     
                     # 🎯 DEBUG: Ermittle Orientation aus Geometry-Objekt
                     surface_orientation = orientation
@@ -956,6 +1065,7 @@ class SPL3DPlotRenderer:
                         from scipy.interpolate import griddata
                         
                         print(f"[DEBUG Plot Triangulation] Surface '{surface_id}': Verarbeite Triangulation")
+                        print(f"  └─ [DEBUG Subdivision] Prüfe ob Subdivision ausgeführt wird...")
                         
                         # Lade SPL-Werte aus surface_results_data
                         result_data = surface_results_data.get(surface_id) if isinstance(surface_results_data, dict) else None
@@ -1112,35 +1222,49 @@ class SPL3DPlotRenderer:
                                                 status = "✓" if np.isfinite(spl) else "✗"
                                                 print(f"          [{idx:5d}] {status} ({v[0]:6.2f}, {v[1]:6.2f}, {v[2]:6.2f}) -> {spl:.1f} dB")
                             else:
-                                # Fallback: Alte Interpolations-Methode (falls Vertices nicht Grid-Punkte sind)
-                                print(f"  └─ ⚠️  INTERPOLATION (Fallback): {n_vertices} Vertices ≠ {n_grid_points} Grid-Punkte")
-                                
-                                from scipy.interpolate import griddata
-                                points_new = triangulated_vertices[:, :2]  # x, y
-                                
-                                points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
-                                values_orig = spl_values_2d.ravel()
-                                
-                                # Maskiere auf gültige Flächenpunkte
-                                if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
-                                    mask_flat = surface_mask.ravel().astype(bool)
-                                    if np.any(mask_flat):
-                                        points_orig = points_orig[mask_flat]
-                                        values_orig = values_orig[mask_flat]
-                                
-                                spl_at_verts = griddata(
-                                    points_orig,
-                                    values_orig,
-                                    points_new,
-                                    method='nearest',
-                                    fill_value=np.nan
-                                )
-                                
-                                valid_mask = np.isfinite(spl_at_verts)
-                                n_valid = np.sum(valid_mask)
-                                if n_valid > 0:
-                                    spl_valid = spl_at_verts[valid_mask]
-                                    print(f"      └─ SPL: {n_valid}/{len(spl_at_verts)} gültige Werte, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB")
+                                # Fallback: Vertices ≠ Grid-Punkte → mappe per nächstem Gridpunkt (ohne Mittelung)
+                                print(f"  └─ ⚠️  Vertices != Grid-Punkte ({n_vertices} vs {n_grid_points}) – mappe auf nächstes Grid")
+                                try:
+                                    from scipy.spatial import cKDTree
+                                    grid_pts = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                    grid_vals = spl_values_2d.ravel()
+                                    if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                        mask_flat = surface_mask.ravel().astype(bool)
+                                        grid_pts = grid_pts[mask_flat]
+                                        grid_vals = grid_vals[mask_flat]
+                                    tree = cKDTree(grid_pts)
+                                    dists, nn_idx = tree.query(triangulated_vertices[:, :2], k=1)
+                                    spl_at_verts = grid_vals[nn_idx]
+                                    valid_mask = np.isfinite(spl_at_verts)
+                                    n_valid = int(np.sum(valid_mask))
+                                    if n_valid > 0:
+                                        spl_valid = spl_at_verts[valid_mask]
+                                        print(f"      └─ Nearest-Map: {n_valid}/{len(spl_at_verts)} gültig, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB, max_dist={np.nanmax(dists):.3f}")
+                                    else:
+                                        print(f"      ⚠️  Keine gültigen Werte nach Nearest-Map")
+                                except Exception as e_nn:
+                                    print(f"      ⚠️  Nearest-Map fehlgeschlagen ({e_nn}) – verwende griddata(nearest)")
+                                    from scipy.interpolate import griddata
+                                    points_new = triangulated_vertices[:, :2]
+                                    points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                    values_orig = spl_values_2d.ravel()
+                                    if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                        mask_flat = surface_mask.ravel().astype(bool)
+                                        if np.any(mask_flat):
+                                            points_orig = points_orig[mask_flat]
+                                            values_orig = values_orig[mask_flat]
+                                    spl_at_verts = griddata(
+                                        points_orig,
+                                        values_orig,
+                                        points_new,
+                                        method='nearest',
+                                        fill_value=np.nan
+                                    )
+                                    valid_mask = np.isfinite(spl_at_verts)
+                                    n_valid = np.sum(valid_mask)
+                                    if n_valid > 0:
+                                        spl_valid = spl_at_verts[valid_mask]
+                                        print(f"      └─ SPL: {n_valid}/{len(spl_at_verts)} gültige Werte, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB")
                             
                             # Bestimme Colorbar-Bereich für Visualisierung
                             cbar_min_local = cbar_min
@@ -1160,9 +1284,35 @@ class SPL3DPlotRenderer:
                             # Clipping nur für Visualisierung
                             spl_at_verts = np.clip(spl_at_verts, cbar_min_local, cbar_max_local)
                             
-                            # Erstelle PyVista PolyData Mesh
-                            mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
-                            mesh["plot_scalars"] = spl_at_verts
+                            # 🎯 SUBDIVISION: Unterteile jedes Dreieck in 4 kleinere für schärfere Plots
+                            # Dies erhöht die visuelle Auflösung ohne die Berechnungszeit zu erhöhen
+                            # subdivision_level: 0=keine, 1=4x Faces, 2=16x Faces, 3=64x Faces, etc.
+                            subdivision_level = max(0, min(PLOT_SUBDIVISION_LEVEL, 3))  # Limit auf 0-3 für Performance
+                            
+                            if subdivision_level > 0:
+                                try:
+                                    current_vertices = triangulated_vertices
+                                    current_faces = triangulated_faces
+                                    current_scalars = spl_at_verts
+                                    
+                                    # Iterative Subdivision (mehrfache Anwendung für höhere Level)
+                                    for level in range(subdivision_level):
+                                        current_vertices, current_faces, current_scalars = self._subdivide_triangles(
+                                            current_vertices, current_faces, current_scalars
+                                        )
+                                    
+                                    # Erstelle PyVista PolyData Mesh mit subdividierten Daten
+                                    mesh = pv.PolyData(current_vertices, current_faces)
+                                    mesh["plot_scalars"] = current_scalars
+                                except Exception as e_subdiv:
+                                    print(f"[DEBUG Subdivision] ⚠️  Surface '{surface_id}': Subdivision fehlgeschlagen: {e_subdiv}")
+                                    # Fallback: Verwende Original-Daten ohne Subdivision
+                                    mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
+                                    mesh["plot_scalars"] = spl_at_verts
+                            else:
+                                # Keine Subdivision
+                                mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
+                                mesh["plot_scalars"] = spl_at_verts
                             
                             # 🎯 FÜR SCHRÄGE FLÄCHEN: Bestätige Mesh-Erstellung
                             if surface_orientation == "sloped":
@@ -1188,16 +1338,17 @@ class SPL3DPlotRenderer:
                                 scalars="plot_scalars",
                                 cmap=cmap_object,
                                 clim=(cbar_min, cbar_max),
-                                smooth_shading=not is_step_mode,
+                                smooth_shading=False,  # Kein Smooth Shading für schärfere Plots nach Subdivision
                                 show_scalar_bar=False,
                                 reset_camera=False,
-                                interpolate_before_map=not is_step_mode,
+                                interpolate_before_map=False,  # Keine Interpolation - verwende exakte Vertex-Werte
                             )
                             
-                            # 🎯 Color Step: Deaktiviere Interpolation explizit für harte Farbstufen
-                            if is_step_mode and hasattr(actor, "prop") and actor.prop is not None:
+                            # 🎯 Für schärfere Plots: Deaktiviere Interpolation (auch außerhalb step_mode)
+                            # Nach Subdivision haben wir bereits mehr Polygone, daher keine zusätzliche Interpolation nötig
+                            if hasattr(actor, "prop") and actor.prop is not None:
                                 try:
-                                    actor.prop.interpolation = "flat"
+                                    actor.prop.interpolation = "flat"  # Flat shading für schärfere Kanten
                                 except Exception:
                                     pass
                             
@@ -1315,13 +1466,100 @@ class SPL3DPlotRenderer:
     ):
         """Aktualisiert die SPL-Fläche."""
         t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+        
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Plot Overrides] update_spl_plot aufgerufen")
 
         camera_state = self._camera_state or self._capture_camera()
 
+        # 🎯 WICHTIG: Erstelle surface_overrides VOR den Validierungsprüfungen,
+        # damit vertikale Flächen auch ohne gültige globale SPL-Daten geplottet werden können
+        surface_overrides: dict[str, dict[str, np.ndarray]] = {}
+        calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
+        surface_grids_data = {}
+        surface_results_data = {}
+        if isinstance(calc_spl, dict):
+            surface_grids_data = calc_spl.get("surface_grids", {}) or {}
+            surface_results_data = calc_spl.get("surface_results", {}) or {}
+        
+        if DEBUG_PLOT3D_TIMING:
+            print(f"[DEBUG Plot Overrides] surface_grids_data vorhanden: {bool(surface_grids_data)}, Anzahl: {len(surface_grids_data) if isinstance(surface_grids_data, dict) else 0}")
+            print(f"[DEBUG Plot Overrides] surface_results_data vorhanden: {bool(surface_results_data)}, Anzahl: {len(surface_results_data) if isinstance(surface_results_data, dict) else 0}")
+            if isinstance(surface_grids_data, dict):
+                print(f"[DEBUG Plot Overrides] surface_grids_data Keys: {list(surface_grids_data.keys())}")
+            if isinstance(surface_results_data, dict):
+                print(f"[DEBUG Plot Overrides] surface_results_data Keys: {list(surface_results_data.keys())}")
+        
+        if isinstance(surface_grids_data, dict) and surface_grids_data and isinstance(surface_results_data, dict) and surface_results_data:
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_grids_data: {list(surface_grids_data.keys())[:10]}")
+                print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_results_data: {list(surface_results_data.keys())[:10]}")
+            for sid, grid_data in surface_grids_data.items():
+                orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
+                if sid not in surface_results_data:
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Plot Overrides] Surface '{sid}' (orientation={orientation}): Keine Result-Daten vorhanden")
+                    continue
+                try:
+                    Xg = np.asarray(grid_data.get("X_grid", []))
+                    Yg = np.asarray(grid_data.get("Y_grid", []))
+                    if Xg.size == 0 or Yg.size == 0:
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Plot Overrides] Surface '{sid}': Leere Grid-Daten (Xg.size={Xg.size}, Yg.size={Yg.size})")
+                        continue
+                    if Xg.ndim == 2 and Yg.ndim == 2:
+                        # Achsen aus dem strukturierten Grid ableiten
+                        gx = Xg[0, :] if Xg.shape[1] > 0 else Xg.ravel()
+                        gy = Yg[:, 0] if Yg.shape[0] > 0 else Yg.ravel()
+                    else:
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Plot Overrides] Surface '{sid}': Falsche Dimensionen (Xg.ndim={Xg.ndim}, Yg.ndim={Yg.ndim})")
+                        continue
+                    
+                    # 🎯 NEU: Verwende direkt die berechneten SPL-Werte aus surface_results
+                    #         Keine Interpolation mehr!
+                    result_data = surface_results_data[sid]
+                    sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
+                    
+                    if sound_field_p_complex.size == 0 or sound_field_p_complex.shape != Xg.shape:
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Plot Overrides] Surface '{sid}': Ungültige SPL-Daten (shape={sound_field_p_complex.shape}, erwartet={Xg.shape})")
+                        continue
+                    
+                    # Konvertiere komplexe Werte zu dB (wie im neuen Modul)
+                    pressure_magnitude = np.abs(sound_field_p_complex)
+                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                    spl_values_db = self.functions.mag2db(pressure_magnitude)
+                    spl_values_db = np.nan_to_num(spl_values_db, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    surface_overrides[sid] = {
+                        "source_x": np.asarray(gx, dtype=float),
+                        "source_y": np.asarray(gy, dtype=float),
+                        "values": spl_values_db,  # Direkt die berechneten Werte verwenden
+                    }
+                    if DEBUG_PLOT3D_TIMING:
+                        orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
+                        print(f"[DEBUG Plot Overrides] Override erstellt für Surface '{sid}' (orientation={orientation}): X={len(gx)} pts, Y={len(gy)} pts, Values={spl_values_db.shape}, SPL-Range=[{np.nanmin(spl_values_db):.1f}, {np.nanmax(spl_values_db):.1f}] dB")
+                except Exception as e:
+                    # Wenn etwas schiefgeht, einfach ohne Override weiterarbeiten
+                    if DEBUG_PLOT3D_TIMING:
+                        print(f"[DEBUG Plot Overrides] Fehler beim Erstellen Override für Surface '{sid}': {e}")
+                    continue
+        
         # Wenn keine gültigen SPL-Daten vorliegen, belassen wir die bestehende Szene
         # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
+        # ABER: Wenn surface_overrides vorhanden sind, müssen wir trotzdem plotten!
+        has_surface_overrides = bool(surface_overrides)
         if not self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure):
-            return
+            if not has_surface_overrides:
+                return
+            # Wenn nur surface_overrides vorhanden sind, verwende Dummy-Daten für globale Plot-Geometrie
+            if DEBUG_PLOT3D_TIMING:
+                print(f"[DEBUG Plot Overrides] Keine gültigen globalen SPL-Daten, aber {len(surface_overrides)} Surface-Overrides vorhanden - verwende Dummy-Daten")
+            # Erstelle minimale Dummy-Daten für die globale Plot-Geometrie
+            sound_field_x = np.array([-1.0, 1.0])
+            sound_field_y = np.array([-1.0, 1.0])
+            sound_field_pressure = np.array([[0.0, 0.0], [0.0, 0.0]])
 
         x = np.asarray(sound_field_x, dtype=float)
         y = np.asarray(sound_field_y, dtype=float)
@@ -1344,12 +1582,15 @@ class SPL3DPlotRenderer:
                 try:
                     pressure = pressure.reshape(len(y), len(x))
                 except Exception:  # noqa: BLE001
-                    return
+                    if not has_surface_overrides:
+                        return
             else:
-                return
+                if not has_surface_overrides:
+                    return
 
         if pressure.shape != (len(y), len(x)):
-            return
+            if not has_surface_overrides:
+                return
 
         # Aktualisiere ColorbarManager Modes
         self.colorbar_manager.update_modes(phase_mode_active=phase_mode, time_mode_active=time_mode)
@@ -1359,13 +1600,15 @@ class SPL3DPlotRenderer:
             pressure = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
-                return
+                if not has_surface_overrides:
+                    return
             # Verwende feste Colorbar-Parameter (keine dynamische Skalierung)
             plot_values = pressure
         elif phase_mode:
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
-                return
+                if not has_surface_overrides:
+                    return
             phase_values = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
             plot_values = phase_values
         else:
@@ -1395,7 +1638,8 @@ class SPL3DPlotRenderer:
             
             finite_mask = np.isfinite(spl_db)
             if not np.any(finite_mask):
-                return
+                if not has_surface_overrides:
+                    return
             plot_values = spl_db
         
         if DEBUG_PLOT3D_TIMING:
@@ -1459,72 +1703,8 @@ class SPL3DPlotRenderer:
         plot_values = geometry.plot_values
         z_coords = geometry.z_coords
         
-        # 🎯 NEU: Verwende direkt die berechneten Daten aus surface_results (wie Plot3DSPL_new.py)
-        #         Keine Interpolation der globalen Daten mehr!
-        surface_overrides: dict[str, dict[str, np.ndarray]] = {}
-        calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
-        surface_grids_data = {}
-        surface_results_data = {}
-        if isinstance(calc_spl, dict):
-            surface_grids_data = calc_spl.get("surface_grids", {}) or {}
-            surface_results_data = calc_spl.get("surface_results", {}) or {}
-        
-        if DEBUG_PLOT3D_TIMING:
-            print(f"[DEBUG Plot Overrides] surface_grids_data vorhanden: {bool(surface_grids_data)}, Anzahl: {len(surface_grids_data) if isinstance(surface_grids_data, dict) else 0}")
-            print(f"[DEBUG Plot Overrides] surface_results_data vorhanden: {bool(surface_results_data)}, Anzahl: {len(surface_results_data) if isinstance(surface_results_data, dict) else 0}")
-        
-        if isinstance(surface_grids_data, dict) and surface_grids_data and isinstance(surface_results_data, dict) and surface_results_data:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[DEBUG Plot Overrides] Verfügbare Surface-IDs in surface_grids_data: {list(surface_grids_data.keys())[:10]}")
-            for sid, grid_data in surface_grids_data.items():
-                if sid not in surface_results_data:
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Plot Overrides] Surface '{sid}': Keine Result-Daten vorhanden")
-                    continue
-                try:
-                    Xg = np.asarray(grid_data.get("X_grid", []))
-                    Yg = np.asarray(grid_data.get("Y_grid", []))
-                    if Xg.size == 0 or Yg.size == 0:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG Plot Overrides] Surface '{sid}': Leere Grid-Daten (Xg.size={Xg.size}, Yg.size={Yg.size})")
-                        continue
-                    if Xg.ndim == 2 and Yg.ndim == 2:
-                        # Achsen aus dem strukturierten Grid ableiten
-                        gx = Xg[0, :] if Xg.shape[1] > 0 else Xg.ravel()
-                        gy = Yg[:, 0] if Yg.shape[0] > 0 else Yg.ravel()
-                    else:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG Plot Overrides] Surface '{sid}': Falsche Dimensionen (Xg.ndim={Xg.ndim}, Yg.ndim={Yg.ndim})")
-                        continue
-                    
-                    # 🎯 NEU: Verwende direkt die berechneten SPL-Werte aus surface_results
-                    #         Keine Interpolation mehr!
-                    result_data = surface_results_data[sid]
-                    sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
-                    
-                    if sound_field_p_complex.size == 0 or sound_field_p_complex.shape != Xg.shape:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG Plot Overrides] Surface '{sid}': Ungültige SPL-Daten (shape={sound_field_p_complex.shape}, erwartet={Xg.shape})")
-                        continue
-                    
-                    # Konvertiere komplexe Werte zu dB (wie im neuen Modul)
-                    pressure_magnitude = np.abs(sound_field_p_complex)
-                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
-                    spl_values_db = self.functions.mag2db(pressure_magnitude)
-                    spl_values_db = np.nan_to_num(spl_values_db, nan=0.0, posinf=0.0, neginf=0.0)
-                    
-                    surface_overrides[sid] = {
-                        "source_x": np.asarray(gx, dtype=float),
-                        "source_y": np.asarray(gy, dtype=float),
-                        "values": spl_values_db,  # Direkt die berechneten Werte verwenden
-                    }
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Plot Overrides] Override erstellt für Surface '{sid}': X={len(gx)} pts, Y={len(gy)} pts, Values={spl_values_db.shape}, SPL-Range=[{np.nanmin(spl_values_db):.1f}, {np.nanmax(spl_values_db):.1f}] dB")
-                except Exception as e:
-                    # Wenn etwas schiefgeht, einfach ohne Override weiterarbeiten
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Plot Overrides] Fehler beim Erstellen Override für Surface '{sid}': {e}")
-                    continue
+        # 🎯 surface_overrides wurden bereits am Anfang der Funktion erstellt
+        # (vor den Validierungsprüfungen, damit vertikale Flächen auch ohne gültige globale Daten geplottet werden können)
         
         # 🎯 Cache Plot-Geometrie für Click-Handling
         self._plot_geometry_cache = {
@@ -3095,11 +3275,8 @@ class SPL3DPlotRenderer:
                         status_text = "FEHLER (ungültige Grid-Daten)"
                         issues.append(f"Grid-Shapes: X={X_grid.shape}, Y={Y_grid.shape}, Z={Z_grid.shape}")
                         error_count += 1
-                    # Vertikale Plots sind global deaktiviert → als übersprungen markieren
-                    elif orientation == 'vertical':
-                        status = "⏭️"
-                        status_text = "ÜBERSPRUNGEN (vertikale Plots deaktiviert)"
-                        skipped_count += 1
+                    # Vertikale Flächen werden jetzt über Triangulation geplottet → prüfe normal
+                    # (keine spezielle Behandlung mehr nötig)
                     elif active_points == 0:
                         status = "⚠️"
                         status_text = "WARNUNG (keine aktiven Punkte)"
