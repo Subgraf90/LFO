@@ -1058,12 +1058,7 @@ class GridBuilder(ModuleBase):
         y_coords: np.ndarray,
         polygon_points: List[Dict[str, float]]
     ) -> np.ndarray:
-        """
-        Vektorisierte Punkt-im-Polygon-Prüfung mit verbesserter Kanten-Erkennung.
-        
-        Berücksichtigt auch Punkte, die direkt auf den Polygon-Kanten liegen,
-        was besonders wichtig für kleine Dreiecke ist.
-        """
+        """Vektorisierte Punkt-im-Polygon-Prüfung"""
         if len(polygon_points) < 3:
             return np.zeros_like(x_coords, dtype=bool)
         
@@ -1074,31 +1069,8 @@ class GridBuilder(ModuleBase):
         y_flat = y_coords.flatten()
         n_points = len(x_flat)
         
-        # 🎯 VERBESSERUNG: Berechne Resolution aus Grid und setze boundary_eps relativ dazu
-        # Dies ist wichtig für größere Grid-Auflösungen (z.B. 1.0 m)
-        if x_coords.size > 1:
-            # Berechne durchschnittliche Grid-Auflösung
-            if x_coords.shape[0] > 1:
-                dx = np.abs(np.diff(x_coords, axis=0))
-                avg_dx = np.mean(dx[dx > 0]) if np.any(dx > 0) else 1.0
-            else:
-                avg_dx = 1.0
-            
-            if x_coords.shape[1] > 1:
-                dy = np.abs(np.diff(x_coords, axis=1))
-                avg_dy = np.mean(dy[dy > 0]) if np.any(dy > 0) else 1.0
-            else:
-                avg_dy = 1.0
-            
-            # Verwende kleinere der beiden Auflösungen (konservativer)
-            grid_resolution = min(avg_dx, avg_dy) if (avg_dx > 0 and avg_dy > 0) else 1.0
-            # Setze boundary_eps auf 5% der Grid-Auflösung (mindestens 1e-6)
-            boundary_eps = max(1e-6, grid_resolution * 0.05)
-        else:
-            boundary_eps = 1e-6
-        
         inside = np.zeros(n_points, dtype=bool)
-        on_edge = np.zeros(n_points, dtype=bool)
+        boundary_eps = 1e-6
         n = len(px)
         
         j = n - 1
@@ -1106,41 +1078,15 @@ class GridBuilder(ModuleBase):
             xi, yi = px[i], py[i]
             xj, yj = px[j], py[j]
             
-            # Ray-Casting: Prüfe Schnittpunkte mit horizontalem Strahl
             y_above_edge = (yi > y_flat) != (yj > y_flat)
-            denominator = (yj - yi) + 1e-12  # Vermeide Division durch Null
-            intersection_x = (xj - xi) * (y_flat - yi) / denominator + xi
+            intersection_x = (xj - xi) * (y_flat - yi) / (yj - yi + 1e-10) + xi
             intersects = y_above_edge & (x_flat <= intersection_x + boundary_eps)
             
-            # XOR-Operation für Winding Number
             inside = inside ^ intersects
-            
-            # 🎯 VERBESSERT: Prüfe Punkte, die direkt auf der Kante liegen
-            dx = xj - xi
-            dy = yj - yi
-            segment_len = math.hypot(dx, dy)
-            if segment_len > 1e-12:
-                # Abstand von Punkt zur Kante (senkrecht)
-                numerator = np.abs(dy * (x_flat - xi) - dx * (y_flat - yi))
-                dist_to_edge = numerator / (segment_len + 1e-12)
-                
-                # Projektion auf Kante (0 = Start, 1 = Ende)
-                proj = ((x_flat - xi) * dx + (y_flat - yi) * dy) / ((segment_len ** 2) + 1e-12)
-                
-                # Punkt liegt auf Kante wenn:
-                # - Abstand zur Kante < boundary_eps
-                # - Projektion zwischen -boundary_eps und 1+boundary_eps
-                on_edge_segment = (
-                    (dist_to_edge <= boundary_eps) &
-                    (proj >= -boundary_eps) &
-                    (proj <= 1.0 + boundary_eps)
-                )
-                on_edge = on_edge | on_edge_segment
             
             j = i
         
-        # 🎯 WICHTIG: Berücksichtige sowohl Punkte innerhalb als auch auf Kanten
-        return (inside | on_edge).reshape(x_coords.shape)
+        return inside.reshape(x_coords.shape)
     
     def _points_in_polygon_batch_uv(
         self,
@@ -1159,28 +1105,8 @@ class GridBuilder(ModuleBase):
         v_flat = v_coords.flatten()
         n_points = len(u_flat)
         
-        # 🎯 VERBESSERUNG: Berechne Resolution aus Grid und setze boundary_eps relativ dazu
-        if u_coords.size > 1:
-            # Berechne durchschnittliche Grid-Auflösung
-            if u_coords.shape[0] > 1:
-                du = np.abs(np.diff(u_coords, axis=0))
-                avg_du = np.mean(du[du > 0]) if np.any(du > 0) else 1.0
-            else:
-                avg_du = 1.0
-            
-            if u_coords.shape[1] > 1:
-                dv = np.abs(np.diff(v_coords, axis=1))
-                avg_dv = np.mean(dv[dv > 0]) if np.any(dv > 0) else 1.0
-            else:
-                avg_dv = 1.0
-            
-            grid_resolution = min(avg_du, avg_dv) if (avg_du > 0 and avg_dv > 0) else 1.0
-            boundary_eps = max(1e-6, grid_resolution * 0.05)
-        else:
-            boundary_eps = 1e-6
-        
         inside = np.zeros(n_points, dtype=bool)
-        on_edge = np.zeros(n_points, dtype=bool)
+        boundary_eps = 1e-6
         n = len(pu)
         
         j = n - 1
@@ -1189,38 +1115,14 @@ class GridBuilder(ModuleBase):
             uj, vj = pu[j], pv[j]
             
             v_above_edge = (vi > v_flat) != (vj > v_flat)
-            denominator = (vj - vi) + 1e-12
-            intersection_u = (uj - ui) * (v_flat - vi) / denominator + ui
+            intersection_u = (uj - ui) * (v_flat - vi) / (vj - vi + 1e-10) + ui
             intersects = v_above_edge & (u_flat <= intersection_u + boundary_eps)
             
             inside = inside ^ intersects
             
-            # 🎯 VERBESSERT: Prüfe Punkte, die direkt auf der Kante liegen
-            du = uj - ui
-            dv = vj - vi
-            segment_len = math.hypot(du, dv)
-            if segment_len > 1e-12:
-                # Abstand von Punkt zur Kante (senkrecht)
-                numerator = np.abs(dv * (u_flat - ui) - du * (v_flat - vi))
-                dist_to_edge = numerator / (segment_len + 1e-12)
-                
-                # Projektion auf Kante (0 = Start, 1 = Ende)
-                proj = ((u_flat - ui) * du + (v_flat - vi) * dv) / ((segment_len ** 2) + 1e-12)
-                
-                # Punkt liegt auf Kante wenn:
-                # - Abstand zur Kante < boundary_eps
-                # - Projektion zwischen -boundary_eps und 1+boundary_eps
-                on_edge_segment = (
-                    (dist_to_edge <= boundary_eps) &
-                    (proj >= -boundary_eps) &
-                    (proj <= 1.0 + boundary_eps)
-                )
-                on_edge = on_edge | on_edge_segment
-            
             j = i
         
-        # 🎯 WICHTIG: Berücksichtige sowohl Punkte innerhalb als auch auf Kanten
-        return (inside | on_edge).reshape(u_coords.shape)
+        return inside.reshape(u_coords.shape)
     
     def _dilate_mask_minimal(self, mask: np.ndarray) -> np.ndarray:
         """
@@ -1446,57 +1348,25 @@ class GridBuilder(ModuleBase):
                         # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
                         points_surface = np.column_stack([xs, zs])
                         points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                        
-                        # 🎯 WICHTIG: Stelle sicher, dass Surface-Punkte exakt auf Grid-Punkten liegen
-                        # Prüfe für jeden Surface-Punkt, ob er nahe genug an einem Grid-Punkt liegt
-                        tolerance = step * 0.1  # 10% der Grid-Auflösung
-                        Y_interp = np.full(points_grid.shape[0], np.nan, dtype=float)
-                        surface_points_set = np.zeros(points_grid.shape[0], dtype=bool)
-                        
-                        # Erstelle KDTree für schnelle Nachbarschaftssuche
-                        from scipy.spatial import cKDTree
-                        tree = cKDTree(points_grid)
-                        
-                        # Für jeden Surface-Punkt: Finde nächstliegenden Grid-Punkt
-                        for i, (x_surf, z_surf, y_surf) in enumerate(zip(xs, zs, ys)):
-                            dist, idx = tree.query([x_surf, z_surf], k=1)
-                            if dist < tolerance:
-                                # Surface-Punkt liegt nahe genug → verwende exakten Y-Wert
-                                Y_interp[idx] = y_surf
-                                surface_points_set[idx] = True
-                        
-                        # Interpoliere für alle anderen Grid-Punkte
                         try:
-                            Y_interp_missing = griddata(
+                            Y_interp = griddata(
                                 points_surface, ys,
                                 points_grid,
                                 method='linear', fill_value=float(np.mean(ys))
                             )
-                            # Überschreibe nur die Werte, die noch nicht von Surface-Punkten gesetzt wurden
-                            mask_not_set = ~surface_points_set
-                            Y_interp[mask_not_set] = Y_interp_missing[mask_not_set]
                         except Exception as e:
                             # QhullError bei koplanaren Punkten → Fallback auf 'nearest'
                             print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Linear-Interpolation fehlgeschlagen ({type(e).__name__}), verwende 'nearest' als Fallback")
                             try:
-                                Y_interp_missing = griddata(
+                                Y_interp = griddata(
                                     points_surface, ys,
                                     points_grid,
                                     method='nearest', fill_value=float(np.mean(ys))
                                 )
-                                mask_not_set = ~surface_points_set
-                                Y_interp[mask_not_set] = Y_interp_missing[mask_not_set]
                             except Exception as e2:
                                 # Auch 'nearest' schlägt fehl → verwende konstanten Wert
                                 print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Auch 'nearest' fehlgeschlagen, verwende konstanten Y-Wert: {np.mean(ys):.3f}")
-                                mask_not_set = ~surface_points_set
-                                Y_interp[mask_not_set] = float(np.mean(ys))
-                        
-                        # Stelle sicher, dass keine NaN-Werte übrig bleiben
-                        mask_nan = np.isnan(Y_interp)
-                        if np.any(mask_nan):
-                            Y_interp[mask_nan] = float(np.mean(ys))
-                        
+                                Y_interp = np.full(points_grid.shape[0], float(np.mean(ys)), dtype=float)
                         Y_interp = Y_interp.reshape(U_grid.shape)
                         
                         # Transformiere zu (X, Y, Z) Koordinaten
@@ -1537,12 +1407,10 @@ class GridBuilder(ModuleBase):
                             adaptive_resolution = diagonal / min_points_per_dimension
                             adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
                             resolution = adaptive_resolution
-                    # 🎯 ERWEITERE GRID: Minimal (nur 10% der Resolution) für vertikale Surfaces
-                    grid_padding = resolution * 0.1  # Nur 10% der Resolution
-                    min_x -= grid_padding
-                    max_x += grid_padding
-                    min_y -= grid_padding
-                    max_y += grid_padding
+                    min_x -= resolution
+                    max_x += resolution
+                    min_y -= resolution
+                    max_y += resolution
                     sound_field_x = np.arange(min_x, max_x + resolution, resolution)
                     sound_field_y = np.arange(min_y, max_y + resolution, resolution)
                     if len(sound_field_x) < min_points_per_dimension:
@@ -1597,14 +1465,11 @@ class GridBuilder(ModuleBase):
                     
                     resolution = adaptive_resolution
             
-            # 🎯 ERWEITERE GRID: Minimal (nur 10% der Resolution) um Rand-Effekte zu vermeiden
-            # Dies stellt sicher, dass Grid-Punkte nahe der Surface-Grenze erfasst werden,
-            # ohne dass das Grid zu weit über die Surface hinausgeht
-            grid_padding = resolution * 0.1  # Nur 10% der Resolution
-            min_x -= grid_padding
-            max_x += grid_padding
-            min_y -= grid_padding
-            max_y += grid_padding
+            # 🎯 ERWEITERE GRID: Um genau einen Punkt (resolution) über den Rand hinaus
+            min_x -= resolution
+            max_x += resolution
+            min_y -= resolution
+            max_y += resolution
             
             # 🎯 ADAPTIVE RESOLUTION: Höhere Dichte am Rand für schärfere Plots
             # Erstelle feineres Grid am Rand (z.B. halbe Resolution) für bessere Detailwiedergabe
@@ -1745,30 +1610,11 @@ class GridBuilder(ModuleBase):
             
             # 🎯 DEBUG: Grid-Erweiterung (vor Z-Interpolation, damit total_grid_points verfügbar ist)
             total_grid_points = X_grid.size
-            points_in_surface_strict = np.count_nonzero(surface_mask_strict)
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            
-            # 🎯 WARNUNG: Wenn keine Punkte in der strikten Maske, könnte das Grid falsch positioniert sein
-            if points_in_surface_strict == 0:
-                print(f"⚠️  [DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}': KEINE Punkte in strikter Maske!")
-                print(f"  └─ Bounding Box: X=[{min_x:.2f}, {max_x:.2f}], Y=[{min_y:.2f}, {max_y:.2f}]")
-                print(f"  └─ Grid-Range: X=[{X_grid.min():.2f}, {X_grid.max():.2f}], Y=[{Y_grid.min():.2f}, {Y_grid.max():.2f}]")
-                print(f"  └─ Surface-Punkte: {len(geometry.points)}")
-                if geometry.points:
-                    surface_xs = [p.get('x', 0.0) for p in geometry.points]
-                    surface_ys = [p.get('y', 0.0) for p in geometry.points]
-                    print(f"  └─ Surface X-Range: [{min(surface_xs):.2f}, {max(surface_xs):.2f}]")
-                    print(f"  └─ Surface Y-Range: [{min(surface_ys):.2f}, {max(surface_ys):.2f}]")
-                    # Prüfe ob Grid und Surface überlappen
-                    grid_x_overlap = (X_grid.max() >= min(surface_xs)) and (X_grid.min() <= max(surface_xs))
-                    grid_y_overlap = (Y_grid.max() >= min(surface_ys)) and (Y_grid.min() <= max(surface_ys))
-                    print(f"  └─ Grid-Overlap: X={grid_x_overlap}, Y={grid_y_overlap}")
-            
             print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}':")
             print(f"  └─ Total Grid-Punkte: {total_grid_points}")
-            print(f"  └─ Punkte IN Surface (strikt): {points_in_surface_strict}")
-            print(f"  └─ Punkte IN Surface (erweitert): {points_in_surface}")
+            print(f"  └─ Punkte IN Surface: {points_in_surface}")
             print(f"  └─ Punkte AUSSERHALB Surface (erweitert): {points_outside_surface}")
             
             # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
@@ -1779,47 +1625,13 @@ class GridBuilder(ModuleBase):
             if geometry.plane_model:
                 # Berechne Z-Werte für ALLE Punkte im Grid (linear interpoliert gemäß Plane-Model)
                 # Dies ermöglicht erweiterte Punkte außerhalb der Surface-Grenze
-                try:
-                    Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
-                    if Z_values_all is not None and Z_values_all.shape == X_grid.shape:
-                        # 🎯 VALIDIERUNG: Prüfe auf unplausible Z-Werte (z.B. durch numerische Fehler)
-                        z_min = float(np.min(Z_values_all))
-                        z_max = float(np.max(Z_values_all))
-                        z_span = z_max - z_min
-                        
-                        # Prüfe auf extrem große Werte (wahrscheinlich numerischer Fehler)
-                        if abs(z_min) > 1e6 or abs(z_max) > 1e6 or abs(z_span) > 1e6:
-                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geometry.surface_id}': Unplausible Z-Werte erkannt!")
-                            print(f"  └─ Z-Range: [{z_min:.2f}, {z_max:.2f}], Span: {z_span:.2f} m")
-                            print(f"  └─ Plane-Model: {geometry.plane_model}")
-                            print(f"  └─ Fallback: Verwende Z-Werte aus Surface-Punkten")
-                            # Fallback: Verwende Z-Werte aus Surface-Punkten
-                            if geometry.points:
-                                surface_z = np.array([p.get("z", 0.0) for p in geometry.points], dtype=float)
-                                z_mean = float(np.mean(surface_z))
-                                Z_grid.fill(z_mean)
-                            else:
-                                Z_grid.fill(0.0)
-                        else:
-                            Z_grid = Z_values_all
-                            z_span_grid = z_span
-                            # Nur Warnung ausgeben, wenn Problem erkannt wird
-                            if geometry.orientation == "sloped" and z_span_grid < 0.01:
-                                plane_mode = geometry.plane_model.get('mode', 'unknown')
-                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geometry.surface_id}' (sloped): Z-Grid-Spanne={z_span_grid:.3f} m <0.01 m (mode={plane_mode})!")
-                    else:
-                        raise ValueError(f"Z_values_all hat falsche Shape: {Z_values_all.shape if Z_values_all is not None else None}, erwartet: {X_grid.shape}")
-                except Exception as e:
-                    print(f"[DEBUG Z-Grid] ⚠️  Surface '{geometry.surface_id}': Fehler bei Plane-Model-Auswertung: {e}")
-                    print(f"  └─ Plane-Model: {geometry.plane_model}")
-                    print(f"  └─ Fallback: Verwende Z-Werte aus Surface-Punkten")
-                    # Fallback: Verwende Z-Werte aus Surface-Punkten
-                    if geometry.points:
-                        surface_z = np.array([p.get("z", 0.0) for p in geometry.points], dtype=float)
-                        z_mean = float(np.mean(surface_z))
-                        Z_grid.fill(z_mean)
-                    else:
-                        Z_grid.fill(0.0)
+                Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
+                Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
+                z_span_grid = float(np.max(Z_grid)) - float(np.min(Z_grid))
+                # Nur Warnung ausgeben, wenn Problem erkannt wird
+                if geometry.orientation == "sloped" and z_span_grid < 0.01:
+                    plane_mode = geometry.plane_model.get('mode', 'unknown')
+                    print(f"[DEBUG Z-Grid] ⚠️  Surface '{geometry.surface_id}' (sloped): Z-Grid-Spanne={z_span_grid:.3f} m <0.01 m (mode={plane_mode})!")
             else:
                 # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
                 surface_points = geometry.points or []
@@ -1937,42 +1749,8 @@ class GridBuilder(ModuleBase):
                             except Exception as e:
                                 raise RuntimeError(f"Surface '{geometry.surface_id}': Z-Interpolation (Y-Z-Wand) fehlgeschlagen: {e}")
                         else:
-                            # 🎯 VERBESSERT: Wenn x_span und y_span ähnlich sind, verwende 2D-Interpolation
-                            # Dies ist robuster als ein Fehler und funktioniert für alle planaren/schrägen Surfaces
-                            from scipy.interpolate import griddata
-                            points_surface = np.column_stack([surface_x, surface_y])
-                            points_grid = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-                            
-                            try:
-                                Z_interp = griddata(
-                                    points_surface,
-                                    surface_z,
-                                    points_grid,
-                                    method='linear',
-                                    fill_value='extrapolate'  # Erlaube Extrapolation für erweiterte Punkte
-                                )
-                                # Prüfe auf NaN-Werte (können bei Extrapolation auftreten)
-                                if np.isnan(Z_interp).any():
-                                    # Fallback: Verwende nearest neighbor für NaN-Punkte
-                                    Z_interp_nn = griddata(
-                                        points_surface,
-                                        surface_z,
-                                        points_grid,
-                                        method='nearest',
-                                        fill_value=np.nan
-                                    )
-                                    nan_mask = np.isnan(Z_interp)
-                                    Z_interp[nan_mask] = Z_interp_nn[nan_mask]
-                                
-                                Z_grid = Z_interp.reshape(X_grid.shape)
-                                print(f"  └─ Z-Werte 2D-interpoliert (linear) für ALLE {total_grid_points} Punkte")
-                                print(f"  └─ X-Spanne: {x_span:.6f} m, Y-Spanne: {y_span:.6f} m (ähnliche Spannen)")
-                                print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
-                            except Exception as e:
-                                # Letzter Fallback: Verwende konstanten Z-Wert (Mittelwert)
-                                z_mean = float(np.mean(surface_z))
-                                Z_grid.fill(z_mean)
-                                print(f"  └─ ⚠️  Z-Interpolation fehlgeschlagen ({type(e).__name__}), verwende konstanten Z-Wert: {z_mean:.3f} m")
+                            # Fallback: Verwende konstanten Z-Wert
+                            raise ValueError(f"Surface '{geometry.surface_id}': unklare Orientierung (x_span={x_span:.6f}, y_span={y_span:.6f}) – keine Z-Interpolation.")
                     else:
                         # Normale Surfaces: Lineare Interpolation in (x,y)
                         from scipy.interpolate import griddata
@@ -2559,267 +2337,217 @@ class FlexibleGridGenerator(ModuleBase):
             else:
                 actual_resolution = resolution
             
-            # 🎯 TRIANGULATION: Versuche zuerst direkte Triangulation aus Surface-Punkten (wie bei planaren Flächen)
-            # Falls das nicht genug Auflösung bietet, verwende Grid-basierte Triangulation
+            # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
+            # Pro Grid-Punkt werden Vertices verwendet, pro Grid-Quadrat 2 Dreiecke erstellt
             triangulated_vertices = None
             triangulated_faces = None
             triangulated_success = False
             
             try:
-                # 🎯 METHODE 1: Direkte Triangulation aus Surface-Punkten (wie bei planaren Flächen)
-                # Dies stellt sicher, dass Vertices exakt an Surface-Grenzen liegen
-                surface_points = geom.points or []
-                if len(surface_points) >= 3:
-                    try:
-                        tris = triangulate_points(surface_points)
-                        if tris and len(tris) > 0:
-                            # Konvertiere Triangulation zu Vertices und Faces
-                            verts_list = []
-                            for tri in tris:
-                                for p in tri:
-                                    verts_list.append([p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)])
-                            
-                            verts = np.array(verts_list, dtype=float)
-                            faces_list = []
-                            vertex_offset = 0
-                            for _ in tris:
-                                faces_list.extend([3, vertex_offset, vertex_offset + 1, vertex_offset + 2])
-                                vertex_offset += 3
-                            
-                            triangulated_vertices = verts
-                            triangulated_faces = np.array(faces_list, dtype=np.int64)
-                            triangulated_success = True
-                            
-                            print(f"[DEBUG Triangulation] ✅ Surface '{geom.surface_id}': Direkte Triangulation aus Surface-Punkten (wie planare Flächen)")
-                            print(f"  └─ Anzahl Surface-Punkte: {len(surface_points)}")
-                            print(f"  └─ Anzahl Dreiecke: {len(tris)}")
-                            print(f"  └─ Anzahl Vertices: {len(verts)}")
-                            print(f"  └─ Vertices X-Range: [{verts[:, 0].min():.3f}, {verts[:, 0].max():.3f}]")
-                            print(f"  └─ Vertices Y-Range: [{verts[:, 1].min():.3f}, {verts[:, 1].max():.3f}]")
-                            print(f"  └─ Vertices Z-Range: [{verts[:, 2].min():.3f}, {verts[:, 2].max():.3f}]")
-                            
-                            # Prüfe auf NaN oder Inf
-                            if np.any(np.isnan(verts)) or np.any(np.isinf(verts)):
-                                print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
-                                triangulated_success = False
-                            else:
-                                print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
-                    except Exception as e:
-                        print(f"[DEBUG Triangulation] ⚠️  Surface '{geom.surface_id}': Direkte Triangulation fehlgeschlagen: {e}")
-                        print(f"  └─ Fallback auf Grid-basierte Triangulation...")
-                        triangulated_success = False
+                # Verwende Grid-Punkte innerhalb der Surface-Maske als Vertices
+                ny, nx = X_grid.shape
+                mask_flat = surface_mask.ravel()  # Erweiterte Maske (für SPL-Werte)
+                mask_strict_flat = surface_mask_strict.ravel()  # Strikte Maske (für Face-Filterung)
                 
-                # 🎯 METHODE 2: Grid-basierte Triangulation (Fallback, wenn direkte Triangulation fehlschlägt oder nicht genug Auflösung bietet)
-                if not triangulated_success:
-                    # Verwende Grid-Punkte innerhalb der Surface-Maske als Vertices
-                    ny, nx = X_grid.shape
-                    mask_flat = surface_mask.ravel()  # Erweiterte Maske (für SPL-Werte)
-                    mask_strict_flat = surface_mask_strict.ravel()  # Strikte Maske (für Face-Filterung)
+                if np.any(mask_flat):
+                    print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Starte Grid-basierte Triangulation")
+                    print(f"  └─ Grid-Shape: {X_grid.shape} (ny={ny}, nx={nx})")
+                    print(f"  └─ Aktive Grid-Punkte (erweitert): {np.sum(mask_flat)} / {mask_flat.size}")
+                    print(f"  └─ Aktive Grid-Punkte (strikt): {np.sum(mask_strict_flat)} / {mask_strict_flat.size}")
                     
-                    if np.any(mask_flat):
-                        print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Starte Grid-basierte Triangulation")
-                        print(f"  └─ Grid-Shape: {X_grid.shape} (ny={ny}, nx={nx})")
-                        print(f"  └─ Aktive Grid-Punkte (erweitert): {np.sum(mask_flat)} / {mask_flat.size}")
-                        print(f"  └─ Aktive Grid-Punkte (strikt): {np.sum(mask_strict_flat)} / {mask_strict_flat.size}")
+                    # Erstelle Vertex-Koordinaten aus allen Grid-Punkten (auch inaktive für konsistente Indizes)
+                    # Wir brauchen alle Punkte für die strukturierte Triangulation
+                    all_vertices = np.column_stack([
+                        X_grid.ravel(),  # X-Koordinaten
+                        Y_grid.ravel(),  # Y-Koordinaten
+                        Z_grid.ravel()   # Z-Koordinaten
+                    ])  # Shape: (ny * nx, 3)
+                    
+                    # 🎯 ZUSÄTZLICHE VERTICES AN POLYGON-ECKEN HINZUFÜGEN (für höhere Auflösung)
+                    # Dies erhöht die Polygon-Dichte an den Ecken, um Lücken zu vermeiden
+                    additional_vertices = []
+                    if geom.orientation in ("planar", "sloped"):
+                        surface_points = geom.points or []
+                        if len(surface_points) >= 3:
+                            # Extrahiere Polygon-Ecken
+                            polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+                            polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+                            
+                            # Prüfe für jede Polygon-Ecke, ob nahe Grid-Punkte existieren
+                            vertex_threshold = resolution * 0.3  # Wenn Ecke innerhalb 30% der Resolution
+                            existing_vertex_tolerance = resolution * 0.1  # Toleranz für "bereits vorhanden"
+                            
+                            for corner_x, corner_y in zip(polygon_x, polygon_y):
+                                # Prüfe ob bereits ein Vertex sehr nahe an dieser Ecke existiert
+                                distances = np.sqrt((all_vertices[:, 0] - corner_x)**2 + (all_vertices[:, 1] - corner_y)**2)
+                                min_distance = np.min(distances)
+                                
+                                if min_distance > existing_vertex_tolerance:
+                                    # Kein Vertex nahe genug → füge neuen Vertex hinzu
+                                    # Berechne Z-Koordinate für Ecke
+                                    corner_z = 0.0
+                                    if geom.plane_model:
+                                        try:
+                                            z_new = _evaluate_plane_on_grid(
+                                                geom.plane_model,
+                                                np.array([[corner_x]]),
+                                                np.array([[corner_y]])
+                                            )
+                                            if z_new is not None and z_new.size > 0:
+                                                corner_z = float(z_new.flat[0])
+                                        except Exception:
+                                            pass
+                                    
+                                    additional_vertices.append([corner_x, corner_y, corner_z])
+                            
+                            if len(additional_vertices) > 0:
+                                additional_vertices_array = np.array(additional_vertices, dtype=float)
+                                all_vertices = np.vstack([all_vertices, additional_vertices_array])
+                                print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt")
+                    
+                    # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
+                    base_vertex_count = X_grid.size
+                    additional_vertex_start_idx = base_vertex_count
+                    additional_vertices_array = np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+                    
+                    # 🎯 RAND-VERTICES AUF SURFACE-GRENZE PROJIZIEREN
+                    # Für Rand-Vertices (in erweiterter Maske, aber nicht in strikter Maske):
+                    # Verschiebe sie auf die Surface-Grenze, damit Polygone exakt am Rand verlaufen
+                    if geom.orientation in ("planar", "sloped"):
+                        # Berechne Rand-Vertices: in erweitert, aber nicht in strikt
+                        is_on_boundary = mask_flat & (~mask_strict_flat)
+                        boundary_indices = np.where(is_on_boundary)[0]
                         
-                        # Erstelle Vertex-Koordinaten aus allen Grid-Punkten (auch inaktive für konsistente Indizes)
-                        # Wir brauchen alle Punkte für die strukturierte Triangulation
-                        all_vertices = np.column_stack([
-                            X_grid.ravel(),  # X-Koordinaten
-                            Y_grid.ravel(),  # Y-Koordinaten
-                            Z_grid.ravel()   # Z-Koordinaten
-                        ])  # Shape: (ny * nx, 3)
-                        
-                        # 🎯 ZUSÄTZLICHE VERTICES AN POLYGON-ECKEN HINZUFÜGEN (für höhere Auflösung)
-                        # Dies erhöht die Polygon-Dichte an den Ecken, um Lücken zu vermeiden
-                        additional_vertices = []
-                        if geom.orientation in ("planar", "sloped"):
+                        if len(boundary_indices) > 0:
+                            # Lade Surface-Polygon für Projektion
                             surface_points = geom.points or []
                             if len(surface_points) >= 3:
-                                # Extrahiere Polygon-Ecken
+                                # Extrahiere Polygon-Koordinaten (für planare/schräge: x,y)
                                 polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
                                 polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
                                 
-                                # Prüfe für jede Polygon-Ecke, ob nahe Grid-Punkte existieren
-                                vertex_threshold = resolution * 0.3  # Wenn Ecke innerhalb 30% der Resolution
-                                existing_vertex_tolerance = resolution * 0.1  # Toleranz für "bereits vorhanden"
-                                
-                                for corner_x, corner_y in zip(polygon_x, polygon_y):
-                                    # 🎯 PRÜFE: Ist die Ecke innerhalb der Surface? (sollte immer True sein, aber sicherheitshalber)
-                                    # Die Polygon-Ecken sollten immer innerhalb liegen, aber prüfen wir zur Sicherheit
-                                    # Da die Ecken Teil des Polygons sind, sollten sie immer als "inside" erkannt werden
+                                # Projiziere jeden Rand-Vertex auf die nächstliegende Polygon-Kante oder Ecke
+                                for idx in boundary_indices:
+                                    v = all_vertices[idx]
+                                    vx, vy = v[0], v[1]
                                     
-                                    # Prüfe ob bereits ein Vertex sehr nahe an dieser Ecke existiert
-                                    distances = np.sqrt((all_vertices[:, 0] - corner_x)**2 + (all_vertices[:, 1] - corner_y)**2)
-                                    min_distance = np.min(distances)
+                                    # Finde nächstliegenden Punkt auf Polygon-Rand (Kante oder Ecke)
+                                    min_dist_sq = np.inf
+                                    closest_x, closest_y = vx, vy
                                     
-                                    if min_distance > existing_vertex_tolerance:
-                                        # Kein Vertex nahe genug → füge neuen Vertex hinzu
-                                        # Berechne Z-Koordinate für Ecke
-                                        corner_z = 0.0
-                                        if geom.plane_model:
-                                            try:
-                                                z_new = _evaluate_plane_on_grid(
-                                                    geom.plane_model,
-                                                    np.array([[corner_x]]),
-                                                    np.array([[corner_y]])
-                                                )
-                                                if z_new is not None and z_new.size > 0:
-                                                    corner_z = float(z_new.flat[0])
-                                            except Exception:
-                                                pass
+                                    n_poly = len(polygon_x)
+                                    
+                                    # 🎯 ZUERST: Prüfe Polygon-Ecken (für bessere Abdeckung an scharfen Ecken)
+                                    corner_threshold = 1e-6  # Sehr kleine Schwellenwert für "nahe an Ecke"
+                                    for i in range(n_poly):
+                                        corner_x, corner_y = polygon_x[i], polygon_y[i]
+                                        dist_sq_to_corner = (vx - corner_x)**2 + (vy - corner_y)**2
                                         
-                                        additional_vertices.append([corner_x, corner_y, corner_z])
+                                        # Wenn Vertex sehr nahe an einer Polygon-Ecke ist, projiziere direkt auf Ecke
+                                        if dist_sq_to_corner < corner_threshold:
+                                            closest_x, closest_y = corner_x, corner_y
+                                            min_dist_sq = dist_sq_to_corner
+                                            break  # Direkte Ecken-Projektion hat Priorität
+                                        
+                                        # Wenn noch kein guter Kandidat gefunden, prüfe ob Ecke näher ist als bisher
+                                        if dist_sq_to_corner < min_dist_sq:
+                                            min_dist_sq = dist_sq_to_corner
+                                            closest_x, closest_y = corner_x, corner_y
+                                    
+                                    # Dann: Prüfe alle Polygon-Kanten (kann bessere Projektion als Ecke liefern)
+                                    for i in range(n_poly):
+                                        p1 = np.array([polygon_x[i], polygon_y[i]])
+                                        p2 = np.array([polygon_x[(i + 1) % n_poly], polygon_y[(i + 1) % n_poly]])
+                                        
+                                        # Berechne Projektion von v auf Kante (p1, p2)
+                                        edge = p2 - p1
+                                        edge_len_sq = np.dot(edge, edge)
+                                        if edge_len_sq < 1e-12:
+                                            continue  # Degenerierte Kante
+                                        
+                                        t = np.dot([vx - p1[0], vy - p1[1]], edge) / edge_len_sq
+                                        t = np.clip(t, 0.0, 1.0)  # Clamp auf Kante
+                                        proj = p1 + t * edge
+                                        
+                                        # Berechne Abstand
+                                        dist_sq = (vx - proj[0])**2 + (vy - proj[1])**2
+                                        
+                                        # Verwende Kanten-Projektion nur wenn sie besser ist als Ecken-Projektion
+                                        # (außer wir haben bereits eine sehr nahe Ecken-Projektion gefunden)
+                                        if dist_sq < min_dist_sq or (min_dist_sq >= corner_threshold and dist_sq < min_dist_sq * 1.1):
+                                            min_dist_sq = dist_sq
+                                            closest_x, closest_y = proj[0], proj[1]
+                                    
+                                    # Verschiebe Vertex auf nächstliegenden Punkt auf Surface-Grenze
+                                    all_vertices[idx, 0] = closest_x
+                                    all_vertices[idx, 1] = closest_y
+                                    # Berechne Z-Koordinate neu basierend auf Plane-Model
+                                    if geom.plane_model:
+                                        try:
+                                            # Verwende _evaluate_plane_on_grid für konsistente Z-Berechnung
+                                            z_new = _evaluate_plane_on_grid(
+                                                geom.plane_model,
+                                                np.array([[closest_x]]),
+                                                np.array([[closest_y]])
+                                            )
+                                            if z_new is not None and z_new.size > 0:
+                                                all_vertices[idx, 2] = float(z_new.flat[0])
+                                        except Exception:
+                                            pass  # Falls Berechnung fehlschlägt, behalte alte Z-Koordinate
                                 
-                                if len(additional_vertices) > 0:
-                                    additional_vertices_array = np.array(additional_vertices, dtype=float)
-                                    all_vertices = np.vstack([all_vertices, additional_vertices_array])
-                                    print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt")
-                        
-                        # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
-                        base_vertex_count = X_grid.size
-                        additional_vertex_start_idx = base_vertex_count
-                        additional_vertices_array = np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
-                        
-                        # 🎯 RAND-VERTICES AUF SURFACE-GRENZE PROJIZIEREN
-                        # Für Rand-Vertices (in erweiterter Maske, aber nicht in strikter Maske):
-                        # Verschiebe sie auf die Surface-Grenze, damit Polygone exakt am Rand verlaufen
-                        if geom.orientation in ("planar", "sloped"):
-                            # Berechne Rand-Vertices: in erweitert, aber nicht in strikt
-                            is_on_boundary = mask_flat & (~mask_strict_flat)
-                            boundary_indices = np.where(is_on_boundary)[0]
+                                if len(boundary_indices) > 0:
+                                    print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert")
+                    
+                    # Erstelle Index-Mapping: (i, j) → linearer Index
+                    # Für ein strukturiertes Grid: index = i * nx + j
+                    
+                    # Erstelle Faces: Pro Grid-Quadrat bis zu 2 Dreiecke
+                    # Ein Quadrat hat Ecken: (i,j), (i,j+1), (i+1,j), (i+1,j+1)
+                    # Dreieck 1: (i,j) → (i,j+1) → (i+1,j)
+                    # Dreieck 2: (i,j+1) → (i+1,j+1) → (i+1,j)
+                    faces_list = []
+                    active_quads = 0
+                    partial_quads = 0  # Quadrate mit 3 aktiven Ecken
+                    filtered_out = 0  # Dreiecke außerhalb der strikten Maske
+                    
+                    for i in range(ny - 1):
+                        for j in range(nx - 1):
+                            idx_tl = i * nx + j           # Top-Left
+                            idx_tr = i * nx + (j + 1)     # Top-Right
+                            idx_bl = (i + 1) * nx + j     # Bottom-Left
+                            idx_br = (i + 1) * nx + (j + 1)  # Bottom-Right
                             
-                            if len(boundary_indices) > 0:
-                                # Lade Surface-Polygon für Projektion
-                                surface_points = geom.points or []
-                                if len(surface_points) >= 3:
-                                    # Extrahiere Polygon-Koordinaten (für planare/schräge: x,y)
-                                    polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                                    polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                                    
-                                    # Projiziere jeden Rand-Vertex auf die nächstliegende Polygon-Kante oder Ecke
-                                    for idx in boundary_indices:
-                                        v = all_vertices[idx]
-                                        vx, vy = v[0], v[1]
-                                        
-                                        # Finde nächstliegenden Punkt auf Polygon-Rand (Kante oder Ecke)
-                                        min_dist_sq = np.inf
-                                        closest_x, closest_y = vx, vy
-                                        
-                                        n_poly = len(polygon_x)
-                                        
-                                        # 🎯 ZUERST: Prüfe Polygon-Ecken (für bessere Abdeckung an scharfen Ecken)
-                                        corner_threshold = 1e-6  # Sehr kleine Schwellenwert für "nahe an Ecke"
-                                        for i in range(n_poly):
-                                            corner_x, corner_y = polygon_x[i], polygon_y[i]
-                                            dist_sq_to_corner = (vx - corner_x)**2 + (vy - corner_y)**2
-                                            
-                                            # Wenn Vertex sehr nahe an einer Polygon-Ecke ist, projiziere direkt auf Ecke
-                                            if dist_sq_to_corner < corner_threshold:
-                                                closest_x, closest_y = corner_x, corner_y
-                                                min_dist_sq = dist_sq_to_corner
-                                                break  # Direkte Ecken-Projektion hat Priorität
-                                            
-                                            # Wenn noch kein guter Kandidat gefunden, prüfe ob Ecke näher ist als bisher
-                                            if dist_sq_to_corner < min_dist_sq:
-                                                min_dist_sq = dist_sq_to_corner
-                                                closest_x, closest_y = corner_x, corner_y
-                                        
-                                        # Dann: Prüfe alle Polygon-Kanten (kann bessere Projektion als Ecke liefern)
-                                        for i in range(n_poly):
-                                            p1 = np.array([polygon_x[i], polygon_y[i]])
-                                            p2 = np.array([polygon_x[(i + 1) % n_poly], polygon_y[(i + 1) % n_poly]])
-                                            
-                                            # Berechne Projektion von v auf Kante (p1, p2)
-                                            edge = p2 - p1
-                                            edge_len_sq = np.dot(edge, edge)
-                                            if edge_len_sq < 1e-12:
-                                                continue  # Degenerierte Kante
-                                            
-                                            t = np.dot([vx - p1[0], vy - p1[1]], edge) / edge_len_sq
-                                            t = np.clip(t, 0.0, 1.0)  # Clamp auf Kante
-                                            proj = p1 + t * edge
-                                            
-                                            # Berechne Abstand
-                                            dist_sq = (vx - proj[0])**2 + (vy - proj[1])**2
-                                            
-                                            # Verwende Kanten-Projektion nur wenn sie besser ist als Ecken-Projektion
-                                            # (außer wir haben bereits eine sehr nahe Ecken-Projektion gefunden)
-                                            if dist_sq < min_dist_sq or (min_dist_sq >= corner_threshold and dist_sq < min_dist_sq * 1.1):
-                                                min_dist_sq = dist_sq
-                                                closest_x, closest_y = proj[0], proj[1]
-                                        
-                                        # Verschiebe Vertex auf nächstliegenden Punkt auf Surface-Grenze
-                                        all_vertices[idx, 0] = closest_x
-                                        all_vertices[idx, 1] = closest_y
-                                        # Berechne Z-Koordinate neu basierend auf Plane-Model
-                                        if geom.plane_model:
-                                            try:
-                                                # Verwende _evaluate_plane_on_grid für konsistente Z-Berechnung
-                                                z_new = _evaluate_plane_on_grid(
-                                                    geom.plane_model,
-                                                    np.array([[closest_x]]),
-                                                    np.array([[closest_y]])
-                                                )
-                                                if z_new is not None and z_new.size > 0:
-                                                    all_vertices[idx, 2] = float(z_new.flat[0])
-                                            except Exception:
-                                                pass  # Falls Berechnung fehlschlägt, behalte alte Z-Koordinate
-                                    
-                                    if len(boundary_indices) > 0:
-                                        print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert")
-                        
-                        # Erstelle Index-Mapping: (i, j) → linearer Index
-                        # Für ein strukturiertes Grid: index = i * nx + j
-                        
-                        # Erstelle Faces: Pro Grid-Quadrat bis zu 2 Dreiecke
-                        # Ein Quadrat hat Ecken: (i,j), (i,j+1), (i+1,j), (i+1,j+1)
-                        # Dreieck 1: (i,j) → (i,j+1) → (i+1,j)
-                        # Dreieck 2: (i,j+1) → (i+1,j+1) → (i+1,j)
-                        faces_list = []
-                        active_quads = 0
-                        partial_quads = 0  # Quadrate mit 3 aktiven Ecken
-                        filtered_out = 0  # Dreiecke außerhalb der strikten Maske
-                        
-                        for i in range(ny - 1):
-                            for j in range(nx - 1):
-                                idx_tl = i * nx + j           # Top-Left
-                                idx_tr = i * nx + (j + 1)     # Top-Right
-                                idx_bl = (i + 1) * nx + j     # Bottom-Left
-                                idx_br = (i + 1) * nx + (j + 1)  # Bottom-Right
-                                
-                                # Prüfe mit erweiterter Maske (für SPL-Werte)
-                                tl_active = mask_flat[idx_tl]
-                                tr_active = mask_flat[idx_tr]
-                                bl_active = mask_flat[idx_bl]
-                                br_active = mask_flat[idx_br]
-                                
-                                # Prüfe mit strikter Maske (für Face-Filterung)
-                                tl_in_strict = mask_strict_flat[idx_tl]
-                                tr_in_strict = mask_strict_flat[idx_tr]
-                                bl_in_strict = mask_strict_flat[idx_bl]
-                                br_in_strict = mask_strict_flat[idx_br]
-                                
-                                active_count = sum([tl_active, tr_active, bl_active, br_active])
-                                strict_count = sum([tl_in_strict, tr_in_strict, bl_in_strict, br_in_strict])
-                                
-                                # Nur Quadrate verarbeiten, wenn mindestens eine Ecke aktiv ist (erweiterte Maske)
-                                # Nach Projektion der Rand-Vertices können wir alle aktiven Dreiecke erstellen
-                                if active_count == 0:
-                                    # Alle Ecken inaktiv → überspringe komplett
-                                    continue
+                            # Prüfe mit erweiterter Maske (für SPL-Werte)
+                            tl_active = mask_flat[idx_tl]
+                            tr_active = mask_flat[idx_tr]
+                            bl_active = mask_flat[idx_bl]
+                            br_active = mask_flat[idx_br]
+                            
+                            # Prüfe mit strikter Maske (für Face-Filterung)
+                            tl_in_strict = mask_strict_flat[idx_tl]
+                            tr_in_strict = mask_strict_flat[idx_tr]
+                            bl_in_strict = mask_strict_flat[idx_bl]
+                            br_in_strict = mask_strict_flat[idx_br]
+                            
+                            active_count = sum([tl_active, tr_active, bl_active, br_active])
+                            strict_count = sum([tl_in_strict, tr_in_strict, bl_in_strict, br_in_strict])
+                            
+                            # Nur Quadrate verarbeiten, wenn mindestens eine Ecke aktiv ist (erweiterte Maske)
+                            # Nach Projektion der Rand-Vertices können wir alle aktiven Dreiecke erstellen
+                            if active_count == 0:
+                                # Alle Ecken inaktiv → überspringe komplett
+                                continue
                             
                             # Hilfsfunktion: Prüft ob ein Dreieck erstellt werden soll
-                            # 🎯 STRENGE FILTERUNG: Nur Dreiecke erstellen, wenn mindestens 2 von 3 Vertices
-                            # in der strikten Maske sind (innerhalb der Surface)
-                            # Dies verhindert, dass Dreiecke außerhalb der Surface erstellt werden
+                            # Nach Projektion der Rand-Vertices auf die Surface-Grenze können wir
+                            # alle Dreiecke erstellen, die mindestens einen aktiven Vertex haben
+                            # (entweder in strikter Maske oder projizierter Rand-Vertex)
                             def should_create_triangle(v1_in_strict, v2_in_strict, v3_in_strict, v1_active, v2_active, v3_active):
                                 strict_vertices = sum([v1_in_strict, v2_in_strict, v3_in_strict])
                                 active_vertices = sum([v1_active, v2_active, v3_active])
-                                # Erstelle Dreieck nur wenn mindestens 2 Vertices in strikter Maske sind
-                                # (d.h. innerhalb der Surface)
-                                # Dies stellt sicher, dass das Dreieck hauptsächlich innerhalb der Surface liegt
-                                return strict_vertices >= 2 and active_vertices >= 2
+                                # Erstelle Dreieck wenn mindestens 1 aktiver Vertex vorhanden ist
+                                # (nach Projektion liegen Rand-Vertices auf der Surface-Grenze)
+                                return active_vertices >= 1
                             
                             # Fall 1: Alle 4 Ecken aktiv → 2 Dreiecke
                             if active_count == 4:
@@ -2945,154 +2673,38 @@ class FlexibleGridGenerator(ModuleBase):
                                                     faces_list.extend([3, corner1_idx, corner2_idx, diag_idx])
                                                     partial_quads += 1
                                                     break  # Ein Dreieck reicht für benachbarte Ecken
+                    
+                    if len(faces_list) > 0:
+                        triangulated_vertices = all_vertices  # Alle Grid-Punkte als Vertices
+                        triangulated_faces = np.array(faces_list, dtype=np.int64)
+                        triangulated_success = True
                         
-                        if len(faces_list) > 0:
-                            # 🎯 FILTERE VERTICES: Nur Vertices behalten, die in Faces verwendet werden
-                            # ABER: Surface-Ecken müssen IMMER erhalten bleiben, damit Polygone exakt am Rand aufhören
-                            faces_array = np.array(faces_list, dtype=np.int64)
-                            
-                            # Extrahiere alle Vertex-Indizes aus Faces (überspringe erste Zahl pro Face = Anzahl Vertices)
-                            used_vertex_indices = set()
-                            i = 0
-                            while i < len(faces_list):
-                                n_verts = faces_list[i]
-                                for j in range(1, n_verts + 1):
-                                    if i + j < len(faces_list):
-                                        used_vertex_indices.add(faces_list[i + j])
-                                i += n_verts + 1
-                            
-                            # 🎯 WICHTIG: Alle Vertices, die in Faces verwendet werden, müssen im Mapping sein
-                            # Auch wenn sie nicht in der strikten Maske sind (können in erweiterten Maske sein)
-                            # Dies verhindert "Vertex-Index nicht im Mapping gefunden" Warnungen
-                            vertices_used_in_faces = set()
-                            for idx in used_vertex_indices:
-                                # Prüfe ob Index gültig ist
-                                if idx < len(all_vertices):
-                                    vertices_used_in_faces.add(idx)
-                                else:
-                                    # Index außerhalb des Arrays - sollte nicht passieren, aber sicherstellen
-                                    print(f"  ⚠️  WARNUNG: Vertex-Index {idx} außerhalb des Arrays (max: {len(all_vertices)})")
-                            
-                            # 🎯 ZUSÄTZLICH: Vertices in der strikten Maske (für spätere Filterung)
-                            # Diese werden verwendet, um zu entscheiden, welche Vertices behalten werden sollen
-                            vertices_in_strict_mask = set()
-                            for idx in used_vertex_indices:
-                                # Grid-Punkte: Prüfe strikte Maske
-                                if idx < len(mask_strict_flat):
-                                    if mask_strict_flat[idx]:
-                                        vertices_in_strict_mask.add(idx)
-                                else:
-                                    # Zusätzliche Ecken-Vertices: IMMER hinzufügen (sind exakt an Surface-Ecken)
-                                    vertices_in_strict_mask.add(idx)
-                            
-                            # 🎯 WICHTIG: Surface-Ecken müssen IMMER erhalten bleiben (für exakte Polygon-Grenzen)
-                            # Identifiziere Surface-Ecken-Vertices (die zusätzlich hinzugefügten Vertices)
-                            corner_vertex_indices = set()
-                            if geom.orientation in ("planar", "sloped"):
-                                # Die zusätzlichen Vertices beginnen ab additional_vertex_start_idx
-                                # (falls welche hinzugefügt wurden)
-                                if additional_vertex_start_idx < len(all_vertices):
-                                    for idx in range(additional_vertex_start_idx, len(all_vertices)):
-                                        corner_vertex_indices.add(idx)
-                                
-                                # ZUSÄTZLICH: Finde auch Grid-Vertices, die sehr nahe an Surface-Ecken liegen
-                                # (falls Ecken bereits im Grid vorhanden sind)
-                                surface_points = geom.points or []
-                                if len(surface_points) >= 3:
-                                    polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                                    polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                                    corner_tolerance = resolution * 0.1  # 10% der Resolution
-                                    
-                                    for corner_x, corner_y in zip(polygon_x, polygon_y):
-                                        # Finde Grid-Vertices, die sehr nahe an dieser Ecke liegen
-                                        for idx in range(min(len(all_vertices), base_vertex_count)):
-                                            if idx < len(mask_strict_flat) and mask_strict_flat[idx]:
-                                                vx, vy = all_vertices[idx, 0], all_vertices[idx, 1]
-                                                dist = np.sqrt((vx - corner_x)**2 + (vy - corner_y)**2)
-                                                if dist <= corner_tolerance:
-                                                    corner_vertex_indices.add(idx)
-                            elif geom.orientation == "vertical":
-                                # Für vertikale Surfaces: Identifiziere Ecken aus Surface-Punkten
-                                surface_points = geom.points or []
-                                if len(surface_points) >= 3:
-                                    corner_tolerance = resolution * 0.2  # 20% der Resolution
-                                    for p in surface_points:
-                                        corner_x = p.get("x", 0.0)
-                                        corner_y = p.get("y", 0.0)
-                                        corner_z = p.get("z", 0.0)
-                                        # Finde Grid-Vertices, die sehr nahe an dieser Ecke liegen
-                                        for idx in range(min(len(all_vertices), base_vertex_count)):
-                                            if idx < len(mask_strict_flat) and mask_strict_flat[idx]:
-                                                vx, vy, vz = all_vertices[idx, 0], all_vertices[idx, 1], all_vertices[idx, 2]
-                                                dist = np.sqrt((vx - corner_x)**2 + (vy - corner_y)**2 + (vz - corner_z)**2)
-                                                if dist <= corner_tolerance:
-                                                    corner_vertex_indices.add(idx)
-                            
-                            # Kombiniere: 
-                            # 1. Alle Vertices, die in Faces verwendet werden (MUSS im Mapping sein, sonst Fehler)
-                            # 2. Vertices in strikter Maske (für Filterung)
-                            # 3. Surface-Ecken (müssen IMMER erhalten bleiben)
-                            required_vertex_indices = vertices_used_in_faces | vertices_in_strict_mask | corner_vertex_indices
-                            
-                            # Erstelle Mapping: alter Index → neuer Index (nur für erforderliche Vertices)
-                            required_indices_sorted = sorted(required_vertex_indices)
-                            old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(required_indices_sorted)}
-                            
-                            # Filtere Vertices: Nur erforderliche Vertices behalten (Faces + Ecken)
-                            filtered_vertices = all_vertices[required_indices_sorted]
-                            
-                            # Aktualisiere Face-Indizes: Mappe alte Indizes auf neue Indizes
-                            remapped_faces_list = []
-                            i = 0
-                            while i < len(faces_list):
-                                n_verts = faces_list[i]
-                                remapped_faces_list.append(n_verts)
-                                for j in range(1, n_verts + 1):
-                                    if i + j < len(faces_list):
-                                        old_idx = faces_list[i + j]
-                                        if old_idx in old_to_new:
-                                            remapped_faces_list.append(old_to_new[old_idx])
-                                        else:
-                                            # ⚠️ WARNUNG: Vertex-Index nicht im Mapping - sollte nicht passieren
-                                            # Fallback: verwende Index 0 (kann zu fehlerhaften Faces führen)
-                                            print(f"  ⚠️  WARNUNG: Vertex-Index {old_idx} nicht im Mapping gefunden!")
-                                            remapped_faces_list.append(0)
-                                i += n_verts + 1
-                            
-                            triangulated_vertices = filtered_vertices
-                            triangulated_faces = np.array(remapped_faces_list, dtype=np.int64)
-                            triangulated_success = True
-                            
-                            n_faces = len(remapped_faces_list) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
-                            n_vertices_used = len(filtered_vertices)
-                            expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
-                            
-                            # 🎯 DEBUG: Detaillierte Ausgabe
-                            n_corner_vertices = len(corner_vertex_indices) if 'corner_vertex_indices' in locals() else 0
-                            print(f"[DEBUG Triangulation] ✅ Surface '{geom.surface_id}': Grid-basierte Triangulation erfolgreich")
-                            print(f"  └─ Anzahl Grid-Punkte (vor Filterung): {len(all_vertices)}")
-                            print(f"  └─ Anzahl Vertices (nach Filterung): {n_vertices_used}")
-                            print(f"  └─ Gefilterte Vertices: {len(all_vertices) - n_vertices_used}")
-                            if n_corner_vertices > 0:
-                                print(f"  └─ Surface-Ecken-Vertices (erhalten): {n_corner_vertices}")
-                            print(f"  └─ Volle Quadrate (4 aktive Ecken): {active_quads}")
-                            print(f"  └─ Rand-Quadrate (3 aktive Ecken): {partial_quads}")
-                            print(f"  └─ Gefilterte Dreiecke (außerhalb strikte Maske): {filtered_out}")
-                            print(f"  └─ Anzahl Dreiecke (Faces): {n_faces} (erwartet: {expected_faces}, gefiltert: {filtered_out})")
-                            print(f"  └─ Vertices pro Grid-Punkt (Ø): {n_vertices_used / max(np.sum(mask_flat), 1):.2f}")
-                            print(f"  └─ Vertices X-Range: [{filtered_vertices[:, 0].min():.3f}, {filtered_vertices[:, 0].max():.3f}]")
-                            print(f"  └─ Vertices Y-Range: [{filtered_vertices[:, 1].min():.3f}, {filtered_vertices[:, 1].max():.3f}]")
-                            print(f"  └─ Vertices Z-Range: [{filtered_vertices[:, 2].min():.3f}, {filtered_vertices[:, 2].max():.3f}]")
-                            
-                            # Prüfe auf NaN oder Inf
-                            if np.any(np.isnan(all_vertices)) or np.any(np.isinf(all_vertices)):
-                                print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
-                            else:
-                                print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
+                        n_faces = len(faces_list) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
+                        n_vertices_used = len(np.unique(triangulated_faces[1::4]))  # Eindeutige Vertex-Indizes
+                        expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
+                        
+                        # 🎯 DEBUG: Detaillierte Ausgabe
+                        print(f"[DEBUG Triangulation] ✅ Surface '{geom.surface_id}': Grid-basierte Triangulation erfolgreich")
+                        print(f"  └─ Anzahl Grid-Punkte (Vertices): {len(all_vertices)}")
+                        print(f"  └─ Volle Quadrate (4 aktive Ecken): {active_quads}")
+                        print(f"  └─ Rand-Quadrate (3 aktive Ecken): {partial_quads}")
+                        print(f"  └─ Gefilterte Dreiecke (außerhalb strikte Maske): {filtered_out}")
+                        print(f"  └─ Anzahl Dreiecke (Faces): {n_faces} (erwartet: {expected_faces}, gefiltert: {filtered_out})")
+                        print(f"  └─ Verwendete Vertices: {n_vertices_used}")
+                        print(f"  └─ Vertices pro Grid-Punkt (Ø): {n_vertices_used / np.sum(mask_flat):.2f}")
+                        print(f"  └─ Vertices X-Range: [{all_vertices[:, 0].min():.3f}, {all_vertices[:, 0].max():.3f}]")
+                        print(f"  └─ Vertices Y-Range: [{all_vertices[:, 1].min():.3f}, {all_vertices[:, 1].max():.3f}]")
+                        print(f"  └─ Vertices Z-Range: [{all_vertices[:, 2].min():.3f}, {all_vertices[:, 2].max():.3f}]")
+                        
+                        # Prüfe auf NaN oder Inf
+                        if np.any(np.isnan(all_vertices)) or np.any(np.isinf(all_vertices)):
+                            print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
                         else:
-                            print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Quadrate für Triangulation")
+                            print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
                     else:
-                        print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Grid-Punkte")
+                        print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Quadrate für Triangulation")
+                else:
+                    print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Grid-Punkte")
             except Exception as e:
                 print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Fehler bei Triangulation: {e}")
                 import traceback

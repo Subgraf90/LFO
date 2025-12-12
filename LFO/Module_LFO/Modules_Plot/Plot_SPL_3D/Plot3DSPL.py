@@ -3521,28 +3521,16 @@ class SPL3DPlotRenderer:
                     
                     # Prüfe ob Actor vorhanden ist
                     # Planare Surfaces: "spl_surface_tex_{surface_id}" oder "spl_surface_tri_{surface_id}" (Triangulation)
-                    # Vertikale Surfaces: "vertical_spl_{surface_id}" ODER "spl_surface_tri_{surface_id}" (Triangulation wird auch für vertikale verwendet)
+                    # Vertikale Surfaces: "vertical_spl_{surface_id}"
                     has_actor = False
                     actor_name = None  # 🎯 Initialisiere actor_name, damit es immer definiert ist
-                    
-                    # 🎯 WICHTIG: Prüfe zuerst in _surface_actors (wird beim Plotten gesetzt)
-                    # bevor wir in plotter.renderer.actors suchen (kann verzögert sein)
-                    if hasattr(self, '_surface_actors') and isinstance(self._surface_actors, dict):
-                        if surface_id in self._surface_actors:
-                            has_actor = True
-                            surface_name = getattr(self, 'SURFACE_NAME', 'spl_surface')
-                            actor_name = f"{surface_name}_tri_{surface_id}"
-                    
-                    # Falls nicht in _surface_actors gefunden, prüfe in plotter.renderer.actors
-                    if not has_actor and hasattr(self, 'plotter') and self.plotter is not None:
+                    if hasattr(self, 'plotter') and self.plotter is not None:
                         try:
                             actor_names = []
-                            surface_name = getattr(self, 'SURFACE_NAME', 'spl_surface')
                             if orientation == 'vertical':
-                                # Vertikale Surfaces können sowohl als "vertical_spl_" als auch als "spl_surface_tri_" geplottet werden
                                 actor_names.append(f"vertical_spl_{surface_id}")
-                                actor_names.append(f"{surface_name}_tri_{surface_id}")  # Triangulations-Pfad (wird für vertikale verwendet)
                             else:
+                                surface_name = getattr(self, 'SURFACE_NAME', 'spl_surface')
                                 actor_names.append(f"{surface_name}_tex_{surface_id}")  # Texture-Pfad
                                 actor_names.append(f"{surface_name}_tri_{surface_id}")  # Triangulations-Pfad
                                 actor_names.append(f"{surface_name}_gridtri_{surface_id}")  # StructuredGrid-Pfad
