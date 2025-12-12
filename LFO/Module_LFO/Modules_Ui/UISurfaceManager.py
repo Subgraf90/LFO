@@ -1452,6 +1452,13 @@ class UISurfaceManager(ModuleBase):
         if not group_item:
             return
         
+        group_id_data = group_item.data(0, Qt.UserRole)
+        if isinstance(group_id_data, dict):
+            group_id = group_id_data.get("id")
+        else:
+            group_id = group_id_data
+        print(f"[DEBUG _update_group_child_checkboxes] Gruppe '{group_id}': column={column}, checked={checked}, update_data={update_data}, childCount={group_item.childCount()}")
+        
         for i in range(group_item.childCount()):
             child = group_item.child(i)
             child_type = child.data(0, Qt.UserRole + 1)
@@ -1465,30 +1472,60 @@ class UISurfaceManager(ModuleBase):
                 else:
                     surface_id = surface_id_data
                 
-                # Wenn Checkbox vorhanden ist, aktualisiere sie (für den Fall, dass Surface später aus Gruppe entfernt wird)
-                if surface_id and checkbox:
-                    checkbox.blockSignals(True)
-                    # Verwende setCheckState für tristate-Checkboxen
-                    checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-                    checkbox.blockSignals(False)
+                print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}' (column={column}): checkbox vorhanden={checkbox is not None}, update_data={update_data}, checked={checked}")
+                
+                # 🎯 WICHTIG: Stelle sicher, dass Checkbox existiert, bevor wir sie setzen
+                # Wenn Surface in einer Gruppe ist, hat es keine Checkbox (wird in ensure_surface_checkboxes entfernt)
+                # Aber wenn Surface später aus Gruppe entfernt wird, sollte die Checkbox erstellt werden
+                if surface_id:
+                    # Prüfe, ob Surface in einer Gruppe ist
+                    parent = child.parent()
+                    is_in_group = parent is not None and parent.data(0, Qt.UserRole + 1) == "group"
+                    
+                    if not is_in_group and not checkbox:
+                        # Surface ist nicht in einer Gruppe, aber Checkbox fehlt - erstelle sie
+                        print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Checkbox fehlt, erstelle sie (column={column})")
+                        self.ensure_surface_checkboxes(child)
+                        checkbox = self.surface_tree_widget.itemWidget(child, column)
+                    
+                    # Wenn Checkbox vorhanden ist, aktualisiere sie
+                    if checkbox:
+                        checkbox.blockSignals(True)
+                        # Verwende setCheckState für tristate-Checkboxen
+                        checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                        checkbox.blockSignals(False)
+                        print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Checkbox auf {checked} gesetzt")
                 
                 # Aktualisiere Surface-Daten durch Aufruf des entsprechenden Handlers
                 # (wird auch ausgeführt, wenn keine Checkbox vorhanden ist, da Surface in Gruppe ist)
                 if update_data and surface_id:
                     state = Qt.Checked if checked else Qt.Unchecked
+                    print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Rufe Handler auf (column={column}, state={state})")
                     if column == 1:  # Enable
                         self.on_surface_enable_changed(surface_id, state, skip_calculations=skip_calculations)
                     elif column == 2:  # Hide
                         self.on_surface_hide_changed(surface_id, state, skip_calculations=skip_calculations)
                     elif column == 3:  # XY
                         self.on_surface_xy_changed(surface_id, state, skip_calculations=skip_calculations)
+                    print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Handler aufgerufen")
+                elif not update_data:
+                    print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': update_data=False - überspringe Datenaktualisierung")
+                elif not surface_id:
+                    print(f"[DEBUG _update_group_child_checkboxes] Surface: surface_id ist None - überspringe")
             elif child_type == "group":
                 # Gruppe: Aktualisiere Checkbox (Gruppen behalten immer ihre Checkboxen)
+                # 🎯 WICHTIG: Stelle sicher, dass Checkbox existiert
+                if not checkbox:
+                    print(f"[DEBUG _update_group_child_checkboxes] Verschachtelte Gruppe: Checkbox fehlt, erstelle sie (column={column})")
+                    self.ensure_group_checkboxes(child)
+                    checkbox = self.surface_tree_widget.itemWidget(child, column)
+                
                 if checkbox:
                     checkbox.blockSignals(True)
                     # Verwende setCheckState für tristate-Checkboxen
                     checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                     checkbox.blockSignals(False)
+                    print(f"[DEBUG _update_group_child_checkboxes] Verschachtelte Gruppe: Checkbox auf {checked} gesetzt")
                 
                 # Aktualisiere Gruppen-Daten durch Aufruf des entsprechenden Handlers
                 # (übergeordnete Gruppe kann untergeordnete Gruppe steuern)
@@ -2207,7 +2244,7 @@ class UISurfaceManager(ModuleBase):
                         if hasattr(plotter, 'update_overlays'):
                             plotter.update_overlays(self.settings, self.container)
             else:
-                # Hide deaktiviert: Nur dieses Surface neu berechnen und plotten, inkl. XY-Linie wenn aktiv
+                # Hide deaktiviert: Validiere Surface und berechne/plotte wenn enabled
                 for sid in surfaces_to_update:
                     surface = self._get_surface(sid)
                     if surface:
@@ -2217,9 +2254,47 @@ class UISurfaceManager(ModuleBase):
                         else:
                             is_enabled = bool(surface.get('enabled', False))
                         
-                        # Nur berechnen wenn enabled
+                        # 🎯 WICHTIG: Validiere Surface IMMER, auch wenn nicht enabled
+                        # (damit UI korrekt aktualisiert wird und Validierungsfehler angezeigt werden)
+                        from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
+                        surface_obj = surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(sid, surface)
+                        validation_result = validate_and_optimize_surface(
+                            surface_obj,
+                            round_to_cm=False,
+                            remove_redundant=False,
+                        )
+                        
+                        # Zusätzliche Prüfung: Triangulation für Surfaces mit 4+ Punkten
+                        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                        is_valid_for_spl = validation_result.is_valid
+                        if is_valid_for_spl and len(points) >= 4:
+                            try:
+                                triangles = triangulate_points(points)
+                                if not triangles or len(triangles) == 0:
+                                    is_valid_for_spl = False
+                            except Exception:
+                                is_valid_for_spl = False
+                        
+                        # Stelle sicher, dass Surface-Definitionen in settings aktualisiert sind
+                        if hasattr(self.settings, 'surface_definitions'):
+                            surface_store = self.settings.surface_definitions
+                            if surface_store is None:
+                                surface_store = {}
+                            if isinstance(surface, SurfaceDefinition):
+                                surface_store[sid] = surface
+                            else:
+                                surface_store[sid] = SurfaceDefinition.from_dict(sid, surface)
+                            self.settings.surface_definitions = surface_store
+                        
+                        # Berechne nur wenn enabled und valid
                         if is_enabled:
-                            self.calculate_single_surface(sid)
+                            if is_valid_for_spl:
+                                # Surface ist enabled und valid - berechne und plotte
+                                self.calculate_single_surface(sid)
+                            else:
+                                # Surface ist enabled aber invalid - entferne SPL-Daten
+                                self._remove_spl_data_for_surface(sid)
+                            
                             # Nach der Berechnung auch Overlays aktualisieren, damit XY-Linien gezeichnet werden
                             # (wenn xy_enabled=True)
                             if (hasattr(self.main_window, 'draw_plots') and 
@@ -2237,7 +2312,8 @@ class UISurfaceManager(ModuleBase):
                                     if hasattr(plotter, 'update_overlays'):
                                         plotter.update_overlays(self.settings, self.container)
                         else:
-                            # Wenn autocalc nicht aktiv, nur Overlays aktualisieren (zeigt Surface wieder)
+                            # Surface ist nicht enabled - nur Overlays aktualisieren (zeigt Surface wieder)
+                            # Aber Validierung wurde bereits ausgeführt, damit UI korrekt aktualisiert wird
                             if (hasattr(self.main_window, 'draw_plots') and 
                                 hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
                                 plotter = self.main_window.draw_plots.draw_spl_plotter
@@ -2343,6 +2419,12 @@ class UISurfaceManager(ModuleBase):
     def on_group_enable_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
         enable_value = (state == Qt.Checked)
+        group_id_data = group_item.data(0, Qt.UserRole)
+        if isinstance(group_id_data, dict):
+            group_id = group_id_data.get("id")
+        else:
+            group_id = group_id_data
+        print(f"[DEBUG on_group_enable_changed] Gruppe '{group_id}': enable_value={enable_value}, childCount={group_item.childCount()}")
         
         # Prüfe, ob mehrere Items ausgewählt sind
         selected_items = self.surface_tree_widget.selectedItems()
@@ -2412,6 +2494,12 @@ class UISurfaceManager(ModuleBase):
     def on_group_hide_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
         hide_value = (state == Qt.Checked)
+        group_id_data = group_item.data(0, Qt.UserRole)
+        if isinstance(group_id_data, dict):
+            group_id = group_id_data.get("id")
+        else:
+            group_id = group_id_data
+        print(f"[DEBUG on_group_hide_changed] Gruppe '{group_id}': hide_value={hide_value}, childCount={group_item.childCount()}")
         
         # Prüfe, ob mehrere Items ausgewählt sind
         selected_items = self.surface_tree_widget.selectedItems()
@@ -2486,6 +2574,7 @@ class UISurfaceManager(ModuleBase):
         """Wird aufgerufen, wenn sich der XY-Status einer Gruppe ändert"""
         group_id = group_item.data(0, Qt.UserRole)
         checked = (state == Qt.Checked)
+        print(f"[DEBUG on_group_xy_changed] Gruppe '{group_id}': checked={checked}, childCount={group_item.childCount()}")
         
         # Setze Gruppen-Checkbox explizit auf den neuen Zustand
         group_checkbox = self.surface_tree_widget.itemWidget(group_item, 3)
@@ -2966,6 +3055,22 @@ class UISurfaceManager(ModuleBase):
                             
                             self.settings.surface_definitions = surface_store
                         
+                        # 🎯 Setze Signatur zurück, damit update_overlays (wird von plot_spl aufgerufen) die Änderung erkennt
+                        # und XY-Linien im 3D-Plot neu zeichnet
+                        if (hasattr(self.main_window, 'draw_plots') and 
+                            hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                            plotter = self.main_window.draw_plots.draw_spl_plotter
+                            if plotter:
+                                print(f"[DEBUG UISurfaceManager] Setze axis Signatur zurück für 3D-Plot-Update")
+                                # Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
+                                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                                    plotter.overlay_axis._last_axis_state = None
+                                # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                                if hasattr(plotter, '_last_overlay_signatures'):
+                                    # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                                    if isinstance(plotter._last_overlay_signatures, dict):
+                                        plotter._last_overlay_signatures.pop('axis', None)
+                        
                         # 🎯 Achsen ZUERST neu berechnen, da Surface-Koordinaten geändert wurden
                         # (muss vor update_speaker_array_calculations erfolgen, damit aktualisierte Koordinaten verwendet werden)
                         print(f"[DEBUG UISurfaceManager] Surface '{surface_id}' Koordinaten geändert - rufe calculate_axes() auf")
@@ -2979,9 +3084,32 @@ class UISurfaceManager(ModuleBase):
                             # Surface ist gültig - aktualisiere Berechnungen/Plot
                             if hasattr(self.main_window, 'update_speaker_array_calculations'):
                                 self.main_window.update_speaker_array_calculations()
+                            else:
+                                # Fallback: Wenn update_speaker_array_calculations nicht verfügbar ist,
+                                # rufe plot_spl() auf, damit update_overlays() die Achsen neu zeichnet
+                                if hasattr(self.main_window, 'plot_spl'):
+                                    print(f"[DEBUG UISurfaceManager] Rufe plot_spl() auf, damit 3D-Plot-Achsen aktualisiert werden")
+                                    self.main_window.plot_spl(update_axes=False)
                         else:
                             # Surface ist ungültig - entferne SPL-Daten für diese Surface und zeige nur graue Fläche
                             self._remove_spl_data_for_surface(surface_id)
+                            
+                            # 🎯 Setze Signatur zurück, damit update_overlays (wird von plot_spl aufgerufen) die Änderung erkennt
+                            # und XY-Linien im 3D-Plot neu zeichnet
+                            if (hasattr(self.main_window, 'draw_plots') and 
+                                hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                                plotter = self.main_window.draw_plots.draw_spl_plotter
+                                if plotter:
+                                    print(f"[DEBUG UISurfaceManager] Setze axis Signatur zurück für 3D-Plot-Update (ungültige Surface)")
+                                    # Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
+                                    if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                                        plotter.overlay_axis._last_axis_state = None
+                                    # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                                    if hasattr(plotter, '_last_overlay_signatures'):
+                                        # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                                        if isinstance(plotter._last_overlay_signatures, dict):
+                                            plotter._last_overlay_signatures.pop('axis', None)
+                            
                             # Aktualisiere Plot (zeigt nur graue Fläche, keine SPL-Daten)
                             if hasattr(self.main_window, 'plot_spl'):
                                 self.main_window.plot_spl(update_axes=False)

@@ -560,6 +560,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
+        print(f"[DEBUG Plot3D.update_overlays] update_overlays() aufgerufen")
         t_start = time.perf_counter()
         
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
@@ -578,11 +579,18 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             previous = self._last_overlay_signatures or {}
             if not previous:
                 categories_to_refresh = set(signatures.keys())
+                print(f"[DEBUG Plot3D.update_overlays] Keine vorherige Signatur - alle Kategorien werden aktualisiert: {categories_to_refresh}")
             else:
                 categories_to_refresh = {
                     key for key, value in signatures.items() 
                     if key != 'speakers_highlights' and value != previous.get(key)
                 }
+                print(f"[DEBUG Plot3D.update_overlays] Signatur-Vergleich: categories_to_refresh={categories_to_refresh}")
+                if 'axis' in signatures and 'axis' in previous:
+                    print(f"[DEBUG Plot3D.update_overlays] axis Signatur geändert: {signatures['axis'] != previous['axis']}")
+                    if signatures['axis'] != previous['axis']:
+                        print(f"[DEBUG Plot3D.update_overlays] axis Signatur ALT: {previous['axis']}")
+                        print(f"[DEBUG Plot3D.update_overlays] axis Signatur NEU: {signatures['axis']}")
         # 🚀 OPTIMIERUNG: Prüfe ob sich nur Highlights geändert haben
         highlight_changed = False
         if previous:
@@ -629,8 +637,12 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         
         # Debug-Flag wird nicht mehr benötigt (war nur für Koordinator)
         if 'axis' in categories_to_refresh:
+            print(f"[DEBUG Plot3D.update_overlays] 'axis' in categories_to_refresh - zeichne Achsen neu")
             with perf_section("PlotSPL3D.update_overlays.draw_axis"):
                 self.overlay_axis.draw_axis_lines(settings, selected_axis=self._axis_selected)
+        else:
+            print(f"[DEBUG Plot3D.update_overlays] 'axis' NICHT in categories_to_refresh - Achsen werden NICHT neu gezeichnet")
+            print(f"[DEBUG Plot3D.update_overlays] categories_to_refresh: {categories_to_refresh}")
         
         if 'surfaces' in categories_to_refresh:
             with perf_section("PlotSPL3D.update_overlays.draw_surfaces"):

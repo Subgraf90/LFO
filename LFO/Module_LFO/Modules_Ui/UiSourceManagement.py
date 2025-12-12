@@ -5997,20 +5997,41 @@ class Sources(ModuleBase, QObject):
                 # Array: Aktualisiere Checkbox und Array-Daten
                 array_id = child.data(0, Qt.UserRole)
                 if array_id is not None:
-                    # Aktualisiere Checkbox, falls vorhanden
-                    if checkbox:
-                        checkbox.blockSignals(True)
-                        # Verwende setCheckState für tristate-Checkboxen
-                        checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-                        checkbox.blockSignals(False)
-                    
-                    # Aktualisiere Array-Daten (immer, auch wenn keine Checkbox vorhanden ist)
+                    # Aktualisiere Array-Daten ZUERST (immer, auch wenn keine Checkbox vorhanden ist)
                     speaker_array = self.settings.get_speaker_array(array_id)
                     if speaker_array:
                         if column == 1:  # Mute
                             speaker_array.mute = checked
                         elif column == 2:  # Hide
                             speaker_array.hide = checked
+                    
+                    # Aktualisiere Checkbox, falls vorhanden
+                    if checkbox:
+                        checkbox.blockSignals(True)
+                        # Verwende setCheckState für tristate-Checkboxen
+                        checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                        checkbox.blockSignals(False)
+                    else:
+                        # Checkbox nicht vorhanden - erstelle sie, falls nötig
+                        # (Arrays in Gruppen sollten ihre Checkboxen behalten)
+                        # WICHTIG: Erstelle Checkboxen mit blockierten Signalen, damit keine Berechnungen ausgelöst werden
+                        array_id = child.data(0, Qt.UserRole)
+                        if array_id is not None:
+                            # Erstelle Checkboxen manuell mit blockierten Signalen
+                            if column == 1:  # Mute
+                                mute_checkbox = self.create_checkbox(checked)
+                                mute_checkbox.blockSignals(True)  # Blockiere Signale während der Erstellung
+                                mute_checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                                mute_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_mute_state(id, state))
+                                mute_checkbox.blockSignals(False)
+                                self.sources_tree_widget.setItemWidget(child, 1, mute_checkbox)
+                            elif column == 2:  # Hide
+                                hide_checkbox = self.create_checkbox(checked)
+                                hide_checkbox.blockSignals(True)  # Blockiere Signale während der Erstellung
+                                hide_checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+                                hide_checkbox.stateChanged.connect(lambda state, id=array_id: self.update_hide_state(id, state))
+                                hide_checkbox.blockSignals(False)
+                                self.sources_tree_widget.setItemWidget(child, 2, hide_checkbox)
             elif child_type == "group":
                 # Gruppe: Aktualisiere Checkbox und rekursiv alle Childs
                 if checkbox:

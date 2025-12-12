@@ -197,6 +197,7 @@ class SPL3DHelpers:
             getattr(self, '_axis_selected', None),  # Highlight-Status in Signatur aufnehmen
             tuple(surface_points_signature),  # Aktive Surface-Geometrien
         )
+        print(f"[DEBUG Plot3DHelpers._compute_overlay_signatures] axis_signature erstellt: {len(surface_points_signature)} Surfaces in Signatur")
 
         speaker_arrays = getattr(settings, 'speaker_arrays', {})
         speakers_signature: List[tuple] = []

@@ -1319,7 +1319,7 @@ class SoundFieldCalculator(ModuleBase):
                 
                 # Nur gültige Surfaces hinzufügen
                 if is_valid_for_spl:
-                enabled.append((surface_id, surface_data))
+                    enabled.append((surface_id, surface_data))
                 else:
                     if DEBUG_SOUNDFIELD:
                         print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' wird übersprungen (ungültig)")
@@ -1535,6 +1535,222 @@ class SoundFieldCalculator(ModuleBase):
     # ============================================================
     # DEBUG / VALIDIERUNG
     # ============================================================
+
+    @measure_time("SoundFieldCalculator._calculate_sound_field_for_surface_grid")
+    def _calculate_sound_field_for_surface_grid(
+        self,
+        surface_grid: 'SurfaceGrid',
+        phys_constants: Dict[str, Any],
+        capture_arrays: bool = False
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """
+        🚀 PROZESSOPTIMIERT: Berechnet das Schallfeld für ein einzelnes Surface-Grid.
+        
+        Diese Methode führt die vollständig vektorisierte Berechnung für ein Surface-Grid durch.
+        Alle Optimierungen (Batch-Interpolation, vektorisierte Operationen) bleiben erhalten.
+        
+        Args:
+            surface_grid: SurfaceGrid-Objekt mit X_grid, Y_grid, Z_grid, surface_mask
+            phys_constants: Dictionary mit physikalischen Konstanten (wird einmal berechnet)
+            capture_arrays: Wenn True, werden Array-Felder zurückgegeben
+        
+        Returns:
+            Tuple von (sound_field_p, array_fields_dict)
+            - sound_field_p: 2D-Array komplexer Zahlen (Shape: [ny, nx])
+            - array_fields_dict: Dict von {array_key: array_wave} (wenn capture_arrays=True)
+        """
+        from Module_LFO.Modules_Calculate.FlexibleGridGenerator import SurfaceGrid
+        
+        # Extrahiere Grid-Daten
+        X_grid = surface_grid.X_grid
+        Y_grid = surface_grid.Y_grid
+        Z_grid = surface_grid.Z_grid
+        surface_mask = surface_grid.surface_mask
+        
+        # 🎯 DEBUG: Prüfe ob vertikale Fläche
+        is_vertical = surface_grid.geometry.orientation == "vertical"
+        surface_id = surface_grid.geometry.surface_id
+        
+        # Initialisiere Schallfeld
+        ny, nx = X_grid.shape
+        sound_field_p = np.zeros((ny, nx), dtype=complex)
+        array_fields = {} if capture_arrays else None
+        
+        if is_vertical:
+            print(f"  └─ [VERTIKAL Berechnung] Starte Berechnung für '{surface_id}'")
+            print(f"  └─ [VERTIKAL Berechnung] Grid-Punkte: {ny}×{nx} = {ny*nx} Punkte")
+            print(f"  └─ [VERTIKAL Berechnung] Aktive Punkte (in Maske): {np.count_nonzero(surface_mask)}")
+        
+        # Extrahiere physikalische Konstanten (bereits berechnet)
+        speed_of_sound = phys_constants['speed_of_sound']
+        wave_number = phys_constants['wave_number']
+        calculate_frequency = phys_constants['calculate_frequency']
+        a_source_pa = phys_constants['a_source_pa']
+        
+        # Bereite Grid-Punkte vor
+        grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
+        surface_mask_flat = surface_mask.reshape(-1)
+        
+        # 🎯 ERWEITERTE MASKE: Erstelle Maske, die auch Punkte außerhalb der Surface enthält
+        # Dies ermöglicht SPL-Berechnung für erweiterte Punkte außerhalb der Surface
+        extended_mask_flat = self._create_extended_mask(surface_mask)
+        
+        # Iteriere über alle Lautsprecher-Arrays
+        for array_key, speaker_array in self.settings.speaker_arrays.items():
+            if speaker_array.mute or speaker_array.hide:
+                continue
+            
+            array_wave = np.zeros_like(sound_field_p, dtype=complex) if capture_arrays else None
+            
+            # Konvertiere Lautsprechernamen in Indizes
+            speaker_indices = []
+            for speaker_name in speaker_array.source_polar_pattern:
+                try:
+                    speaker_names = self._data_container.get_speaker_names()
+                    index = speaker_names.index(speaker_name)
+                    speaker_indices.append(index)
+                except ValueError:
+                    speaker_indices.append(0)
+            
+            source_indices = np.array(speaker_indices)
+            source_position_x = getattr(
+                speaker_array,
+                'source_position_calc_x',
+                getattr(speaker_array, 'source_position_x', None),
+            )
+            source_position_y = getattr(
+                speaker_array,
+                'source_position_calc_y',
+                getattr(speaker_array, 'source_position_y', None),
+            )
+            source_position_z = getattr(
+                speaker_array,
+                'source_position_calc_z',
+                getattr(speaker_array, 'source_position_z', None),
+            )
+        
+            source_azimuth = np.deg2rad(speaker_array.source_azimuth)
+            source_delay = speaker_array.delay
+            
+            # Stelle sicher, dass source_time ein Array/Liste ist
+            if isinstance(speaker_array.source_time, (int, float)):
+                source_time = [speaker_array.source_time + source_delay]
+            else:
+                source_time = [time + source_delay for time in speaker_array.source_time]
+            source_time = [x / 1000 for x in source_time]
+            source_gain = speaker_array.gain
+            source_level = speaker_array.source_level + source_gain
+            source_level = self.functions.db2mag(np.array(source_level))
+            
+            # Iteriere über alle Lautsprecher im Array
+            for isrc in range(len(source_indices)):
+                speaker_name = speaker_array.source_polar_pattern[isrc]
+                
+                # VEKTORISIERTE GEOMETRIE-BERECHNUNG
+                x_distances = X_grid - source_position_x[isrc]
+                y_distances = Y_grid - source_position_y[isrc]
+                horizontal_dists = np.sqrt(x_distances**2 + y_distances**2)
+                z_distance = Z_grid - source_position_z[isrc]
+                source_dists = np.sqrt(horizontal_dists**2 + z_distance**2)
+                
+                # VEKTORISIERTE WINKEL-BERECHNUNG
+                source_to_point_angles = np.arctan2(y_distances, x_distances)
+                azimuths = (np.degrees(source_to_point_angles) + np.degrees(source_azimuth[isrc])) % 360
+                azimuths = (360 - azimuths) % 360
+                azimuths = (azimuths + 90) % 360
+                elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
+                
+                # BATCH-INTERPOLATION
+                polar_gains, polar_phases = self.get_balloon_data_batch(speaker_name, azimuths, elevations)
+                
+                if polar_gains is not None and polar_phases is not None:
+                    # VEKTORISIERTE WELLENBERECHNUNG
+                    magnitude_linear = 10 ** (polar_gains / 20)
+                    polar_phase_rad = np.radians(polar_phases)
+                    
+                    source_position = np.array(
+                        [
+                            source_position_x[isrc],
+                            source_position_y[isrc],
+                            source_position_z[isrc],
+                        ],
+                        dtype=float,
+                    )
+                    
+                    polarity_flag = False
+                    if hasattr(speaker_array, 'source_polarity'):
+                        try:
+                            polarity_flag = bool(speaker_array.source_polarity[isrc])
+                        except (TypeError, IndexError):
+                            polarity_flag = False
+
+                    source_props = {
+                        "magnitude_linear": magnitude_linear.reshape(-1),
+                        "polar_phase_rad": polar_phase_rad.reshape(-1),
+                        "source_level": source_level[isrc],
+                        "a_source_pa": a_source_pa,
+                        "wave_number": wave_number,
+                        "frequency": calculate_frequency,
+                        "source_time": source_time[isrc],
+                        "polarity": polarity_flag,
+                        "distances": source_dists.reshape(-1),
+                    }
+
+                    # MASKEN-LOGIK: Verwende erweiterte Maske für SPL-Berechnung
+                    # Erweiterte Maske enthält auch Punkte außerhalb der Surface (für bessere Interpolation)
+                    mask_options = {
+                        "min_distance": 0.001,
+                        "additional_mask": extended_mask_flat,  # 🎯 ERWEITERTE MASKE: Berechne auch für Punkte außerhalb
+                    }
+                    
+                    wave_flat = self._compute_wave_for_points(
+                        grid_points,
+                        source_position,
+                        source_props,
+                        mask_options,
+                    )
+                    wave = wave_flat.reshape(source_dists.shape)
+                    
+                    # AKKUMULATION (Interferenz-Überlagerung)
+                    sound_field_p += wave
+                    if capture_arrays and array_wave is not None:
+                        array_wave += wave
+            
+            if capture_arrays and array_wave is not None:
+                array_fields[array_key] = array_wave
+        
+        # 🎯 DEBUG: Zusammenfassung für vertikale Flächen
+        if is_vertical:
+            calculated_points = np.count_nonzero(np.abs(sound_field_p))
+            calculated_in_mask = np.count_nonzero(np.abs(sound_field_p[surface_mask]))
+            print(f"  └─ [VERTIKAL Berechnung] ✅ Berechnung abgeschlossen")
+            print(f"  └─ [VERTIKAL Berechnung] Berechnete Punkte: {calculated_points}/{sound_field_p.size} (gesamt)")
+            print(f"  └─ [VERTIKAL Berechnung] Berechnete Punkte in Maske: {calculated_in_mask}/{np.count_nonzero(surface_mask)} (in Surface)")
+
+        return sound_field_p, array_fields
+    
+    def _create_extended_mask(self, surface_mask: np.ndarray) -> np.ndarray:
+        """
+        Erstellt eine erweiterte Maske, die auch Punkte außerhalb der Surface enthält.
+        
+        Die erweiterte Maske enthält:
+        - Alle Punkte innerhalb der Surface (originale Maske)
+        - Alle Punkte im erweiterten Grid (außerhalb der Surface)
+        
+        Dies ermöglicht SPL-Berechnung für erweiterte Punkte außerhalb der Surface,
+        die für die Triangulation und Interpolation benötigt werden.
+        
+        Args:
+            surface_mask: 2D-Boolean-Array (Shape: [ny, nx]) - originale Surface-Maske
+        
+        Returns:
+            1D-Boolean-Array (Shape: [ny*nx]) - erweiterte Maske (alle Punkte im Grid)
+        """
+        # 🎯 ERWEITERTE MASKE: Alle Punkte im Grid sind gültig für SPL-Berechnung
+        # Die erweiterten Punkte außerhalb der Surface werden ebenfalls berechnet
+        # (haben aber möglicherweise niedrigere SPL-Werte)
+        extended_mask = np.ones_like(surface_mask, dtype=bool)
+        return extended_mask.reshape(-1)
 
     def _debug_check_grid_and_mask_symmetry(
         self,

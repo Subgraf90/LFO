@@ -41,6 +41,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             settings: Settings-Objekt
             selected_axis: 'x' oder 'y' für ausgewählte Achse (wird rot gezeichnet), None wenn keine ausgewählt
         """
+        print(f"[DEBUG Plot3DOverlaysAxis.draw_axis_lines] draw_axis_lines() aufgerufen, selected_axis={selected_axis}")
         t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
         # Berechne maximale Surface-Dimension für Achsenflächen-Größe
@@ -48,6 +49,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
         
         # Erstelle Signatur der aktiven Surface-Punkte, damit Änderungen erkannt werden
         active_surfaces = self._get_active_xy_surfaces(settings)
+        print(f"[DEBUG Plot3DOverlaysAxis.draw_axis_lines] Aktive Surfaces gefunden: {len(active_surfaces)}")
         surface_points_signature = []
         for surface_id, surface in active_surfaces:
             if isinstance(surface, SurfaceDefinition):
@@ -82,6 +84,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             tuple(surface_points_signature),
         )
         existing_names = self._category_actors.get('axis', [])
+        print(f"[DEBUG Plot3DOverlaysAxis.draw_axis_lines] _last_axis_state={self._last_axis_state}, state={state}, existing_names={len(existing_names)}")
         # 🎯 WICHTIG: Beim Laden (_last_axis_state ist None) immer neu zeichnen
         # Prüfe auch, ob Actors fehlen (z. B. nach File-Reload)
         if self._last_axis_state is not None and self._last_axis_state == state and existing_names:
@@ -92,7 +95,9 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                     # Prüfe ob alle Actors noch im Renderer existieren
                     actors_exist = all(name in renderer.actors for name in existing_names)
                     if actors_exist:
+                        print(f"[DEBUG Plot3DOverlaysAxis.draw_axis_lines] State unverändert und Actors existieren - überspringe Neuzeichnen")
                         return
+        print(f"[DEBUG Plot3DOverlaysAxis.draw_axis_lines] Zeichne Achsen neu (State geändert oder _last_axis_state ist None)")
         # Wenn wir hier ankommen, müssen wir neu zeichnen (State geändert, _last_axis_state ist None, oder Actors fehlen)
 
         t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None

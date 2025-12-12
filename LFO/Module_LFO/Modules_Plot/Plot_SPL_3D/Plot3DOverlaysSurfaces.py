@@ -327,14 +327,14 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                             inactive_surface_enabled.append(True)
                     else:
                         # Gültige enabled Surface: normal behandeln
-                    if is_active:
-                        active_enabled_points_list.append(closed_coords_array)
-                        active_enabled_lines_list.append(n_points)
-                    else:
-                        inactive_points_list.append(closed_coords_array)
-                        inactive_lines_list.append(n_points)
-                        inactive_surface_ids.append(str(surface_id))
-                        inactive_surface_enabled.append(True)
+                        if is_active:
+                            active_enabled_points_list.append(closed_coords_array)
+                            active_enabled_lines_list.append(n_points)
+                        else:
+                            inactive_points_list.append(closed_coords_array)
+                            inactive_lines_list.append(n_points)
+                            inactive_surface_ids.append(str(surface_id))
+                            inactive_surface_enabled.append(True)
                 
                 surfaces_drawn += 1
             except (ValueError, TypeError, AttributeError, Exception):
