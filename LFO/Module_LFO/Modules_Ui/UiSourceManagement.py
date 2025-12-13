@@ -5505,13 +5505,21 @@ class Sources(ModuleBase, QObject):
             mute_checkbox = self.create_checkbox(False, tristate=False)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
+            print(f"[DEBUG ensure_group_checkboxes] Verbinde Signal für neue Mute-Checkbox: item={item}")
             mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
             self.sources_tree_widget.setItemWidget(item, 1, mute_checkbox)
+            print(f"[DEBUG ensure_group_checkboxes] Signal verbunden, Checkbox gesetzt")
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             mute_checkbox.setFixedSize(18, 18)
             if mute_checkbox.isTristate():
                 mute_checkbox.setTristate(False)
+            # Prüfe, ob Signal bereits verbunden ist
+            receivers = mute_checkbox.receivers(mute_checkbox.stateChanged)
+            print(f"[DEBUG ensure_group_checkboxes] Mute-Checkbox existiert bereits: receivers={receivers}")
+            if receivers == 0:
+                print(f"[DEBUG ensure_group_checkboxes] ⚠️ Signal nicht verbunden - verbinde jetzt")
+                mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
         
@@ -5988,29 +5996,48 @@ class Sources(ModuleBase, QObject):
         if not group_item:
             return
         
+        group_id_data = group_item.data(0, Qt.UserRole)
+        if isinstance(group_id_data, dict):
+            group_id = group_id_data.get("id")
+        else:
+            group_id = group_id_data
+        print(f"[DEBUG _update_group_child_checkboxes] Aufgerufen: group_id={group_id}, column={column}, checked={checked}, childCount={group_item.childCount()}")
+        
         for i in range(group_item.childCount()):
             child = group_item.child(i)
             child_type = child.data(0, Qt.UserRole + 1)
+            child_data = child.data(0, Qt.UserRole)
             checkbox = self.sources_tree_widget.itemWidget(child, column)
+            child_text = child.text(0)
+            print(f"[DEBUG _update_group_child_checkboxes] Child {i}: text='{child_text}', type={child_type}, data={child_data}, checkbox vorhanden={checkbox is not None}")
             
             if child_type == "array":
                 # Array: Aktualisiere Checkbox und Array-Daten
                 array_id = child.data(0, Qt.UserRole)
+                print(f"[DEBUG _update_group_child_checkboxes] Array gefunden: array_id={array_id}, column={column}, checked={checked}, checkbox vorhanden={checkbox is not None}")
                 if array_id is not None:
                     # Aktualisiere Array-Daten ZUERST (immer, auch wenn keine Checkbox vorhanden ist)
                     speaker_array = self.settings.get_speaker_array(array_id)
                     if speaker_array:
+                        old_mute = getattr(speaker_array, 'mute', None)
+                        old_hide = getattr(speaker_array, 'hide', None)
                         if column == 1:  # Mute
                             speaker_array.mute = checked
+                            print(f"[DEBUG _update_group_child_checkboxes] Array '{array_id}': mute von {old_mute} auf {checked} gesetzt")
                         elif column == 2:  # Hide
                             speaker_array.hide = checked
+                            print(f"[DEBUG _update_group_child_checkboxes] Array '{array_id}': hide von {old_hide} auf {checked} gesetzt")
+                    else:
+                        print(f"[DEBUG _update_group_child_checkboxes] ⚠️ Array '{array_id}' nicht in settings gefunden!")
                     
                     # Aktualisiere Checkbox, falls vorhanden
                     if checkbox:
+                        old_state = checkbox.checkState()
                         checkbox.blockSignals(True)
                         # Verwende setCheckState für tristate-Checkboxen
                         checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                         checkbox.blockSignals(False)
+                        print(f"[DEBUG _update_group_child_checkboxes] Array '{array_id}': Checkbox von {old_state} auf {checkbox.checkState()} gesetzt")
                     else:
                         # Checkbox nicht vorhanden - erstelle sie, falls nötig
                         # (Arrays in Gruppen sollten ihre Checkboxen behalten)
@@ -6050,10 +6077,13 @@ class Sources(ModuleBase, QObject):
     
     def on_group_mute_changed(self, group_item, state):
         """Handler für Mute-Checkbox von Gruppen - setzt Mute für alle Childs. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
+        print(f"[DEBUG on_group_mute_changed] Aufgerufen: group_item={group_item}, state={state}")
         if not group_item:
+            print(f"[DEBUG on_group_mute_changed] group_item ist None - beende")
             return
         
         mute_value = (state == Qt.Checked)
+        print(f"[DEBUG on_group_mute_changed] mute_value={mute_value}")
         
         # Prüfe, ob mehrere Items ausgewählt sind
         selected_items = self.sources_tree_widget.selectedItems()
@@ -6098,7 +6128,9 @@ class Sources(ModuleBase, QObject):
                 parent = parent.parent()
         
         # 🎯 WICHTIG: Aktualisiere Berechnungen erst NACH allen Zustandsänderungen
+        print(f"[DEBUG on_group_mute_changed] Rufe update_speaker_array_calculations() auf (mute_value={mute_value}, groups_to_update={len(groups_to_update)})")
         self.main_window.update_speaker_array_calculations()
+        print(f"[DEBUG on_group_mute_changed] update_speaker_array_calculations() zurückgekehrt")
     
     def on_group_hide_changed(self, group_item, state):
         """Handler für Hide-Checkbox von Gruppen - setzt Hide für alle Childs. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""

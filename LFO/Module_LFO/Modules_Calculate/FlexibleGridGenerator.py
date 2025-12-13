@@ -1196,15 +1196,22 @@ class GridBuilder(ModuleBase):
                 # Wenn dominant_axis vorhanden ist, prüfe ob Y oder X variiert
                 if geometry.dominant_axis == "xz":
                     # X-Z-Wand: Y sollte variieren können (schräg)
-                    is_slanted_vertical = (y_span > eps_line and z_span > max(x_span, y_span) * 0.5)
+                    # Wenn Y variiert (y_span > eps_line), ist die Wand schräg
+                    # Zusätzlich: Z-Spanne sollte signifikant sein (z_span > 1e-3)
+                    is_slanted_vertical = (y_span > eps_line and z_span > 1e-3)
                 elif geometry.dominant_axis == "yz":
                     # Y-Z-Wand: X sollte variieren können (schräg)
-                    is_slanted_vertical = (x_span > eps_line and z_span > max(x_span, y_span) * 0.5)
+                    # Wenn X variiert (x_span > eps_line), ist die Wand schräg
+                    # Zusätzlich: Z-Spanne sollte signifikant sein (z_span > 1e-3)
+                    is_slanted_vertical = (x_span > eps_line and z_span > 1e-3)
             
-            # Fallback: Prüfe ob schräge vertikale Fläche basierend auf Spannen
-            if not is_slanted_vertical:
-                is_slanted_vertical = (z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3 and 
-                                      (y_span > eps_line or x_span > eps_line))
+            
+            # Debug-Ausgabe für schräge Flächen (immer ausgeben, da wichtig für Fehlerdiagnose)
+            dominant_axis_str = getattr(geometry, 'dominant_axis', None) if hasattr(geometry, 'dominant_axis') else None
+            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': "
+                  f"dominant_axis={dominant_axis_str}, "
+                  f"x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, "
+                  f"is_slanted_vertical={is_slanted_vertical}")
             
             # 🎯 BEHANDLE SCHRÄGE FLÄCHEN ZUERST (vor den Bedingungen für konstante X/Y)
             # Wenn schräge Fläche erkannt, überspringe die Bedingungen für konstante X/Y
@@ -1315,23 +1322,21 @@ class GridBuilder(ModuleBase):
                     print(f"[DEBUG Vertical Grid] Y-Z-Wand: Grid in (y,z)-Ebene erstellt (x={x0:.3f} konstant)")
                 
             else:
-                # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
-                if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
+                # Prüfe, ob es eine schräge vertikale Fläche ist (bereits oben bestimmt)
+                print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': else-Block erreicht, is_slanted_vertical={is_slanted_vertical}")
+                if is_slanted_vertical:
                     # Schräge vertikale Fläche: Bestimme dominante Orientierung
-                    # 🎯 VERWENDE dominant_axis WENN VERFÜGBAR (wurde durch PCA/robuste Analyse bestimmt)
+                    # 🎯 VERWENDE dominant_axis (muss vorhanden sein)
+                    if not hasattr(geometry, 'dominant_axis') or not geometry.dominant_axis:
+                        raise ValueError(f"Surface '{geometry.surface_id}': dominant_axis nicht verfügbar für schräge vertikale Fläche")
+                    
                     use_yz_wall = False
-                    if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
-                        # Verwende dominant_axis als primäre Quelle
-                        if geometry.dominant_axis == "yz":
-                            use_yz_wall = True
-                        elif geometry.dominant_axis == "xz":
-                            use_yz_wall = False
-                        else:
-                            # Fallback: Verwende Spannen-Vergleich
-                            use_yz_wall = (x_span < y_span)
+                    if geometry.dominant_axis == "yz":
+                        use_yz_wall = True
+                    elif geometry.dominant_axis == "xz":
+                        use_yz_wall = False
                     else:
-                        # Kein dominant_axis verfügbar → verwende Spannen-Vergleich
-                        use_yz_wall = (x_span < y_span)
+                        raise ValueError(f"Surface '{geometry.surface_id}': Unbekannter dominant_axis '{geometry.dominant_axis}'")
                     
                     if use_yz_wall:
                         # Y-Z-Wand schräg: Y und Z variieren, X variiert entlang der Fläche
@@ -1376,25 +1381,11 @@ class GridBuilder(ModuleBase):
                             # Interpoliere X-Koordinaten von Surface-Punkten auf (y,z)-Grid
                             points_surface = np.column_stack([ys, zs])
                             points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                            try:
-                                X_interp = griddata(
-                                    points_surface, xs,
-                                    points_grid,
-                                    method='linear', fill_value=float(np.mean(xs))
-                                )
-                            except Exception as e:
-                                # QhullError bei koplanaren Punkten → Fallback auf 'nearest'
-                                print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Linear-Interpolation fehlgeschlagen ({type(e).__name__}), verwende 'nearest' als Fallback")
-                                try:
-                                    X_interp = griddata(
-                                        points_surface, xs,
-                                        points_grid,
-                                        method='nearest', fill_value=float(np.mean(xs))
-                                    )
-                                except Exception as e2:
-                                    # Auch 'nearest' schlägt fehl → verwende konstanten Wert
-                                    print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Auch 'nearest' fehlgeschlagen, verwende konstanten X-Wert: {np.mean(xs):.3f}")
-                                    X_interp = np.full(points_grid.shape[0], float(np.mean(xs)), dtype=float)
+                            X_interp = griddata(
+                                points_surface, xs,
+                                points_grid,
+                                method='linear', fill_value=float(np.mean(xs))
+                            )
                             X_interp = X_interp.reshape(U_grid.shape)
                             
                             # Transformiere zu (X, Y, Z) Koordinaten
@@ -1452,25 +1443,18 @@ class GridBuilder(ModuleBase):
                         # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
                         points_surface = np.column_stack([xs, zs])
                         points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                        try:
-                            Y_interp = griddata(
-                                points_surface, ys,
-                                points_grid,
-                                method='linear', fill_value=float(np.mean(ys))
-                            )
-                        except Exception as e:
-                            # QhullError bei koplanaren Punkten → Fallback auf 'nearest'
-                            print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Linear-Interpolation fehlgeschlagen ({type(e).__name__}), verwende 'nearest' als Fallback")
-                            try:
-                                Y_interp = griddata(
-                                    points_surface, ys,
-                                    points_grid,
-                                    method='nearest', fill_value=float(np.mean(ys))
-                                )
-                            except Exception as e2:
-                                # Auch 'nearest' schlägt fehl → verwende konstanten Wert
-                                print(f"ℹ️  [FlexibleGridGenerator] Surface '{geometry.surface_id}': Auch 'nearest' fehlgeschlagen, verwende konstanten Y-Wert: {np.mean(ys):.3f}")
-                                Y_interp = np.full(points_grid.shape[0], float(np.mean(ys)), dtype=float)
+                        
+                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere Y-Koordinaten (X-Z-Wand schräg)")
+                        print(f"  └─ Surface-Punkte: {len(points_surface)} Punkte, Y-Range: [{np.min(ys):.3f}, {np.max(ys):.3f}], Span: {np.ptp(ys):.3f}")
+                        print(f"  └─ Grid-Punkte: {len(points_grid)} Punkte")
+                        
+                        Y_interp = griddata(
+                            points_surface, ys,
+                            points_grid,
+                            method='linear', fill_value=float(np.mean(ys))
+                        )
+                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ Linear-Interpolation erfolgreich")
+                        print(f"  └─ Y_interp Range: [{np.nanmin(Y_interp):.3f}, {np.nanmax(Y_interp):.3f}], Span: {np.nanmax(Y_interp) - np.nanmin(Y_interp):.3f}")
                         Y_interp = Y_interp.reshape(U_grid.shape)
                         
                         # Transformiere zu (X, Y, Z) Koordinaten
@@ -1486,51 +1470,7 @@ class GridBuilder(ModuleBase):
                             print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
                 else:
                     # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
-                    # → Behandle als planare/schräge Surface und erstelle Grid in X-Y-Ebene
-                    if DEBUG_FLEXIBLE_GRID:
-                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Z-Spanne ({z_span:.3f}) nicht groß genug für vertikale Behandlung.")
-                        print(f"  └─ x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}")
-                        print(f"  └─ Fallback: Behandle als planare/schräge Surface (Grid in X-Y-Ebene)")
-                    # Fallback: Setze orientation auf "planar" damit die planare Maske-Erstellung verwendet wird
-                    geometry.orientation = "planar"
-                    # Fallback: Verwende planare Grid-Erstellung direkt hier
-                    if not geometry.bbox:
-                        raise ValueError(f"Surface '{geometry.surface_id}': keine Bounding Box vorhanden.")
-                    min_x, max_x, min_y, max_y = geometry.bbox
-                    width = max_x - min_x
-                    height = max_y - min_y
-                    nx_base = max(1, int(np.ceil(width / resolution)) + 1)
-                    ny_base = max(1, int(np.ceil(height / resolution)) + 1)
-                    total_points_base = nx_base * ny_base
-                    min_total_points = min_points_per_dimension ** 2
-                    if total_points_base < min_total_points:
-                        diagonal = np.sqrt(width**2 + height**2)
-                        if diagonal > 0:
-                            adaptive_resolution = diagonal / min_points_per_dimension
-                            adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
-                            resolution = adaptive_resolution
-                    min_x -= resolution
-                    max_x += resolution
-                    min_y -= resolution
-                    max_y += resolution
-                    sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-                    sound_field_y = np.arange(min_y, max_y + resolution, resolution)
-                    if len(sound_field_x) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_x)
-                        step = resolution if len(sound_field_x) > 1 else (max_x - min_x) / (min_points_per_dimension - 1)
-                        if step <= 0:
-                            step = resolution
-                        additional_x = np.arange(max_x + step, max_x + step * n_points_needed, step)
-                        sound_field_x = np.concatenate([sound_field_x, additional_x])
-                    if len(sound_field_y) < min_points_per_dimension:
-                        n_points_needed = min_points_per_dimension - len(sound_field_y)
-                        step = resolution if len(sound_field_y) > 1 else (max_y - min_y) / (min_points_per_dimension - 1)
-                        if step <= 0:
-                            step = resolution
-                        additional_y = np.arange(max_y + step, max_y + step * n_points_needed, step)
-                        sound_field_y = np.concatenate([sound_field_y, additional_y])
-                    X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
-                    Z_grid = np.zeros_like(X_grid, dtype=float)
+                    raise ValueError(f"Surface '{geometry.surface_id}': Als 'vertical' klassifiziert, aber Z-Spanne ({z_span:.3f}) nicht groß genug. x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}")
         else:
             # PLANARE/SCHRÄGE SURFACES: Grid in X-Y-Ebene (wie bisher)
             if not geometry.bbox:
@@ -1630,21 +1570,23 @@ class GridBuilder(ModuleBase):
             zs = np.array([p.get('z', 0.0) for p in points], dtype=float)
             x_span = float(np.ptp(xs))
             y_span = float(np.ptp(ys))
+            z_span = float(np.ptp(zs))
             
             eps_line = 1e-6
             
-            if y_span < eps_line and x_span >= eps_line:
-                # X-Z-Wand: Maske in (x,z)-Ebene
-                U_grid = X_grid  # u = x
-                V_grid = Z_grid  # v = z
-                polygon_uv = [
-                    {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
-                    for p in points
-                ]
-                surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
-                surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-            elif x_span < eps_line and y_span >= eps_line:
+            # 🎯 VERWENDE dominant_axis (muss vorhanden sein)
+            if not hasattr(geometry, 'dominant_axis') or not geometry.dominant_axis:
+                raise ValueError(f"Surface '{geometry.surface_id}': dominant_axis nicht verfügbar für Maske-Erstellung")
+            
+            use_yz_wall = False
+            if geometry.dominant_axis == "yz":
+                use_yz_wall = True
+            elif geometry.dominant_axis == "xz":
+                use_yz_wall = False
+            else:
+                raise ValueError(f"Surface '{geometry.surface_id}': Unbekannter dominant_axis '{geometry.dominant_axis}'")
+            
+            if use_yz_wall:
                 # Y-Z-Wand: Maske in (y,z)-Ebene
                 U_grid = Y_grid  # u = y
                 V_grid = Z_grid  # v = z
@@ -1656,49 +1598,16 @@ class GridBuilder(ModuleBase):
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
             else:
-                # Prüfe, ob es eine schräge vertikale Fläche ist
-                z_span = float(np.ptp(zs))
-                if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
-                    # Schräge vertikale Fläche: Bestimme dominante Orientierung
-                    # 🎯 VERWENDE dominant_axis WENN VERFÜGBAR (konsistent mit Grid-Erstellung)
-                    use_yz_wall = False
-                    if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
-                        # Verwende dominant_axis als primäre Quelle
-                        if geometry.dominant_axis == "yz":
-                            use_yz_wall = True
-                        elif geometry.dominant_axis == "xz":
-                            use_yz_wall = False
-                        else:
-                            # Fallback: Verwende Spannen-Vergleich
-                            use_yz_wall = (x_span < y_span)
-                    else:
-                        # Kein dominant_axis verfügbar → verwende Spannen-Vergleich
-                        use_yz_wall = (x_span < y_span)
-                    
-                    if use_yz_wall:
-                        # Y-Z-Wand schräg: Maske in (y,z)-Ebene
-                        U_grid = Y_grid  # u = y
-                        V_grid = Z_grid  # v = z
-                        polygon_uv = [
-                            {"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))}
-                            for p in points
-                        ]
-                        surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                        # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
-                        surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-                    else:
-                        # X-Z-Wand schräg: Maske in (x,z)-Ebene
-                        U_grid = X_grid  # u = x
-                        V_grid = Z_grid  # v = z
-                        polygon_uv = [
-                            {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
-                            for p in points
-                        ]
-                        surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                        # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
-                        surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-                else:
-                    raise ValueError(f"Vertikale Surface '{geometry.surface_id}': keine vertikale Maske ableitbar.")
+                # X-Z-Wand: Maske in (x,z)-Ebene
+                U_grid = X_grid  # u = x
+                V_grid = Z_grid  # v = z
+                polygon_uv = [
+                    {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
+                    for p in points
+                ]
+                surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                surface_mask = self._dilate_mask_minimal(surface_mask_strict)
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
@@ -2484,11 +2393,15 @@ class FlexibleGridGenerator(ModuleBase):
                             y_span = float(np.ptp(ys))
                             eps_line = 1e-6
                             
-                            # Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
+                            # 🎯 ZUERST AUSRICHTUNG PRÜFEN: Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
                             # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende dominant_axis wenn verfügbar
                             # Berechne Konstanten-Werte im Voraus
                             x_mean = float(np.mean(xs))
                             y_mean = float(np.mean(ys))
+                            z_span = float(np.ptp(zs))
+                            
+                            # 🎯 PRÜFE OB SCHRÄGE WAND: Y variiert bei X-Z-Wänden, X variiert bei Y-Z-Wänden
+                            is_slanted_wall = False
                             
                             if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
                                 # Verwende dominant_axis als primäre Quelle (konsistent mit Grid-Erstellung)
@@ -2497,41 +2410,31 @@ class FlexibleGridGenerator(ModuleBase):
                                     polygon_u = ys
                                     polygon_v = zs
                                     is_xz_wall = False
+                                    # Prüfe ob schräg: X variiert (gleiche Logik wie Grid-Erstellung)
+                                    is_slanted_wall = (x_span > eps_line and z_span > 1e-3)
+                                    if DEBUG_FLEXIBLE_GRID:
+                                        print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': Y-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                 elif geom.dominant_axis == "xz":
                                     # X-Z-Wand: u = x, v = z
                                     polygon_u = xs
                                     polygon_v = zs
                                     is_xz_wall = True
+                                    # Prüfe ob schräg: Y variiert (gleiche Logik wie Grid-Erstellung)
+                                    is_slanted_wall = (y_span > eps_line and z_span > 1e-3)
+                                    if DEBUG_FLEXIBLE_GRID:
+                                        print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': X-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                 else:
-                                    # Unbekannter dominant_axis → Fallback auf Spannen-Analyse
-                                    if x_span < y_span:
-                                        polygon_u = ys
-                                        polygon_v = zs
-                                        is_xz_wall = False
-                                    else:
-                                        polygon_u = xs
-                                        polygon_v = zs
-                                        is_xz_wall = True
-                            elif y_span < eps_line and x_span >= eps_line:
-                                # X-Z-Wand: y ≈ const, u = x, v = z
-                                polygon_u = xs
-                                polygon_v = zs
-                                is_xz_wall = True
-                            elif x_span < eps_line and y_span >= eps_line:
-                                # Y-Z-Wand: x ≈ const, u = y, v = z
-                                polygon_u = ys
-                                polygon_v = zs
-                                is_xz_wall = False
-                            else:
-                                # Fallback: Verwende kleinste Spanne
-                                if x_span < y_span:
-                                    polygon_u = ys
-                                    polygon_v = zs
-                                    is_xz_wall = False
+                                    raise ValueError(f"Surface '{geom.surface_id}': Unbekannter dominant_axis '{geom.dominant_axis}'")
+                            
+                            # 🎯 FÜR SCHRÄGE WÄNDE: Interpoliere Y (X-Z-Wand) bzw. X (Y-Z-Wand) aus Surface-Punkten
+                            if is_slanted_wall:
+                                from scipy.interpolate import griddata
+                                if is_xz_wall:
+                                    # X-Z-Wand schräg: Interpoliere Y aus (x,z)-Koordinaten
+                                    points_surface = np.column_stack([xs, zs])
                                 else:
-                                    polygon_u = xs
-                                    polygon_v = zs
-                                    is_xz_wall = True
+                                    # Y-Z-Wand schräg: Interpoliere X aus (y,z)-Koordinaten
+                                    points_surface = np.column_stack([ys, zs])
                             
                             # Prüfe für jede Polygon-Ecke in (u,v)-Koordinaten
                             existing_vertex_tolerance = resolution * 0.1  # Toleranz für "bereits vorhanden"
@@ -2552,15 +2455,37 @@ class FlexibleGridGenerator(ModuleBase):
                                     # Kein Vertex nahe genug → füge neuen Vertex hinzu
                                     # Transformiere (u,v) zurück zu (x,y,z)
                                     if is_xz_wall:
-                                        # X-Z-Wand: u = x, v = z, y = konstant
+                                        # X-Z-Wand: u = x, v = z
                                         corner_x = corner_u
-                                        corner_y = y_mean
                                         corner_z = corner_v
+                                        if is_slanted_wall:
+                                            # Schräge Wand: Y interpoliert aus (x,z)
+                                            corner_y = griddata(
+                                                points_surface, ys,
+                                                np.array([[corner_u, corner_v]]),
+                                                method='linear', fill_value=y_mean
+                                            )[0]
+                                            if DEBUG_FLEXIBLE_GRID and len(additional_vertices) == 0:
+                                                print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': Y interpoliert für Ecke (u={corner_u:.3f}, v={corner_v:.3f}) → Y={corner_y:.3f} (linear)")
+                                        else:
+                                            # Konstante Wand: Y = konstant
+                                            corner_y = y_mean
                                     else:
-                                        # Y-Z-Wand: u = y, v = z, x = konstant
-                                        corner_x = x_mean
+                                        # Y-Z-Wand: u = y, v = z
                                         corner_y = corner_u
                                         corner_z = corner_v
+                                        if is_slanted_wall:
+                                            # Schräge Wand: X interpoliert aus (y,z)
+                                            corner_x = griddata(
+                                                points_surface, xs,
+                                                np.array([[corner_u, corner_v]]),
+                                                method='linear', fill_value=x_mean
+                                            )[0]
+                                            if DEBUG_FLEXIBLE_GRID and len(additional_vertices) == 0:
+                                                print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': X interpoliert für Ecke (u={corner_u:.3f}, v={corner_v:.3f}) → X={corner_x:.3f} (linear)")
+                                        else:
+                                            # Konstante Wand: X = konstant
+                                            corner_x = x_mean
                                     
                                     additional_vertices.append([corner_x, corner_y, corner_z])
                         else:
@@ -2625,12 +2550,15 @@ class FlexibleGridGenerator(ModuleBase):
                                 y_span = float(np.ptp(ys))
                                 eps_line = 1e-6
                                 
-                                # Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
+                                # 🎯 ZUERST AUSRICHTUNG PRÜFEN: Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
                                 # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende dominant_axis wenn verfügbar
                                 z_span = float(np.ptp(zs))
+                                x_mean = float(np.mean(xs))
+                                y_mean = float(np.mean(ys))
                                 
-                                # Prüfe ob es eine schräge vertikale Fläche ist
-                                is_slanted = (z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3)
+                                # 🎯 PRÜFE OB SCHRÄGE WAND: Y variiert bei X-Z-Wänden, X variiert bei Y-Z-Wänden
+                                # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende gleiche Logik wie is_slanted_vertical
+                                is_slanted_wall = False
                                 
                                 if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
                                     # Verwende dominant_axis als primäre Quelle (konsistent mit Grid-Erstellung)
@@ -2638,50 +2566,32 @@ class FlexibleGridGenerator(ModuleBase):
                                         # Y-Z-Wand: u = y, v = z
                                         polygon_u = ys
                                         polygon_v = zs
-                                        x_const = float(np.mean(xs))
                                         is_xz_wall = False
+                                        # Prüfe ob schräg: X variiert (gleiche Logik wie Grid-Erstellung)
+                                        is_slanted_wall = (x_span > eps_line and z_span > 1e-3)
+                                        if DEBUG_FLEXIBLE_GRID:
+                                            print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': Y-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                     elif geom.dominant_axis == "xz":
                                         # X-Z-Wand: u = x, v = z
                                         polygon_u = xs
                                         polygon_v = zs
-                                        y_const = float(np.mean(ys))
                                         is_xz_wall = True
+                                        # Prüfe ob schräg: Y variiert (gleiche Logik wie Grid-Erstellung)
+                                        is_slanted_wall = (y_span > eps_line and z_span > 1e-3)
+                                        if DEBUG_FLEXIBLE_GRID:
+                                            print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': X-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                     else:
-                                        # Unbekannter dominant_axis → Fallback auf Spannen-Analyse
-                                        if x_span < y_span:
-                                            polygon_u = ys
-                                            polygon_v = zs
-                                            x_const = float(np.mean(xs))
-                                            is_xz_wall = False
-                                        else:
-                                            polygon_u = xs
-                                            polygon_v = zs
-                                            y_const = float(np.mean(ys))
-                                            is_xz_wall = True
-                                elif y_span < eps_line and x_span >= eps_line:
-                                    # X-Z-Wand: y ≈ const, u = x, v = z
-                                    polygon_u = xs
-                                    polygon_v = zs
-                                    y_const = float(np.mean(ys))
-                                    is_xz_wall = True
-                                elif x_span < eps_line and y_span >= eps_line:
-                                    # Y-Z-Wand: x ≈ const, u = y, v = z
-                                    polygon_u = ys
-                                    polygon_v = zs
-                                    x_const = float(np.mean(xs))
-                                    is_xz_wall = False
-                                else:
-                                    # Fallback: Verwende kleinste Spanne
-                                    if x_span < y_span:
-                                        polygon_u = ys
-                                        polygon_v = zs
-                                        x_const = float(np.mean(xs))
-                                        is_xz_wall = False
+                                        raise ValueError(f"Surface '{geom.surface_id}': Unbekannter dominant_axis '{geom.dominant_axis}'")
+                                
+                                # 🎯 FÜR SCHRÄGE WÄNDE: Interpoliere Y (X-Z-Wand) bzw. X (Y-Z-Wand) aus Surface-Punkten
+                                if is_slanted_wall:
+                                    from scipy.interpolate import griddata
+                                    if is_xz_wall:
+                                        # X-Z-Wand schräg: Interpoliere Y aus (x,z)-Koordinaten
+                                        points_surface = np.column_stack([xs, zs])
                                     else:
-                                        polygon_u = xs
-                                        polygon_v = zs
-                                        y_const = float(np.mean(ys))
-                                        is_xz_wall = True
+                                        # Y-Z-Wand schräg: Interpoliere X aus (y,z)-Koordinaten
+                                        points_surface = np.column_stack([ys, zs])
                                 
                                 # Projiziere jeden Rand-Vertex auf die nächstliegende Polygon-Kante oder Ecke in (u,v)
                                 for idx in boundary_indices:
@@ -2744,15 +2654,39 @@ class FlexibleGridGenerator(ModuleBase):
                                     
                                     # Transformiere (u,v) zurück zu (x,y,z) und verschiebe Vertex
                                     if is_xz_wall:
-                                        # X-Z-Wand: u = x, v = z, y = konstant
+                                        # X-Z-Wand: u = x, v = z
                                         all_vertices[idx, 0] = closest_u
-                                        all_vertices[idx, 1] = float(np.mean(ys))
                                         all_vertices[idx, 2] = closest_v
+                                        if is_slanted_wall:
+                                            # Schräge Wand: Y interpoliert aus (x,z)
+                                            old_y = all_vertices[idx, 1]
+                                            all_vertices[idx, 1] = griddata(
+                                                points_surface, ys,
+                                                np.array([[closest_u, closest_v]]),
+                                                method='linear', fill_value=y_mean
+                                            )[0]
+                                            if DEBUG_FLEXIBLE_GRID and len(boundary_indices) > 0 and idx == boundary_indices[0]:
+                                                print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': Y interpoliert für Rand-Vertex (u={closest_u:.3f}, v={closest_v:.3f}) → Y={all_vertices[idx, 1]:.3f} (linear, vorher: {old_y:.3f})")
+                                        else:
+                                            # Konstante Wand: Y = konstant
+                                            all_vertices[idx, 1] = y_mean
                                     else:
-                                        # Y-Z-Wand: u = y, v = z, x = konstant
-                                        all_vertices[idx, 0] = float(np.mean(xs))
+                                        # Y-Z-Wand: u = y, v = z
                                         all_vertices[idx, 1] = closest_u
                                         all_vertices[idx, 2] = closest_v
+                                        if is_slanted_wall:
+                                            # Schräge Wand: X interpoliert aus (y,z)
+                                            old_x = all_vertices[idx, 0]
+                                            all_vertices[idx, 0] = griddata(
+                                                points_surface, xs,
+                                                np.array([[closest_u, closest_v]]),
+                                                method='linear', fill_value=x_mean
+                                            )[0]
+                                            if DEBUG_FLEXIBLE_GRID and len(boundary_indices) > 0 and idx == boundary_indices[0]:
+                                                print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': X interpoliert für Rand-Vertex (u={closest_u:.3f}, v={closest_v:.3f}) → X={all_vertices[idx, 0]:.3f} (linear, vorher: {old_x:.3f})")
+                                        else:
+                                            # Konstante Wand: X = konstant
+                                            all_vertices[idx, 0] = x_mean
                             else:
                                 # PLANARE/SCHRÄGE FLÄCHEN: Projektion in (x,y)-Koordinaten
                                 # Extrahiere Polygon-Koordinaten (für planare/schräge: x,y)

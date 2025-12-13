@@ -299,6 +299,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                 hidden = surface_to_use.get('hidden', False)
                 surface_name = surface_to_use.get('name', surface_id)
             
+            
             if not (xy_enabled and enabled and not hidden):
                 continue
             
