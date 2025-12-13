@@ -1664,12 +1664,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
                             grid_data = surface_grids_data[surface_id]
                             
-                            # 🎯 PRÜFE ORIENTIERUNG: Überspringe vertikale Surfaces (werden separat behandelt)
-                            orientation = grid_data.get('orientation', 'unknown')
-                            if orientation == 'vertical':
-                                if DEBUG_PLOT3D_TIMING:
-                                    print(f"[DEBUG Plot] Surface '{surface_id}': Überspringe vertikale Surface (wird separat behandelt)")
-                                return None
+                            # 🎯 IDENTISCHE BEHANDLUNG: Vertikale Flächen werden jetzt auch hier behandelt
+                            # (werden in _render_surfaces_textured mit Triangulation geplottet)
                             
                             if 'X_grid' in grid_data and 'Y_grid' in grid_data and 'Z_grid' in grid_data:
                                 X_grid_direct = np.array(grid_data['X_grid'], dtype=float)

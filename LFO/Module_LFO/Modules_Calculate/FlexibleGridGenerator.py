@@ -1173,7 +1173,7 @@ class GridBuilder(ModuleBase):
         t_orientation_start = time.perf_counter() if PERF_ENABLED else None
         
         # 🎯 VERTIKALE SURFACES: Erstelle Grid direkt in (u,v)-Ebene der Fläche
-        # Folgt der bewährten Logik aus SurfaceGridCalculator._build_vertical_surface_samples
+        # Gleiche Funktionalität wie planare Flächen, nur andere Flächenausrichtung
         if geometry.orientation == "vertical":
             # Bestimme Orientierung und erstelle Grid in (u,v)-Ebene
             points = geometry.points
@@ -1186,12 +1186,8 @@ class GridBuilder(ModuleBase):
             
             eps_line = 1e-6
             
-            # 🎯 ALTE LOGIK: Verfeinere Resolution für vertikale Flächen (wie in _build_vertical_surface_samples)
-            base_resolution = float(resolution or 1.0)
-            refine_factor = 2.0
-            step = base_resolution / refine_factor
-            if step <= 0.0:
-                step = base_resolution or 1.0
+            # 🎯 IDENTISCHE RESOLUTION: Keine Verdoppelung mehr, verwende Basis-Resolution
+            step = float(resolution or 1.0)
             
             if y_span < eps_line and x_span >= eps_line:
                 # X-Z-Wand: y ≈ const, Grid in (x,z)-Ebene
@@ -1203,32 +1199,51 @@ class GridBuilder(ModuleBase):
                 # Prüfe auf degenerierte Flächen
                 if math.isclose(u_min, u_max) or math.isclose(v_min, v_max):
                     raise ValueError(f"Vertikale Surface '{geometry.surface_id}' degeneriert (X-Z-Wand) – Grid-Erstellung abgebrochen.")
-                else:
-                    # 🎯 ALTE LOGIK: Keine Grid-Erweiterung für vertikale Flächen
-                    # Erstelle Grid direkt in (u,v)-Ebene OHNE Padding (wie in _build_vertical_surface_samples)
-                    u_axis = np.arange(u_min, u_max + step, step, dtype=float)
-                    v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                
+                # 🎯 ADAPTIVE RESOLUTION: Wie bei planaren Flächen
+                width = u_max - u_min
+                height = v_max - v_min
+                nu_base = max(1, int(np.ceil(width / step)) + 1)
+                nv_base = max(1, int(np.ceil(height / step)) + 1)
+                total_points_base = nu_base * nv_base
+                min_total_points = min_points_per_dimension ** 2
+                
+                if total_points_base < min_total_points:
+                    diagonal = np.sqrt(width**2 + height**2)
+                    if diagonal > 0:
+                        adaptive_resolution = diagonal / min_points_per_dimension
+                        adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                        step = adaptive_resolution
+                
+                # 🎯 IDENTISCHES PADDING: Wie bei planaren Flächen
+                u_min -= step
+                u_max += step
+                v_min -= step
+                v_max += step
+                
+                u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                v_axis = np.arange(v_min, v_max + step, step, dtype=float)
                     
-                    if u_axis.size < 2 or v_axis.size < 2:
-                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (X-Z-Wand) liefert zu wenige Punkte in (u,v)-Ebene.")
-                    else:
-                        # Erstelle 2D-Meshgrid in (u,v)-Ebene
-                        U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
-                        
-                        # Transformiere zu (X, Y, Z) Koordinaten
-                        X_grid = U_grid  # u = x
-                        Y_grid = np.full_like(U_grid, y0, dtype=float)  # y = konstant
-                        Z_grid = V_grid  # v = z
-                        
-                        # sound_field_x und sound_field_y für Rückgabe (werden für Plot verwendet)
-                        sound_field_x = u_axis  # x-Koordinaten
-                        sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
-                        
-                        print(f"[DEBUG Vertical Grid] X-Z-Wand: Grid in (x,z)-Ebene erstellt")
-                        print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                        print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                        print(f"  └─ wall_y (konstant): {y0:.3f}")
-                        print(f"  └─ step (refined): {step:.3f} m (base: {base_resolution:.3f} m)")
+                if u_axis.size < 2 or v_axis.size < 2:
+                    raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (X-Z-Wand) liefert zu wenige Punkte in (u,v)-Ebene.")
+                
+                # Erstelle 2D-Meshgrid in (u,v)-Ebene
+                U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                
+                # Transformiere zu (X, Y, Z) Koordinaten
+                X_grid = U_grid  # u = x
+                Y_grid = np.full_like(U_grid, y0, dtype=float)  # y = konstant
+                Z_grid = V_grid  # v = z
+                
+                # sound_field_x und sound_field_y für Rückgabe (werden für Plot verwendet)
+                sound_field_x = u_axis  # x-Koordinaten
+                sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
+                
+                print(f"[DEBUG Vertical Grid] X-Z-Wand: Grid in (x,z)-Ebene erstellt")
+                print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
+                print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                print(f"  └─ wall_y (konstant): {y0:.3f}")
+                print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
                 
             elif x_span < eps_line and y_span >= eps_line:
                 # Y-Z-Wand: x ≈ const, Grid in (y,z)-Ebene
@@ -1240,32 +1255,51 @@ class GridBuilder(ModuleBase):
                 # Prüfe auf degenerierte Flächen
                 if math.isclose(u_min, u_max) or math.isclose(v_min, v_max):
                     raise ValueError(f"Vertikale Surface '{geometry.surface_id}' degeneriert (Y-Z-Wand) – Grid-Erstellung abgebrochen.")
-                else:
-                    # 🎯 ALTE LOGIK: Keine Grid-Erweiterung für vertikale Flächen
-                    # Erstelle Grid direkt in (u,v)-Ebene OHNE Padding (wie in _build_vertical_surface_samples)
-                    u_axis = np.arange(u_min, u_max + step, step, dtype=float)
-                    v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                
+                # 🎯 ADAPTIVE RESOLUTION: Wie bei planaren Flächen
+                width = u_max - u_min
+                height = v_max - v_min
+                nu_base = max(1, int(np.ceil(width / step)) + 1)
+                nv_base = max(1, int(np.ceil(height / step)) + 1)
+                total_points_base = nu_base * nv_base
+                min_total_points = min_points_per_dimension ** 2
+                
+                if total_points_base < min_total_points:
+                    diagonal = np.sqrt(width**2 + height**2)
+                    if diagonal > 0:
+                        adaptive_resolution = diagonal / min_points_per_dimension
+                        adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                        step = adaptive_resolution
+                
+                # 🎯 IDENTISCHES PADDING: Wie bei planaren Flächen
+                u_min -= step
+                u_max += step
+                v_min -= step
+                v_max += step
+                
+                u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                v_axis = np.arange(v_min, v_max + step, step, dtype=float)
                     
-                    if u_axis.size < 2 or v_axis.size < 2:
-                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (Y-Z-Wand) liefert zu wenige Punkte in (u,v)-Ebene.")
-                    else:
-                        # Erstelle 2D-Meshgrid in (u,v)-Ebene
-                        U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
-                        
-                        # Transformiere zu (X, Y, Z) Koordinaten
-                        X_grid = np.full_like(U_grid, x0, dtype=float)  # x = konstant
-                        Y_grid = U_grid  # u = y
-                        Z_grid = V_grid  # v = z
-                        
-                        # sound_field_x und sound_field_y für Rückgabe (werden für Plot verwendet)
-                        sound_field_x = u_axis  # y-Koordinaten (als x für sound_field_x)
-                        sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
-                        
-                        print(f"[DEBUG Vertical Grid] Y-Z-Wand: Grid in (y,z)-Ebene erstellt")
-                        print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                        print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                        print(f"  └─ wall_x (konstant): {x0:.3f}")
-                        print(f"  └─ step (refined): {step:.3f} m (base: {base_resolution:.3f} m)")
+                if u_axis.size < 2 or v_axis.size < 2:
+                    raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (Y-Z-Wand) liefert zu wenige Punkte in (u,v)-Ebene.")
+                
+                # Erstelle 2D-Meshgrid in (u,v)-Ebene
+                U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                
+                # Transformiere zu (X, Y, Z) Koordinaten
+                X_grid = np.full_like(U_grid, x0, dtype=float)  # x = konstant
+                Y_grid = U_grid  # u = y
+                Z_grid = V_grid  # v = z
+                
+                # sound_field_x und sound_field_y für Rückgabe (werden für Plot verwendet)
+                sound_field_x = u_axis  # y-Koordinaten (als x für sound_field_x)
+                sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
+                
+                print(f"[DEBUG Vertical Grid] Y-Z-Wand: Grid in (y,z)-Ebene erstellt")
+                print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
+                print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                print(f"  └─ wall_x (konstant): {x0:.3f}")
+                print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
                 
             else:
                 # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
@@ -1276,6 +1310,28 @@ class GridBuilder(ModuleBase):
                         # u = y, v = z
                         u_min, u_max = float(ys.min()), float(ys.max())
                         v_min, v_max = float(zs.min()), float(zs.max())
+                        
+                        # 🎯 ADAPTIVE RESOLUTION: Wie bei planaren Flächen
+                        width = u_max - u_min
+                        height = v_max - v_min
+                        nu_base = max(1, int(np.ceil(width / step)) + 1)
+                        nv_base = max(1, int(np.ceil(height / step)) + 1)
+                        total_points_base = nu_base * nv_base
+                        min_total_points = min_points_per_dimension ** 2
+                        
+                        if total_points_base < min_total_points:
+                            diagonal = np.sqrt(width**2 + height**2)
+                            if diagonal > 0:
+                                adaptive_resolution = diagonal / min_points_per_dimension
+                                adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                                step = adaptive_resolution
+                        
+                        # 🎯 IDENTISCHES PADDING: Wie bei planaren Flächen
+                        u_min -= step
+                        u_max += step
+                        v_min -= step
+                        v_max += step
+                        
                         # X wird später interpoliert
                         from scipy.interpolate import griddata
                         
@@ -1325,6 +1381,7 @@ class GridBuilder(ModuleBase):
                             print(f"[DEBUG Vertical Grid] Y-Z-Wand schräg: Grid in (y,z)-Ebene erstellt, X interpoliert")
                             print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
                             print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                            print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
                             print(f"  └─ X interpoliert: min={X_interp.min():.3f}, max={X_interp.max():.3f}")
                             print(f"  └─ X_grid nach Zuweisung: min={X_grid.min():.3f}, max={X_grid.max():.3f}, shape={X_grid.shape}")
                     else:
@@ -1332,6 +1389,28 @@ class GridBuilder(ModuleBase):
                         # u = x, v = z
                         u_min, u_max = float(xs.min()), float(xs.max())
                         v_min, v_max = float(zs.min()), float(zs.max())
+                        
+                        # 🎯 ADAPTIVE RESOLUTION: Wie bei planaren Flächen
+                        width = u_max - u_min
+                        height = v_max - v_min
+                        nu_base = max(1, int(np.ceil(width / step)) + 1)
+                        nv_base = max(1, int(np.ceil(height / step)) + 1)
+                        total_points_base = nu_base * nv_base
+                        min_total_points = min_points_per_dimension ** 2
+                        
+                        if total_points_base < min_total_points:
+                            diagonal = np.sqrt(width**2 + height**2)
+                            if diagonal > 0:
+                                adaptive_resolution = diagonal / min_points_per_dimension
+                                adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                                step = adaptive_resolution
+                        
+                        # 🎯 IDENTISCHES PADDING: Wie bei planaren Flächen
+                        u_min -= step
+                        u_max += step
+                        v_min -= step
+                        v_max += step
+                        
                         # Y wird später interpoliert
                         from scipy.interpolate import griddata
                         
@@ -1381,6 +1460,7 @@ class GridBuilder(ModuleBase):
                         print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
                         print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
                         print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
+                        print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
                         print(f"  └─ Y interpoliert: min={Y_interp.min():.3f}, max={Y_interp.max():.3f}")
                 else:
                     # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
@@ -1534,29 +1614,27 @@ class GridBuilder(ModuleBase):
             
             if y_span < eps_line and x_span >= eps_line:
                 # X-Z-Wand: Maske in (x,z)-Ebene
-                # 🎯 ALTE LOGIK: Verwende _points_in_polygon_batch (funktioniert auch für (u,v))
                 U_grid = X_grid  # u = x
                 V_grid = Z_grid  # v = z
                 polygon_uv = [
                     {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
                     for p in points
                 ]
-                surface_mask = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                # 🎯 ALTE LOGIK: Leichte Dilatation der Maske (wie in _build_vertical_surface_samples)
-                surface_mask = self._dilate_mask_minimal(surface_mask)
+                surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                surface_mask = self._dilate_mask_minimal(surface_mask_strict)
                 print(f"[DEBUG Vertical Mask] X-Z-Wand: Maske in (x,z)-Ebene erstellt")
             elif x_span < eps_line and y_span >= eps_line:
                 # Y-Z-Wand: Maske in (y,z)-Ebene
-                # 🎯 ALTE LOGIK: Verwende _points_in_polygon_batch (funktioniert auch für (u,v))
                 U_grid = Y_grid  # u = y
                 V_grid = Z_grid  # v = z
                 polygon_uv = [
                     {"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))}
                     for p in points
                 ]
-                surface_mask = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                # 🎯 ALTE LOGIK: Leichte Dilatation der Maske (wie in _build_vertical_surface_samples)
-                surface_mask = self._dilate_mask_minimal(surface_mask)
+                surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                surface_mask = self._dilate_mask_minimal(surface_mask_strict)
                 print(f"[DEBUG Vertical Mask] Y-Z-Wand: Maske in (y,z)-Ebene erstellt")
             else:
                 # Prüfe, ob es eine schräge vertikale Fläche ist
@@ -1571,8 +1649,9 @@ class GridBuilder(ModuleBase):
                             {"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))}
                             for p in points
                         ]
-                        surface_mask = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                        surface_mask = self._dilate_mask_minimal(surface_mask)
+                        surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                        # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                        surface_mask = self._dilate_mask_minimal(surface_mask_strict)
                         print(f"[DEBUG Vertical Mask] Y-Z-Wand schräg: Maske in (y,z)-Ebene erstellt")
                     else:
                         # X-Z-Wand schräg: Maske in (x,z)-Ebene
@@ -1582,17 +1661,16 @@ class GridBuilder(ModuleBase):
                             {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
                             for p in points
                         ]
-                        surface_mask = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
-                        surface_mask = self._dilate_mask_minimal(surface_mask)
+                        surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                        # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                        surface_mask = self._dilate_mask_minimal(surface_mask_strict)
                         print(f"[DEBUG Vertical Mask] X-Z-Wand schräg: Maske in (x,z)-Ebene erstellt")
                 else:
                     raise ValueError(f"Vertikale Surface '{geometry.surface_id}': keine vertikale Maske ableitbar.")
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
-            # Für vertikale Surfaces: surface_mask_strict = surface_mask (beide sind erweitert, aber identisch)
-            # Da vertikale Surfaces bereits erweitert sind, verwenden wir die Maske als "strikt"
-            surface_mask_strict = surface_mask.copy()  # Für vertikale identisch
+            # surface_mask_strict wurde bereits oben erstellt (vor Dilatation)
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface

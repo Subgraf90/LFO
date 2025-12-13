@@ -237,10 +237,11 @@ class SoundFieldCalculator(ModuleBase):
         # Kombiniere Z-Grids und Masken aus einzelnen Surface-Grids
         from scipy.interpolate import griddata
         for surface_id, grid in surface_grids_grouped.items():
-            is_vertical = getattr(grid.geometry, "orientation", None) == "vertical"
+            orientation = getattr(grid.geometry, "orientation", None)
             
-            # Vertikale Flächen nicht ins kombinierte Z-Grid mischen (werden separat geplottet)
-            if not is_vertical:
+            # 🎯 IDENTISCHE BEHANDLUNG: Vertikale Flächen haben separate Grids (andere Koordinatenebene)
+            # Sie werden nicht ins kombinierte (x,y)-Grid gemischt, aber gleich behandelt
+            if orientation != "vertical":
                 # Interpoliere Z-Grid
                 points_orig = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
                 z_orig = grid.Z_grid.ravel()
@@ -321,10 +322,14 @@ class SoundFieldCalculator(ModuleBase):
             
             # Prüfe Z-Koordinaten für schräge Flächen
             for surface_id, surface_def in enabled_surfaces:
-                # Überspringe vertikale Flächen (sie sind nicht im kombinierten Grid)
+                # 🎯 IDENTISCHE BEHANDLUNG: Alle Flächen werden geprüft
+                # (vertikale Flächen haben separate Grids, werden aber gleich behandelt)
                 if surface_id in surface_grids_grouped:
                     grid = surface_grids_grouped[surface_id]
-                    if getattr(grid.geometry, "orientation", None) == "vertical":
+                    orientation = getattr(grid.geometry, "orientation", None)
+                    # Vertikale Flächen haben separate Grids (andere Koordinatenebene), 
+                    # werden aber mit der gleichen Logik behandelt
+                    if orientation == "vertical":
                         continue
                 
                 points = surface_def.get("points", [])
@@ -1567,19 +1572,20 @@ class SoundFieldCalculator(ModuleBase):
         Z_grid = surface_grid.Z_grid
         surface_mask = surface_grid.surface_mask
         
-        # 🎯 DEBUG: Prüfe ob vertikale Fläche
-        is_vertical = surface_grid.geometry.orientation == "vertical"
+        # 🎯 IDENTISCHE BEHANDLUNG: Vertikale und planare Flächen verwenden die gleiche Berechnung
         surface_id = surface_grid.geometry.surface_id
+        orientation = surface_grid.geometry.orientation
         
         # Initialisiere Schallfeld
         ny, nx = X_grid.shape
         sound_field_p = np.zeros((ny, nx), dtype=complex)
         array_fields = {} if capture_arrays else None
         
-        if is_vertical:
-            print(f"  └─ [VERTIKAL Berechnung] Starte Berechnung für '{surface_id}'")
-            print(f"  └─ [VERTIKAL Berechnung] Grid-Punkte: {ny}×{nx} = {ny*nx} Punkte")
-            print(f"  └─ [VERTIKAL Berechnung] Aktive Punkte (in Maske): {np.count_nonzero(surface_mask)}")
+        # 🎯 DEBUG: Einheitliche Ausgabe für alle Orientierungen
+        if DEBUG_SOUNDFIELD:
+            print(f"  └─ [Berechnung] Starte Berechnung für '{surface_id}' (Orientation: {orientation})")
+            print(f"  └─ [Berechnung] Grid-Punkte: {ny}×{nx} = {ny*nx} Punkte")
+            print(f"  └─ [Berechnung] Aktive Punkte (in Maske): {np.count_nonzero(surface_mask)}")
         
         # Extrahiere physikalische Konstanten (bereits berechnet)
         speed_of_sound = phys_constants['speed_of_sound']
@@ -1719,13 +1725,13 @@ class SoundFieldCalculator(ModuleBase):
             if capture_arrays and array_wave is not None:
                 array_fields[array_key] = array_wave
         
-        # 🎯 DEBUG: Zusammenfassung für vertikale Flächen
-        if is_vertical:
+        # 🎯 DEBUG: Einheitliche Zusammenfassung für alle Flächen
+        if DEBUG_SOUNDFIELD:
             calculated_points = np.count_nonzero(np.abs(sound_field_p))
             calculated_in_mask = np.count_nonzero(np.abs(sound_field_p[surface_mask]))
-            print(f"  └─ [VERTIKAL Berechnung] ✅ Berechnung abgeschlossen")
-            print(f"  └─ [VERTIKAL Berechnung] Berechnete Punkte: {calculated_points}/{sound_field_p.size} (gesamt)")
-            print(f"  └─ [VERTIKAL Berechnung] Berechnete Punkte in Maske: {calculated_in_mask}/{np.count_nonzero(surface_mask)} (in Surface)")
+            print(f"  └─ [Berechnung] ✅ Berechnung abgeschlossen (Orientation: {orientation})")
+            print(f"  └─ [Berechnung] Berechnete Punkte: {calculated_points}/{sound_field_p.size} (gesamt)")
+            print(f"  └─ [Berechnung] Berechnete Punkte in Maske: {calculated_in_mask}/{np.count_nonzero(surface_mask)} (in Surface)")
 
         return sound_field_p, array_fields
     

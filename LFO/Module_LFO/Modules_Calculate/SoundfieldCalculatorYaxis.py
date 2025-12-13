@@ -295,12 +295,14 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     hidden = surface_to_use.get('hidden', False)
                     surface_name = surface_to_use.get('name', surface_id)
                     
+
                 
                 if not (xy_enabled and enabled and not hidden):
                     continue
             
             if self._line_intersects_surface_yz(position_x, surface_to_use):
                 y_coords, z_coords = self._get_surface_intersection_points_yz(position_x, surface_to_use)
+
                 if y_coords is not None and z_coords is not None:
                     # Sammle alle Punkte von allen geschnittenen Surfaces
                     all_y_coords.append(y_coords)

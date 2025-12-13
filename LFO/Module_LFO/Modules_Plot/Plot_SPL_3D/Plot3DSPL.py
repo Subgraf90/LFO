@@ -1031,7 +1031,7 @@ class SPL3DPlotRenderer:
                 
                 if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
                     grid_data = surface_grids_data[surface_id]
-                    # ✅ Vertikale Flächen können auch über Triangulation geplottet werden
+                    # 🎯 IDENTISCHE BEHANDLUNG: Planare und vertikale Flächen verwenden beide Triangulation
                     orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
                     
                     # 🎯 DEBUG: Ermittle Orientation aus Geometry-Objekt
@@ -1041,6 +1041,9 @@ class SPL3DPlotRenderer:
                         surface_orientation = geometry_obj.orientation
                     
                     triangulated_success = grid_data.get('triangulated_success', False)
+                    
+                    # 🎯 VERTIKALE FLÄCHEN: Werden jetzt identisch wie planare Flächen behandelt
+                    # Keine separate Behandlung mehr nötig - beide verwenden Triangulation
                     
                     # 🎯 DEBUG: Prüfe Triangulation-Status (mit Orientation)
                     print(f"[DEBUG Plot Triangulation] Surface '{surface_id}': Prüfe Triangulation-Daten (Orientation: {surface_orientation})")
@@ -2121,20 +2124,15 @@ class SPL3DPlotRenderer:
         self.cbar = self.colorbar_manager.cbar  # Synchronisiere cbar-Referenz
 
         # ------------------------------------------------------------
-        # Vertikale Flächen: separate SPL-Flächen rendern
+        # Vertikale Flächen: werden jetzt identisch wie planare Flächen behandelt
+        # (über _render_surfaces_textured mit Triangulation)
         # ------------------------------------------------------------
-        # Merke den aktuell verwendeten Colorization-Mode, damit
-        # _update_vertical_spl_surfaces_from_grids identisch reagieren kann.
+        # Merke den aktuell verwendeten Colorization-Mode
         self._last_colorization_mode = colorization_mode_used
 
-        # Nur triangulierte Plots: vertikale Renderer komplett deaktivieren
-        disable_verticals = True
-        if disable_verticals:
-            if DEBUG_PLOT3D_TIMING:
-                print("[DEBUG Vertical Grids] Vertikale Plots deaktiviert – entferne vorhandene Vertical-Actors")
-            self._clear_vertical_spl_surfaces()
-        else:
-            self._update_vertical_spl_surfaces_from_grids()
+        # 🎯 VERTIKALE FLÄCHEN: Werden jetzt in _render_surfaces_textured behandelt
+        # Entferne alte separate Vertical-Actors (falls vorhanden)
+        self._clear_vertical_spl_surfaces()
         
         # ------------------------------------------------------------
         # 🎯 VALIDIERUNG: Prüfe ob alle Surfaces korrekt geplottet wurden
@@ -2290,6 +2288,12 @@ class SPL3DPlotRenderer:
         self._vertical_surface_meshes.clear()
 
     def _update_vertical_spl_surfaces(self) -> None:
+        """
+        🎯 DEPRECATED: Vertikale Surfaces werden jetzt identisch wie planare Surfaces behandelt.
+        
+        Diese Funktion ist nicht mehr nötig, da vertikale Flächen jetzt in _render_surfaces_textured()
+        mit der gleichen Triangulation-Logik wie planare Flächen geplottet werden.
+        """
         """
         Zeichnet / aktualisiert SPL-Flächen für senkrechte Surfaces auf Basis von
         calculation_spl['surface_samples'] und calculation_spl['surface_fields'].
@@ -2449,18 +2453,19 @@ class SPL3DPlotRenderer:
 
     def _update_vertical_spl_surfaces_from_grids(self) -> None:
         """
-        🎯 NEU: Zeichnet vertikale Surfaces aus surface_grids und surface_results.
+        🎯 DEPRECATED: Vertikale Surfaces werden jetzt identisch wie planare Surfaces behandelt.
         
-        Diese Funktion behandelt vertikale Surfaces, die in update_spl_plot() übersprungen wurden.
-        Sie konvertiert die Grid-Daten in das (u,v)-Koordinatensystem für vertikale Surfaces.
+        Diese Funktion ist nicht mehr nötig, da vertikale Flächen jetzt in _render_surfaces_textured()
+        mit der gleichen Triangulation-Logik wie planare Flächen geplottet werden.
+        
+        Die Funktion bleibt für Rückwärtskompatibilität, macht aber nichts mehr.
         """
-        # Nur triangulierte Plots: vertikale Renderer komplett deaktivieren
-        disable_verticals = True
-        if disable_verticals:
-            if DEBUG_PLOT3D_TIMING:
-                print("[DEBUG Vertical Grids] Vertikale Plots deaktiviert – skip")
-            self._clear_vertical_spl_surfaces()
-            return
+        # 🎯 VERTIKALE FLÄCHEN: Werden jetzt in _render_surfaces_textured behandelt
+        # Diese separate Funktion ist nicht mehr nötig
+        if DEBUG_PLOT3D_TIMING:
+            print("[DEBUG Vertical Grids] Vertikale Plots werden jetzt in _render_surfaces_textured behandelt – skip separate Funktion")
+        self._clear_vertical_spl_surfaces()
+        return
         if DEBUG_PLOT3D_TIMING:
             print(f"[DEBUG Vertical Grids] Starte _update_vertical_spl_surfaces_from_grids()")
         
@@ -3520,20 +3525,22 @@ class SPL3DPlotRenderer:
                     is_enabled = surface_id in enabled_surface_ids
                     
                     # Prüfe ob Actor vorhanden ist
-                    # Planare Surfaces: "spl_surface_tex_{surface_id}" oder "spl_surface_tri_{surface_id}" (Triangulation)
-                    # Vertikale Surfaces: "vertical_spl_{surface_id}"
+                    # 🎯 IDENTISCHE BEHANDLUNG: Alle Flächen (planar, sloped, vertical) verwenden jetzt Triangulation
+                    # Actor-Namen: "spl_surface_tri_{surface_id}" (Triangulation) oder "spl_surface_tex_{surface_id}" (Texture)
+                    # Legacy: "vertical_spl_{surface_id}" (veraltet, wird nicht mehr verwendet)
                     has_actor = False
                     actor_name = None  # 🎯 Initialisiere actor_name, damit es immer definiert ist
                     if hasattr(self, 'plotter') and self.plotter is not None:
                         try:
+                            surface_name = getattr(self, 'SURFACE_NAME', 'spl_surface')
                             actor_names = []
+                            # 🎯 IDENTISCHE BEHANDLUNG: Alle Orientierungen verwenden die gleichen Actor-Namen
+                            actor_names.append(f"{surface_name}_tri_{surface_id}")  # Triangulations-Pfad (Hauptpfad)
+                            actor_names.append(f"{surface_name}_tex_{surface_id}")  # Texture-Pfad (Fallback)
+                            actor_names.append(f"{surface_name}_gridtri_{surface_id}")  # StructuredGrid-Pfad (Fallback)
+                            # Legacy: Vertikale Flächen könnten noch den alten Namen haben (für Rückwärtskompatibilität)
                             if orientation == 'vertical':
-                                actor_names.append(f"vertical_spl_{surface_id}")
-                            else:
-                                surface_name = getattr(self, 'SURFACE_NAME', 'spl_surface')
-                                actor_names.append(f"{surface_name}_tex_{surface_id}")  # Texture-Pfad
-                                actor_names.append(f"{surface_name}_tri_{surface_id}")  # Triangulations-Pfad
-                                actor_names.append(f"{surface_name}_gridtri_{surface_id}")  # StructuredGrid-Pfad
+                                actor_names.append(f"vertical_spl_{surface_id}")  # Legacy-Name
                             for aname in actor_names:
                                 actor = self.plotter.renderer.actors.get(aname)
                                 if actor is not None:
