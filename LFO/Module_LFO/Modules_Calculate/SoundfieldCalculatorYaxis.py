@@ -139,23 +139,9 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     else:
                         return None, None
         
-        # Fallback: Verwende übergebene Surface-Daten (nur wenn keine aktuelle Surface gefunden wurde)
+        # Keine aktuelle Surface gefunden
         if current_points is None:
-            # Prüfe auch hier nochmal, ob die übergebene Surface aktiv ist
-            if isinstance(surface, SurfaceDefinition):
-                xy_enabled = getattr(surface, 'xy_enabled', True)
-                enabled = surface.enabled
-                hidden = surface.hidden
-                if not (xy_enabled and enabled and not hidden):
-                    return None, None
-                current_points = surface.points
-            else:
-                xy_enabled = surface.get('xy_enabled', True)
-                enabled = surface.get('enabled', False)
-                hidden = surface.get('hidden', False)
-                if not (xy_enabled and enabled and not hidden):
-                    return None, None
-                current_points = surface.get('points', [])
+            raise ValueError(f"Keine aktuelle Surface gefunden für surface_id='{surface_id}'")
         
         if len(current_points) < 3:
             return None, None
@@ -494,23 +480,8 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     # Bandgemittelte Daten haben keine Frequenzdimension mehr
                     return self._interpolate_angle_data(magnitude, phase, vertical_angles, azimuth, elevation)
         
-        # 🔄 FALLBACK: Verwende originale Daten
-        balloon_data = self._data_container.get_balloon_data(speaker_name, use_averaged=False)
-        if balloon_data is None:
-            print(f"❌ Keine Balloon-Daten für {speaker_name}")
-            return None, None
-        
-        # Direkte Nutzung der optimierten Balloon-Daten
-        magnitude = balloon_data.get('magnitude')
-        phase = balloon_data.get('phase')
-        vertical_angles = balloon_data.get('vertical_angles')
-        
-        if magnitude is None or phase is None or vertical_angles is None:
-            print(f"Fehlende Daten in Balloon-Daten für {speaker_name}")
-            return None, None
-        
-        # Verwende die gleiche Interpolationslogik für beide Datentypen
-        return self._interpolate_angle_data(magnitude, phase, vertical_angles, azimuth, elevation)
+        # Keine bandgemittelten Daten verfügbar
+        return None, None
 
     @measure_time("SoundFieldCalculatorYaxis.calculate_sound_field_at_points_yz")
     def calculate_sound_field_at_points_yz(self, x_const, y_coords, z_coords):

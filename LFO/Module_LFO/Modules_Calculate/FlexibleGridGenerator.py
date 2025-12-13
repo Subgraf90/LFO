@@ -2306,24 +2306,19 @@ class FlexibleGridGenerator(ModuleBase):
                 if geom.orientation == "sloped":
                     # Für schräge Flächen: Immer aus Punkten ableiten, um sicherzustellen, dass es korrekt ist
                     if geom.points:
-                        try:
-                            plane_model_local, _ = derive_surface_plane(geom.points)
-                            geom.plane_model = plane_model_local
-                        except Exception as e:
-                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model konnte nicht abgeleitet werden: {e}")
-                            # Fallback: Verwende vorhandenes plane_model, falls vorhanden
-                            if plane_model_local is None:
-                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Kein plane_model verfügbar!")
+                        plane_model_local, _ = derive_surface_plane(geom.points)
+                        if plane_model_local is None:
+                            raise ValueError(f"Surface '{geom.surface_id}' (sloped): plane_model konnte nicht abgeleitet werden")
+                        geom.plane_model = plane_model_local
                     else:
                         print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Keine Punkte verfügbar!")
                 else:
                     # Für planare Flächen: Nur ableiten, wenn nicht vorhanden
                     if plane_model_local is None and geom.points:
-                        try:
-                            plane_model_local, _ = derive_surface_plane(geom.points)
-                            geom.plane_model = plane_model_local
-                        except Exception as e:
-                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (planar): plane_model konnte nicht abgeleitet werden: {e}")
+                        plane_model_local, _ = derive_surface_plane(geom.points)
+                        if plane_model_local is None:
+                            raise ValueError(f"Surface '{geom.surface_id}' (planar): plane_model konnte nicht abgeleitet werden")
+                        geom.plane_model = plane_model_local
                 
                 if plane_model_local:
                     try:

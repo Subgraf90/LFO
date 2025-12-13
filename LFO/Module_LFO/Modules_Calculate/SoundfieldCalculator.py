@@ -73,23 +73,8 @@ class SoundFieldCalculator(ModuleBase):
                     # Bandgemittelte Daten haben keine Frequenzdimension mehr
                     return self._interpolate_angle_data(magnitude, phase, vertical_angles, azimuth, elevation)
 
-        # 🔄 FALLBACK: Verwende originale Daten
-        if balloon_data is None:
-            balloon_data = self._data_container.get_balloon_data(speaker_name, use_averaged=False)
-
-        if balloon_data is None:
-            return None, None
-        
-        # Direkte Nutzung der optimierten Balloon-Daten
-        magnitude = balloon_data.get('magnitude')
-        phase = balloon_data.get('phase')
-        vertical_angles = balloon_data.get('vertical_angles')
-        
-        if magnitude is None or phase is None or vertical_angles is None:
-            return None, None
-        
-        # Verwende die gleiche Interpolationslogik für beide Datentypen
-        return self._interpolate_angle_data(magnitude, phase, vertical_angles, azimuth, elevation)
+        # Keine bandgemittelten Daten verfügbar
+        return None, None
 
     def get_balloon_data_batch(self, speaker_name, azimuths, elevations, use_averaged=True):
         """
@@ -115,19 +100,8 @@ class SoundFieldCalculator(ModuleBase):
                 if magnitude is not None and phase is not None and vertical_angles is not None:
                     return self._interpolate_angle_data_batch(magnitude, phase, vertical_angles, azimuths, elevations)
         
-        # 🔄 FALLBACK: Verwende originale Daten
-        balloon_data = self._data_container.get_balloon_data(speaker_name, use_averaged=False)
-        if balloon_data is None:
-            return None, None
-        
-        magnitude = balloon_data.get('magnitude')
-        phase = balloon_data.get('phase')
-        vertical_angles = balloon_data.get('vertical_angles')
-        
-        if magnitude is None or phase is None or vertical_angles is None:
-            return None, None
-        
-        return self._interpolate_angle_data_batch(magnitude, phase, vertical_angles, azimuths, elevations)
+        # Keine bandgemittelten Daten verfügbar
+        return None, None
 
     def _calculate_sound_field_complex(self, capture_arrays: bool = False):
         """
@@ -803,57 +777,24 @@ class SoundFieldCalculator(ModuleBase):
                     }
                 )
 
-        # 🎯 NEU: Verwende direkt berechnete Surface-Grids, fallback auf Interpolation
-        if surface_results_buffers:
+        # 🎯 NEU: Verwende direkt berechnete Surface-Grids
+        if not surface_results_buffers:
+            raise ValueError("surface_results_buffers ist leer - keine Surface-Ergebnisse verfügbar")
+        
+        if DEBUG_SOUNDFIELD:
+            print(f"[DEBUG surface_results] surface_results_buffers: {list(surface_results_buffers.keys())}")
+        for surface_id, buffer in surface_results_buffers.items():
+            # Prüfe ob Buffer nicht leer ist
+            buffer_array = np.array(buffer, dtype=complex)
             if DEBUG_SOUNDFIELD:
-                print(f"[DEBUG surface_results] surface_results_buffers: {list(surface_results_buffers.keys())}")
-            for surface_id, buffer in surface_results_buffers.items():
-                # Prüfe ob Buffer nicht leer ist
-                buffer_array = np.array(buffer, dtype=complex)
-                if DEBUG_SOUNDFIELD:
-                    orientation = None
-                    if surface_id in surface_grids_grouped:
-                        orientation = getattr(surface_grids_grouped[surface_id].geometry, "orientation", None)
-                    non_zero_count = np.count_nonzero(np.abs(buffer_array))
-                    print(f"[DEBUG surface_results] Surface '{surface_id}' (orientation={orientation}): Buffer shape={buffer_array.shape}, non-zero values={non_zero_count}/{buffer_array.size}")
-                surface_results_data[surface_id] = {
-                    'sound_field_p': buffer_array.tolist(),
-                }
-        else:
-            # Fallback: Interpolation aus dem globalen Grid
-            from scipy.interpolate import griddata
-            for surface_id, grid in surface_grids_grouped.items():
-                if surface_id not in surface_grids_data:
-                    continue
-                
-                # Interpoliere sound_field_p auf das Surface-Grid
-                points_orig = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-                values_orig = sound_field_p.ravel()
-                points_new = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
-                
-                # Interpoliere komplexe Werte (Real- und Imaginärteil separat)
-                if np.any(values_orig != 0):
-                    real_interp = griddata(
-                        points_orig,
-                        np.real(values_orig),
-                        points_new,
-                        method='linear',
-                        fill_value=0.0
-                    )
-                    imag_interp = griddata(
-                        points_orig,
-                        np.imag(values_orig),
-                        points_new,
-                        method='linear',
-                        fill_value=0.0
-                    )
-                    sound_field_p_surface = (real_interp + 1j * imag_interp).reshape(grid.X_grid.shape)
-                else:
-                    sound_field_p_surface = np.zeros_like(grid.X_grid, dtype=complex)
-                
-                surface_results_data[surface_id] = {
-                    'sound_field_p': np.array(sound_field_p_surface).tolist(),
-                }
+                orientation = None
+                if surface_id in surface_grids_grouped:
+                    orientation = getattr(surface_grids_grouped[surface_id].geometry, "orientation", None)
+                non_zero_count = np.count_nonzero(np.abs(buffer_array))
+                print(f"[DEBUG surface_results] Surface '{surface_id}' (orientation={orientation}): Buffer shape={buffer_array.shape}, non-zero values={non_zero_count}/{buffer_array.size}")
+            surface_results_data[surface_id] = {
+                'sound_field_p': buffer_array.tolist(),
+            }
         
         if isinstance(self.calculation_spl, dict):
             # 🎯 ALTE DATEN AUSKOMMENTIERT - Verwende nur neue Struktur
