@@ -1618,6 +1618,10 @@ class UISurfaceManager(ModuleBase):
         if not checkbox:
             return
         
+        # Stelle sicher, dass die Checkbox tristate aktiviert hat
+        if not checkbox.isTristate():
+            checkbox.setTristate(True)
+        
         # Sammle alle Child-Checkboxen und Surface-Daten (rekursiv)
         checked_count = 0
         unchecked_count = 0
@@ -1673,12 +1677,17 @@ class UISurfaceManager(ModuleBase):
                                 else:
                                     unchecked_count += 1
                 elif child_type == "group":
-                    # Gruppe: Prüfe Checkbox
+                    # Gruppe: Prüfe Checkbox-Zustand (inkl. PartiallyChecked)
                     if child_checkbox:
                         total_count += 1
-                        if child_checkbox.isChecked():
+                        child_state = child_checkbox.checkState()
+                        if child_state == Qt.Checked:
                             checked_count += 1
-                        else:
+                        elif child_state == Qt.Unchecked:
+                            unchecked_count += 1
+                        elif child_state == Qt.PartiallyChecked:
+                            # PartiallyChecked bedeutet gemischter Zustand -> zählt als beide
+                            checked_count += 1
                             unchecked_count += 1
                     
                     # Rekursiv für Untergruppen
@@ -1717,6 +1726,7 @@ class UISurfaceManager(ModuleBase):
             checkbox.setCheckState(Qt.Unchecked)
         else:
             # Gemischter Zustand: Einige checked, einige unchecked -> PartiallyChecked
+            # Dies tritt auf, wenn checked_count > 0 und unchecked_count > 0
             checkbox.setCheckState(Qt.PartiallyChecked)
         checkbox.blockSignals(False)
     

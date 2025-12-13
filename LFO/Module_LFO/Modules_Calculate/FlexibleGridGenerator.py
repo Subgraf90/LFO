@@ -1510,162 +1510,153 @@ class GridBuilder(ModuleBase):
                         # X-Z-Wand schräg: X und Z variieren, Y variiert entlang der Fläche
                         # u = x, v = z
                         # 🎯 VERWENDE dominant_axis WENN VERFÜGBAR (wurde durch PCA/robuste Analyse bestimmt)
-                        u_min, u_max = float(xs.min()), float(xs.max())
-                        v_min, v_max = float(zs.min()), float(zs.max())
                         
-                        # 🎯 ADAPTIVE RESOLUTION: Wie bei planaren Flächen
-                        width = u_max - u_min
-                        height = v_max - v_min
-                        nu_base = max(1, int(np.ceil(width / step)) + 1)
-                        nv_base = max(1, int(np.ceil(height / step)) + 1)
-                        total_points_base = nu_base * nv_base
-                        min_total_points = min_points_per_dimension ** 2
+                        # 🎯 PRÜFE KOLLINEARITÄT VOR Grid-Erstellung: Wenn Punkte in (x,z)-Ebene fast kollinear sind,
+                        # dann wechsle automatisch zu Y-Z-Wand (X wird aus (y,z) interpoliert)
+                        points_surface_xz = np.column_stack([xs, zs])
+                        should_switch_to_yz = False
                         
-                        if total_points_base < min_total_points:
-                            diagonal = np.sqrt(width**2 + height**2)
-                            if diagonal > 0:
-                                adaptive_resolution = diagonal / min_points_per_dimension
-                                adaptive_resolution = min(adaptive_resolution, step * 0.5)
-                                step = adaptive_resolution
-                        
-                        # 🎯 IDENTISCHES PADDING: Wie bei planaren Flächen
-                        u_min -= step
-                        u_max += step
-                        v_min -= step
-                        v_max += step
-                        
-                        # Y wird später interpoliert
-                        from scipy.interpolate import griddata
-                        
-                        # Erstelle Grid in (u,v)-Ebene = (x,z)-Ebene
-                        u_axis = np.arange(u_min, u_max + step, step, dtype=float)
-                        v_axis = np.arange(v_min, v_max + step, step, dtype=float)
-                        
-                    if u_axis.size < 2 or v_axis.size < 2:
-                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, x-z) liefert zu wenige Punkte in (u,v)-Ebene.")
-                    else:
-                        # Erstelle 2D-Meshgrid in (u,v)-Ebene = (x,z)-Ebene
-                        U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
-                        
-                        # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
-                        points_surface = np.column_stack([xs, zs])
-                        points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                        
-                        # 🎯 PRÜFE KOLLINEARITÄT: Wenn Punkte in (x,z)-Ebene fast kollinear sind, 
-                        # dann ist die Interpolation problematisch
-                        if len(points_surface) >= 3:
-                            cov_xz = np.cov(points_surface.T)
-                            det_cov = np.linalg.det(cov_xz)
-                            if det_cov < 1e-10:
-                                # Punkte sind fast kollinear in (x,z) → Interpolation wird fehlschlagen
-                                # Prüfe ob wir stattdessen X aus (y,z) interpolieren können
-                                if DEBUG_FLEXIBLE_GRID:
-                                    print(f"[DEBUG Vertical Grid] ⚠️ Surface '{geometry.surface_id}': Punkte sind fast kollinear in (x,z)-Ebene (det={det_cov:.2e})")
-                                    print(f"  └─ Prüfe ob stattdessen X aus (y,z) interpoliert werden kann...")
+                        if len(points_surface_xz) >= 3:
+                            cov_xz = np.cov(points_surface_xz.T)
+                            det_cov_xz = np.linalg.det(cov_xz)
+                            
+                            if det_cov_xz < 1e-10:
+                                # Punkte sind fast kollinear in (x,z) → prüfe ob (y,z) besser ist
+                                print(f"[DEBUG Vertical Grid] ⚠️ Surface '{geometry.surface_id}': Punkte sind fast kollinear in (x,z)-Ebene (det={det_cov_xz:.2e})")
                                 
-                                # Prüfe ob Punkte in (y,z)-Ebene besser verteilt sind
                                 points_surface_yz = np.column_stack([ys, zs])
                                 cov_yz = np.cov(points_surface_yz.T)
                                 det_cov_yz = np.linalg.det(cov_yz)
                                 
                                 if det_cov_yz > 1e-10:
                                     # Punkte sind besser verteilt in (y,z) → wechsle zu Y-Z-Wand
-                                    if DEBUG_FLEXIBLE_GRID:
-                                        print(f"  └─ ✅ Punkte besser verteilt in (y,z)-Ebene (det={det_cov_yz:.2e}) → wechsle zu Y-Z-Wand")
-                                    
-                                    # Wechsle zu Y-Z-Wand: X wird aus (y,z) interpoliert
-                                    u_min, u_max = float(ys.min()), float(ys.max())
-                                    v_min, v_max = float(zs.min()), float(zs.max())
-                                    
-                                    # Adaptive Resolution
-                                    width = u_max - u_min
-                                    height = v_max - v_min
-                                    nu_base = max(1, int(np.ceil(width / step)) + 1)
-                                    nv_base = max(1, int(np.ceil(height / step)) + 1)
-                                    total_points_base = nu_base * nv_base
-                                    min_total_points = min_points_per_dimension ** 2
-                                    
-                                    if total_points_base < min_total_points:
-                                        diagonal = np.sqrt(width**2 + height**2)
-                                        if diagonal > 0:
-                                            adaptive_resolution = diagonal / min_points_per_dimension
-                                            adaptive_resolution = min(adaptive_resolution, step * 0.5)
-                                            step = adaptive_resolution
-                                    
-                                    u_min -= step
-                                    u_max += step
-                                    v_min -= step
-                                    v_max += step
-                                    
-                                    u_axis = np.arange(u_min, u_max + step, step, dtype=float)
-                                    v_axis = np.arange(v_min, v_max + step, step, dtype=float)
-                                    
-                                    if u_axis.size < 2 or v_axis.size < 2:
-                                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, y-z) liefert zu wenige Punkte in (u,v)-Ebene.")
-                                    
-                                    U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
-                                    
-                                    # Interpoliere X-Koordinaten von Surface-Punkten auf (y,z)-Grid
-                                    points_surface = np.column_stack([ys, zs])
-                                    points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
-                                    
-                                    if DEBUG_FLEXIBLE_GRID:
-                                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere X-Koordinaten (Y-Z-Wand schräg, nach Kollinearitäts-Prüfung)")
-                                    
-                                    X_interp = griddata(
-                                        points_surface, xs,
-                                        points_grid,
-                                        method='linear', fill_value=float(np.mean(xs))
-                                    )
-                                    X_interp = X_interp.reshape(U_grid.shape)
-                                    
-                                    # Transformiere zu (X, Y, Z) Koordinaten
-                                    X_grid = X_interp  # X interpoliert
-                                    Y_grid = U_grid  # u = y
-                                    Z_grid = V_grid  # v = z
-                                    
-                                    # sound_field_x und sound_field_y für Rückgabe
-                                    sound_field_x = u_axis  # y-Koordinaten
-                                    sound_field_y = v_axis  # z-Koordinaten
-                                    
-                                    if DEBUG_FLEXIBLE_GRID:
-                                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ X-Interpolation erfolgreich (nach Kollinearitäts-Prüfung)")
-                                    
-                                    # Überspringe den Rest des X-Z-Wand-Codes
-                                    # (return wird später gemacht)
-                                    skip_xz_wall_code = True
-                                else:
-                                    skip_xz_wall_code = False
-                            else:
-                                skip_xz_wall_code = False
-                        else:
-                            skip_xz_wall_code = False
+                                    should_switch_to_yz = True
+                                    print(f"  └─ ✅ Punkte besser verteilt in (y,z)-Ebene (det={det_cov_yz:.2e}) → wechsle zu Y-Z-Wand")
                         
-                        if not skip_xz_wall_code:
-                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere Y-Koordinaten (X-Z-Wand schräg)")
-                            print(f"  └─ Surface-Punkte: {len(points_surface)} Punkte, Y-Range: [{np.min(ys):.3f}, {np.max(ys):.3f}], Span: {np.ptp(ys):.3f}")
-                            print(f"  └─ Grid-Punkte: {len(points_grid)} Punkte")
+                        if should_switch_to_yz:
+                            # Wechsle zu Y-Z-Wand: X wird aus (y,z) interpoliert
+                            u_min, u_max = float(ys.min()), float(ys.max())
+                            v_min, v_max = float(zs.min()), float(zs.max())
                             
-                            Y_interp = griddata(
-                                points_surface, ys,
+                            # Adaptive Resolution
+                            width = u_max - u_min
+                            height = v_max - v_min
+                            nu_base = max(1, int(np.ceil(width / step)) + 1)
+                            nv_base = max(1, int(np.ceil(height / step)) + 1)
+                            total_points_base = nu_base * nv_base
+                            min_total_points = min_points_per_dimension ** 2
+                            
+                            if total_points_base < min_total_points:
+                                diagonal = np.sqrt(width**2 + height**2)
+                                if diagonal > 0:
+                                    adaptive_resolution = diagonal / min_points_per_dimension
+                                    adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                                    step = adaptive_resolution
+                            
+                            u_min -= step
+                            u_max += step
+                            v_min -= step
+                            v_max += step
+                            
+                            u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                            v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                            
+                            if u_axis.size < 2 or v_axis.size < 2:
+                                raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, y-z) liefert zu wenige Punkte in (u,v)-Ebene.")
+                            
+                            U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                            
+                            # Interpoliere X-Koordinaten von Surface-Punkten auf (y,z)-Grid
+                            points_surface = np.column_stack([ys, zs])
+                            points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
+                            
+                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere X-Koordinaten (Y-Z-Wand schräg, nach Kollinearitäts-Prüfung)")
+                            
+                            from scipy.interpolate import griddata
+                            X_interp = griddata(
+                                points_surface, xs,
                                 points_grid,
-                                method='linear', fill_value=float(np.mean(ys))
+                                method='linear', fill_value=float(np.mean(xs))
                             )
-                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ Linear-Interpolation erfolgreich")
-                            print(f"  └─ Y_interp Range: [{np.nanmin(Y_interp):.3f}, {np.nanmax(Y_interp):.3f}], Span: {np.nanmax(Y_interp) - np.nanmin(Y_interp):.3f}")
-                            Y_interp = Y_interp.reshape(U_grid.shape)
+                            X_interp = X_interp.reshape(U_grid.shape)
                             
                             # Transformiere zu (X, Y, Z) Koordinaten
-                            X_grid = U_grid  # u = x
-                            Y_grid = Y_interp  # Y interpoliert
+                            X_grid = X_interp  # X interpoliert
+                            Y_grid = U_grid  # u = y
                             Z_grid = V_grid  # v = z
                             
                             # sound_field_x und sound_field_y für Rückgabe
-                            sound_field_x = u_axis  # x-Koordinaten
+                            sound_field_x = u_axis  # y-Koordinaten
                             sound_field_y = v_axis  # z-Koordinaten
                             
-                            if DEBUG_FLEXIBLE_GRID:
-                                print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
+                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ X-Interpolation erfolgreich (nach Kollinearitäts-Prüfung)")
+                        else:
+                            # Normale X-Z-Wand: Y wird aus (x,z) interpoliert
+                            u_min, u_max = float(xs.min()), float(xs.max())
+                            v_min, v_max = float(zs.min()), float(zs.max())
+                            
+                            # 🎯 ADAPTIVE RESOLUTION: Wie bei planaren Flächen
+                            width = u_max - u_min
+                            height = v_max - v_min
+                            nu_base = max(1, int(np.ceil(width / step)) + 1)
+                            nv_base = max(1, int(np.ceil(height / step)) + 1)
+                            total_points_base = nu_base * nv_base
+                            min_total_points = min_points_per_dimension ** 2
+                            
+                            if total_points_base < min_total_points:
+                                diagonal = np.sqrt(width**2 + height**2)
+                                if diagonal > 0:
+                                    adaptive_resolution = diagonal / min_points_per_dimension
+                                    adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                                    step = adaptive_resolution
+                            
+                            # 🎯 IDENTISCHES PADDING: Wie bei planaren Flächen
+                            u_min -= step
+                            u_max += step
+                            v_min -= step
+                            v_max += step
+                            
+                            # Y wird später interpoliert
+                            from scipy.interpolate import griddata
+                            
+                            # Erstelle Grid in (u,v)-Ebene = (x,z)-Ebene
+                            u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                            v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                            
+                            if u_axis.size < 2 or v_axis.size < 2:
+                                raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, x-z) liefert zu wenige Punkte in (u,v)-Ebene.")
+                            else:
+                                # Erstelle 2D-Meshgrid in (u,v)-Ebene = (x,z)-Ebene
+                                U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                                
+                                # Interpoliere Y-Koordinaten von Surface-Punkten auf (x,z)-Grid
+                                points_surface = np.column_stack([xs, zs])
+                                points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
+                                
+                                print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere Y-Koordinaten (X-Z-Wand schräg)")
+                                print(f"  └─ Surface-Punkte: {len(points_surface)} Punkte, Y-Range: [{np.min(ys):.3f}, {np.max(ys):.3f}], Span: {np.ptp(ys):.3f}")
+                                print(f"  └─ Grid-Punkte: {len(points_grid)} Punkte")
+                                
+                                Y_interp = griddata(
+                                    points_surface, ys,
+                                    points_grid,
+                                    method='linear', fill_value=float(np.mean(ys))
+                                )
+                                print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ Linear-Interpolation erfolgreich")
+                                print(f"  └─ Y_interp Range: [{np.nanmin(Y_interp):.3f}, {np.nanmax(Y_interp):.3f}], Span: {np.nanmax(Y_interp) - np.nanmin(Y_interp):.3f}")
+                                Y_interp = Y_interp.reshape(U_grid.shape)
+                                
+                                # Transformiere zu (X, Y, Z) Koordinaten
+                                X_grid = U_grid  # u = x
+                                Y_grid = Y_interp  # Y interpoliert
+                                Z_grid = V_grid  # v = z
+                                
+                                # sound_field_x und sound_field_y für Rückgabe
+                                sound_field_x = u_axis  # x-Koordinaten
+                                sound_field_y = v_axis  # z-Koordinaten
+                                
+                                if DEBUG_FLEXIBLE_GRID:
+                                    print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
                 else:
                     # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
                     raise ValueError(f"Surface '{geometry.surface_id}': Als 'vertical' klassifiziert, aber Z-Spanne ({z_span:.3f}) nicht groß genug. x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}")
