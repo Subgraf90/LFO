@@ -1099,7 +1099,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     if DEBUG_PLOT3D_TIMING:
                         print(f"[DEBUG Plot] Fehler beim Laden Orientierung aus grid_data für {surface_id}: {e}")
             
-            # 🎯 Fallback: Berechne Planmodell für geneigte Flächen (wenn nicht bereits vertikal erkannt)
+            # Berechne Planmodell für geneigte Flächen (wenn nicht bereits vertikal erkannt)
             if not is_vertical:
                 dict_points = [
                     {"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "z": float(p.get("z", 0.0))}
@@ -1107,8 +1107,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 ]
                 plane_model, _ = derive_surface_plane(dict_points)
                 
-                # Prüfe ob Fläche senkrecht ist (Fallback-Methode)
+                # Plane-Model muss verfügbar sein
                 if plane_model is None:
+                    raise ValueError(f"Surface '{surface_id}': plane_model konnte nicht abgeleitet werden")
                     x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
                     y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
                     z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
@@ -1265,9 +1266,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     use_direct_grids = False
             
             if not use_direct_grids:
-                # Fallback: Alte Logik mit prepare_vertical_plot_geometry
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Vertical] {surface_id}: Verwende Fallback (prepare_vertical_plot_geometry)")
+                # Direkte Grids müssen verfügbar sein
+                raise ValueError(f"Surface '{surface_id}': Direkte Grids nicht verfügbar für vertikale Surface")
                 
                 # Senkrechte Flächen verwenden (u,v)-Koordinaten
                 if orientation == "xz":
@@ -1729,9 +1729,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 tex_res_surface = tex_res_global  # Für Metadaten
                 is_axis_aligned_rectangle = False  # Bei direkten Grids keine Heuristik nötig
             else:
-                # 🎯 FALLBACK: Alte Logik (Grid-Erstellung aus Bounding Box)
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Grid Creation] {surface_id}: Verwende Fallback (Grid-Erstellung aus Bounding Box)")
+                # Direkte Grids müssen verfügbar sein
+                raise ValueError(f"Surface '{surface_id}': Direkte Grids nicht verfügbar - Grid-Erstellung aus Bounding Box nicht mehr unterstützt")
                 
                 tex_res_surface = tex_res_global
                 

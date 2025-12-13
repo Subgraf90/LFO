@@ -372,11 +372,7 @@ class SPL3DPlotRenderer:
         # Entferne NaN-Werte
         valid_mask = np.isfinite(values_flat) & np.isfinite(points_3d).all(axis=1)
         if not np.any(valid_mask):
-            # Fallback: 2D-Interpolation
-            if method == "nearest":
-                return SPL3DPlotRenderer._nearest_interpolate_grid(source_x, source_y, values, xq, yq)
-            else:
-                return SPL3DPlotRenderer._bilinear_interpolate_grid(source_x, source_y, values, xq, yq)
+            raise ValueError("Keine gültigen Werte für 3D-Interpolation verfügbar")
         
         points_3d_clean = points_3d[valid_mask]
         values_clean = values_flat[valid_mask]
@@ -393,18 +389,10 @@ class SPL3DPlotRenderer:
             fill_value=np.nan
         )
         
-        # Fallback für NaN-Werte: 2D-Interpolation
+        # Prüfe auf NaN-Werte
         nan_mask = np.isnan(result)
         if np.any(nan_mask):
-            if method == "nearest":
-                fallback = SPL3DPlotRenderer._nearest_interpolate_grid(
-                    source_x, source_y, values, xq[nan_mask], yq[nan_mask]
-                )
-            else:
-                fallback = SPL3DPlotRenderer._bilinear_interpolate_grid(
-                    source_x, source_y, values, xq[nan_mask], yq[nan_mask]
-                )
-            result[nan_mask] = fallback
+            raise ValueError(f"3D-Interpolation liefert {np.sum(nan_mask)} NaN-Werte")
         
         return result
 
@@ -801,27 +789,8 @@ class SPL3DPlotRenderer:
             print(f"[DEBUG Plot Triangulation] Keine enabled_surfaces und keine surface_overrides - beende _render_surfaces_textured")
             return
 
-        # Versuche, aus der Plot-Geometrie einen effektiven Upscaling-Faktor zu rekonstruieren.
-        # Hintergrund: Für achsparallele Rechtecke können wir die Textur grober machen,
-        #              wenn das Plot-Raster bereits hochskaliert ist.
+        # Effektiver Upscaling-Faktor (Standardwert)
         effective_upscale_factor: int = 4
-        try:
-            plot_x = np.asarray(getattr(geometry, "plot_x", []), dtype=float)
-            plot_y = np.asarray(getattr(geometry, "plot_y", []), dtype=float)
-            if plot_x.size > 1 and plot_y.size > 1 and source_x.size > 1 and source_y.size > 1:
-                # Nutze das Verhältnis der Stützstellen als Approximation
-                ratio_x = (float(plot_x.size) - 1.0) / (float(source_x.size) - 1.0)
-                ratio_y = (float(plot_y.size) - 1.0) / (float(source_y.size) - 1.0)
-                approx = max(ratio_x, ratio_y)
-                if approx > 1.2:
-                    # Runde auf ganzzahligen Faktor und begrenze auf sinnvollen Bereich
-                    effective_upscale_factor = int(round(approx))
-                    if effective_upscale_factor < 1:
-                        effective_upscale_factor = 1
-                    if effective_upscale_factor > 8:
-                        effective_upscale_factor = 8
-        except Exception:
-            effective_upscale_factor = 1
 
         if DEBUG_PLOT3D_TIMING:
             print(
@@ -981,28 +950,9 @@ class SPL3DPlotRenderer:
                             if DEBUG_PLOT3D_TIMING:
                                 print(f"[DEBUG Plot Overrides] Surface '{sid}' zu surfaces_to_process hinzugefügt (hat Override, aber nicht aktiviert)")
                     else:
-                        # 🎯 FALLBACK: Wenn keine Surface-Definition vorhanden ist, versuche Punkte aus Grid-Daten zu extrahieren
-                        # Dies ist wichtig für vertikale Flächen, die möglicherweise keine explizite Definition haben
-                        grid_data = surface_grids_data.get(sid)
-                        if grid_data:
-                            X_grid = np.array(grid_data.get('X_grid', []), dtype=float)
-                            Y_grid = np.array(grid_data.get('Y_grid', []), dtype=float)
-                            Z_grid = np.array(grid_data.get('Z_grid', []), dtype=float)
-                            if X_grid.ndim == 2 and Y_grid.ndim == 2 and Z_grid.ndim == 2:
-                                # Extrahiere Eckpunkte aus dem Grid
-                                # Nimm die 4 Ecken des Grids
-                                ny, nx = X_grid.shape
-                                if ny >= 2 and nx >= 2:
-                                    points = [
-                                        {"x": float(X_grid[0, 0]), "y": float(Y_grid[0, 0]), "z": float(Z_grid[0, 0])},
-                                        {"x": float(X_grid[0, -1]), "y": float(Y_grid[0, -1]), "z": float(Z_grid[0, -1])},
-                                        {"x": float(X_grid[-1, -1]), "y": float(Y_grid[-1, -1]), "z": float(Z_grid[-1, -1])},
-                                        {"x": float(X_grid[-1, 0]), "y": float(Y_grid[-1, 0]), "z": float(Z_grid[-1, 0])},
-                                    ]
-                                    if len(points) >= 3:
-                                        surfaces_to_process.append((sid, points, None))
-                                        if DEBUG_PLOT3D_TIMING:
-                                            print(f"[DEBUG Plot Overrides] Surface '{sid}' zu surfaces_to_process hinzugefügt (Punkte aus Grid extrahiert, hat Override, aber nicht aktiviert)")
+                        # Keine Surface-Definition vorhanden - überspringe
+                        if DEBUG_PLOT3D_TIMING:
+                            print(f"[DEBUG Plot Overrides] Surface '{sid}' übersprungen (keine Surface-Definition vorhanden)")
         
         # 🎯 DEBUG: Zeige alle Surfaces, die verarbeitet werden sollen
         print(f"[DEBUG Plot Triangulation] surfaces_to_process: {len(surfaces_to_process)} Surfaces")
@@ -1273,6 +1223,24 @@ class SPL3DPlotRenderer:
                             n_vertices = len(triangulated_vertices)
                             n_grid_points = Xg.size
                             
+                            # 🎯 DEBUG: Erweiterte Ausgabe für Vertices vs Grid-Punkte
+                            print(f"  └─ [VERTICES vs GRID] Surface '{surface_id}':")
+                            print(f"      └─ Anzahl Vertices: {n_vertices}")
+                            print(f"      └─ Anzahl Grid-Punkte: {n_grid_points}")
+                            print(f"      └─ Differenz: {n_vertices - n_grid_points} ({'+' if n_vertices > n_grid_points else ''}{n_vertices - n_grid_points})")
+                            print(f"      └─ Grid Shape: {Xg.shape} (ny={Xg.shape[0]}, nx={Xg.shape[1]})")
+                            print(f"      └─ Orientation: {surface_orientation}")
+                            
+                            # Prüfe, ob zusätzliche Vertices vorhanden sind (z.B. an Polygon-Ecken)
+                            if n_vertices > n_grid_points:
+                                print(f"      └─ ⚠️  WARNUNG: {n_vertices - n_grid_points} zusätzliche Vertices vorhanden (wahrscheinlich an Polygon-Ecken)")
+                                print(f"      └─ Erste {min(5, n_grid_points)} Vertices:")
+                                for i in range(min(5, n_grid_points)):
+                                    print(f"          [{i:3d}] Vertex: ({triangulated_vertices[i][0]:6.2f}, {triangulated_vertices[i][1]:6.2f}, {triangulated_vertices[i][2]:6.2f})")
+                                print(f"      └─ Letzte {min(5, n_vertices - n_grid_points)} zusätzliche Vertices:")
+                                for i in range(n_grid_points, min(n_grid_points + 5, n_vertices)):
+                                    print(f"          [{i:3d}] Vertex: ({triangulated_vertices[i][0]:6.2f}, {triangulated_vertices[i][1]:6.2f}, {triangulated_vertices[i][2]:6.2f})")
+                            
                             if n_vertices == n_grid_points:
                                 # 🎯 Direkte Zuordnung: Vertices = Grid-Punkte in derselben Reihenfolge
                                 orientation_info = f" (Orientation: {surface_orientation})" if surface_orientation else ""
@@ -1323,31 +1291,38 @@ class SPL3DPlotRenderer:
                                                 status = "✓" if np.isfinite(spl) else "✗"
                                                 print(f"          [{idx:5d}] {status} ({v[0]:6.2f}, {v[1]:6.2f}, {v[2]:6.2f}) -> {spl:.1f} dB")
                             else:
-                                # Fallback: Vertices ≠ Grid-Punkte → mappe per nächstem Gridpunkt (ohne Mittelung)
-                                print(f"  └─ ⚠️  Vertices != Grid-Punkte ({n_vertices} vs {n_grid_points}) – mappe auf nächstes Grid")
+                                # Vertices ≠ Grid-Punkte - verwende Nearest-Map für zusätzliche Vertices
+                                print(f"  └─ ⚠️  Vertices != Grid-Punkte ({n_vertices} vs {n_grid_points}) – verwende Nearest-Map für Zuordnung")
                                 try:
                                     from scipy.spatial import cKDTree
-                                    grid_pts = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                    # Erstelle Grid-Punkte für Nearest-Map
+                                    grid_pts = np.column_stack([Xg.ravel(), Yg.ravel(), Zg_check.ravel() if 'Zg_check' in locals() else np.zeros(Xg.size)])
                                     grid_vals = spl_values_2d.ravel()
+                                    
+                                    # Filtere nach surface_mask, falls vorhanden
                                     if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
                                         mask_flat = surface_mask.ravel().astype(bool)
                                         grid_pts = grid_pts[mask_flat]
                                         grid_vals = grid_vals[mask_flat]
+                                    
+                                    # Erstelle KDTree für Nearest-Neighbor-Suche
                                     tree = cKDTree(grid_pts)
-                                    dists, nn_idx = tree.query(triangulated_vertices[:, :2], k=1)
+                                    dists, nn_idx = tree.query(triangulated_vertices, k=1)
                                     spl_at_verts = grid_vals[nn_idx]
+                                    
                                     valid_mask = np.isfinite(spl_at_verts)
                                     n_valid = int(np.sum(valid_mask))
                                     if n_valid > 0:
                                         spl_valid = spl_at_verts[valid_mask]
-                                        print(f"      └─ Nearest-Map: {n_valid}/{len(spl_at_verts)} gültig, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB, max_dist={np.nanmax(dists):.3f}")
+                                        print(f"      └─ Nearest-Map: {n_valid}/{len(spl_at_verts)} gültig, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB, max_dist={np.nanmax(dists):.3f} m")
                                     else:
                                         print(f"      ⚠️  Keine gültigen Werte nach Nearest-Map")
+                                        raise ValueError(f"Surface '{surface_id}': Nearest-Map liefert keine gültigen Werte")
                                 except Exception as e_nn:
                                     print(f"      ⚠️  Nearest-Map fehlgeschlagen ({e_nn}) – verwende griddata(nearest)")
                                     from scipy.interpolate import griddata
-                                    points_new = triangulated_vertices[:, :2]
-                                    points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                    points_new = triangulated_vertices
+                                    points_orig = np.column_stack([Xg.ravel(), Yg.ravel(), Zg_check.ravel() if 'Zg_check' in locals() else np.zeros(Xg.size)])
                                     values_orig = spl_values_2d.ravel()
                                     if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
                                         mask_flat = surface_mask.ravel().astype(bool)
@@ -1365,7 +1340,9 @@ class SPL3DPlotRenderer:
                                     n_valid = np.sum(valid_mask)
                                     if n_valid > 0:
                                         spl_valid = spl_at_verts[valid_mask]
-                                        print(f"      └─ SPL: {n_valid}/{len(spl_at_verts)} gültige Werte, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB")
+                                        print(f"      └─ Griddata(nearest): {n_valid}/{len(spl_at_verts)} gültige Werte, Range=[{np.nanmin(spl_valid):.1f}, {np.nanmax(spl_valid):.1f}] dB")
+                                    else:
+                                        raise ValueError(f"Surface '{surface_id}': Griddata(nearest) liefert keine gültigen Werte")
                             
                             # Bestimme Colorbar-Bereich für Visualisierung
                             cbar_min_local = cbar_min
@@ -1412,10 +1389,7 @@ class SPL3DPlotRenderer:
                                     mesh = pv.PolyData(current_vertices, current_faces)
                                     mesh["plot_scalars"] = current_scalars
                                 except Exception as e_subdiv:
-                                    print(f"[DEBUG Subdivision] ⚠️  Surface '{surface_id}': Subdivision fehlgeschlagen: {e_subdiv}")
-                                    # Fallback: Verwende Original-Daten ohne Subdivision
-                                    mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
-                                    mesh["plot_scalars"] = spl_at_verts
+                                    raise RuntimeError(f"Surface '{surface_id}': Subdivision fehlgeschlagen: {e_subdiv}")
                             else:
                                 # Keine Subdivision
                                 mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
@@ -1518,37 +1492,9 @@ class SPL3DPlotRenderer:
                         print(f"  └─ Traceback: {traceback.format_exc()}")
                         use_triangulation = False
                 
-                # 🎯 PRIORITÄT 2: Fallback zu Texture-Pfad (wenn keine Triangulation verfügbar)
+                # Triangulation muss erfolgreich sein
                 if not use_triangulation:
-                    if disable_textures:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[DEBUG Plot Textures] Texturen deaktiviert – Fallback übersprungen für {surface_id}")
-                        continue
-                    result = self._process_single_surface_texture(
-                    surface_id=surface_id,
-                    points=points,
-                    surface_obj=surface_obj,
-                    source_x=sx,
-                    source_y=sy,
-                    values=vals,
-                    cbar_min=cbar_min,
-                    cbar_max=cbar_max,
-                    base_cmap=base_cmap,
-                    norm=norm,
-                    is_step_mode=is_step_mode,
-                    colorization_mode=colorization_mode,
-                    cbar_step=cbar_step,
-                    tex_res_global=tex_res_global,
-                    effective_upscale_factor=effective_upscale_factor,
-                )
-                
-                if result is None:
-                    continue
-                
-                grid = result['grid']
-                tex = result['texture']
-                metadata = result['metadata']
-                texture_signature = result['texture_signature']
+                    raise ValueError(f"Surface '{surface_id}': Triangulation fehlgeschlagen – kein Plot möglich")
                 
                 # Alten Actor entfernen
                 old_texture_data = self._surface_texture_actors.get(surface_id)
@@ -2703,14 +2649,19 @@ class SPL3DPlotRenderer:
                             # X variiert entlang der Fläche, wir verwenden den Mittelwert als Referenz
                             wall_value = float(np.mean(xs))
                     elif x_span >= eps_line and y_span >= eps_line and z_span >= eps_line:
-                        # Schräge vertikale Surface: Variiert in X, Y und Z (Fallback)
-                        # Bestimme dominante Richtung in XY
-                        if x_span >= y_span:
-                            vertical_orientation = "xz_slanted"
-                            wall_value = float(np.mean(ys))
+                        # Schräge vertikale Surface: Variiert in X, Y und Z
+                        # Bestimme dominante Richtung in XY basierend auf dominant_axis
+                        if hasattr(surface_def, 'dominant_axis') and surface_def.dominant_axis:
+                            if surface_def.dominant_axis == "xz":
+                                vertical_orientation = "xz_slanted"
+                                wall_value = float(np.mean(ys))
+                            elif surface_def.dominant_axis == "yz":
+                                vertical_orientation = "yz_slanted"
+                                wall_value = float(np.mean(xs))
+                            else:
+                                raise ValueError(f"Surface '{surface_id}': Unbekannter dominant_axis '{surface_def.dominant_axis}' für schräge vertikale Surface")
                         else:
-                            vertical_orientation = "yz_slanted"
-                            wall_value = float(np.mean(xs))
+                            raise ValueError(f"Surface '{surface_id}': dominant_axis nicht verfügbar für schräge vertikale Surface")
                 
                 # 🎯 DEBUG: Zeige Koordinaten-Informationen
                 if DEBUG_PLOT3D_TIMING:
@@ -2769,11 +2720,8 @@ class SPL3DPlotRenderer:
                     if DEBUG_PLOT3D_TIMING:
                         print(f"  └─ Schräge Y-Z-Wand: u_axis (Y) len={len(u_axis)}, v_axis (Z) len={len(v_axis)}")
                 else:
-                    # Fallback: Standard (sollte nicht vorkommen für vertical)
-                    u_axis = sound_field_x
-                    v_axis = sound_field_y
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  └─ ⚠️ Keine Orientierung erkannt, verwende sound_field_x/y")
+                    # Keine Orientierung erkannt - Fehler
+                    raise ValueError(f"Surface '{surface_id}': Keine Orientierung erkannt für vertikale Surface")
                 
                 # 🎯 UPSCALING: Erhöhe Grid-Auflösung (in UV-Koordinaten)
                 upscale_factor = getattr(self, 'UPSCALE_FACTOR', 1)
@@ -2943,23 +2891,8 @@ class SPL3DPlotRenderer:
                         # Z_fine = interpoliertes X
                         Z_fine = X_interp
                     else:
-                        # Fallback: Normale XY-Interpolation
-                        spl_fine = self._bilinear_interpolate_grid(
-                            sound_field_x, sound_field_y, spl_values,
-                            U_fine.ravel(), V_fine.ravel()
-                        )
-                        spl_fine = spl_fine.reshape(U_fine.shape)
-                        mask_float = surface_mask.astype(float)
-                        mask_fine = self._nearest_interpolate_grid(
-                            sound_field_x, sound_field_y, mask_float,
-                            U_fine.ravel(), V_fine.ravel()
-                        )
-                        mask_fine = mask_fine.reshape(U_fine.shape).astype(bool)
-                        Z_fine = self._bilinear_interpolate_grid(
-                            sound_field_x, sound_field_y, Z_grid,
-                            U_fine.ravel(), V_fine.ravel()
-                        )
-                        Z_fine = Z_fine.reshape(U_fine.shape)
+                        # Unbekannte vertikale Orientierung - Fehler
+                        raise ValueError(f"Surface '{surface_id}': Unbekannte vertikale Orientierung '{vertical_orientation}'")
                     
                     # Transformiere für build_surface_mesh
                     if vertical_orientation == "xz":
@@ -3619,11 +3552,9 @@ class SPL3DPlotRenderer:
                                 # Verwende mag2db wie in Plot3DSPL_new.py
                                 pressure_magnitude = np.abs(sound_field_p)
                                 pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
-                                if hasattr(self, 'functions') and hasattr(self.functions, 'mag2db'):
-                                    spl_values = self.functions.mag2db(pressure_magnitude)
-                                else:
-                                    # Fallback: direkte Berechnung
-                                    spl_values = 20.0 * np.log10(pressure_magnitude / 2e-5)
+                                if not (hasattr(self, 'functions') and hasattr(self.functions, 'mag2db')):
+                                    raise ValueError("functions.mag2db nicht verfügbar")
+                                spl_values = self.functions.mag2db(pressure_magnitude)
                                 spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
                                 valid_spl = spl_values[np.isfinite(spl_values) & (spl_values > 0)]
                                 if valid_spl.size > 0:

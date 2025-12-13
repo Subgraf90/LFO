@@ -345,12 +345,11 @@ class SPL3DOverlayBase:
                     if device_pixel_ratio > 1.0:
                         self._dpi_scale_factor = 1.0 / device_pixel_ratio
                         return self._dpi_scale_factor
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:
+            raise RuntimeError(f"DPI-Skalierung konnte nicht bestimmt werden: {e}")
         
-        # Fallback: Keine Skalierung (Standard-DPI)
-        self._dpi_scale_factor = 1.0
-        return self._dpi_scale_factor
+        # DPI-Skalierung muss bestimmt werden
+        raise ValueError("DPI-Skalierung konnte nicht bestimmt werden")
     
     def _get_scaled_line_width(self, base_line_width: float) -> float:
         """Skaliert eine Linienbreite basierend auf der Bildschirmauflösung.

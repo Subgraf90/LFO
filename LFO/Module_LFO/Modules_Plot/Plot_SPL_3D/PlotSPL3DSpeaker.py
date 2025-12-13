@@ -812,35 +812,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                 continue
 
             if geometries is None:
-                # Fallback: Neu berechnen (sollte nicht passieren, aber sicherheitshalber)
-                # Dies passiert nur wenn:
-                # 1. Parallelisierung fehlgeschlagen ist
-                # 2. Cache-Transformation fehlgeschlagen ist
-                # 3. Task wurde nicht in tasks_without_cache oder tasks_with_cache aufgenommen
-                with perf_section("PlotSPL3DOverlays.draw_speakers.build_geometries_fallback", array_id=array_id, speaker_idx=idx):
-                    geometries = self._build_speaker_geometries(
-                        task['speaker_array'],
-                        idx,
-                        x,
-                        y,
-                        z,
-                        cabinet_lookup,
-                        container,
-                    )
-                    # Cache speichern auch im Fallback
-                    if geometries:
-                        cache_key = self._create_geometry_cache_key(
-                            task['array_id'], task['speaker_array'], task['idx'], task['speaker_name'],
-                            task['configuration'], cabinet_lookup.get(task['speaker_name'])
-                        )
-                        self._speaker_geometry_cache[cache_key] = {
-                            'geoms': [(mesh.copy(deep=True), exit_idx) for mesh, exit_idx in geometries],
-                            'position': (x, y, z)
-                        }
-                        if len(self._speaker_geometry_cache) > self._geometry_cache_max_size:
-                            first_key = next(iter(self._speaker_geometry_cache))
-                            del self._speaker_geometry_cache[first_key]
-                        self._speaker_geometry_param_cache[task['geometry_param_key']] = task['geometry_param_signature']
+                # Geometrien müssen verfügbar sein
+                raise ValueError(f"Geometrien nicht verfügbar für array_id='{array_id}', speaker_idx={idx}")
 
             # MESH MERGING: Kombiniere alle Geometrien eines Speakers zu einem Mesh
             # WICHTIG: Dies muss IMMER ausgeführt werden, auch wenn Geometrien aus Parallelisierung kommen!
@@ -1479,8 +1452,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     y_offset = 0.0
                     stack_group_key = ('on_top', round(x_offset, 4), 0.0)
                 else:
-                    x_offset = self._safe_float(cabinet, 'x_offset', fallback=(-width / 2.0))
-                    y_offset = self._safe_float(cabinet, 'y_offset', fallback=0.0)
+                    x_offset = self._safe_float(cabinet, 'x_offset') if 'x_offset' in cabinet else (-width / 2.0)
+                    y_offset = self._safe_float(cabinet, 'y_offset') if 'y_offset' in cabinet else 0.0
                     stack_group_key = ('beside', round(x_offset, 4), round(y_offset, 4))
 
                 if stack_group_key not in stack_groups:
@@ -1525,8 +1498,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                 y_offset = 0.0
                 return ('on_top', round(x_offset, 4), 0.0)
             else:
-                x_offset = self._safe_float(cabinet, 'x_offset', fallback=(-width / 2.0))
-                y_offset = self._safe_float(cabinet, 'y_offset', fallback=0.0)
+                x_offset = self._safe_float(cabinet, 'x_offset') if 'x_offset' in cabinet else (-width / 2.0)
+                y_offset = self._safe_float(cabinet, 'y_offset') if 'y_offset' in cabinet else 0.0
                 return ('beside', round(x_offset, 4), round(y_offset, 4))
 
         return None
@@ -1591,7 +1564,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             width = self._safe_float(cabinet, 'width')
             depth = self._safe_float(cabinet, 'depth')
             front_height = self._safe_float(cabinet, 'front_height')
-            back_height = self._safe_float(cabinet, 'back_height', fallback=front_height)
+            back_height = self._safe_float(cabinet, 'back_height') if 'back_height' in cabinet else front_height
             cardio = bool(cabinet.get('cardio', False)) if isinstance(cabinet, dict) else False
             angle_point_raw = ''
             if isinstance(cabinet, dict):
@@ -1604,9 +1577,9 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             if width <= 0 or depth <= 0 or height <= 0:
                 continue
 
-            x_offset = self._safe_float(cabinet, 'x_offset', fallback=(-width / 2.0))
-            y_offset = self._safe_float(cabinet, 'y_offset', fallback=0.0)
-            z_offset = self._safe_float(cabinet, 'z_offset', fallback=0.0)
+            x_offset = self._safe_float(cabinet, 'x_offset') if 'x_offset' in cabinet else (-width / 2.0)
+            y_offset = self._safe_float(cabinet, 'y_offset') if 'y_offset' in cabinet else 0.0
+            z_offset = self._safe_float(cabinet, 'z_offset') if 'z_offset' in cabinet else 0.0
 
             stack_group_key = None
             if entry_config == 'stack':
@@ -2104,21 +2077,23 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         return None
 
     @classmethod
-    def _safe_float(cls, mapping, key: str, fallback: float | None = None) -> float:
+    def _safe_float(cls, mapping, key: str) -> float:
         if isinstance(mapping, (float, int)):
             return float(mapping)
         if isinstance(mapping, str):
             try:
                 return float(mapping)
-            except Exception:  # noqa: BLE001
-                return float(fallback) if cls._is_numeric(fallback) else 0.0
+            except Exception as e:
+                raise ValueError(f"_safe_float: Konvertierung von String '{mapping}' zu float fehlgeschlagen: {e}")
         if not isinstance(mapping, dict):
-            return float(fallback) if cls._is_numeric(fallback) else 0.0
-        value = mapping.get(key, fallback if fallback is not None else 0.0)
+            raise ValueError(f"_safe_float: mapping ist kein dict, sondern {type(mapping)}")
+        if key not in mapping:
+            raise ValueError(f"_safe_float: Key '{key}' nicht in mapping gefunden")
+        value = mapping.get(key)
         try:
             return float(value)
-        except Exception:  # noqa: BLE001
-            return float(fallback) if cls._is_numeric(fallback) else 0.0
+        except Exception as e:
+            raise ValueError(f"_safe_float: Konvertierung von Wert '{value}' (Key '{key}') zu float fehlgeschlagen: {e}")
 
     @staticmethod
     def _array_value(values, index: int) -> float | None:
