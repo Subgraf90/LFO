@@ -2394,6 +2394,7 @@ class Sources(ModuleBase, QObject):
                 new_array_item = QTreeWidgetItem(self.sources_tree_widget, [array_name])
                 new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
                 new_array_item.setData(0, Qt.UserRole, array_id)
+                new_array_item.setData(0, Qt.UserRole + 1, "array")  # Setze child_type für Array-Erkennung
                 new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                 
                 # Setze Checkboxen
@@ -3437,6 +3438,7 @@ class Sources(ModuleBase, QObject):
         new_array_item = QTreeWidgetItem(self.sources_tree_widget, [array_name])
         new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
         new_array_item.setData(0, Qt.UserRole, array_id)
+        new_array_item.setData(0, Qt.UserRole + 1, "array")  # Setze child_type für Array-Erkennung
         new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
     
         # Checkboxen erstellen und verbinden
@@ -3524,6 +3526,7 @@ class Sources(ModuleBase, QObject):
         new_array_item = QTreeWidgetItem(self.sources_tree_widget, [array_name])
         new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
         new_array_item.setData(0, Qt.UserRole, array_id)
+        new_array_item.setData(0, Qt.UserRole + 1, "array")  # Setze child_type für Array-Erkennung
         new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
     
         # Checkboxen erstellen und verbinden
@@ -3818,6 +3821,7 @@ class Sources(ModuleBase, QObject):
                     new_array_item = QTreeWidgetItem([new_array.name])
                     new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
                     new_array_item.setData(0, Qt.UserRole, new_array_id)
+                    new_array_item.setData(0, Qt.UserRole + 1, "array")  # Setze child_type für Array-Erkennung
                     new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                     
                     # Füge Item direkt unter dem Original-Item ein
@@ -5910,6 +5914,7 @@ class Sources(ModuleBase, QObject):
                 new_array_item = QTreeWidgetItem([new_array.name])
                 new_array_item.setFlags(new_array_item.flags() | Qt.ItemIsEditable)
                 new_array_item.setData(0, Qt.UserRole, new_array_id)
+                new_array_item.setData(0, Qt.UserRole + 1, "array")  # Setze child_type für Array-Erkennung
                 new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                 
                 # Erstelle Checkboxen
@@ -6010,6 +6015,17 @@ class Sources(ModuleBase, QObject):
             checkbox = self.sources_tree_widget.itemWidget(child, column)
             child_text = child.text(0)
             print(f"[DEBUG _update_group_child_checkboxes] Child {i}: text='{child_text}', type={child_type}, data={child_data}, checkbox vorhanden={checkbox is not None}")
+            
+            # Fallback: Wenn child_type None ist, aber child_data (array_id) vorhanden ist, 
+            # dann ist es wahrscheinlich ein Array (für bereits existierende Items, die noch nicht neu geladen wurden)
+            if child_type is None and child_data is not None:
+                # Prüfe, ob es ein Array ist, indem wir versuchen, es aus settings zu holen
+                speaker_array = self.settings.get_speaker_array(child_data)
+                if speaker_array:
+                    child_type = "array"
+                    # Setze child_type für zukünftige Verwendung
+                    child.setData(0, Qt.UserRole + 1, "array")
+                    print(f"[DEBUG _update_group_child_checkboxes] Child {i}: child_type war None, aber Array gefunden - setze auf 'array'")
             
             if child_type == "array":
                 # Array: Aktualisiere Checkbox und Array-Daten

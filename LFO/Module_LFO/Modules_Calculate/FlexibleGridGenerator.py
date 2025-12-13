@@ -1594,7 +1594,8 @@ class GridBuilder(ModuleBase):
                     {"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))}
                     for p in points
                 ]
-                surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                # 🎯 KORREKTUR: Verwende _points_in_polygon_batch_uv für (u,v)-Koordinaten
+                surface_mask_strict = self._points_in_polygon_batch_uv(U_grid, V_grid, polygon_uv)
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
             else:
@@ -1605,7 +1606,8 @@ class GridBuilder(ModuleBase):
                     {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
                     for p in points
                 ]
-                surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
+                # 🎯 KORREKTUR: Verwende _points_in_polygon_batch_uv für (u,v)-Koordinaten
+                surface_mask_strict = self._points_in_polygon_batch_uv(U_grid, V_grid, polygon_uv)
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
             
@@ -1798,13 +1800,14 @@ class GridBuilder(ModuleBase):
             )
         
         # Für planare/schräge Surfaces: Gebe auch die strikte Maske zurück (ohne Erweiterung)
-        # Für vertikale Surfaces: surface_mask_strict = surface_mask (keine Erweiterung für diese)
+        # Für vertikale Surfaces: surface_mask_strict wurde bereits vorher erstellt (vor Dilatation)
         if geometry.orientation in ("planar", "sloped"):
             # surface_mask_strict wurde bereits vorher erstellt
             return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
         else:
-            # Vertikale Surfaces: keine separate strikte Maske nötig
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask)
+            # 🎯 KORREKTUR: Vertikale Surfaces haben auch eine strikte Maske (vor Dilatation erstellt)
+            # surface_mask_strict wurde bereits oben erstellt (vor Dilatation in Zeile 1598/1610)
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
 
 
 class GridTransformer(ABC):
@@ -2455,6 +2458,7 @@ class FlexibleGridGenerator(ModuleBase):
                                         corner_z = corner_v
                                         if is_slanted_wall:
                                             # Schräge Wand: Y interpoliert aus (x,z)
+                                            from scipy.interpolate import griddata
                                             corner_y = griddata(
                                                 points_surface, ys,
                                                 np.array([[corner_u, corner_v]]),
@@ -2471,6 +2475,7 @@ class FlexibleGridGenerator(ModuleBase):
                                         corner_z = corner_v
                                         if is_slanted_wall:
                                             # Schräge Wand: X interpoliert aus (y,z)
+                                            from scipy.interpolate import griddata
                                             corner_x = griddata(
                                                 points_surface, xs,
                                                 np.array([[corner_u, corner_v]]),
