@@ -2077,7 +2077,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         return None
 
     @classmethod
-    def _safe_float(cls, mapping, key: str) -> float:
+    def _safe_float(cls, mapping, key: str, default=None) -> float:
         if isinstance(mapping, (float, int)):
             return float(mapping)
         if isinstance(mapping, str):
@@ -2088,6 +2088,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         if not isinstance(mapping, dict):
             raise ValueError(f"_safe_float: mapping ist kein dict, sondern {type(mapping)}")
         if key not in mapping:
+            if default is not None:
+                return float(default)
             raise ValueError(f"_safe_float: Key '{key}' nicht in mapping gefunden")
         value = mapping.get(key)
         try:
