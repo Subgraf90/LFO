@@ -646,12 +646,6 @@ def triangulate_points(points: List[Dict[str, float]]) -> List[List[Dict[str, fl
                 triangles: List[List[Dict[str, float]]] = []
                 for a, b, c in valid_triangles:
                     triangles.append([points[a], points[b], points[c]])
-                
-                # 🎯 DEBUG: Ausgabe welche Triangulation verwendet wurde
-                print(f"[DEBUG Triangulation] ✅ DELAUNAY verwendet: {len(triangles)} Dreiecke (erwartet: {expected_tris})")
-                print(f"  └─ Eingabe: {len(points)} Punkte")
-                print(f"  └─ Delaunay-Dreiecke (vor Filterung): {len(triangles_delaunay)}")
-                print(f"  └─ Gültige Dreiecke (nach Filterung): {len(valid_triangles)}")
                 print(f"  └─ Ausgabe: {len(triangles)} Dreiecke")
                 
                 if len(triangles) < expected_tris:
@@ -704,9 +698,6 @@ def triangulate_points(points: List[Dict[str, float]]) -> List[List[Dict[str, fl
         len(filtered_order),
         expected_tris,
     )
-    
-    # 🎯 DEBUG: Ausgabe welche Triangulation verwendet wurde
-    print(f"[DEBUG Triangulation] ✅ FAN-TRIANGULATION verwendet (Fallback): {len(tris_idx)} Dreiecke (erwartet: {expected_tris})")
     print(f"  └─ Eingabe: {len(points)} Punkte")
     print(f"  └─ Nach Filterung: {len(filtered_order)} Punkte")
     print(f"  └─ Ausgabe: {len(tris_idx)} Dreiecke")
@@ -860,7 +851,6 @@ def validate_and_optimize_surface(
         # Fallback: Geometrische Prüfung
         is_planar, max_distance = _check_planarity_geometric(points_array)
         if is_planar:
-            logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist planar (max Abstand: {max_distance*100:.2f}cm)")
             is_valid = True
             invalid_fields = []
             corrected_points = points
@@ -886,7 +876,6 @@ def validate_and_optimize_surface(
         outliers = _identify_outliers(valid_points, model, tolerance=PLANAR_TOLERANCE)
         
         if model["max_error"] < PLANAR_TOLERANCE and not outliers:
-            logger.info(f"✓ Surface '{surface.name}' ({surface.surface_id}) ist planar (max Fehler: {model['max_error']*100:.2f}cm)")
             is_valid = True
             invalid_fields = []
             corrected_points = points

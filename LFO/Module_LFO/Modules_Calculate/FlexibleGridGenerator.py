@@ -1313,12 +1313,6 @@ class GridBuilder(ModuleBase):
                     is_slanted_vertical = (x_span > eps_line and z_span > 1e-3)
             
             
-            # Debug-Ausgabe für schräge Flächen (immer ausgeben, da wichtig für Fehlerdiagnose)
-            dominant_axis_str = getattr(geometry, 'dominant_axis', None) if hasattr(geometry, 'dominant_axis') else None
-            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': "
-                  f"dominant_axis={dominant_axis_str}, "
-                  f"x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, "
-                  f"is_slanted_vertical={is_slanted_vertical}")
             
             # 🎯 BEHANDLE SCHRÄGE FLÄCHEN ZUERST (vor den Bedingungen für konstante X/Y)
             # Wenn schräge Fläche erkannt, überspringe die Bedingungen für konstante X/Y
@@ -1372,8 +1366,6 @@ class GridBuilder(ModuleBase):
                 sound_field_x = u_axis  # x-Koordinaten
                 sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
                 
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Vertical Grid] X-Z-Wand: Grid in (x,z)-Ebene erstellt (y={y0:.3f} konstant)")
                 
             elif not is_slanted_vertical and x_span < eps_line and y_span >= eps_line:
                 # Y-Z-Wand: x ≈ const, Grid in (y,z)-Ebene
@@ -1425,12 +1417,7 @@ class GridBuilder(ModuleBase):
                 sound_field_x = u_axis  # y-Koordinaten (als x für sound_field_x)
                 sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
                 
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Vertical Grid] Y-Z-Wand: Grid in (y,z)-Ebene erstellt (x={x0:.3f} konstant)")
-                
             else:
-                # Prüfe, ob es eine schräge vertikale Fläche ist (bereits oben bestimmt)
-                print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': else-Block erreicht, is_slanted_vertical={is_slanted_vertical}")
                 if is_slanted_vertical:
                     # Schräge vertikale Fläche: Bestimme dominante Orientierung
                     # 🎯 VERWENDE dominant_axis (muss vorhanden sein)
@@ -1504,8 +1491,6 @@ class GridBuilder(ModuleBase):
                             sound_field_x = u_axis  # y-Koordinaten
                             sound_field_y = v_axis  # z-Koordinaten
                             
-                            if DEBUG_FLEXIBLE_GRID:
-                                print(f"[DEBUG Vertical Grid] Y-Z-Wand schräg: Grid in (y,z)-Ebene erstellt, X interpoliert")
                     else:
                         # X-Z-Wand schräg: X und Z variieren, Y variiert entlang der Fläche
                         # u = x, v = z
@@ -1522,7 +1507,6 @@ class GridBuilder(ModuleBase):
                             
                             if det_cov_xz < 1e-10:
                                 # Punkte sind fast kollinear in (x,z) → prüfe ob (y,z) besser ist
-                                print(f"[DEBUG Vertical Grid] ⚠️ Surface '{geometry.surface_id}': Punkte sind fast kollinear in (x,z)-Ebene (det={det_cov_xz:.2e})")
                                 
                                 points_surface_yz = np.column_stack([ys, zs])
                                 cov_yz = np.cov(points_surface_yz.T)
@@ -1570,7 +1554,6 @@ class GridBuilder(ModuleBase):
                             points_surface = np.column_stack([ys, zs])
                             points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
                             
-                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere X-Koordinaten (Y-Z-Wand schräg, nach Kollinearitäts-Prüfung)")
                             
                             from scipy.interpolate import griddata
                             X_interp = griddata(
@@ -1589,7 +1572,6 @@ class GridBuilder(ModuleBase):
                             sound_field_x = u_axis  # y-Koordinaten
                             sound_field_y = v_axis  # z-Koordinaten
                             
-                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ X-Interpolation erfolgreich (nach Kollinearitäts-Prüfung)")
                         else:
                             # Normale X-Z-Wand: Y wird aus (x,z) interpoliert
                             u_min, u_max = float(xs.min()), float(xs.max())
@@ -1633,17 +1615,11 @@ class GridBuilder(ModuleBase):
                                 points_surface = np.column_stack([xs, zs])
                                 points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
                                 
-                                print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere Y-Koordinaten (X-Z-Wand schräg)")
-                                print(f"  └─ Surface-Punkte: {len(points_surface)} Punkte, Y-Range: [{np.min(ys):.3f}, {np.max(ys):.3f}], Span: {np.ptp(ys):.3f}")
-                                print(f"  └─ Grid-Punkte: {len(points_grid)} Punkte")
-                                
                                 Y_interp = griddata(
                                     points_surface, ys,
                                     points_grid,
                                     method='linear', fill_value=float(np.mean(ys))
                                 )
-                                print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ Linear-Interpolation erfolgreich")
-                                print(f"  └─ Y_interp Range: [{np.nanmin(Y_interp):.3f}, {np.nanmax(Y_interp):.3f}], Span: {np.nanmax(Y_interp) - np.nanmin(Y_interp):.3f}")
                                 Y_interp = Y_interp.reshape(U_grid.shape)
                                 
                                 # Transformiere zu (X, Y, Z) Koordinaten
@@ -1655,8 +1631,6 @@ class GridBuilder(ModuleBase):
                                 sound_field_x = u_axis  # x-Koordinaten
                                 sound_field_y = v_axis  # z-Koordinaten
                                 
-                                if DEBUG_FLEXIBLE_GRID:
-                                    print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
                 else:
                     # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
                     raise ValueError(f"Surface '{geometry.surface_id}': Als 'vertical' klassifiziert, aber Z-Spanne ({z_span:.3f}) nicht groß genug. x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}")
@@ -1836,7 +1810,6 @@ class GridBuilder(ModuleBase):
                 # Nur Warnung ausgeben, wenn Problem erkannt wird
                 if geometry.orientation == "sloped" and z_span_grid < 0.01:
                     plane_mode = geometry.plane_model.get('mode', 'unknown')
-                    print(f"[DEBUG Z-Grid] ⚠️  Surface '{geometry.surface_id}' (sloped): Z-Grid-Spanne={z_span_grid:.3f} m <0.01 m (mode={plane_mode})!")
             else:
                 # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
                 surface_points = geometry.points or []
@@ -2458,15 +2431,15 @@ class FlexibleGridGenerator(ModuleBase):
                             mode = plane_model_new.get('mode', 'unknown')
                             # Nur Warnungen ausgeben, wenn Probleme erkannt werden
                             if mode == "constant":
-                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model ist 'constant' trotz Z-Spanne={z_span_points:.3f} m!")
+                                pass
                             elif mode in ("x", "y") and abs(plane_model_new.get('slope', 0.0)) < 1e-6:
-                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model hat slope≈0 (mode={mode}) trotz Z-Spanne={z_span_points:.3f} m!")
+                                pass
                         else:
-                            print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model-Ableitung ergab None!")
+                            pass
                     except Exception as e:
-                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): plane_model-Ableitung fehlgeschlagen: {e}")
+                        pass
                 else:
-                    print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Keine Punkte verfügbar!")
+                    pass
             
             try:
                 result = self.builder.build_single_surface_grid(
@@ -2503,7 +2476,7 @@ class FlexibleGridGenerator(ModuleBase):
                             raise ValueError(f"Surface '{geom.surface_id}' (sloped): plane_model konnte nicht abgeleitet werden")
                         geom.plane_model = plane_model_local
                     else:
-                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Keine Punkte verfügbar!")
+                        pass
                 else:
                     # Für planare Flächen: Nur ableiten, wenn nicht vorhanden
                     if plane_model_local is None and geom.points:
@@ -2522,12 +2495,12 @@ class FlexibleGridGenerator(ModuleBase):
                             z_span = zmax - zmin
                             # Nur Warnung ausgeben, wenn Problem erkannt wird
                             if geom.orientation == "sloped" and z_span < 0.01:
-                                print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Z-Spanne={z_span:.3f} m <0.01 m (vorher: {z_old_span:.3f} m)")
+                                pass
                     except Exception as e:
-                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
+                        pass
                 else:
                     if geom.orientation == "sloped":
-                        print(f"[DEBUG Z-Grid] ⚠️  Surface '{geom.surface_id}' (sloped): Kein plane_model verfügbar!")
+                        pass
             
             # Berechne tatsächliche Resolution (kann adaptiv sein)
             ny, nx = X_grid.shape
@@ -2551,11 +2524,6 @@ class FlexibleGridGenerator(ModuleBase):
                 mask_strict_flat = surface_mask_strict.ravel()  # Strikte Maske (für Face-Filterung)
                 
                 if np.any(mask_flat):
-                    print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Starte Grid-basierte Triangulation")
-                    print(f"  └─ Grid-Shape: {X_grid.shape} (ny={ny}, nx={nx})")
-                    print(f"  └─ Aktive Grid-Punkte (erweitert): {np.sum(mask_flat)} / {mask_flat.size}")
-                    print(f"  └─ Aktive Grid-Punkte (strikt): {np.sum(mask_strict_flat)} / {mask_strict_flat.size}")
-                    
                     # Erstelle Vertex-Koordinaten aus allen Grid-Punkten (auch inaktive für konsistente Indizes)
                     # Wir brauchen alle Punkte für die strukturierte Triangulation
                     all_vertices = np.column_stack([
@@ -3139,32 +3107,13 @@ class FlexibleGridGenerator(ModuleBase):
                         n_vertices_used = len(np.unique(triangulated_faces[1::4]))  # Eindeutige Vertex-Indizes
                         expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
                         
-                        # 🎯 DEBUG: Detaillierte Ausgabe
-                        print(f"[DEBUG Triangulation] ✅ Surface '{geom.surface_id}': Grid-basierte Triangulation erfolgreich")
-                        print(f"  └─ Anzahl Grid-Punkte (Vertices): {len(all_vertices)}")
-                        print(f"  └─ Volle Quadrate (4 aktive Ecken): {active_quads}")
-                        print(f"  └─ Rand-Quadrate (3 aktive Ecken): {partial_quads}")
-                        print(f"  └─ Gefilterte Dreiecke (außerhalb strikte Maske): {filtered_out}")
-                        print(f"  └─ Anzahl Dreiecke (Faces): {n_faces} (erwartet: {expected_faces}, gefiltert: {filtered_out})")
-                        print(f"  └─ Verwendete Vertices: {n_vertices_used}")
-                        print(f"  └─ Vertices pro Grid-Punkt (Ø): {n_vertices_used / np.sum(mask_flat):.2f}")
-                        print(f"  └─ Vertices X-Range: [{all_vertices[:, 0].min():.3f}, {all_vertices[:, 0].max():.3f}]")
-                        print(f"  └─ Vertices Y-Range: [{all_vertices[:, 1].min():.3f}, {all_vertices[:, 1].max():.3f}]")
-                        print(f"  └─ Vertices Z-Range: [{all_vertices[:, 2].min():.3f}, {all_vertices[:, 2].max():.3f}]")
-                        
-                        # Prüfe auf NaN oder Inf
-                        if np.any(np.isnan(all_vertices)) or np.any(np.isinf(all_vertices)):
-                            print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
-                        else:
-                            print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
                     else:
-                        print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Quadrate für Triangulation")
+                        pass
                 else:
-                    print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Keine aktiven Grid-Punkte")
+                    pass
             except Exception as e:
-                print(f"[DEBUG Triangulation] ❌ Surface '{geom.surface_id}': Fehler bei Triangulation: {e}")
                 import traceback
-                print(f"  └─ Traceback: {traceback.format_exc()}")
+                traceback.print_exc()
                 triangulated_success = False
             
             surface_grids[geom.surface_id] = SurfaceGrid(
@@ -3233,12 +3182,8 @@ class FlexibleGridGenerator(ModuleBase):
                 Z_eval = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
                 if Z_eval is not None and Z_eval.shape == X_grid.shape:
                     Z_grid = Z_eval
-                    if DEBUG_FLEXIBLE_GRID:
-                        zmin, zmax = float(Z_grid.min()), float(Z_grid.max())
-                        print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Z neu aus Ebene gesetzt (min={zmin:.3f}, max={zmax:.3f})")
             except Exception as e:
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Z-Grid] Surface '{geom.surface_id}': Ebene konnte nicht ausgewertet werden: {e}")
+                pass
 
         ny, nx = X_grid.shape
         if len(sound_field_x) > 1 and len(sound_field_y) > 1:

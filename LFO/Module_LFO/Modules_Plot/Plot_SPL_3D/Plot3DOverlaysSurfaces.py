@@ -120,9 +120,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         
         signature_tuple = (tuple(surfaces_signature), active_surface_id, highlight_ids_tuple, has_spl_data_for_signature)
         
-        print(f"[DEBUG draw_surfaces] active_ids_set = {sorted(active_ids_set)}")
-        print(f"[DEBUG draw_surfaces] highlight_ids_tuple = {highlight_ids_tuple}")
-        
         signature_changed = True
         if self._last_surfaces_state is not None and not create_empty_plot_surfaces:
             # Prüfe ob Signatur-Struktur übereinstimmt (4-Tupel wie in _compute_overlay_signatures)
@@ -134,30 +131,18 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 highlights_changed = (last_ids_set != active_ids_set)
                 active_id_changed = (last_active_id != active_surface_id)
                 spl_data_changed = (last_has_spl != has_spl_data_for_signature)
-                print(f"[DEBUG draw_surfaces] Signature comparison:")
-                print(f"  last_ids_set: {sorted(last_ids_set)}")
-                print(f"  active_ids_set: {sorted(active_ids_set)}")
-                print(f"  surfaces_changed: {surfaces_changed}")
-                print(f"  highlights_changed: {highlights_changed}")
-                print(f"  active_id_changed: {active_id_changed}")
-                print(f"  spl_data_changed: {spl_data_changed}")
                 if not surfaces_changed and not highlights_changed and not active_id_changed and not spl_data_changed:
                     signature_changed = False
-                    print(f"[DEBUG draw_surfaces] SIGNATURE UNCHANGED - SKIPPING REDRAW")
             elif len(self._last_surfaces_state) == 2:
                 # Alte Signatur-Struktur (2-Tupel) - behandle als geändert
-                print(f"[DEBUG draw_surfaces] OLD SIGNATURE FORMAT - FORCING REDRAW")
+                pass
             elif self._last_surfaces_state == signature_tuple:
                 signature_changed = False
-                print(f"[DEBUG draw_surfaces] SIGNATURE UNCHANGED (exact match) - SKIPPING REDRAW")
         
         # 🎯 WICHTIG: Auch wenn sich nur die Highlight-IDs geändert haben, müssen wir neu zeichnen
         # (damit disabled Surfaces rot umrandet werden, wenn sie angeklickt werden)
         if not signature_changed and not create_empty_plot_surfaces:
-            print(f"[DEBUG draw_surfaces] RETURNING EARLY - no redraw needed")
             return
-        
-        print(f"[DEBUG draw_surfaces] PROCEEDING WITH REDRAW - signature_changed={signature_changed}")
         
         t_clear_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         self.clear_category('surfaces')
@@ -242,11 +227,9 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                             if not triangles or len(triangles) == 0:
                                 # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
                                 is_valid_for_spl = False
-                                print(f"[DEBUG draw_surfaces] Surface '{surface_id}' mit {len(points)} Punkten: Triangulation fehlgeschlagen (keine Dreiecke)")
                         except Exception as e:
                             # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
                             is_valid_for_spl = False
-                            print(f"[DEBUG draw_surfaces] Surface '{surface_id}' mit {len(points)} Punkten: Triangulation fehlgeschlagen ({e})")
                 except Exception:
                     # Bei Fehler in Validierung: als ungültig behandeln
                     is_valid_for_spl = False
@@ -257,8 +240,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 disabled_count += 1
             
             is_active = (str(surface_id) in active_ids_set)
-            if is_active:
-                print(f"[DEBUG draw_surfaces] Surface {surface_id} is ACTIVE (enabled={enabled}, hidden={hidden}, valid_for_spl={is_valid_for_spl})")
             
             try:
                 point_coords = []
@@ -270,11 +251,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 
                 if len(point_coords) < 3:
                     continue
-                
-                # 🎯 DEBUG: Zeige Z-Koordinaten für ungültige Surfaces
-                if enabled and not is_valid_for_spl:
-                    z_values = [p[2] - z_offset for p in point_coords]
-                    print(f"[DEBUG draw_surfaces] Ungültige Surface '{surface_id}': Z-Werte = {z_values}")
                 
                 first_point = point_coords[0]
                 last_point = point_coords[-1]
@@ -291,11 +267,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 
                 n_points = len(closed_coords)
                 closed_coords_array = np.array(closed_coords, dtype=float)
-                
-                # 🎯 DEBUG: Zeige Koordinaten-Array für ungültige Surfaces
-                if enabled and not is_valid_for_spl:
-                    print(f"[DEBUG draw_surfaces] Ungültige Surface '{surface_id}': closed_coords_array shape = {closed_coords_array.shape}")
-                    print(f"[DEBUG draw_surfaces] Ungültige Surface '{surface_id}': Z-Min = {closed_coords_array[:, 2].min():.2f}, Z-Max = {closed_coords_array[:, 2].max():.2f}")
                 
                 if not enabled:
                     disabled_surface_ids.append(str(surface_id))
@@ -365,7 +336,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         
         # Zeichne aktive ENABLED Surfaces als Batch
         if active_enabled_points_list:
-            print(f"[DEBUG draw_surfaces] Drawing {len(active_enabled_points_list)} active ENABLED surfaces with RED border")
             try:
                 all_active_enabled_points = np.vstack(active_enabled_points_list)
                 active_enabled_lines_array = []
@@ -394,17 +364,12 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     show_vertices=False,
                     render_lines_as_tubes=True,
                 )
-                print(f"[DEBUG draw_surfaces] Successfully added RED border for active ENABLED surfaces")
             except Exception as e:
-                print(f"[DEBUG draw_surfaces] ERROR drawing active ENABLED surfaces: {e}")
                 import traceback
                 traceback.print_exc()
-        else:
-            print(f"[DEBUG draw_surfaces] No active ENABLED surfaces to draw (active_enabled_points_list is empty)")
         
         # Zeichne aktive DISABLED Surfaces als Batch
         if active_disabled_points_list:
-            print(f"[DEBUG draw_surfaces] Drawing {len(active_disabled_points_list)} active DISABLED surfaces with RED border")
             try:
                 all_active_disabled_points = np.vstack(active_disabled_points_list)
                 active_disabled_lines_array = []
@@ -433,13 +398,9 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     show_vertices=False,
                     render_lines_as_tubes=True,
                 )
-                print(f"[DEBUG draw_surfaces] Successfully added RED border for active DISABLED surfaces")
             except Exception as e:
-                print(f"[DEBUG draw_surfaces] ERROR drawing active DISABLED surfaces: {e}")
                 import traceback
                 traceback.print_exc()
-        else:
-            print(f"[DEBUG draw_surfaces] No active DISABLED surfaces to draw (active_disabled_points_list is empty)")
         
         # Zeichne Fläche für enabled Surfaces NUR wenn create_empty_plot_surfaces=True
         if create_empty_plot_surfaces:
@@ -540,7 +501,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     triangulation_success = False
                     if triangles and len(triangles) > 0:
                         # Triangulation erfolgreich: Verwende Dreiecke
-                        print(f"[DEBUG draw_surfaces] Trianguliere ungültige Surface: {len(triangles)} Dreiecke")
                         for tri in triangles:
                             # Finde Indizes der Punkte im points_array
                             tri_indices = []
@@ -600,9 +560,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     if actor_name not in self.overlay_actor_names:
                         self.overlay_actor_names.append(actor_name)
                     self._category_actors.setdefault('surfaces', []).append(actor_name)
-                    print(f"[DEBUG draw_surfaces] Ungültige enabled Surfaces gezeichnet: {len(invalid_enabled_points_list)} Flächen, {len(all_invalid_faces) // 4 if all_invalid_faces else 0} Faces")
             except Exception as e:
-                print(f"[DEBUG draw_surfaces] ERROR drawing invalid enabled surfaces: {e}")
                 import traceback
                 traceback.print_exc()
         

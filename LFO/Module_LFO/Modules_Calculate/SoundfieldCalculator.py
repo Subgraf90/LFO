@@ -146,13 +146,6 @@ class SoundFieldCalculator(ModuleBase):
         if missing_ids:
             print(f"⚠️  [SoundFieldCalculator] {len(missing_ids)} Surface(s) wurden beim Grid-Generieren übersprungen: {sorted(missing_ids)}")
         
-        # Debug: Zeige Orientierungen der generierten Grids
-        if DEBUG_SOUNDFIELD:
-            print(f"[DEBUG SoundFieldCalculator] Generierte Grids: {len(surface_grids_grouped)}")
-            for sid, grid in surface_grids_grouped.items():
-                orientation = getattr(grid.geometry, "orientation", None) if hasattr(grid, 'geometry') else None
-                print(f"  └─ {sid}: orientation={orientation}, shape={grid.X_grid.shape if hasattr(grid, 'X_grid') else 'N/A'}")
-        
         if not surface_grids_grouped:
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
@@ -199,14 +192,11 @@ class SoundFieldCalculator(ModuleBase):
                 head = ", ".join(f"{v:.2f}" for v in arr[:5])
                 tail = ", ".join(f"{v:.2f}" for v in arr[-5:]) if n > 5 else ""
                 mid = " ... " if n > 10 else (" | " if n > 5 else "")
-                print(f"[DEBUG GRID AXIS] {name}: len={n}, min={amin:.2f}, max={amax:.2f}")
-                if n > 0:
-                    print(f"  {name} values: {head}{mid}{tail}")
 
             _axis_summary("sound_field_x", sound_field_x)
             _axis_summary("sound_field_y", sound_field_y)
         except Exception as e:
-            print(f"[DEBUG GRID AXIS] Ausgabe fehlgeschlagen: {e}")
+            pass
         
         # Kombiniere Z-Grids und Masken aus einzelnen Surface-Grids
         from scipy.interpolate import griddata
@@ -287,13 +277,6 @@ class SoundFieldCalculator(ModuleBase):
             )
             from matplotlib.path import Path
             
-            print(f"[SoundFieldCalculator] Grid-Erstellung:")
-            print(f"  Grid shape: X_grid={X_grid.shape}, Y_grid={Y_grid.shape}, Z_grid={Z_grid.shape}")
-            print(f"  X range: [{X_grid.min():.2f}, {X_grid.max():.2f}]")
-            print(f"  Y range: [{Y_grid.min():.2f}, {Y_grid.max():.2f}]")
-            print(f"  Z range: [{Z_grid.min():.2f}, {Z_grid.max():.2f}]")
-            print(f"  Active points: {active_points} / {total_points}")
-            
             # Prüfe Z-Koordinaten für schräge Flächen
             for surface_id, surface_def in enabled_surfaces:
                 # 🎯 IDENTISCHE BEHANDLUNG: Alle Flächen werden geprüft
@@ -330,44 +313,6 @@ class SoundFieldCalculator(ModuleBase):
                 # Prüfe Z-Koordinaten
                 points_with_z = np.sum((inside) & (np.abs(Z_grid) > 1e-6))
                 points_in_surface = np.sum(inside)
-                
-                print(f"  [DEBUG Z-Grid] {surface_id} (mode={mode}):")
-                print(f"    Points in surface: {points_in_surface}, Points with Z≠0: {points_with_z}")
-                
-                if np.any(inside):
-                    # Prüfe Z-Koordinaten an Ecken
-                    corners = [
-                        (0, 0, "oben-links"),
-                        (0, X_grid.shape[1]-1, "oben-rechts"),
-                        (X_grid.shape[0]-1, 0, "unten-links"),
-                        (X_grid.shape[0]-1, X_grid.shape[1]-1, "unten-rechts"),
-                    ]
-                    for jj, ii, name in corners:
-                        if inside[jj, ii]:
-                            x_val = X_grid[jj, ii]
-                            y_val = Y_grid[jj, ii]
-                            z_val = Z_grid[jj, ii]
-                            
-                            # Berechne erwarteten Z-Wert aus Plane-Model
-                            z_expected = evaluate_surface_plane(model, x_val, y_val)
-                            
-                            print(f"    Corner {name} [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
-                    
-                    # Prüfe auch einige Punkte innerhalb der Fläche
-                    inside_indices = np.where(inside)
-                    if len(inside_indices[0]) > 0:
-                        # Wähle einige zufällige Punkte
-                        sample_indices = np.random.choice(len(inside_indices[0]), min(5, len(inside_indices[0])), replace=False)
-                        for idx in sample_indices:
-                            jj = inside_indices[0][idx]
-                            ii = inside_indices[1][idx]
-                            x_val = X_grid[jj, ii]
-                            y_val = Y_grid[jj, ii]
-                            z_val = Z_grid[jj, ii]
-                            z_expected = evaluate_surface_plane(model, x_val, y_val)
-                            print(f"    Sample [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z={z_val:.2f}, Z_expected={z_expected:.2f}, diff={abs(z_val-z_expected):.3f}")
-                else:
-                    print(f"    ⚠️  Keine Grid-Punkte innerhalb der Surface gefunden!")
         surface_meshes = []
         surface_samples = []
         # Sichtbarkeits-Occluder aus aktuellen Surface-Definitionen ableiten
@@ -781,17 +726,9 @@ class SoundFieldCalculator(ModuleBase):
         if not surface_results_buffers:
             raise ValueError("surface_results_buffers ist leer - keine Surface-Ergebnisse verfügbar")
         
-        if DEBUG_SOUNDFIELD:
-            print(f"[DEBUG surface_results] surface_results_buffers: {list(surface_results_buffers.keys())}")
         for surface_id, buffer in surface_results_buffers.items():
             # Prüfe ob Buffer nicht leer ist
             buffer_array = np.array(buffer, dtype=complex)
-            if DEBUG_SOUNDFIELD:
-                orientation = None
-                if surface_id in surface_grids_grouped:
-                    orientation = getattr(surface_grids_grouped[surface_id].geometry, "orientation", None)
-                non_zero_count = np.count_nonzero(np.abs(buffer_array))
-                print(f"[DEBUG surface_results] Surface '{surface_id}' (orientation={orientation}): Buffer shape={buffer_array.shape}, non-zero values={non_zero_count}/{buffer_array.size}")
             surface_results_data[surface_id] = {
                 'sound_field_p': buffer_array.tolist(),
             }
@@ -1522,12 +1459,6 @@ class SoundFieldCalculator(ModuleBase):
         sound_field_p = np.zeros((ny, nx), dtype=complex)
         array_fields = {} if capture_arrays else None
         
-        # 🎯 DEBUG: Einheitliche Ausgabe für alle Orientierungen
-        if DEBUG_SOUNDFIELD:
-            print(f"  └─ [Berechnung] Starte Berechnung für '{surface_id}' (Orientation: {orientation})")
-            print(f"  └─ [Berechnung] Grid-Punkte: {ny}×{nx} = {ny*nx} Punkte")
-            print(f"  └─ [Berechnung] Aktive Punkte (in Maske): {np.count_nonzero(surface_mask)}")
-        
         # Extrahiere physikalische Konstanten (bereits berechnet)
         speed_of_sound = phys_constants['speed_of_sound']
         wave_number = phys_constants['wave_number']
@@ -1666,14 +1597,6 @@ class SoundFieldCalculator(ModuleBase):
             if capture_arrays and array_wave is not None:
                 array_fields[array_key] = array_wave
         
-        # 🎯 DEBUG: Einheitliche Zusammenfassung für alle Flächen
-        if DEBUG_SOUNDFIELD:
-            calculated_points = np.count_nonzero(np.abs(sound_field_p))
-            calculated_in_mask = np.count_nonzero(np.abs(sound_field_p[surface_mask]))
-            print(f"  └─ [Berechnung] ✅ Berechnung abgeschlossen (Orientation: {orientation})")
-            print(f"  └─ [Berechnung] Berechnete Punkte: {calculated_points}/{sound_field_p.size} (gesamt)")
-            print(f"  └─ [Berechnung] Berechnete Punkte in Maske: {calculated_in_mask}/{np.count_nonzero(surface_mask)} (in Surface)")
-
         return sound_field_p, array_fields
     
     def _create_extended_mask(self, surface_mask: np.ndarray) -> np.ndarray:

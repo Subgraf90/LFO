@@ -5506,29 +5506,26 @@ class Sources(ModuleBase, QObject):
         
         # Erstelle Checkboxen, falls sie nicht existieren
         if not mute_checkbox:
-            mute_checkbox = self.create_checkbox(False, tristate=False)
+            mute_checkbox = self.create_checkbox(False, tristate=True)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
-            print(f"[DEBUG ensure_group_checkboxes] Verbinde Signal für neue Mute-Checkbox: item={item}")
             mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
             self.sources_tree_widget.setItemWidget(item, 1, mute_checkbox)
-            print(f"[DEBUG ensure_group_checkboxes] Signal verbunden, Checkbox gesetzt")
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             mute_checkbox.setFixedSize(18, 18)
-            if mute_checkbox.isTristate():
-                mute_checkbox.setTristate(False)
+            # Stelle sicher, dass tristate aktiviert ist
+            if not mute_checkbox.isTristate():
+                mute_checkbox.setTristate(True)
             # Prüfe, ob Signal bereits verbunden ist
             receivers = mute_checkbox.receivers(mute_checkbox.stateChanged)
-            print(f"[DEBUG ensure_group_checkboxes] Mute-Checkbox existiert bereits: receivers={receivers}")
             if receivers == 0:
-                print(f"[DEBUG ensure_group_checkboxes] ⚠️ Signal nicht verbunden - verbinde jetzt")
                 mute_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_mute_changed(g_item, state))
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 1)
         
         if not hide_checkbox:
-            hide_checkbox = self.create_checkbox(False, tristate=False)
+            hide_checkbox = self.create_checkbox(False, tristate=True)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 2)
             hide_checkbox.stateChanged.connect(lambda state, g_item=item: self.on_group_hide_changed(g_item, state))
@@ -5536,8 +5533,9 @@ class Sources(ModuleBase, QObject):
         else:
             # Stelle sicher, dass die Checkbox die richtige Größe hat
             hide_checkbox.setFixedSize(18, 18)
-            if hide_checkbox.isTristate():
-                hide_checkbox.setTristate(False)
+            # Stelle sicher, dass tristate aktiviert ist
+            if not hide_checkbox.isTristate():
+                hide_checkbox.setTristate(True)
             # Aktualisiere Checkbox-Zustand basierend auf Child-Items
             self._update_group_checkbox_state(item, 2)
     
@@ -5620,7 +5618,7 @@ class Sources(ModuleBase, QObject):
     def _update_group_checkbox_state(self, group_item, column):
         """
         Aktualisiert den Zustand einer Gruppen-Checkbox basierend auf den Child-Items.
-        Zeigt nur Checked oder Unchecked; gemischte Zustände werden als Unchecked dargestellt.
+        Setzt PartiallyChecked (Klammer), wenn einige Child-Items checked und andere unchecked sind.
         Rekursiv für Untergruppen.
         
         Args:
@@ -5633,6 +5631,10 @@ class Sources(ModuleBase, QObject):
         checkbox = self.sources_tree_widget.itemWidget(group_item, column)
         if not checkbox:
             return
+        
+        # Stelle sicher, dass die Checkbox tristate aktiviert hat
+        if not checkbox.isTristate():
+            checkbox.setTristate(True)
         
         # Sammle alle Child-Checkboxen (rekursiv für Untergruppen)
         checked_count = 0
@@ -5648,9 +5650,14 @@ class Sources(ModuleBase, QObject):
                 
                 if child_checkbox:
                     total_count += 1
-                    if child_checkbox.isChecked():
+                    child_state = child_checkbox.checkState()
+                    if child_state == Qt.Checked:
                         checked_count += 1
-                    else:
+                    elif child_state == Qt.Unchecked:
+                        unchecked_count += 1
+                    elif child_state == Qt.PartiallyChecked:
+                        # PartiallyChecked bedeutet gemischter Zustand -> zählt als beide
+                        checked_count += 1
                         unchecked_count += 1
                 
                 # Rekursiv für Untergruppen
@@ -5667,9 +5674,12 @@ class Sources(ModuleBase, QObject):
         elif checked_count == total_count:
             # Alle Child-Items sind checked
             checkbox.setCheckState(Qt.Checked)
-        else:
-            # Gemischter Zustand oder mindestens ein unchecked -> Unchecked
+        elif checked_count == 0:
+            # Alle Child-Items sind unchecked
             checkbox.setCheckState(Qt.Unchecked)
+        else:
+            # Gemischter Zustand: Einige checked, einige unchecked -> PartiallyChecked
+            checkbox.setCheckState(Qt.PartiallyChecked)
         checkbox.blockSignals(False)
     
     def validate_all_checkboxes(self):
@@ -5776,9 +5786,9 @@ class Sources(ModuleBase, QObject):
         group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
         self._apply_group_item_style(group_item)
         
-        # Erstelle Checkboxen für die Gruppe
-        mute_checkbox = self.create_checkbox(False)
-        hide_checkbox = self.create_checkbox(False)
+        # Erstelle Checkboxen für die Gruppe (mit tristate)
+        mute_checkbox = self.create_checkbox(False, tristate=True)
+        hide_checkbox = self.create_checkbox(False, tristate=True)
         
         # Verbinde Checkboxen mit Handler
         mute_checkbox.stateChanged.connect(lambda state, g_item=group_item: self.on_group_mute_changed(g_item, state))
@@ -5786,6 +5796,10 @@ class Sources(ModuleBase, QObject):
         
         self.sources_tree_widget.setItemWidget(group_item, 1, mute_checkbox)
         self.sources_tree_widget.setItemWidget(group_item, 2, hide_checkbox)
+        
+        # Aktualisiere Checkbox-Zustand basierend auf Child-Items (falls vorhanden)
+        self._update_group_checkbox_state(group_item, 1)
+        self._update_group_checkbox_state(group_item, 2)
         
         # Kein Farb-Quadrat für Gruppen
         group_item.setExpanded(True)
@@ -5943,9 +5957,9 @@ class Sources(ModuleBase, QObject):
             new_group_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
             self._apply_group_item_style(new_group_item)
             
-            # Erstelle Checkboxen für neue Gruppe
-            new_mute_checkbox = self.create_checkbox(group_mute)
-            new_hide_checkbox = self.create_checkbox(group_hide)
+            # Erstelle Checkboxen für neue Gruppe (mit tristate)
+            new_mute_checkbox = self.create_checkbox(group_mute, tristate=True)
+            new_hide_checkbox = self.create_checkbox(group_hide, tristate=True)
             
             # Verbinde Checkboxen
             new_mute_checkbox.stateChanged.connect(lambda state, g_item=new_group_item: self.on_group_mute_changed(g_item, state))
@@ -5953,6 +5967,10 @@ class Sources(ModuleBase, QObject):
             
             self.sources_tree_widget.setItemWidget(new_group_item, 1, new_mute_checkbox)
             self.sources_tree_widget.setItemWidget(new_group_item, 2, new_hide_checkbox)
+            
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(new_group_item, 1)
+            self._update_group_checkbox_state(new_group_item, 2)
             
             # Füge alle duplizierten Items zur neuen Gruppe hinzu (BEVOR die Gruppe eingefügt wird)
             for array_item in duplicated_items:
@@ -6098,7 +6116,11 @@ class Sources(ModuleBase, QObject):
             print(f"[DEBUG on_group_mute_changed] group_item ist None - beende")
             return
         
-        mute_value = (state == Qt.Checked)
+        # Wenn PartiallyChecked geklickt wird, setze auf Checked (alle aktivieren)
+        if state == Qt.PartiallyChecked:
+            mute_value = True
+        else:
+            mute_value = (state == Qt.Checked)
         print(f"[DEBUG on_group_mute_changed] mute_value={mute_value}")
         
         # Prüfe, ob mehrere Items ausgewählt sind
@@ -6153,7 +6175,11 @@ class Sources(ModuleBase, QObject):
         if not group_item:
             return
         
-        hide_value = (state == Qt.Checked)
+        # Wenn PartiallyChecked geklickt wird, setze auf Checked (alle verstecken)
+        if state == Qt.PartiallyChecked:
+            hide_value = True
+        else:
+            hide_value = (state == Qt.Checked)
         
         # Prüfe, ob mehrere Items ausgewählt sind
         selected_items = self.sources_tree_widget.selectedItems()

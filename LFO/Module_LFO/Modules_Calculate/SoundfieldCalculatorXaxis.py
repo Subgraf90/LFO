@@ -253,13 +253,9 @@ class SoundFieldCalculatorXaxis(ModuleBase):
     def calculateXAxis(self):
         resolution = 0.1  # 10cm Auflösung
         position_y = self.settings.position_y_axis
-        
-        print(f"[DEBUG SoundFieldCalculatorXaxis] calculateXAxis() aufgerufen, position_y={position_y}")
-        
         # Prüfe ob aktive Surfaces vorhanden sind, die die Linie y=position_y schneiden
         # Berücksichtige nur Surfaces mit xy_enabled=True, enabled=True, hidden=False
         active_surfaces = self._get_active_xy_surfaces()
-        print(f"[DEBUG SoundFieldCalculatorXaxis] Aktive Surfaces gefunden: {len(active_surfaces)}")
         all_x_coords = []
         all_z_coords = []
         used_surfaces = []
@@ -272,11 +268,6 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             
             # Verwende aktualisierte Surface-Definition, falls vorhanden
             surface_to_use = current_surface if current_surface is not None else surface
-            if current_surface is not None:
-                print(f"[DEBUG SoundFieldCalculatorXaxis] Surface '{surface_id}': Verwende aktualisierte Surface-Definition aus settings")
-            else:
-                print(f"[DEBUG SoundFieldCalculatorXaxis] Surface '{surface_id}': Verwende Surface aus active_surfaces (keine aktualisierte Definition gefunden)")
-            
             if surface_to_use:
                 if isinstance(surface_to_use, SurfaceDefinition):
                     xy_enabled = getattr(surface_to_use, 'xy_enabled', True)
@@ -368,8 +359,6 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         is_meaningful_curve = np.isfinite(sound_field_p_calc).any()
 
         show_curve = has_active_sources and is_meaningful_curve
-        print(f"[DEBUG SoundFieldCalculatorXaxis] show_curve={show_curve} (has_active_sources={has_active_sources}, is_meaningful_curve={is_meaningful_curve}), Daten len={len(sound_field_p_calc) if sound_field_p_calc is not None else 0}")
-
         # Finde Segment-Grenzen (Anfang und Ende jedes Segments) für gestrichelte Linien
         segment_boundaries = []
         # Prüfe ob surface_segments existiert und nicht leer ist
@@ -421,8 +410,6 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             "color": "#6A5ACD",
             "segment_boundaries_xaxis": segment_boundaries_list  # X-Positionen für vertikale Linien als Python-Liste
         }
-        print(f"[DEBUG SoundFieldCalculatorXaxis] calculation_spl['aktuelle_simulation'] gesetzt: show_in_plot={bool(show_curve)}, x_data len={len(sound_field_p_calc) if sound_field_p_calc is not None else 0}, y_data len={len(sound_field_x_xaxis_calc) if sound_field_x_xaxis_calc is not None else 0}")
-      
     def get_balloon_data_batch(self, speaker_name, azimuths, elevations, use_averaged=True):
         """
         🚀 BATCH-OPTIMIERT: Holt Balloon-Daten für VIELE Winkel auf einmal

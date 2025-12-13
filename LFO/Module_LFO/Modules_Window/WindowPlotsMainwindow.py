@@ -701,22 +701,13 @@ class DrawPlotsMainwindow(ModuleBase):
                 isinstance(surface_results_data, dict) and len(surface_results_data) > 0
             )
         
-        # 🎯 DEBUG: Prüfe warum has_data False sein könnte
-        print(f"[DEBUG plot_spl] has_data={has_data}, has_surface_data={has_surface_data}, time_mode_enabled={time_mode_enabled}")
         if not has_data and isinstance(calc_spl, dict):
-            print(f"[DEBUG plot_spl] calc_spl Keys: {list(calc_spl.keys())}")
-            print(f"[DEBUG plot_spl] sound_field_x vorhanden: {'sound_field_x' in calc_spl}, len={len(calc_spl.get('sound_field_x', []))}")
-            print(f"[DEBUG plot_spl] sound_field_y vorhanden: {'sound_field_y' in calc_spl}, len={len(calc_spl.get('sound_field_y', []))}")
-            print(f"[DEBUG plot_spl] {field_key} vorhanden: {field_key in calc_spl}, len={len(calc_spl.get(field_key, []))}")
             if field_key in calc_spl:
                 field_data = calc_spl[field_key]
                 is_empty = self._is_empty_data(field_data, allow_all_zero=allow_zero_phase)
-                print(f"[DEBUG plot_spl] {field_key} is_empty: {is_empty}")
             # Prüfe ob surface_grids_data vorhanden ist (für vertikale Flächen)
             surface_grids_data = calc_spl.get('surface_grids', {})
             surface_results_data = calc_spl.get('surface_results', {})
-            print(f"[DEBUG plot_spl] surface_grids_data vorhanden: {bool(surface_grids_data)}, Keys: {list(surface_grids_data.keys()) if isinstance(surface_grids_data, dict) else 'N/A'}")
-            print(f"[DEBUG plot_spl] surface_results_data vorhanden: {bool(surface_results_data)}, Keys: {list(surface_results_data.keys()) if isinstance(surface_results_data, dict) else 'N/A'}")
         
         # 🎯 WICHTIG: Wenn keine globalen Daten vorhanden sind, aber Surface-Daten existieren,
         # sollten wir trotzdem plotten (z.B. für vertikale Flächen)
@@ -761,13 +752,11 @@ class DrawPlotsMainwindow(ModuleBase):
                 sound_field_x = np.array([-1.0, 1.0])
                 sound_field_y = np.array([-1.0, 1.0])
                 sound_field_values = np.array([[0.0, 0.0], [0.0, 0.0]])
-                print(f"[DEBUG plot_spl] Verwende Dummy-Daten für globale Koordinaten (nur Surface-Daten vorhanden)")
             else:
                 # Sollte nicht erreicht werden, da wir bereits oben return haben
                 return
 
         # 3D-Plot aktualisieren
-        print(f"[DEBUG plot_spl] Rufe update_spl_plot auf (has_data={has_data}, has_surface_data={has_surface_data})")
         draw_spl_plotter.update_spl_plot(
             sound_field_x,
             sound_field_y,
@@ -869,12 +858,10 @@ class DrawPlotsMainwindow(ModuleBase):
         show_in_plot = aktuelle_simulation.get("show_in_plot", False)
         x_data = aktuelle_simulation.get("x_data_xaxis", [])
         y_data = aktuelle_simulation.get("y_data_xaxis", [])
-        print(f"[DEBUG WindowPlotsMainwindow.plot_xaxis] show_in_plot={show_in_plot}, x_data len={len(x_data) if x_data is not None else 0}, y_data len={len(y_data) if y_data is not None else 0}")
         self.draw_spl_plot_xaxis.plot_xaxis(calculation_axes)
 
         # Aktualisieren des Plots
         self.matplotlib_canvas_xaxis.draw()
-        print(f"[DEBUG WindowPlotsMainwindow.plot_xaxis] Plot aktualisiert")
 
     def plot_yaxis(self):
         # Aufrufen der plot_yaxis Methode von DrawSPLPlot_Yaxis
@@ -883,12 +870,10 @@ class DrawPlotsMainwindow(ModuleBase):
         show_in_plot = aktuelle_simulation.get("show_in_plot", False)
         x_data = aktuelle_simulation.get("x_data_yaxis", [])
         y_data = aktuelle_simulation.get("y_data_yaxis", [])
-        print(f"[DEBUG WindowPlotsMainwindow.plot_yaxis] show_in_plot={show_in_plot}, x_data len={len(x_data) if x_data is not None else 0}, y_data len={len(y_data) if y_data is not None else 0}")
         self.draw_spl_plot_yaxis.plot_yaxis(calculation_axes)
 
         # Aktualisieren des Plots
         self.matplotlib_canvas_yaxis.draw()
-        print(f"[DEBUG WindowPlotsMainwindow.plot_yaxis] Plot aktualisiert")
 
     def plot_polar_pattern(self):
         polar_data = self.container.get_polar_data()

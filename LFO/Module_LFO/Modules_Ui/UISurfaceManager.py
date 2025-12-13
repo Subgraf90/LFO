@@ -1478,7 +1478,6 @@ class UISurfaceManager(ModuleBase):
             group_id = group_id_data.get("id")
         else:
             group_id = group_id_data
-        print(f"[DEBUG _update_group_child_checkboxes] Gruppe '{group_id}': column={column}, checked={checked}, update_data={update_data}, childCount={group_item.childCount()}")
         
         for i in range(group_item.childCount()):
             child = group_item.child(i)
@@ -1493,8 +1492,6 @@ class UISurfaceManager(ModuleBase):
                 else:
                     surface_id = surface_id_data
                 
-                print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}' (column={column}): checkbox vorhanden={checkbox is not None}, update_data={update_data}, checked={checked}")
-                
                 # 🎯 WICHTIG: Stelle sicher, dass Checkbox existiert, bevor wir sie setzen
                 # Wenn Surface in einer Gruppe ist, hat es keine Checkbox (wird in ensure_surface_checkboxes entfernt)
                 # Aber wenn Surface später aus Gruppe entfernt wird, sollte die Checkbox erstellt werden
@@ -1505,7 +1502,6 @@ class UISurfaceManager(ModuleBase):
                     
                     if not is_in_group and not checkbox:
                         # Surface ist nicht in einer Gruppe, aber Checkbox fehlt - erstelle sie
-                        print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Checkbox fehlt, erstelle sie (column={column})")
                         self.ensure_surface_checkboxes(child)
                         checkbox = self.surface_tree_widget.itemWidget(child, column)
                     
@@ -1515,29 +1511,21 @@ class UISurfaceManager(ModuleBase):
                         # Verwende setCheckState für tristate-Checkboxen
                         checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                         checkbox.blockSignals(False)
-                        print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Checkbox auf {checked} gesetzt")
                 
                 # Aktualisiere Surface-Daten durch Aufruf des entsprechenden Handlers
                 # (wird auch ausgeführt, wenn keine Checkbox vorhanden ist, da Surface in Gruppe ist)
                 if update_data and surface_id:
                     state = Qt.Checked if checked else Qt.Unchecked
-                    print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Rufe Handler auf (column={column}, state={state})")
                     if column == 1:  # Enable
                         self.on_surface_enable_changed(surface_id, state, skip_calculations=skip_calculations)
                     elif column == 2:  # Hide
                         self.on_surface_hide_changed(surface_id, state, skip_calculations=skip_calculations)
                     elif column == 3:  # XY
                         self.on_surface_xy_changed(surface_id, state, skip_calculations=skip_calculations)
-                    print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': Handler aufgerufen")
-                elif not update_data:
-                    print(f"[DEBUG _update_group_child_checkboxes] Surface '{surface_id}': update_data=False - überspringe Datenaktualisierung")
-                elif not surface_id:
-                    print(f"[DEBUG _update_group_child_checkboxes] Surface: surface_id ist None - überspringe")
             elif child_type == "group":
                 # Gruppe: Aktualisiere Checkbox (Gruppen behalten immer ihre Checkboxen)
                 # 🎯 WICHTIG: Stelle sicher, dass Checkbox existiert
                 if not checkbox:
-                    print(f"[DEBUG _update_group_child_checkboxes] Verschachtelte Gruppe: Checkbox fehlt, erstelle sie (column={column})")
                     self.ensure_group_checkboxes(child)
                     checkbox = self.surface_tree_widget.itemWidget(child, column)
                 
@@ -1546,7 +1534,6 @@ class UISurfaceManager(ModuleBase):
                     # Verwende setCheckState für tristate-Checkboxen
                     checkbox.setCheckState(Qt.Checked if checked else Qt.Unchecked)
                     checkbox.blockSignals(False)
-                    print(f"[DEBUG _update_group_child_checkboxes] Verschachtelte Gruppe: Checkbox auf {checked} gesetzt")
                 
                 # Aktualisiere Gruppen-Daten durch Aufruf des entsprechenden Handlers
                 # (übergeordnete Gruppe kann untergeordnete Gruppe steuern)
@@ -2541,7 +2528,6 @@ class UISurfaceManager(ModuleBase):
             group_id = group_id_data.get("id")
         else:
             group_id = group_id_data
-        print(f"[DEBUG on_group_hide_changed] Gruppe '{group_id}': hide_value={hide_value}, childCount={group_item.childCount()}")
         
         # Prüfe, ob mehrere Items ausgewählt sind
         selected_items = self.surface_tree_widget.selectedItems()
