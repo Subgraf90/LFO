@@ -1377,8 +1377,9 @@ class UISurfaceManager(ModuleBase):
     def ensure_group_checkboxes(self, item):
         """Stellt sicher, dass Checkboxen für ein Gruppen-Item existieren"""
         # Enable Checkbox (Spalte 1) - mit Tristate für teilweise aktivierte Gruppen
-        if self.surface_tree_widget.itemWidget(item, 1) is None:
-            enable_checkbox = self.create_checkbox(tristate=False)
+        enable_checkbox = self.surface_tree_widget.itemWidget(item, 1)
+        if enable_checkbox is None:
+            enable_checkbox = self.create_checkbox(tristate=True)
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen Enable-Status
@@ -1394,10 +1395,17 @@ class UISurfaceManager(ModuleBase):
                 lambda state, g_item=item: self.on_group_enable_changed(g_item, state)
             )
             self.surface_tree_widget.setItemWidget(item, 1, enable_checkbox)
+        else:
+            # Stelle sicher, dass bestehende Checkbox tristate aktiviert hat
+            if not enable_checkbox.isTristate():
+                enable_checkbox.setTristate(True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 1)
         
         # Hide Checkbox (Spalte 2) - mit Tristate für teilweise aktivierte Gruppen
-        if self.surface_tree_widget.itemWidget(item, 2) is None:
-            hide_checkbox = self.create_checkbox(tristate=False)
+        hide_checkbox = self.surface_tree_widget.itemWidget(item, 2)
+        if hide_checkbox is None:
+            hide_checkbox = self.create_checkbox(tristate=True)
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen Hide-Status
@@ -1413,10 +1421,17 @@ class UISurfaceManager(ModuleBase):
                 lambda state, g_item=item: self.on_group_hide_changed(g_item, state)
             )
             self.surface_tree_widget.setItemWidget(item, 2, hide_checkbox)
+        else:
+            # Stelle sicher, dass bestehende Checkbox tristate aktiviert hat
+            if not hide_checkbox.isTristate():
+                hide_checkbox.setTristate(True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 2)
         
         # XY Checkbox (Spalte 3) - mit Tristate für teilweise aktivierte Gruppen
-        if self.surface_tree_widget.itemWidget(item, 3) is None:
-            xy_checkbox = self.create_checkbox(tristate=False)
+        xy_checkbox = self.surface_tree_widget.itemWidget(item, 3)
+        if xy_checkbox is None:
+            xy_checkbox = self.create_checkbox(tristate=True)
             group_id = item.data(0, Qt.UserRole)
             
             # Lade aktuellen XY-Status (falls vorhanden)
@@ -1436,6 +1451,12 @@ class UISurfaceManager(ModuleBase):
                 lambda state, g_item=item: self.on_group_xy_changed(g_item, state)
             )
             self.surface_tree_widget.setItemWidget(item, 3, xy_checkbox)
+        else:
+            # Stelle sicher, dass bestehende Checkbox tristate aktiviert hat
+            if not xy_checkbox.isTristate():
+                xy_checkbox.setTristate(True)
+            # Aktualisiere Checkbox-Zustand basierend auf Child-Items
+            self._update_group_checkbox_state(item, 3)
     
     def _update_group_child_checkboxes(self, group_item, column, checked, update_data=True, skip_calculations=False, skip_state_update=False):
         """
@@ -1691,9 +1712,12 @@ class UISurfaceManager(ModuleBase):
         elif checked_count == total_count:
             # Alle Child-Items sind checked
             checkbox.setCheckState(Qt.Checked)
-        else:
-            # Mindestens ein Child ist unchecked -> gesamter Zustand unchecked
+        elif checked_count == 0:
+            # Alle Child-Items sind unchecked
             checkbox.setCheckState(Qt.Unchecked)
+        else:
+            # Gemischter Zustand: Einige checked, einige unchecked -> PartiallyChecked
+            checkbox.setCheckState(Qt.PartiallyChecked)
         checkbox.blockSignals(False)
     
     def create_checkbox(self, checked=False, tristate=False):
@@ -2418,7 +2442,11 @@ class UISurfaceManager(ModuleBase):
     
     def on_group_enable_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
-        enable_value = (state == Qt.Checked)
+        # Wenn PartiallyChecked geklickt wird, setze auf Checked (alle aktivieren)
+        if state == Qt.PartiallyChecked:
+            enable_value = True
+        else:
+            enable_value = (state == Qt.Checked)
         group_id_data = group_item.data(0, Qt.UserRole)
         if isinstance(group_id_data, dict):
             group_id = group_id_data.get("id")
@@ -2493,7 +2521,11 @@ class UISurfaceManager(ModuleBase):
     
     def on_group_hide_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
-        hide_value = (state == Qt.Checked)
+        # Wenn PartiallyChecked geklickt wird, setze auf Checked (alle verstecken)
+        if state == Qt.PartiallyChecked:
+            hide_value = True
+        else:
+            hide_value = (state == Qt.Checked)
         group_id_data = group_item.data(0, Qt.UserRole)
         if isinstance(group_id_data, dict):
             group_id = group_id_data.get("id")
@@ -2573,7 +2605,11 @@ class UISurfaceManager(ModuleBase):
     def on_group_xy_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der XY-Status einer Gruppe ändert"""
         group_id = group_item.data(0, Qt.UserRole)
-        checked = (state == Qt.Checked)
+        # Wenn PartiallyChecked geklickt wird, setze auf Checked (alle aktivieren)
+        if state == Qt.PartiallyChecked:
+            checked = True
+        else:
+            checked = (state == Qt.Checked)
         print(f"[DEBUG on_group_xy_changed] Gruppe '{group_id}': checked={checked}, childCount={group_item.childCount()}")
         
         # Setze Gruppen-Checkbox explizit auf den neuen Zustand

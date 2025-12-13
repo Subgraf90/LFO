@@ -324,11 +324,33 @@ class SurfaceAnalyzer(ModuleBase):
                 x_span = float(np.ptp(coords[:, 0]))
                 y_span = float(np.ptp(coords[:, 1]))
                 z_span = float(np.ptp(coords[:, 2]))
+                
+                # 🎯 VERBESSERTE ERKENNUNG: Prüfe Varianz statt nur Spanne
+                x_var = float(np.var(coords[:, 0]))
+                y_var = float(np.var(coords[:, 1]))
+                z_var = float(np.var(coords[:, 2]))
+                max_var = max(x_var, y_var, z_var)
+                if max_var > 1e-12:
+                    x_var_rel = x_var / max_var
+                    y_var_rel = y_var / max_var
+                else:
+                    x_var_rel = 0.0
+                    y_var_rel = 0.0
+                
                 dominant_axis = None
                 if z_span > max(x_span, y_span) * 0.7:
-                    if x_span < y_span * 0.3:
+                    # 🎯 VERBESSERTE BEDINGUNG: Prüfe ob X oder Y wirklich konstant ist
+                    eps_constant = 1e-6
+                    x_is_constant = (x_span < eps_constant) or (x_var_rel < 0.01)
+                    y_is_constant = (y_span < eps_constant) or (y_var_rel < 0.01)
+                    
+                    if x_is_constant and not y_is_constant:
+                        dominant_axis = "yz"  # Y-Z-Wand (X ist konstant)
+                    elif y_is_constant and not x_is_constant:
+                        dominant_axis = "xz"  # X-Z-Wand (Y ist konstant)
+                    elif x_span < y_span * 0.2 and x_var_rel < y_var_rel * 0.1:
                         dominant_axis = "yz"
-                    elif y_span < x_span * 0.3:
+                    elif y_span < x_span * 0.2 and y_var_rel < x_var_rel * 0.1:
                         dominant_axis = "xz"
                 
                 return {
@@ -400,13 +422,41 @@ class SurfaceAnalyzer(ModuleBase):
             y_span = float(np.ptp(coords[:, 1]))
             z_span = float(np.ptp(coords[:, 2]))
             
+            # 🎯 VERBESSERTE ERKENNUNG: Prüfe Varianz statt nur Spanne
+            # Für eine Y-Z-Wand sollte X konstant sein (geringe Varianz)
+            # Für eine X-Z-Wand sollte Y konstant sein (geringe Varianz)
+            x_var = float(np.var(coords[:, 0]))
+            y_var = float(np.var(coords[:, 1]))
+            z_var = float(np.var(coords[:, 2]))
+            
+            # Relative Varianz (normalisiert zur größten Varianz)
+            max_var = max(x_var, y_var, z_var)
+            if max_var > 1e-12:
+                x_var_rel = x_var / max_var
+                y_var_rel = y_var / max_var
+            else:
+                x_var_rel = 0.0
+                y_var_rel = 0.0
+            
             dominant_axis = None
             if z_span > max(x_span, y_span) * 0.7:
                 # Z variiert am meisten → vertikal
-                if x_span < y_span * 0.3:
-                    dominant_axis = "yz"  # Y-Z-Wand
-                elif y_span < x_span * 0.3:
-                    dominant_axis = "xz"  # X-Z-Wand
+                # 🎯 VERBESSERTE BEDINGUNG: Prüfe ob X oder Y wirklich konstant ist
+                # Verwende sowohl Spanne als auch Varianz für robustere Erkennung
+                eps_constant = 1e-6
+                x_is_constant = (x_span < eps_constant) or (x_var_rel < 0.01)
+                y_is_constant = (y_span < eps_constant) or (y_var_rel < 0.01)
+                
+                if x_is_constant and not y_is_constant:
+                    dominant_axis = "yz"  # Y-Z-Wand (X ist konstant)
+                elif y_is_constant and not x_is_constant:
+                    dominant_axis = "xz"  # X-Z-Wand (Y ist konstant)
+                elif x_span < y_span * 0.2 and x_var_rel < y_var_rel * 0.1:
+                    # X variiert deutlich weniger als Y → Y-Z-Wand
+                    dominant_axis = "yz"
+                elif y_span < x_span * 0.2 and y_var_rel < x_var_rel * 0.1:
+                    # Y variiert deutlich weniger als X → X-Z-Wand
+                    dominant_axis = "xz"
             
             return {
                 "vertical_score": float(vertical_score),
@@ -586,29 +636,86 @@ class SurfaceAnalyzer(ModuleBase):
             if pca_dominant_axis:
                 dominant_axis = pca_dominant_axis
             else:
-                # Fallback: Bestimme dominante Achse basierend auf Spannen-Analyse
-                # (kein stiller Fallback - wird verwendet wenn PCA keine Achse liefert)
+                # Fallback: Bestimme dominante Achse basierend auf verbesserter Analyse
+                # 🎯 VERBESSERTE ERKENNUNG: Prüfe Varianz statt nur Spanne
+                x_var = float(np.var(xs))
+                y_var = float(np.var(ys))
+                z_var = float(np.var(zs))
+                max_var = max(x_var, y_var, z_var)
+                if max_var > 1e-12:
+                    x_var_rel = x_var / max_var
+                    y_var_rel = y_var / max_var
+                else:
+                    x_var_rel = 0.0
+                    y_var_rel = 0.0
+                
                 eps_line = 1e-6
-                if y_span < eps_line and x_span >= eps_line:
-                    dominant_axis = "xz"  # X-Z-Wand
-                elif x_span < eps_line and y_span >= eps_line:
-                    dominant_axis = "yz"  # Y-Z-Wand
+                eps_constant = 1e-6
+                
+                # Prüfe ob X oder Y wirklich konstant ist
+                x_is_constant = (x_span < eps_constant) or (x_var_rel < 0.01)
+                y_is_constant = (y_span < eps_constant) or (y_var_rel < 0.01)
+                
+                if y_is_constant and not x_is_constant:
+                    dominant_axis = "xz"  # X-Z-Wand (Y ist konstant)
+                elif x_is_constant and not y_is_constant:
+                    dominant_axis = "yz"  # Y-Z-Wand (X ist konstant)
                 elif z_span > max(x_span, y_span) * 0.7:
-                    # Bestimme welche Achse (X oder Y) weniger variiert
-                    if x_span < y_span * 0.5:
+                    # Bestimme welche Achse (X oder Y) deutlich weniger variiert
+                    # Verwende sowohl Spanne als auch Varianz
+                    if x_span < y_span * 0.2 and x_var_rel < y_var_rel * 0.1:
                         dominant_axis = "yz"
-                    elif y_span < x_span * 0.5:
+                    elif y_span < x_span * 0.2 and y_var_rel < x_var_rel * 0.1:
                         dominant_axis = "xz"
                 
                 if dominant_axis is None:
-                    # Letzter Fallback: Verwende die Achse mit der kleinsten Spanne
-                    if x_span < y_span:
-                        dominant_axis = "yz"
+                    # Letzter Fallback: Verwende die Achse mit der kleinsten Spanne UND Varianz
+                    # 🎯 VERSCHÄRFTE BEDINGUNG: Nur wenn die Differenz signifikant ist (>30%)
+                    span_ratio = min(x_span, y_span) / max(x_span, y_span) if max(x_span, y_span) > 1e-6 else 1.0
+                    var_ratio = min(x_var_rel, y_var_rel) / max(x_var_rel, y_var_rel) if max(x_var_rel, y_var_rel) > 1e-12 else 1.0
+                    
+                    # Nur wenn eine Achse deutlich kleiner ist (weniger als 70% der anderen)
+                    if span_ratio < 0.7 and var_ratio < 0.7:
+                        if x_span < y_span and x_var_rel < y_var_rel:
+                            dominant_axis = "yz"
+                        elif y_span < x_span and y_var_rel < x_var_rel:
+                            dominant_axis = "xz"
+                    # Wenn keine Achse deutlich kleiner ist, prüfe Kollinearität
                     else:
-                        dominant_axis = "xz"
+                        # Prüfe ob Punkte in (x,z)-Ebene kollinear sind
+                        coords_xz = np.column_stack([xs, zs])
+                        if len(coords_xz) >= 3:
+                            # Berechne Varianz in (x,z)-Ebene (Determinante der Kovarianzmatrix)
+                            cov_xz = np.cov(coords_xz.T)
+                            det_cov = np.linalg.det(cov_xz)
+                            # Wenn Determinante sehr klein, sind Punkte fast kollinear
+                            if det_cov < 1e-10:
+                                # Punkte sind kollinear in (x,z) → verwende Y-Z-Wand (X interpoliert aus (y,z))
+                                dominant_axis = "yz"
+                            else:
+                                # Prüfe ob Punkte in (y,z)-Ebene kollinear sind
+                                coords_yz = np.column_stack([ys, zs])
+                                cov_yz = np.cov(coords_yz.T)
+                                det_cov_yz = np.linalg.det(cov_yz)
+                                if det_cov_yz < 1e-10:
+                                    # Punkte sind kollinear in (y,z) → verwende X-Z-Wand (Y interpoliert aus (x,z))
+                                    dominant_axis = "xz"
+                                else:
+                                    # Standard-Fallback: kleinere Spanne
+                                    if x_span < y_span and x_var_rel < y_var_rel:
+                                        dominant_axis = "yz"
+                                    else:
+                                        dominant_axis = "xz"
+                        else:
+                            # Standard-Fallback: kleinere Spanne
+                            if x_span < y_span and x_var_rel < y_var_rel:
+                                dominant_axis = "yz"
+                            else:
+                                dominant_axis = "xz"
                 
                 if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Ultra-Robust] ⚠️ PCA lieferte keine dominante Achse, verwende Spannen-Analyse: {dominant_axis}")
+                    print(f"[DEBUG Ultra-Robust] ⚠️ PCA lieferte keine dominante Achse, verwende verbesserte Analyse: {dominant_axis}")
+                    print(f"  └─ x_span={x_span:.3f}, y_span={y_span:.3f}, x_var_rel={x_var_rel:.6f}, y_var_rel={y_var_rel:.6f}")
         
         if DEBUG_FLEXIBLE_GRID:
             print(f"[DEBUG Ultra-Robust] Score-Analyse:")
@@ -1444,30 +1551,121 @@ class GridBuilder(ModuleBase):
                         points_surface = np.column_stack([xs, zs])
                         points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
                         
-                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere Y-Koordinaten (X-Z-Wand schräg)")
-                        print(f"  └─ Surface-Punkte: {len(points_surface)} Punkte, Y-Range: [{np.min(ys):.3f}, {np.max(ys):.3f}], Span: {np.ptp(ys):.3f}")
-                        print(f"  └─ Grid-Punkte: {len(points_grid)} Punkte")
+                        # 🎯 PRÜFE KOLLINEARITÄT: Wenn Punkte in (x,z)-Ebene fast kollinear sind, 
+                        # dann ist die Interpolation problematisch
+                        if len(points_surface) >= 3:
+                            cov_xz = np.cov(points_surface.T)
+                            det_cov = np.linalg.det(cov_xz)
+                            if det_cov < 1e-10:
+                                # Punkte sind fast kollinear in (x,z) → Interpolation wird fehlschlagen
+                                # Prüfe ob wir stattdessen X aus (y,z) interpolieren können
+                                if DEBUG_FLEXIBLE_GRID:
+                                    print(f"[DEBUG Vertical Grid] ⚠️ Surface '{geometry.surface_id}': Punkte sind fast kollinear in (x,z)-Ebene (det={det_cov:.2e})")
+                                    print(f"  └─ Prüfe ob stattdessen X aus (y,z) interpoliert werden kann...")
+                                
+                                # Prüfe ob Punkte in (y,z)-Ebene besser verteilt sind
+                                points_surface_yz = np.column_stack([ys, zs])
+                                cov_yz = np.cov(points_surface_yz.T)
+                                det_cov_yz = np.linalg.det(cov_yz)
+                                
+                                if det_cov_yz > 1e-10:
+                                    # Punkte sind besser verteilt in (y,z) → wechsle zu Y-Z-Wand
+                                    if DEBUG_FLEXIBLE_GRID:
+                                        print(f"  └─ ✅ Punkte besser verteilt in (y,z)-Ebene (det={det_cov_yz:.2e}) → wechsle zu Y-Z-Wand")
+                                    
+                                    # Wechsle zu Y-Z-Wand: X wird aus (y,z) interpoliert
+                                    u_min, u_max = float(ys.min()), float(ys.max())
+                                    v_min, v_max = float(zs.min()), float(zs.max())
+                                    
+                                    # Adaptive Resolution
+                                    width = u_max - u_min
+                                    height = v_max - v_min
+                                    nu_base = max(1, int(np.ceil(width / step)) + 1)
+                                    nv_base = max(1, int(np.ceil(height / step)) + 1)
+                                    total_points_base = nu_base * nv_base
+                                    min_total_points = min_points_per_dimension ** 2
+                                    
+                                    if total_points_base < min_total_points:
+                                        diagonal = np.sqrt(width**2 + height**2)
+                                        if diagonal > 0:
+                                            adaptive_resolution = diagonal / min_points_per_dimension
+                                            adaptive_resolution = min(adaptive_resolution, step * 0.5)
+                                            step = adaptive_resolution
+                                    
+                                    u_min -= step
+                                    u_max += step
+                                    v_min -= step
+                                    v_max += step
+                                    
+                                    u_axis = np.arange(u_min, u_max + step, step, dtype=float)
+                                    v_axis = np.arange(v_min, v_max + step, step, dtype=float)
+                                    
+                                    if u_axis.size < 2 or v_axis.size < 2:
+                                        raise ValueError(f"Vertikale Surface '{geometry.surface_id}' (schräg, y-z) liefert zu wenige Punkte in (u,v)-Ebene.")
+                                    
+                                    U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
+                                    
+                                    # Interpoliere X-Koordinaten von Surface-Punkten auf (y,z)-Grid
+                                    points_surface = np.column_stack([ys, zs])
+                                    points_grid = np.column_stack([U_grid.ravel(), V_grid.ravel()])
+                                    
+                                    if DEBUG_FLEXIBLE_GRID:
+                                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere X-Koordinaten (Y-Z-Wand schräg, nach Kollinearitäts-Prüfung)")
+                                    
+                                    X_interp = griddata(
+                                        points_surface, xs,
+                                        points_grid,
+                                        method='linear', fill_value=float(np.mean(xs))
+                                    )
+                                    X_interp = X_interp.reshape(U_grid.shape)
+                                    
+                                    # Transformiere zu (X, Y, Z) Koordinaten
+                                    X_grid = X_interp  # X interpoliert
+                                    Y_grid = U_grid  # u = y
+                                    Z_grid = V_grid  # v = z
+                                    
+                                    # sound_field_x und sound_field_y für Rückgabe
+                                    sound_field_x = u_axis  # y-Koordinaten
+                                    sound_field_y = v_axis  # z-Koordinaten
+                                    
+                                    if DEBUG_FLEXIBLE_GRID:
+                                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ X-Interpolation erfolgreich (nach Kollinearitäts-Prüfung)")
+                                    
+                                    # Überspringe den Rest des X-Z-Wand-Codes
+                                    # (return wird später gemacht)
+                                    skip_xz_wall_code = True
+                                else:
+                                    skip_xz_wall_code = False
+                            else:
+                                skip_xz_wall_code = False
+                        else:
+                            skip_xz_wall_code = False
                         
-                        Y_interp = griddata(
-                            points_surface, ys,
-                            points_grid,
-                            method='linear', fill_value=float(np.mean(ys))
-                        )
-                        print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ Linear-Interpolation erfolgreich")
-                        print(f"  └─ Y_interp Range: [{np.nanmin(Y_interp):.3f}, {np.nanmax(Y_interp):.3f}], Span: {np.nanmax(Y_interp) - np.nanmin(Y_interp):.3f}")
-                        Y_interp = Y_interp.reshape(U_grid.shape)
-                        
-                        # Transformiere zu (X, Y, Z) Koordinaten
-                        X_grid = U_grid  # u = x
-                        Y_grid = Y_interp  # Y interpoliert
-                        Z_grid = V_grid  # v = z
-                        
-                        # sound_field_x und sound_field_y für Rückgabe
-                        sound_field_x = u_axis  # x-Koordinaten
-                        sound_field_y = v_axis  # z-Koordinaten
-                        
-                        if DEBUG_FLEXIBLE_GRID:
-                            print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
+                        if not skip_xz_wall_code:
+                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': Interpoliere Y-Koordinaten (X-Z-Wand schräg)")
+                            print(f"  └─ Surface-Punkte: {len(points_surface)} Punkte, Y-Range: [{np.min(ys):.3f}, {np.max(ys):.3f}], Span: {np.ptp(ys):.3f}")
+                            print(f"  └─ Grid-Punkte: {len(points_grid)} Punkte")
+                            
+                            Y_interp = griddata(
+                                points_surface, ys,
+                                points_grid,
+                                method='linear', fill_value=float(np.mean(ys))
+                            )
+                            print(f"[DEBUG Vertical Grid] Surface '{geometry.surface_id}': ✅ Linear-Interpolation erfolgreich")
+                            print(f"  └─ Y_interp Range: [{np.nanmin(Y_interp):.3f}, {np.nanmax(Y_interp):.3f}], Span: {np.nanmax(Y_interp) - np.nanmin(Y_interp):.3f}")
+                            Y_interp = Y_interp.reshape(U_grid.shape)
+                            
+                            # Transformiere zu (X, Y, Z) Koordinaten
+                            X_grid = U_grid  # u = x
+                            Y_grid = Y_interp  # Y interpoliert
+                            Z_grid = V_grid  # v = z
+                            
+                            # sound_field_x und sound_field_y für Rückgabe
+                            sound_field_x = u_axis  # x-Koordinaten
+                            sound_field_y = v_axis  # z-Koordinaten
+                            
+                            if DEBUG_FLEXIBLE_GRID:
+                                print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
                 else:
                     # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
                     raise ValueError(f"Surface '{geometry.surface_id}': Als 'vertical' klassifiziert, aber Z-Spanne ({z_span:.3f}) nicht groß genug. x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}")
