@@ -36,6 +36,8 @@ class SPL3DOverlayBase:
         self._planar_z_offset = 0.005
         # Z-Offset speziell für Achsenlinien (höher als Surfaces, damit sie beim Picking bevorzugt werden)
         self._axis_z_offset = 0.01  # 1cm über Surface
+        # Cache für DPI-Skalierungsfaktor (wird bei Bedarf berechnet)
+        self._dpi_scale_factor: Optional[float] = None
         
     def clear(self) -> None:
         """Löscht alle Overlay-Actors."""
@@ -311,6 +313,56 @@ class SPL3DOverlayBase:
                 active_surfaces.append((str(surface_id), surface))
         
         return active_surfaces
+    
+    def _get_dpi_scale_factor(self) -> float:
+        """Berechnet den DPI-Skalierungsfaktor für Linienbreiten.
+        
+        VTK/PyVista interpretiert SetLineWidth() in Pixeln, daher müssen wir
+        bei höherer Bildschirmauflösung (z.B. Retina-Displays) die Linienbreiten
+        entsprechend skalieren, damit sie visuell gleich dick bleiben.
+        
+        Returns:
+            Skalierungsfaktor (1.0 für Standard-DPI, < 1.0 für höhere DPI)
+        """
+        if self._dpi_scale_factor is not None:
+            return self._dpi_scale_factor
+        
+        try:
+            # Versuche, den devicePixelRatio vom QtInteractor-Widget zu ermitteln
+            # Dies ist die zuverlässigste Methode für PyQt5/PyVista
+            if hasattr(self.plotter, 'interactor'):
+                widget = self.plotter.interactor
+                if hasattr(widget, 'devicePixelRatio'):
+                    device_pixel_ratio = widget.devicePixelRatio()
+                    if device_pixel_ratio > 1.0:
+                        # Skaliere die Linienbreite umgekehrt zum Pixel-Ratio
+                        # Bei 2x Retina: line_width wird halbiert, damit visuell gleich dick
+                        self._dpi_scale_factor = 1.0 / device_pixel_ratio
+                        return self._dpi_scale_factor
+                # Alternative: Versuche devicePixelRatioF() für Float-Werte
+                elif hasattr(widget, 'devicePixelRatioF'):
+                    device_pixel_ratio = widget.devicePixelRatioF()
+                    if device_pixel_ratio > 1.0:
+                        self._dpi_scale_factor = 1.0 / device_pixel_ratio
+                        return self._dpi_scale_factor
+        except Exception:  # noqa: BLE001
+            pass
+        
+        # Fallback: Keine Skalierung (Standard-DPI)
+        self._dpi_scale_factor = 1.0
+        return self._dpi_scale_factor
+    
+    def _get_scaled_line_width(self, base_line_width: float) -> float:
+        """Skaliert eine Linienbreite basierend auf der Bildschirmauflösung.
+        
+        Args:
+            base_line_width: Basis-Linienbreite in Pixeln (für Standard-DPI)
+        
+        Returns:
+            Skalierte Linienbreite, die bei höherer Auflösung visuell gleich dick bleibt
+        """
+        scale_factor = self._get_dpi_scale_factor()
+        return base_line_width * scale_factor
 
 
 __all__ = ['SPL3DOverlayBase']

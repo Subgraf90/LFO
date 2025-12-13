@@ -262,6 +262,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         
         return interpolated_coords, interpolated_z_coords
 
+
     @measure_time("SoundFieldCalculatorYaxis.calculateYAxis")
     def calculateYAxis(self):
         resolution = 0.1  # 10cm Auflösung
@@ -283,22 +284,23 @@ class SoundFieldCalculatorYaxis(ModuleBase):
             # Verwende aktualisierte Surface-Definition, falls vorhanden
             surface_to_use = current_surface if current_surface is not None else surface
             
-            if surface_to_use:
-                if isinstance(surface_to_use, SurfaceDefinition):
-                    xy_enabled = getattr(surface_to_use, 'xy_enabled', True)
-                    enabled = surface_to_use.enabled
-                    hidden = surface_to_use.hidden
-                    surface_name = surface_to_use.name
-                else:
-                    xy_enabled = surface_to_use.get('xy_enabled', True)
-                    enabled = surface_to_use.get('enabled', False)
-                    hidden = surface_to_use.get('hidden', False)
-                    surface_name = surface_to_use.get('name', surface_id)
-                    
-
-                
-                if not (xy_enabled and enabled and not hidden):
-                    continue
+            if not surface_to_use:
+                continue
+            
+            # Prüfe ob Surface aktiv ist
+            if isinstance(surface_to_use, SurfaceDefinition):
+                xy_enabled = getattr(surface_to_use, 'xy_enabled', True)
+                enabled = surface_to_use.enabled
+                hidden = surface_to_use.hidden
+                surface_name = surface_to_use.name
+            else:
+                xy_enabled = surface_to_use.get('xy_enabled', True)
+                enabled = surface_to_use.get('enabled', False)
+                hidden = surface_to_use.get('hidden', False)
+                surface_name = surface_to_use.get('name', surface_id)
+            
+            if not (xy_enabled and enabled and not hidden):
+                continue
             
             if self._line_intersects_surface_yz(position_x, surface_to_use):
                 y_coords, z_coords = self._get_surface_intersection_points_yz(position_x, surface_to_use)
@@ -308,6 +310,10 @@ class SoundFieldCalculatorYaxis(ModuleBase):
                     all_y_coords.append(y_coords)
                     all_z_coords.append(z_coords)
                     used_surfaces.append((surface_id, surface_name, len(y_coords)))
+
+
+
+
         
         # Behalte Segmente getrennt für separate Berechnung
         # WICHTIG: Jede Surface bleibt als separates Segment, damit deaktivierte Surfaces als Lücken sichtbar sind

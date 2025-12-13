@@ -66,7 +66,7 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                     cone,
                     color="red",
                     opacity=1.0,
-                    line_width=1.0,
+                    line_width=self._get_scaled_line_width(1.0),
                     category="impulse",
                     render_lines_as_tubes=True,
                 )

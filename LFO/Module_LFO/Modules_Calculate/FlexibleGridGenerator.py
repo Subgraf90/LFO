@@ -1189,7 +1189,26 @@ class GridBuilder(ModuleBase):
             # 🎯 IDENTISCHE RESOLUTION: Keine Verdoppelung mehr, verwende Basis-Resolution
             step = float(resolution or 1.0)
             
-            if y_span < eps_line and x_span >= eps_line:
+            # 🎯 PRÜFE ZUERST OB SCHRÄGE VERTIKALE FLÄCHE (Y oder X variiert stark)
+            # Wenn dominant_axis vorhanden ist und Y/X variiert, behandle als schräg
+            is_slanted_vertical = False
+            if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
+                # Wenn dominant_axis vorhanden ist, prüfe ob Y oder X variiert
+                if geometry.dominant_axis == "xz":
+                    # X-Z-Wand: Y sollte variieren können (schräg)
+                    is_slanted_vertical = (y_span > eps_line and z_span > max(x_span, y_span) * 0.5)
+                elif geometry.dominant_axis == "yz":
+                    # Y-Z-Wand: X sollte variieren können (schräg)
+                    is_slanted_vertical = (x_span > eps_line and z_span > max(x_span, y_span) * 0.5)
+            
+            # Fallback: Prüfe ob schräge vertikale Fläche basierend auf Spannen
+            if not is_slanted_vertical:
+                is_slanted_vertical = (z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3 and 
+                                      (y_span > eps_line or x_span > eps_line))
+            
+            # 🎯 BEHANDLE SCHRÄGE FLÄCHEN ZUERST (vor den Bedingungen für konstante X/Y)
+            # Wenn schräge Fläche erkannt, überspringe die Bedingungen für konstante X/Y
+            if not is_slanted_vertical and y_span < eps_line and x_span >= eps_line:
                 # X-Z-Wand: y ≈ const, Grid in (x,z)-Ebene
                 # u = x, v = z
                 y0 = float(np.mean(ys))
@@ -1239,13 +1258,10 @@ class GridBuilder(ModuleBase):
                 sound_field_x = u_axis  # x-Koordinaten
                 sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
                 
-                print(f"[DEBUG Vertical Grid] X-Z-Wand: Grid in (x,z)-Ebene erstellt")
-                print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                print(f"  └─ wall_y (konstant): {y0:.3f}")
-                print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Vertical Grid] X-Z-Wand: Grid in (x,z)-Ebene erstellt (y={y0:.3f} konstant)")
                 
-            elif x_span < eps_line and y_span >= eps_line:
+            elif not is_slanted_vertical and x_span < eps_line and y_span >= eps_line:
                 # Y-Z-Wand: x ≈ const, Grid in (y,z)-Ebene
                 # u = y, v = z
                 x0 = float(np.mean(xs))
@@ -1295,17 +1311,29 @@ class GridBuilder(ModuleBase):
                 sound_field_x = u_axis  # y-Koordinaten (als x für sound_field_x)
                 sound_field_y = v_axis  # z-Koordinaten (als y für sound_field_y)
                 
-                print(f"[DEBUG Vertical Grid] Y-Z-Wand: Grid in (y,z)-Ebene erstellt")
-                print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                print(f"  └─ wall_x (konstant): {x0:.3f}")
-                print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Vertical Grid] Y-Z-Wand: Grid in (y,z)-Ebene erstellt (x={x0:.3f} konstant)")
                 
             else:
                 # Prüfe, ob es eine schräge vertikale Fläche ist (z_span > max(x_span, y_span) * 0.5)
                 if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
                     # Schräge vertikale Fläche: Bestimme dominante Orientierung
-                    if x_span < y_span:
+                    # 🎯 VERWENDE dominant_axis WENN VERFÜGBAR (wurde durch PCA/robuste Analyse bestimmt)
+                    use_yz_wall = False
+                    if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
+                        # Verwende dominant_axis als primäre Quelle
+                        if geometry.dominant_axis == "yz":
+                            use_yz_wall = True
+                        elif geometry.dominant_axis == "xz":
+                            use_yz_wall = False
+                        else:
+                            # Fallback: Verwende Spannen-Vergleich
+                            use_yz_wall = (x_span < y_span)
+                    else:
+                        # Kein dominant_axis verfügbar → verwende Spannen-Vergleich
+                        use_yz_wall = (x_span < y_span)
+                    
+                    if use_yz_wall:
                         # Y-Z-Wand schräg: Y und Z variieren, X variiert entlang der Fläche
                         # u = y, v = z
                         u_min, u_max = float(ys.min()), float(ys.max())
@@ -1378,15 +1406,12 @@ class GridBuilder(ModuleBase):
                             sound_field_x = u_axis  # y-Koordinaten
                             sound_field_y = v_axis  # z-Koordinaten
                             
-                            print(f"[DEBUG Vertical Grid] Y-Z-Wand schräg: Grid in (y,z)-Ebene erstellt, X interpoliert")
-                            print(f"  └─ u_axis (y): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                            print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                            print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
-                            print(f"  └─ X interpoliert: min={X_interp.min():.3f}, max={X_interp.max():.3f}")
-                            print(f"  └─ X_grid nach Zuweisung: min={X_grid.min():.3f}, max={X_grid.max():.3f}, shape={X_grid.shape}")
+                            if DEBUG_FLEXIBLE_GRID:
+                                print(f"[DEBUG Vertical Grid] Y-Z-Wand schräg: Grid in (y,z)-Ebene erstellt, X interpoliert")
                     else:
                         # X-Z-Wand schräg: X und Z variieren, Y variiert entlang der Fläche
                         # u = x, v = z
+                        # 🎯 VERWENDE dominant_axis WENN VERFÜGBAR (wurde durch PCA/robuste Analyse bestimmt)
                         u_min, u_max = float(xs.min()), float(xs.max())
                         v_min, v_max = float(zs.min()), float(zs.max())
                         
@@ -1457,11 +1482,8 @@ class GridBuilder(ModuleBase):
                         sound_field_x = u_axis  # x-Koordinaten
                         sound_field_y = v_axis  # z-Koordinaten
                         
-                        print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
-                        print(f"  └─ u_axis (x): {len(u_axis)} Punkte, min={u_min:.3f}, max={u_max:.3f}")
-                        print(f"  └─ v_axis (z): {len(v_axis)} Punkte, min={v_min:.3f}, max={v_max:.3f}")
-                        print(f"  └─ step: {step:.3f} m (Basis-Resolution: {resolution:.3f} m)")
-                        print(f"  └─ Y interpoliert: min={Y_interp.min():.3f}, max={Y_interp.max():.3f}")
+                        if DEBUG_FLEXIBLE_GRID:
+                            print(f"[DEBUG Vertical Grid] X-Z-Wand schräg: Grid in (x,z)-Ebene erstellt, Y interpoliert")
                 else:
                     # Surface wurde als "vertical" klassifiziert, aber Z-Spanne ist nicht groß genug
                     # → Behandle als planare/schräge Surface und erstelle Grid in X-Y-Ebene
@@ -1539,9 +1561,8 @@ class GridBuilder(ModuleBase):
                     # Begrenze: Nicht kleiner als halbe Basis-Resolution
                     adaptive_resolution = min(adaptive_resolution, resolution * 0.5)
                     
-                    print(f"[DEBUG Grid pro Surface] Surface '{geometry.surface_id}': "
-                          f"Zu wenige Punkte ({total_points_base} < {min_total_points})")
-                    print(f"  └─ Adaptive Resolution: {adaptive_resolution:.3f} m (Basis: {resolution:.3f} m)")
+                    if DEBUG_FLEXIBLE_GRID:
+                        print(f"[DEBUG Grid] Surface '{geometry.surface_id}': Adaptive Resolution {adaptive_resolution:.3f} m (Basis: {resolution:.3f} m)")
                     
                     resolution = adaptive_resolution
             
@@ -1623,7 +1644,6 @@ class GridBuilder(ModuleBase):
                 surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-                print(f"[DEBUG Vertical Mask] X-Z-Wand: Maske in (x,z)-Ebene erstellt")
             elif x_span < eps_line and y_span >= eps_line:
                 # Y-Z-Wand: Maske in (y,z)-Ebene
                 U_grid = Y_grid  # u = y
@@ -1635,13 +1655,27 @@ class GridBuilder(ModuleBase):
                 surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-                print(f"[DEBUG Vertical Mask] Y-Z-Wand: Maske in (y,z)-Ebene erstellt")
             else:
                 # Prüfe, ob es eine schräge vertikale Fläche ist
                 z_span = float(np.ptp(zs))
                 if z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3:
                     # Schräge vertikale Fläche: Bestimme dominante Orientierung
-                    if x_span < y_span:
+                    # 🎯 VERWENDE dominant_axis WENN VERFÜGBAR (konsistent mit Grid-Erstellung)
+                    use_yz_wall = False
+                    if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
+                        # Verwende dominant_axis als primäre Quelle
+                        if geometry.dominant_axis == "yz":
+                            use_yz_wall = True
+                        elif geometry.dominant_axis == "xz":
+                            use_yz_wall = False
+                        else:
+                            # Fallback: Verwende Spannen-Vergleich
+                            use_yz_wall = (x_span < y_span)
+                    else:
+                        # Kein dominant_axis verfügbar → verwende Spannen-Vergleich
+                        use_yz_wall = (x_span < y_span)
+                    
+                    if use_yz_wall:
                         # Y-Z-Wand schräg: Maske in (y,z)-Ebene
                         U_grid = Y_grid  # u = y
                         V_grid = Z_grid  # v = z
@@ -1652,7 +1686,6 @@ class GridBuilder(ModuleBase):
                         surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
                         # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                         surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-                        print(f"[DEBUG Vertical Mask] Y-Z-Wand schräg: Maske in (y,z)-Ebene erstellt")
                     else:
                         # X-Z-Wand schräg: Maske in (x,z)-Ebene
                         U_grid = X_grid  # u = x
@@ -1664,7 +1697,6 @@ class GridBuilder(ModuleBase):
                         surface_mask_strict = self._points_in_polygon_batch(U_grid, V_grid, polygon_uv)
                         # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
                         surface_mask = self._dilate_mask_minimal(surface_mask_strict)
-                        print(f"[DEBUG Vertical Mask] X-Z-Wand schräg: Maske in (x,z)-Ebene erstellt")
                 else:
                     raise ValueError(f"Vertikale Surface '{geometry.surface_id}': keine vertikale Maske ableitbar.")
             
@@ -1674,11 +1706,8 @@ class GridBuilder(ModuleBase):
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}' (VERTIKAL):")
-            print(f"  └─ Total Grid-Punkte: {total_grid_points}")
-            print(f"  └─ Punkte IN Surface: {points_in_surface}")
-            print(f"  └─ Punkte AUSSERHALB Surface (erweitert): {points_outside_surface}")
-            print(f"  └─ Z_grid bereits korrekt gesetzt (keine Interpolation nötig)")
+            if DEBUG_FLEXIBLE_GRID:
+                print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}' (VERTIKAL): {points_in_surface}/{total_grid_points} Punkte in Surface")
         else:
             # PLANARE/SCHRÄGE SURFACES: Normale Maske und Z-Interpolation
             surface_mask_strict = self._create_surface_mask(X_grid, Y_grid, geometry)  # Ursprüngliche Maske
@@ -1690,10 +1719,8 @@ class GridBuilder(ModuleBase):
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}':")
-            print(f"  └─ Total Grid-Punkte: {total_grid_points}")
-            print(f"  └─ Punkte IN Surface: {points_in_surface}")
-            print(f"  └─ Punkte AUSSERHALB Surface (erweitert): {points_outside_surface}")
+            if DEBUG_FLEXIBLE_GRID:
+                print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}': {points_in_surface}/{total_grid_points} Punkte in Surface")
             
             # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
             # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
@@ -2443,16 +2470,105 @@ class FlexibleGridGenerator(ModuleBase):
                     
                     # 🎯 ZUSÄTZLICHE VERTICES AN POLYGON-ECKEN HINZUFÜGEN (für höhere Auflösung)
                     # Dies erhöht die Polygon-Dichte an den Ecken, um Lücken zu vermeiden
+                    # 🎯 IDENTISCHE BEHANDLUNG: Für alle Orientierungen (planar, sloped, vertical)
                     additional_vertices = []
-                    if geom.orientation in ("planar", "sloped"):
-                        surface_points = geom.points or []
-                        if len(surface_points) >= 3:
-                            # Extrahiere Polygon-Ecken
+                    surface_points = geom.points or []
+                    if len(surface_points) >= 3:
+                        # Bestimme Koordinatensystem basierend auf Orientierung
+                        if geom.orientation == "vertical":
+                            # 🎯 VERTIKALE FLÄCHEN: Verwende (u,v)-Koordinaten basierend auf dominant_axis
+                            xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+                            ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+                            zs = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
+                            x_span = float(np.ptp(xs))
+                            y_span = float(np.ptp(ys))
+                            eps_line = 1e-6
+                            
+                            # Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
+                            # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende dominant_axis wenn verfügbar
+                            # Berechne Konstanten-Werte im Voraus
+                            x_mean = float(np.mean(xs))
+                            y_mean = float(np.mean(ys))
+                            
+                            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                                # Verwende dominant_axis als primäre Quelle (konsistent mit Grid-Erstellung)
+                                if geom.dominant_axis == "yz":
+                                    # Y-Z-Wand: u = y, v = z
+                                    polygon_u = ys
+                                    polygon_v = zs
+                                    is_xz_wall = False
+                                elif geom.dominant_axis == "xz":
+                                    # X-Z-Wand: u = x, v = z
+                                    polygon_u = xs
+                                    polygon_v = zs
+                                    is_xz_wall = True
+                                else:
+                                    # Unbekannter dominant_axis → Fallback auf Spannen-Analyse
+                                    if x_span < y_span:
+                                        polygon_u = ys
+                                        polygon_v = zs
+                                        is_xz_wall = False
+                                    else:
+                                        polygon_u = xs
+                                        polygon_v = zs
+                                        is_xz_wall = True
+                            elif y_span < eps_line and x_span >= eps_line:
+                                # X-Z-Wand: y ≈ const, u = x, v = z
+                                polygon_u = xs
+                                polygon_v = zs
+                                is_xz_wall = True
+                            elif x_span < eps_line and y_span >= eps_line:
+                                # Y-Z-Wand: x ≈ const, u = y, v = z
+                                polygon_u = ys
+                                polygon_v = zs
+                                is_xz_wall = False
+                            else:
+                                # Fallback: Verwende kleinste Spanne
+                                if x_span < y_span:
+                                    polygon_u = ys
+                                    polygon_v = zs
+                                    is_xz_wall = False
+                                else:
+                                    polygon_u = xs
+                                    polygon_v = zs
+                                    is_xz_wall = True
+                            
+                            # Prüfe für jede Polygon-Ecke in (u,v)-Koordinaten
+                            existing_vertex_tolerance = resolution * 0.1  # Toleranz für "bereits vorhanden"
+                            
+                            for corner_u, corner_v in zip(polygon_u, polygon_v):
+                                # Prüfe ob bereits ein Vertex sehr nahe an dieser Ecke existiert
+                                # Für vertikale Flächen: Vergleiche in (u,v)-Koordinaten
+                                if is_xz_wall:
+                                    # X-Z-Wand: u = x, v = z
+                                    distances = np.sqrt((all_vertices[:, 0] - corner_u)**2 + (all_vertices[:, 2] - corner_v)**2)
+                                else:
+                                    # Y-Z-Wand: u = y, v = z
+                                    distances = np.sqrt((all_vertices[:, 1] - corner_u)**2 + (all_vertices[:, 2] - corner_v)**2)
+                                
+                                min_distance = np.min(distances)
+                                
+                                if min_distance > existing_vertex_tolerance:
+                                    # Kein Vertex nahe genug → füge neuen Vertex hinzu
+                                    # Transformiere (u,v) zurück zu (x,y,z)
+                                    if is_xz_wall:
+                                        # X-Z-Wand: u = x, v = z, y = konstant
+                                        corner_x = corner_u
+                                        corner_y = y_mean
+                                        corner_z = corner_v
+                                    else:
+                                        # Y-Z-Wand: u = y, v = z, x = konstant
+                                        corner_x = x_mean
+                                        corner_y = corner_u
+                                        corner_z = corner_v
+                                    
+                                    additional_vertices.append([corner_x, corner_y, corner_z])
+                        else:
+                            # PLANARE/SCHRÄGE FLÄCHEN: Verwende (x,y)-Koordinaten
                             polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
                             polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
                             
                             # Prüfe für jede Polygon-Ecke, ob nahe Grid-Punkte existieren
-                            vertex_threshold = resolution * 0.3  # Wenn Ecke innerhalb 30% der Resolution
                             existing_vertex_tolerance = resolution * 0.1  # Toleranz für "bereits vorhanden"
                             
                             for corner_x, corner_y in zip(polygon_x, polygon_y):
@@ -2477,11 +2593,11 @@ class FlexibleGridGenerator(ModuleBase):
                                             pass
                                     
                                     additional_vertices.append([corner_x, corner_y, corner_z])
-                            
-                            if len(additional_vertices) > 0:
-                                additional_vertices_array = np.array(additional_vertices, dtype=float)
-                                all_vertices = np.vstack([all_vertices, additional_vertices_array])
-                                print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt")
+                        
+                        if len(additional_vertices) > 0:
+                            additional_vertices_array = np.array(additional_vertices, dtype=float)
+                            all_vertices = np.vstack([all_vertices, additional_vertices_array])
+                            print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt ({geom.orientation})")
                     
                     # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
                     base_vertex_count = X_grid.size
@@ -2491,15 +2607,154 @@ class FlexibleGridGenerator(ModuleBase):
                     # 🎯 RAND-VERTICES AUF SURFACE-GRENZE PROJIZIEREN
                     # Für Rand-Vertices (in erweiterter Maske, aber nicht in strikter Maske):
                     # Verschiebe sie auf die Surface-Grenze, damit Polygone exakt am Rand verlaufen
-                    if geom.orientation in ("planar", "sloped"):
-                        # Berechne Rand-Vertices: in erweitert, aber nicht in strikt
-                        is_on_boundary = mask_flat & (~mask_strict_flat)
-                        boundary_indices = np.where(is_on_boundary)[0]
-                        
-                        if len(boundary_indices) > 0:
-                            # Lade Surface-Polygon für Projektion
-                            surface_points = geom.points or []
-                            if len(surface_points) >= 3:
+                    # 🎯 IDENTISCHE BEHANDLUNG: Für alle Orientierungen (planar, sloped, vertical)
+                    # Berechne Rand-Vertices: in erweitert, aber nicht in strikt
+                    is_on_boundary = mask_flat & (~mask_strict_flat)
+                    boundary_indices = np.where(is_on_boundary)[0]
+                    
+                    if len(boundary_indices) > 0:
+                        # Lade Surface-Polygon für Projektion
+                        surface_points = geom.points or []
+                        if len(surface_points) >= 3:
+                            if geom.orientation == "vertical":
+                                # 🎯 VERTIKALE FLÄCHEN: Projektion in (u,v)-Koordinaten
+                                xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+                                ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+                                zs = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
+                                x_span = float(np.ptp(xs))
+                                y_span = float(np.ptp(ys))
+                                eps_line = 1e-6
+                                
+                                # Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
+                                # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende dominant_axis wenn verfügbar
+                                z_span = float(np.ptp(zs))
+                                
+                                # Prüfe ob es eine schräge vertikale Fläche ist
+                                is_slanted = (z_span > max(x_span, y_span) * 0.5 and z_span > 1e-3)
+                                
+                                if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                                    # Verwende dominant_axis als primäre Quelle (konsistent mit Grid-Erstellung)
+                                    if geom.dominant_axis == "yz":
+                                        # Y-Z-Wand: u = y, v = z
+                                        polygon_u = ys
+                                        polygon_v = zs
+                                        x_const = float(np.mean(xs))
+                                        is_xz_wall = False
+                                    elif geom.dominant_axis == "xz":
+                                        # X-Z-Wand: u = x, v = z
+                                        polygon_u = xs
+                                        polygon_v = zs
+                                        y_const = float(np.mean(ys))
+                                        is_xz_wall = True
+                                    else:
+                                        # Unbekannter dominant_axis → Fallback auf Spannen-Analyse
+                                        if x_span < y_span:
+                                            polygon_u = ys
+                                            polygon_v = zs
+                                            x_const = float(np.mean(xs))
+                                            is_xz_wall = False
+                                        else:
+                                            polygon_u = xs
+                                            polygon_v = zs
+                                            y_const = float(np.mean(ys))
+                                            is_xz_wall = True
+                                elif y_span < eps_line and x_span >= eps_line:
+                                    # X-Z-Wand: y ≈ const, u = x, v = z
+                                    polygon_u = xs
+                                    polygon_v = zs
+                                    y_const = float(np.mean(ys))
+                                    is_xz_wall = True
+                                elif x_span < eps_line and y_span >= eps_line:
+                                    # Y-Z-Wand: x ≈ const, u = y, v = z
+                                    polygon_u = ys
+                                    polygon_v = zs
+                                    x_const = float(np.mean(xs))
+                                    is_xz_wall = False
+                                else:
+                                    # Fallback: Verwende kleinste Spanne
+                                    if x_span < y_span:
+                                        polygon_u = ys
+                                        polygon_v = zs
+                                        x_const = float(np.mean(xs))
+                                        is_xz_wall = False
+                                    else:
+                                        polygon_u = xs
+                                        polygon_v = zs
+                                        y_const = float(np.mean(ys))
+                                        is_xz_wall = True
+                                
+                                # Projiziere jeden Rand-Vertex auf die nächstliegende Polygon-Kante oder Ecke in (u,v)
+                                for idx in boundary_indices:
+                                    v = all_vertices[idx]
+                                    
+                                    # Extrahiere (u,v)-Koordinaten aus Vertex
+                                    if is_xz_wall:
+                                        # X-Z-Wand: u = x, v = z
+                                        vu, vv = v[0], v[2]
+                                    else:
+                                        # Y-Z-Wand: u = y, v = z
+                                        vu, vv = v[1], v[2]
+                                    
+                                    # Finde nächstliegenden Punkt auf Polygon-Rand (Kante oder Ecke) in (u,v)
+                                    min_dist_sq = np.inf
+                                    closest_u, closest_v = vu, vv
+                                    
+                                    n_poly = len(polygon_u)
+                                    
+                                    # 🎯 ZUERST: Prüfe Polygon-Ecken (für bessere Abdeckung an scharfen Ecken)
+                                    corner_threshold = 1e-6  # Sehr kleine Schwellenwert für "nahe an Ecke"
+                                    for i in range(n_poly):
+                                        corner_u, corner_v = polygon_u[i], polygon_v[i]
+                                        dist_sq_to_corner = (vu - corner_u)**2 + (vv - corner_v)**2
+                                        
+                                        # Wenn Vertex sehr nahe an einer Polygon-Ecke ist, projiziere direkt auf Ecke
+                                        if dist_sq_to_corner < corner_threshold:
+                                            closest_u, closest_v = corner_u, corner_v
+                                            min_dist_sq = dist_sq_to_corner
+                                            break  # Direkte Ecken-Projektion hat Priorität
+                                        
+                                        # Wenn noch kein guter Kandidat gefunden, prüfe ob Ecke näher ist als bisher
+                                        if dist_sq_to_corner < min_dist_sq:
+                                            min_dist_sq = dist_sq_to_corner
+                                            closest_u, closest_v = corner_u, corner_v
+                                    
+                                    # Dann: Prüfe alle Polygon-Kanten (kann bessere Projektion als Ecke liefern)
+                                    for i in range(n_poly):
+                                        p1 = np.array([polygon_u[i], polygon_v[i]])
+                                        p2 = np.array([polygon_u[(i + 1) % n_poly], polygon_v[(i + 1) % n_poly]])
+                                        
+                                        # Berechne Projektion von v auf Kante (p1, p2) in (u,v)
+                                        edge = p2 - p1
+                                        edge_len_sq = np.dot(edge, edge)
+                                        if edge_len_sq < 1e-12:
+                                            continue  # Degenerierte Kante
+                                        
+                                        t = np.dot([vu - p1[0], vv - p1[1]], edge) / edge_len_sq
+                                        t = np.clip(t, 0.0, 1.0)  # Clamp auf Kante
+                                        proj = p1 + t * edge
+                                        
+                                        # Berechne Abstand
+                                        dist_sq = (vu - proj[0])**2 + (vv - proj[1])**2
+                                        
+                                        # Verwende Kanten-Projektion nur wenn sie besser ist als Ecken-Projektion
+                                        # (außer wir haben bereits eine sehr nahe Ecken-Projektion gefunden)
+                                        if dist_sq < min_dist_sq or (min_dist_sq >= corner_threshold and dist_sq < min_dist_sq * 1.1):
+                                            min_dist_sq = dist_sq
+                                            closest_u, closest_v = proj[0], proj[1]
+                                    
+                                    # Transformiere (u,v) zurück zu (x,y,z) und verschiebe Vertex
+                                    if is_xz_wall:
+                                        # X-Z-Wand: u = x, v = z, y = konstant
+                                        all_vertices[idx, 0] = closest_u
+                                        all_vertices[idx, 1] = float(np.mean(ys))
+                                        all_vertices[idx, 2] = closest_v
+                                    else:
+                                        # Y-Z-Wand: u = y, v = z, x = konstant
+                                        all_vertices[idx, 0] = float(np.mean(xs))
+                                        all_vertices[idx, 1] = closest_u
+                                        all_vertices[idx, 2] = closest_v
+                            else:
+                                # PLANARE/SCHRÄGE FLÄCHEN: Projektion in (x,y)-Koordinaten
                                 # Extrahiere Polygon-Koordinaten (für planare/schräge: x,y)
                                 polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
                                 polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
@@ -2572,9 +2827,9 @@ class FlexibleGridGenerator(ModuleBase):
                                                 all_vertices[idx, 2] = float(z_new.flat[0])
                                         except Exception:
                                             pass  # Falls Berechnung fehlschlägt, behalte alte Z-Koordinate
-                                
-                                if len(boundary_indices) > 0:
-                                    print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert")
+                            
+                            if len(boundary_indices) > 0:
+                                print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert ({geom.orientation})")
                     
                     # Erstelle Index-Mapping: (i, j) → linearer Index
                     # Für ein strukturiertes Grid: index = i * nx + j
@@ -2816,22 +3071,11 @@ class FlexibleGridGenerator(ModuleBase):
                 x_span = float(np.ptp(xs))
                 y_span = float(np.ptp(ys))
                 z_span = float(np.ptp(zs))
-                print(f"[DEBUG Grid pro Surface] '{geom.surface_id}' (VERTIKAL):")
-                print(f"  └─ Grid-Shape: {ny}×{nx} = {total_points} Punkte (gesamt)")
-                print(f"  └─ Punkte in Surface: {points_in_surface}/{total_points}")
-                print(f"  └─ Resolution: {actual_resolution:.3f} m")
-                print(f"  └─ Koordinaten-Spannen: X={x_span:.3f}, Y={y_span:.3f}, Z={z_span:.3f}")
-                print(f"  └─ X-Range: [{xs.min():.3f}, {xs.max():.3f}] (aus X_grid)")
-                print(f"  └─ Y-Range: [{ys.min():.3f}, {ys.max():.3f}] (aus Y_grid)")
-                print(f"  └─ Z-Range: [{zs.min():.3f}, {zs.max():.3f}] (aus Z_grid)")
-                # 🎯 DEBUG: Prüfe X_grid für Y-Z-Wände schräg
-                if geom.orientation == "vertical" and hasattr(geom, 'dominant_axis') and geom.dominant_axis == "yz":
-                    print(f"  └─ [DEBUG YZ-Wand] X_grid.shape={X_grid.shape}, X_grid.min()={X_grid.min():.3f}, X_grid.max()={X_grid.max():.3f}")
-                    print(f"  └─ [DEBUG YZ-Wand] sound_field_x (Y-Koordinaten): min={sound_field_x.min():.3f}, max={sound_field_x.max():.3f}")
-                    print(f"  └─ [DEBUG YZ-Wand] sound_field_y (Z-Koordinaten): min={sound_field_y.min():.3f}, max={sound_field_y.max():.3f}")
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Grid pro Surface] '{geom.surface_id}' (VERTIKAL): {points_in_surface}/{total_points} Punkte, Spannen: X={x_span:.3f}, Y={y_span:.3f}, Z={z_span:.3f}")
             else:
-                print(f"[DEBUG Grid pro Surface] '{geom.surface_id}': "
-                      f"{points_in_surface}/{total_points} Punkte, Resolution: {actual_resolution:.3f} m")
+                if DEBUG_FLEXIBLE_GRID:
+                    print(f"[DEBUG Grid pro Surface] '{geom.surface_id}': {points_in_surface}/{total_points} Punkte, Resolution: {actual_resolution:.3f} m")
         
         return surface_grids
     

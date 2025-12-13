@@ -143,7 +143,8 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                         if combined_mesh is not None:
                             # X-Achse: rot wenn ausgewählt, sonst schwarz
                             line_color = 'red' if selected_axis == 'x' else 'black'
-                            line_width = 6.0 if selected_axis == 'x' else 5.0
+                            base_line_width = 6.0 if selected_axis == 'x' else 5.0
+                            line_width = self._get_scaled_line_width(base_line_width)
                             actor_name = self._add_overlay_mesh(
                                 combined_mesh,
                                 color=line_color,
@@ -196,7 +197,8 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                         if combined_mesh is not None:
                             # Y-Achse: rot wenn ausgewählt, sonst schwarz
                             line_color = 'red' if selected_axis == 'y' else 'black'
-                            line_width = 6.0 if selected_axis == 'y' else 5.0
+                            base_line_width = 6.0 if selected_axis == 'y' else 5.0
+                            line_width = self._get_scaled_line_width(base_line_width)
                             actor_name = self._add_overlay_mesh(
                                 combined_mesh,
                                 color=line_color,
