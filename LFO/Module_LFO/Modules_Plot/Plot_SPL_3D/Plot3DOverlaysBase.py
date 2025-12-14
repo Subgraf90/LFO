@@ -38,6 +38,8 @@ class SPL3DOverlayBase:
         self._axis_z_offset = 0.01  # 1cm über Surface
         # Cache für DPI-Skalierungsfaktor (wird bei Bedarf berechnet)
         self._dpi_scale_factor: Optional[float] = None
+        # Referenz-Zoom-Level für Zoom-Skalierung (wird beim ersten Aufruf gesetzt)
+        self._reference_zoom_level: Optional[float] = None
         
     def clear(self) -> None:
         """Löscht alle Overlay-Actors."""
@@ -332,36 +334,117 @@ class SPL3DOverlayBase:
             # Dies ist die zuverlässigste Methode für PyQt5/PyVista
             if hasattr(self.plotter, 'interactor'):
                 widget = self.plotter.interactor
-                if hasattr(widget, 'devicePixelRatio'):
-                    device_pixel_ratio = widget.devicePixelRatio()
-                    if device_pixel_ratio > 1.0:
-                        # Skaliere die Linienbreite umgekehrt zum Pixel-Ratio
-                        # Bei 2x Retina: line_width wird halbiert, damit visuell gleich dick
-                        self._dpi_scale_factor = 1.0 / device_pixel_ratio
-                        return self._dpi_scale_factor
-                # Alternative: Versuche devicePixelRatioF() für Float-Werte
-                elif hasattr(widget, 'devicePixelRatioF'):
-                    device_pixel_ratio = widget.devicePixelRatioF()
-                    if device_pixel_ratio > 1.0:
-                        self._dpi_scale_factor = 1.0 / device_pixel_ratio
-                        return self._dpi_scale_factor
-        except Exception as e:
-            raise RuntimeError(f"DPI-Skalierung konnte nicht bestimmt werden: {e}")
+                if widget is not None:
+                    if hasattr(widget, 'devicePixelRatio'):
+                        try:
+                            device_pixel_ratio = widget.devicePixelRatio()
+                            if device_pixel_ratio > 1.0:
+                                # Skaliere die Linienbreite umgekehrt zum Pixel-Ratio
+                                # Bei 2x Retina: line_width wird halbiert, damit visuell gleich dick
+                                self._dpi_scale_factor = 1.0 / device_pixel_ratio
+                                return self._dpi_scale_factor
+                        except Exception:
+                            pass  # Fallback zu devicePixelRatioF oder Standard-Wert
+                    # Alternative: Versuche devicePixelRatioF() für Float-Werte
+                    if hasattr(widget, 'devicePixelRatioF'):
+                        try:
+                            device_pixel_ratio = widget.devicePixelRatioF()
+                            if device_pixel_ratio > 1.0:
+                                self._dpi_scale_factor = 1.0 / device_pixel_ratio
+                                return self._dpi_scale_factor
+                        except Exception:
+                            pass  # Fallback zu Standard-Wert
+        except Exception:
+            pass  # Fallback zu Standard-Wert
         
-        # DPI-Skalierung muss bestimmt werden
-        raise ValueError("DPI-Skalierung konnte nicht bestimmt werden")
+        # 🎯 FALLBACK: Wenn DPI-Skalierung nicht bestimmt werden kann, verwende Standard-Wert 1.0
+        # Dies verhindert Abstürze und ermöglicht die Verwendung der Anwendung auch ohne DPI-Erkennung
+        self._dpi_scale_factor = 1.0
+        return self._dpi_scale_factor
     
-    def _get_scaled_line_width(self, base_line_width: float) -> float:
-        """Skaliert eine Linienbreite basierend auf der Bildschirmauflösung.
+    def _reset_zoom_reference(self) -> None:
+        """Setzt die Referenz-Zoom-Level zurück, damit sie beim nächsten Aufruf neu gesetzt wird."""
+        self._reference_zoom_level = None
+    
+    def _get_zoom_scale_factor(self) -> float:
+        """Berechnet den Zoom-Skalierungsfaktor basierend auf der Kamera.
+        
+        Die Linienstärke soll proportional zum Zoom skaliert werden:
+        - Weiter herausgezoomt (größerer parallel_scale) → dünnere Linien
+        - Weiter hineingezoomt (kleinerer parallel_scale) → dickere Linien
+        
+        Returns:
+            Zoom-Skalierungsfaktor (1.0 bei Referenz-Zoom, < 1.0 bei herausgezoomt, > 1.0 bei hineingezoomt)
+        """
+        try:
+            if not hasattr(self.plotter, 'camera') or self.plotter.camera is None:
+                return 1.0
+            
+            cam = self.plotter.camera
+            
+            # Berechne aktuellen Zoom-Level
+            current_zoom = None
+            if hasattr(cam, 'parallel_projection') and getattr(cam, 'parallel_projection', False):
+                # Parallelprojektion: parallel_scale bestimmt den Zoom
+                if hasattr(cam, 'parallel_scale'):
+                    try:
+                        current_zoom = float(cam.parallel_scale)
+                    except Exception:
+                        pass
+            else:
+                # Perspektivprojektion: verwende view_angle als Proxy
+                # Größerer Winkel = weiter herausgezoomt
+                if hasattr(cam, 'view_angle'):
+                    try:
+                        current_zoom = float(cam.view_angle)
+                    except Exception:
+                        pass
+            
+            if current_zoom is None or current_zoom <= 0:
+                return 1.0
+            
+            # Setze Referenz-Zoom beim ersten Aufruf (oder wenn noch nicht gesetzt)
+            if self._reference_zoom_level is None or self._reference_zoom_level <= 0:
+                self._reference_zoom_level = current_zoom
+                return 1.0
+            
+            # Berechne Skalierungsfaktor: reference / current
+            # Wenn current_zoom größer ist (herausgezoomt), wird der Faktor < 1.0
+            # Wenn current_zoom kleiner ist (hineingezoomt), wird der Faktor > 1.0
+            raw_factor = self._reference_zoom_level / current_zoom
+            
+            # Verwende Wurzel-Skalierung für sanftere Anpassung
+            # Dies reduziert die Aggressivität der Zoom-Skalierung
+            # z.B. bei 4x Zoom-Änderung: sqrt(4) = 2x statt 4x Skalierung
+            zoom_factor = np.sqrt(raw_factor) if raw_factor > 0 else 1.0
+            
+            # Begrenze den Faktor auf einen sinnvollen Bereich (0.3 bis 3.0)
+            zoom_factor = max(0.3, min(3.0, zoom_factor))
+            
+            return zoom_factor
+        except Exception:
+            # Bei Fehler: keine Zoom-Skalierung
+            return 1.0
+    
+    def _get_scaled_line_width(self, base_line_width: float, apply_zoom: bool = True) -> float:
+        """Skaliert eine Linienbreite basierend auf der Bildschirmauflösung und optional dem Zoom-Level.
         
         Args:
-            base_line_width: Basis-Linienbreite in Pixeln (für Standard-DPI)
+            base_line_width: Basis-Linienbreite in Pixeln (für Standard-DPI und Referenz-Zoom)
+            apply_zoom: Wenn True, wird auch die Zoom-Skalierung angewendet. Wenn False, nur DPI-Skalierung.
+                       Standard ist True, aber für Achsenlinien sollte False verwendet werden, da diese
+                       als geometrische Segmente gerendert werden.
         
         Returns:
             Skalierte Linienbreite, die bei höherer Auflösung visuell gleich dick bleibt
+            und optional proportional zum Zoom-Level skaliert wird
         """
-        scale_factor = self._get_dpi_scale_factor()
-        return base_line_width * scale_factor
+        dpi_factor = self._get_dpi_scale_factor()
+        if apply_zoom:
+            zoom_factor = self._get_zoom_scale_factor()
+            return base_line_width * dpi_factor * zoom_factor
+        else:
+            return base_line_width * dpi_factor
 
 
 __all__ = ['SPL3DOverlayBase']

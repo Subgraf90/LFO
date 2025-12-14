@@ -890,7 +890,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         mesh_to_add = sphere.copy(deep=True)
                         # Setze Edge-Color basierend auf Highlight-Status
                         edge_color = 'red' if is_highlighted else 'black'
-                        base_line_width = 3.0 if is_highlighted else 1.5
+                        # Basis-Linienbreiten: rot identisch mit Surface-Umrandungen (1.0)
+                        base_line_width = 1.0 if is_highlighted else 1.0
                         actor_name = self._add_overlay_mesh(
                             mesh_to_add,
                             color=body_color,
@@ -946,7 +947,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
 
                         # Setze Edge-Color basierend auf Highlight-Status
                         edge_color = 'red' if is_highlighted else 'black'
-                        base_line_width = 3.0 if is_highlighted else 1.5
+                        # Basis-Linienbreiten: rot identisch mit Surface-Umrandungen (1.0)
+                        base_line_width = 1.0 if is_highlighted else 1.0
                         line_width = self._get_scaled_line_width(base_line_width)
 
                         if exit_face_index == -1 or has_scalars:
@@ -1202,10 +1204,12 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         if prop:
                             if is_highlighted:
                                 prop.SetEdgeColor(1, 0, 0)  # Rot
-                                prop.SetLineWidth(self._get_scaled_line_width(3.0))
+                                # Rote Umrandung identisch mit Surface-Umrandungen (1.0)
+                                prop.SetLineWidth(self._get_scaled_line_width(1.0))
                             else:
                                 prop.SetEdgeColor(0, 0, 0)  # Schwarz
-                                prop.SetLineWidth(self._get_scaled_line_width(1.5))
+                                # Schwarze Umrandung
+                                prop.SetLineWidth(self._get_scaled_line_width(1.0))
                             # WICHTIG: Edge-Visibility muss aktiviert sein
                             prop.SetEdgeVisibility(True)
                             # Stelle sicher, dass Edges angezeigt werden

@@ -358,7 +358,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 self._add_overlay_mesh(
                     active_enabled_polyline,
                     color='#FF0000',
-                    line_width=self._get_scaled_line_width(3.5),
+                    # Rote Surface-Umrandungen mit Zoom-Skalierung
+                    line_width=self._get_scaled_line_width(1.0, apply_zoom=True),
                     opacity=1.0,
                     category='surfaces',
                     show_vertices=False,
@@ -392,7 +393,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 self._add_overlay_mesh(
                     active_disabled_polyline,
                     color='#FF0000',
-                    line_width=self._get_scaled_line_width(3.5),
+                    # Rote Surface-Umrandungen mit Zoom-Skalierung
+                    line_width=self._get_scaled_line_width(1.0, apply_zoom=True),
                     opacity=1.0,
                     category='surfaces',
                     show_vertices=False,
@@ -715,7 +717,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         polyline_mesh,
                         name=edge_actor_name,
                         color='#000000',
-                        line_width=self._get_scaled_line_width(1.5),
+                        # Schwarze Surface-Umrandungen (disabled) mit Zoom-Skalierung
+                        line_width=self._get_scaled_line_width(0.7, apply_zoom=True),
                         opacity=1.0,
                         smooth_shading=False,
                         show_scalar_bar=False,

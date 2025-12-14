@@ -253,6 +253,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
     def calculateXAxis(self):
         resolution = 0.1  # 10cm Auflösung
         position_y = self.settings.position_y_axis
+        
         # Prüfe ob aktive Surfaces vorhanden sind, die die Linie y=position_y schneiden
         # Berücksichtige nur Surfaces mit xy_enabled=True, enabled=True, hidden=False
         active_surfaces = self._get_active_xy_surfaces()
@@ -268,6 +269,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             
             # Verwende aktualisierte Surface-Definition, falls vorhanden
             surface_to_use = current_surface if current_surface is not None else surface
+            
             if surface_to_use:
                 if isinstance(surface_to_use, SurfaceDefinition):
                     xy_enabled = getattr(surface_to_use, 'xy_enabled', True)
@@ -359,6 +361,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         is_meaningful_curve = np.isfinite(sound_field_p_calc).any()
 
         show_curve = has_active_sources and is_meaningful_curve
+
         # Finde Segment-Grenzen (Anfang und Ende jedes Segments) für gestrichelte Linien
         segment_boundaries = []
         # Prüfe ob surface_segments existiert und nicht leer ist
@@ -410,6 +413,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
             "color": "#6A5ACD",
             "segment_boundaries_xaxis": segment_boundaries_list  # X-Positionen für vertikale Linien als Python-Liste
         }
+      
     def get_balloon_data_batch(self, speaker_name, azimuths, elevations, use_averaged=True):
         """
         🚀 BATCH-OPTIMIERT: Holt Balloon-Daten für VIELE Winkel auf einmal

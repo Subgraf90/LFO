@@ -125,7 +125,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                     
                     # Erstelle Strich-Punkt-Linie durch Segmentierung
                     t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
+                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.1, gap_length=0.3)
                     t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                     
                     # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
@@ -138,8 +138,10 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                         if combined_mesh is not None:
                             # X-Achse: rot wenn ausgewählt, sonst schwarz
                             line_color = 'red' if selected_axis == 'x' else 'black'
-                            base_line_width = 6.0 if selected_axis == 'x' else 5.0
-                            line_width = self._get_scaled_line_width(base_line_width)
+                            # Basis-Linienbreite für Achsenlinien (etwas dicker)
+                            base_line_width = 3.0
+                            # Zoom-Skalierung aktiviert für alle Linien
+                            line_width = self._get_scaled_line_width(base_line_width, apply_zoom=True)
                             actor_name = self._add_overlay_mesh(
                                 combined_mesh,
                                 color=line_color,
@@ -179,7 +181,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                     
                     # Erstelle Strich-Punkt-Linie durch Segmentierung
                     t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
+                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.1, gap_length=0.3)
                     t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                     
                     # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
@@ -192,8 +194,10 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                         if combined_mesh is not None:
                             # Y-Achse: rot wenn ausgewählt, sonst schwarz
                             line_color = 'red' if selected_axis == 'y' else 'black'
-                            base_line_width = 6.0 if selected_axis == 'y' else 5.0
-                            line_width = self._get_scaled_line_width(base_line_width)
+                            # Basis-Linienbreite für Achsenlinien (etwas dicker)
+                            base_line_width = 3.0
+                            # Zoom-Skalierung aktiviert für alle Linien
+                            line_width = self._get_scaled_line_width(base_line_width, apply_zoom=True)
                             actor_name = self._add_overlay_mesh(
                                 combined_mesh,
                                 color=line_color,
