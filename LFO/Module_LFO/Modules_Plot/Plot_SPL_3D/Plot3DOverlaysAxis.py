@@ -125,7 +125,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                     
                     # Erstelle Strich-Punkt-Linie durch Segmentierung
                     t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.1, gap_length=0.3)
+                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
                     t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                     
                     # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
@@ -138,10 +138,9 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                         if combined_mesh is not None:
                             # X-Achse: rot wenn ausgewählt, sonst schwarz
                             line_color = 'red' if selected_axis == 'x' else 'black'
-                            # Basis-Linienbreite für Achsenlinien (etwas dicker)
-                            base_line_width = 3.0
-                            # Zoom-Skalierung aktiviert für alle Linien
+                            base_line_width = 3.0 if selected_axis == 'x' else 2.5
                             line_width = self._get_scaled_line_width(base_line_width, apply_zoom=True)
+                            # Keine Tubes für Dash/Dot: verhindert sichtbare Endkappen als Punkte
                             actor_name = self._add_overlay_mesh(
                                 combined_mesh,
                                 color=line_color,
@@ -149,7 +148,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                                 line_pattern=None,
                                 line_repeat=1,
                                 category='axis',
-                                render_lines_as_tubes=True,
+                                render_lines_as_tubes=False,
                             )
                             t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                             x_segments_total += len(dash_dot_segments)
@@ -181,7 +180,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                     
                     # Erstelle Strich-Punkt-Linie durch Segmentierung
                     t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.1, gap_length=0.3)
+                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
                     t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                     
                     # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
@@ -194,10 +193,9 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                         if combined_mesh is not None:
                             # Y-Achse: rot wenn ausgewählt, sonst schwarz
                             line_color = 'red' if selected_axis == 'y' else 'black'
-                            # Basis-Linienbreite für Achsenlinien (etwas dicker)
-                            base_line_width = 3.0
-                            # Zoom-Skalierung aktiviert für alle Linien
+                            base_line_width = 3.0 if selected_axis == 'y' else 2.5
                             line_width = self._get_scaled_line_width(base_line_width, apply_zoom=True)
+                            # Keine Tubes für Dash/Dot: verhindert sichtbare Endkappen als Punkte
                             actor_name = self._add_overlay_mesh(
                                 combined_mesh,
                                 color=line_color,
@@ -205,7 +203,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
                                 line_pattern=None,
                                 line_repeat=1,
                                 category='axis',
-                                render_lines_as_tubes=True,
+                                render_lines_as_tubes=False,
                             )
                             t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
                             y_segments_total += len(dash_dot_segments)

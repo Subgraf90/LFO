@@ -145,7 +145,6 @@ class SPL3DHelpers:
                     result.append(str(item))
             return tuple(result)
 
-        # 🎯 WICHTIG: selected_axis zur Signatur hinzufügen, damit Highlight-Änderungen erkannt werden
         # Berechne maximale Surface-Dimension für Achsenflächen-Größe
         # Verwende overlay_axis oder overlay_surfaces (beide haben die Methode)
         if hasattr(self, 'overlay_axis'):
@@ -194,7 +193,6 @@ class SPL3DHelpers:
             float(getattr(settings, 'width', 0.0)),
             float(getattr(settings, 'axis_3d_transparency', 10.0)),
             float(max_surface_dim),  # Maximale Surface-Dimension für Achsenflächen-Größe
-            getattr(self, '_axis_selected', None),  # Highlight-Status in Signatur aufnehmen
             tuple(surface_points_signature),  # Aktive Surface-Geometrien
         )
 

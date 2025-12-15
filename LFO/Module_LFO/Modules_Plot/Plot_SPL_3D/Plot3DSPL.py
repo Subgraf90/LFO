@@ -1215,6 +1215,21 @@ class SPL3DPlotRenderer:
                                 # Keine Subdivision
                                 mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
                                 mesh["plot_scalars"] = spl_at_verts
+
+                            # Debug-Ausgabe: Prüfe auf NaN/Inf in den Vertex-Skalaren
+                            try:
+                                scalars_arr = np.asarray(mesh["plot_scalars"])
+                                total_count = scalars_arr.size
+                                finite_mask = np.isfinite(scalars_arr)
+                                nan_count = total_count - int(np.count_nonzero(finite_mask))
+                                if nan_count > 0:
+                                    print(f"  └─ ⚠️ plot_scalars enthält {nan_count}/{total_count} NaN/Inf-Werte (Surface={surface_id})")
+                                else:
+                                    finite_vals = scalars_arr[finite_mask]
+                                    if finite_vals.size:
+                                        print(f"  └─ ✅ plot_scalars ohne NaN/Inf (Surface={surface_id}), Range=[{finite_vals.min():.1f}, {finite_vals.max():.1f}]")
+                            except Exception as e_debug_scalars:
+                                print(f"  └─ ⚠️ Debug plot_scalars fehlgeschlagen (Surface={surface_id}): {e_debug_scalars}")
                             
                             # Entferne alten Actor
                             old_texture_data = self._surface_texture_actors.get(surface_id)

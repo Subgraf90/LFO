@@ -38,8 +38,7 @@ class SPL3DOverlayBase:
         self._axis_z_offset = 0.01  # 1cm über Surface
         # Cache für DPI-Skalierungsfaktor (wird bei Bedarf berechnet)
         self._dpi_scale_factor: Optional[float] = None
-        # Referenz-Zoom-Level für Zoom-Skalierung (wird beim ersten Aufruf gesetzt)
-        self._reference_zoom_level: Optional[float] = None
+        # Referenz-Zoom-Level wird im Plotter gespeichert, damit alle Overlays die gleiche Referenz verwenden
         
     def clear(self) -> None:
         """Löscht alle Overlay-Actors."""
@@ -51,6 +50,10 @@ class SPL3DOverlayBase:
         self.overlay_actor_names.clear()
         self.overlay_counter = 0
         self._category_actors.clear()
+        # Zurücksetzen der Zoom-Referenz beim vollständigen Löschen (z.B. beim Laden einer neuen Datei)
+        # Die Referenz wird im Plotter gespeichert, damit alle Overlays die gleiche Referenz verwenden
+        if hasattr(self.plotter, '_overlay_reference_zoom_level'):
+            self.plotter._overlay_reference_zoom_level = None
     
     def clear_category(self, category: str) -> None:
         """Entfernt alle Actor einer Kategorie, ohne andere Overlays anzutasten."""
@@ -186,6 +189,10 @@ class SPL3DOverlayBase:
             try:
                 actor.prop.SetLineStipplePattern(0xFFFF)  # Durchgezogen
                 actor.prop.SetLineStippleRepeatFactor(1)
+                # Bei Tubes wird line_width als Tube-Radius interpretiert - stelle sicher, dass es gesetzt ist
+                if category == 'axis':
+                    # Für Achsenlinien wird line_width bereits oben gesetzt, aber stellen wir sicher
+                    pass  # Wird bereits in Zeile 137 gesetzt
             except Exception:  # noqa: BLE001
                 pass
         
@@ -403,15 +410,35 @@ class SPL3DOverlayBase:
             if current_zoom is None or current_zoom <= 0:
                 return 1.0
             
+            # 🎯 WICHTIG: Referenz-Zoom-Level wird im Plotter gespeichert, damit alle Overlays
+            # die gleiche Referenz verwenden (verhindert unterschiedliche Referenzen zwischen Overlays)
+            if not hasattr(self.plotter, '_overlay_reference_zoom_level'):
+                self.plotter._overlay_reference_zoom_level = None
+            
+            reference_zoom = self.plotter._overlay_reference_zoom_level
+            
             # Setze Referenz-Zoom beim ersten Aufruf (oder wenn noch nicht gesetzt)
-            if self._reference_zoom_level is None or self._reference_zoom_level <= 0:
-                self._reference_zoom_level = current_zoom
+            if reference_zoom is None or reference_zoom <= 0:
+                print(f"[DEBUG ZOOM] Setting initial reference_zoom_level={current_zoom:.3f} (shared in plotter)")
+                self.plotter._overlay_reference_zoom_level = current_zoom
+                return 1.0
+            
+            # 🎯 WICHTIG: Wenn sich der Zoom-Level deutlich ändert (Faktor > 2 oder < 0.5),
+            # aktualisiere die Referenz. Das passiert typischerweise, wenn die Kamera
+            # nach dem ersten Zeichnen initial gezoomt wurde (z.B. in _zoom_to_default_surface).
+            # Dies verhindert, dass die Referenz auf einen falschen Wert gesetzt wird.
+            zoom_ratio = current_zoom / reference_zoom if reference_zoom > 0 else 1.0
+            if zoom_ratio > 2.0 or zoom_ratio < 0.5:
+                # Zoom-Level hat sich deutlich geändert - aktualisiere Referenz
+                print(f"[DEBUG ZOOM] Updating reference_zoom_level: {reference_zoom:.3f} -> {current_zoom:.3f} "
+                      f"(ratio={zoom_ratio:.3f}, shared in plotter)")
+                self.plotter._overlay_reference_zoom_level = current_zoom
                 return 1.0
             
             # Berechne Skalierungsfaktor: reference / current
             # Wenn current_zoom größer ist (herausgezoomt), wird der Faktor < 1.0
             # Wenn current_zoom kleiner ist (hineingezoomt), wird der Faktor > 1.0
-            raw_factor = self._reference_zoom_level / current_zoom
+            raw_factor = reference_zoom / current_zoom
             
             # Verwende Wurzel-Skalierung für sanftere Anpassung
             # Dies reduziert die Aggressivität der Zoom-Skalierung
@@ -420,6 +447,10 @@ class SPL3DOverlayBase:
             
             # Begrenze den Faktor auf einen sinnvollen Bereich (0.3 bis 3.0)
             zoom_factor = max(0.3, min(3.0, zoom_factor))
+            
+            # DEBUG: Ausgabe der Zoom-Berechnung
+            print(f"[DEBUG ZOOM] current_zoom={current_zoom:.3f}, reference_zoom={reference_zoom:.3f}, "
+                  f"raw_factor={raw_factor:.3f}, zoom_factor={zoom_factor:.3f}")
             
             return zoom_factor
         except Exception:

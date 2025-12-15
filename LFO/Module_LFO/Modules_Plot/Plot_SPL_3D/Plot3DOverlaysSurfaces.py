@@ -131,6 +131,9 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 highlights_changed = (last_ids_set != active_ids_set)
                 active_id_changed = (last_active_id != active_surface_id)
                 spl_data_changed = (last_has_spl != has_spl_data_for_signature)
+                # DEBUG: Ausgabe wenn Highlights sich geändert haben
+                if highlights_changed:
+                    print(f"[DEBUG SURFACE] Highlights changed: last={last_ids_set}, current={active_ids_set}")
                 if not surfaces_changed and not highlights_changed and not active_id_changed and not spl_data_changed:
                     signature_changed = False
             elif len(self._last_surfaces_state) == 2:
@@ -358,8 +361,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 self._add_overlay_mesh(
                     active_enabled_polyline,
                     color='#FF0000',
-                    # Rote Surface-Umrandungen mit Zoom-Skalierung
-                    line_width=self._get_scaled_line_width(1.0, apply_zoom=True),
+                    # Rote Surface-Umrandungen mit Zoom-Skalierung (dicker für bessere Sichtbarkeit)
+                    line_width=self._get_scaled_line_width(2.0, apply_zoom=True),
                     opacity=1.0,
                     category='surfaces',
                     show_vertices=False,
@@ -393,8 +396,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 self._add_overlay_mesh(
                     active_disabled_polyline,
                     color='#FF0000',
-                    # Rote Surface-Umrandungen mit Zoom-Skalierung
-                    line_width=self._get_scaled_line_width(1.0, apply_zoom=True),
+                    # Rote Surface-Umrandungen mit Zoom-Skalierung (dicker für bessere Sichtbarkeit)
+                    line_width=self._get_scaled_line_width(2.0, apply_zoom=True),
                     opacity=1.0,
                     category='surfaces',
                     show_vertices=False,
@@ -496,6 +499,13 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                             'y': float(pt[1]),
                             'z': float(z_original)
                         })
+                    
+                    # Versuche Triangulation
+                    triangles = triangulate_points(points_dict)
+                    
+                    # 🎯 DEBUG: Berechne erwartete Polygon-Fläche
+                    from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import _calculate_polygon_area
+                    expected_polygon_area = _calculate_polygon_area(points_dict)
                     
                     # Versuche Triangulation
                     triangles = triangulate_points(points_dict)

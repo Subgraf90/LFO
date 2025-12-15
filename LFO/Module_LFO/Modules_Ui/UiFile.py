@@ -169,6 +169,11 @@ class UiFile:
                 if hasattr(plotter, '_last_overlay_signatures'):
                     plotter._last_overlay_signatures = {}
                 
+                # 🎯 WICHTIG: Setze auch _last_axis_state zurück, damit Achsenlinien beim Laden immer neu gezeichnet werden
+                # (konsistent mit dem Verhalten beim normalen Erstellen einer Fläche und beim Initialisieren)
+                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                    plotter.overlay_axis._last_axis_state = None
+                
                 if hasattr(plotter, 'overlay_speakers'):
                     overlay_speakers = plotter.overlay_speakers
                     if overlay_speakers is not None:
