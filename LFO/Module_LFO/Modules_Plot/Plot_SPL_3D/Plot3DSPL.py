@@ -1216,14 +1216,53 @@ class SPL3DPlotRenderer:
                                 mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
                                 mesh["plot_scalars"] = spl_at_verts
 
+                            # Versuche zunächst, vorhandene NaN-Ergebnisse aus der Berechnung zu verwenden,
+                            # bevor neue Refinement-Requests erzeugt werden.
+                            try:
+                                calc_spl = getattr(self.container, "calculation_spl", None)
+                                extra_nan_data = None
+                                if isinstance(calc_spl, dict):
+                                    surface_results = calc_spl.get("surface_results", {})
+                                    res_entry = surface_results.get(surface_id, {})
+                                    extra_nan_data = res_entry.get("nan_vertices")
+                                if extra_nan_data is not None:
+                                    coords_extra = np.asarray(extra_nan_data.get("coords", []), dtype=float)
+                                    p_extra = np.asarray(extra_nan_data.get("sound_field_p", []), dtype=complex)
+                                    if coords_extra.size and p_extra.size and coords_extra.shape[0] == p_extra.shape[0]:
+                                        from scipy.spatial import cKDTree
+                                        tree = cKDTree(coords_extra)
+                                        vertex_coords = np.asarray(mesh.points, dtype=float)
+                                        nan_local = ~np.isfinite(mesh["plot_scalars"])
+                                        if np.any(nan_local):
+                                            nan_indices = np.where(nan_local)[0]
+                                            _, idx = tree.query(vertex_coords[nan_indices], k=1)
+                                            # Konvertiere komplexen Druck zu SPL in dB
+                                            spl_extra_db = self.functions.mag2db(np.abs(p_extra[idx]))
+                                            mesh["plot_scalars"][nan_indices] = spl_extra_db
+                            except Exception:
+                                # Fallback: Wenn etwas schiefgeht, arbeiten wir mit den
+                                # ursprünglichen Werten weiter und erzeugen unten Requests.
+                                pass
+
                             # Debug-Ausgabe: Prüfe auf NaN/Inf in den Vertex-Skalaren
                             try:
                                 scalars_arr = np.asarray(mesh["plot_scalars"])
                                 total_count = scalars_arr.size
                                 finite_mask = np.isfinite(scalars_arr)
-                                nan_count = total_count - int(np.count_nonzero(finite_mask))
+                                nan_mask = ~finite_mask
+                                nan_count = int(np.count_nonzero(nan_mask))
                                 if nan_count > 0:
                                     print(f"  └─ ⚠️ plot_scalars enthält {nan_count}/{total_count} NaN/Inf-Werte (Surface={surface_id})")
+                                    # Sammle NaN-Vertex-Koordinaten für Refinement in der Berechnung
+                                    try:
+                                        nan_vertices = np.asarray(mesh.points, dtype=float)[nan_mask]
+                                        if nan_vertices.size:
+                                            if not hasattr(self, "_nan_vertex_requests") or not isinstance(self._nan_vertex_requests, dict):
+                                                self._nan_vertex_requests = {}
+                                            lst = self._nan_vertex_requests.setdefault(surface_id, [])
+                                            lst.extend(nan_vertices.tolist())
+                                    except Exception:
+                                        pass
                                 else:
                                     finite_vals = scalars_arr[finite_mask]
                                     if finite_vals.size:
@@ -1297,6 +1336,10 @@ class SPL3DPlotRenderer:
     ):
         """Aktualisiert die SPL-Fläche."""
         t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+
+        # Sammelcontainer für NaN-Vertices pro Surface (wird in _render_surfaces_textured gefüllt)
+        # Struktur: {surface_id: [[x,y,z], ...], ...}
+        self._nan_vertex_requests = {}
 
         camera_state = self._camera_state or self._capture_camera()
 

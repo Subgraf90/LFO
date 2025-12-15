@@ -340,6 +340,9 @@ class SoundFieldCalculator(ModuleBase):
         # 🎯 NEU: Pufferspeicher für direkt berechnete Surface-Grids (ohne Interpolation)
         surface_results_buffers: Dict[str, np.ndarray] = {}
         surface_grid_cache: Dict[str, Dict[str, Any]] = {}
+        # 🎯 NEU: Refinement-Puffer für NaN-Vertices (pro Surface)
+        nan_vertex_requests: Dict[str, Any] = {}
+        nan_vertex_results_buffers: Dict[str, Dict[str, np.ndarray]] = {}
         if surface_samples:
             for sample in surface_samples:
                 # Planare Flächen: Feldwerte direkt aus dem globalen Grid
@@ -376,6 +379,27 @@ class SoundFieldCalculator(ModuleBase):
                     }
                 except Exception:
                     # Wenn etwas schiefgeht, einfach keinen Buffer anlegen
+                    continue
+
+        # 🎯 NEU: Zusätzliche Sample-Punkte für NaN-Vertices (Refinement) aus calculation_spl auslesen
+        if isinstance(self.calculation_spl, dict):
+            try:
+                raw_reqs = self.calculation_spl.get("nan_vertex_requests") or {}
+                if isinstance(raw_reqs, dict):
+                    nan_vertex_requests = raw_reqs
+            except Exception:
+                nan_vertex_requests = {}
+        if nan_vertex_requests:
+            for sid, coords_list in nan_vertex_requests.items():
+                try:
+                    coords = np.asarray(coords_list, dtype=float).reshape(-1, 3)
+                    if coords.size == 0:
+                        continue
+                    nan_vertex_results_buffers[sid] = {
+                        "coords": coords,
+                        "field": np.zeros(coords.shape[0], dtype=complex),
+                    }
+                except Exception:
                     continue
         
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
@@ -625,6 +649,55 @@ class SoundFieldCalculator(ModuleBase):
                             except Exception:
                                 # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
                                 continue
+                    # 🎯 NEU: Berechne Schallfeld für NaN-Vertex-Refinement-Punkte (pro Surface)
+                    if nan_vertex_results_buffers:
+                        for sid, buf in nan_vertex_results_buffers.items():
+                            try:
+                                coords = buf["coords"]
+                                if coords.size == 0:
+                                    continue
+                                dx_nv = coords[:, 0] - source_position_x[isrc]
+                                dy_nv = coords[:, 1] - source_position_y[isrc]
+                                dz_nv = coords[:, 2] - source_position_z[isrc]
+                                horizontal_nv = np.sqrt(dx_nv**2 + dy_nv**2)
+                                dists_nv = np.sqrt(horizontal_nv**2 + dz_nv**2)
+
+                                az_nv = (np.degrees(np.arctan2(dy_nv, dx_nv)) + np.degrees(source_azimuth[isrc])) % 360
+                                az_nv = (360 - az_nv) % 360
+                                az_nv = (az_nv + 90) % 360
+                                el_nv = np.degrees(np.arctan2(dz_nv, horizontal_nv))
+
+                                az_payload = az_nv.reshape(1, -1)
+                                el_payload = el_nv.reshape(1, -1)
+                                gains_nv, phases_nv = self.get_balloon_data_batch(
+                                    speaker_name,
+                                    az_payload,
+                                    el_payload,
+                                )
+                                if gains_nv is None or phases_nv is None:
+                                    continue
+
+                                props_nv = {
+                                    "magnitude_linear": (10 ** (gains_nv.reshape(-1) / 20)),
+                                    "polar_phase_rad": np.radians(phases_nv.reshape(-1)),
+                                    "source_level": source_level[isrc],
+                                    "a_source_pa": a_source_pa,
+                                    "wave_number": wave_number,
+                                    "frequency": calculate_frequency,
+                                    "source_time": source_time[isrc],
+                                    "polarity": polarity_flag,
+                                    "distances": dists_nv,
+                                }
+                                mask_opts_nv = {"min_distance": 0.001}
+                                wave_nv = self._compute_wave_for_points(
+                                    coords,
+                                    source_position,
+                                    props_nv,
+                                    mask_opts_nv,
+                                )
+                                buf["field"] += wave_nv.reshape(-1)
+                            except Exception:
+                                continue
                     if surface_field_buffers:
                         for sample in surface_samples:
                             # Nur planare Surfaces nutzen die (row,col)-Indizes
@@ -732,6 +805,26 @@ class SoundFieldCalculator(ModuleBase):
             surface_results_data[surface_id] = {
                 'sound_field_p': buffer_array.tolist(),
             }
+
+        # 🎯 NEU: Ergebnisse für NaN-Vertex-Refinement an surface_results_data anhängen
+        if nan_vertex_results_buffers:
+            for sid, buf in nan_vertex_results_buffers.items():
+                try:
+                    coords = np.asarray(buf["coords"], dtype=float)
+                    field = np.asarray(buf["field"], dtype=complex)
+                    if coords.size == 0 or field.size == 0:
+                        continue
+                    entry = surface_results_data.setdefault(sid, {})
+                    entry["nan_vertices"] = {
+                        "coords": coords.tolist(),
+                        "sound_field_p": field.tolist(),
+                    }
+                except Exception:
+                    continue
+
+        # Nach Verarbeitung Refinement-Requests zurücksetzen, damit nicht endlos weiter verfeinert wird
+        if isinstance(self.calculation_spl, dict):
+            self.calculation_spl.pop("nan_vertex_requests", None)
         
         if isinstance(self.calculation_spl, dict):
             # 🎯 ALTE DATEN AUSKOMMENTIERT - Verwende nur neue Struktur
