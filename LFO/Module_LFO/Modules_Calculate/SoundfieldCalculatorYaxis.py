@@ -1,6 +1,6 @@
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Init.Logging import measure_time, perf_section
+from Module_LFO.Modules_Init.Logging import measure_time
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition
 
 "SoundfieldCalculatorYaxis berechnet die SPL-Werte in Abhängigkeit der Länge des Schallfeldes"
@@ -483,7 +483,7 @@ class SoundFieldCalculatorYaxis(ModuleBase):
         # Keine bandgemittelten Daten verfügbar
         return None, None
 
-    @measure_time("SoundFieldCalculatorYaxis.calculate_sound_field_at_points_yz")
+    # @measure_time("SoundFieldCalculatorYaxis.calculate_sound_field_at_points_yz")
     def calculate_sound_field_at_points_yz(self, x_const, y_coords, z_coords):
         """
         Berechnet SPL-Werte für spezifische Punkte (Y- und Z-Koordinaten bei konstanter X-Position).

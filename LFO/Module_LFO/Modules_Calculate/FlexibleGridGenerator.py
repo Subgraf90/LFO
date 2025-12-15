@@ -22,7 +22,7 @@ import math
 import os
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
-from Module_LFO.Modules_Init.Logging import PERF_ENABLED, measure_time, perf_section
+from Module_LFO.Modules_Init.Logging import PERF_ENABLED, measure_time
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     evaluate_surface_plane,
@@ -1255,7 +1255,7 @@ class GridBuilder(ModuleBase):
                 dilated[i, j] = np.any(region & kernel)
         return dilated
     
-    @measure_time("GridBuilder.build_single_surface_grid")
+    # @measure_time("GridBuilder.build_single_surface_grid")
     def build_single_surface_grid(
         self,
         geometry: SurfaceGeometry,
@@ -1952,14 +1952,14 @@ class GridBuilder(ModuleBase):
                 else:
                     # Alle Surface-Punkte haben gleichen Z-Wert
                     Z_grid.fill(surface_z[0])
-                    print(f"  └─ Z-Werte auf konstanten Wert {surface_z[0]:.3f} gesetzt für ALLE {total_grid_points} Punkte")
+                    # print(f"  └─ Z-Werte auf konstanten Wert {surface_z[0]:.3f} gesetzt für ALLE {total_grid_points} Punkte")
         
-        if PERF_ENABLED and t_orientation_start is not None:
-            duration_ms = (time.perf_counter() - t_orientation_start) * 1000.0
-            print(
-                f"[PERF] GridBuilder.build_single_surface_grid.{geometry.orientation}: "
-                f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
-            )
+        # if PERF_ENABLED and t_orientation_start is not None:
+        #     duration_ms = (time.perf_counter() - t_orientation_start) * 1000.0
+        #     print(
+        #         f"[PERF] GridBuilder.build_single_surface_grid.{geometry.orientation}: "
+        #         f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
+        #     )
         
         # Für planare/schräge Surfaces: Gebe auch die strikte Maske zurück (ohne Erweiterung)
         # Für vertikale Surfaces: surface_mask_strict wurde bereits vorher erstellt (vor Dilatation)
@@ -2679,7 +2679,7 @@ class FlexibleGridGenerator(ModuleBase):
                         if len(additional_vertices) > 0:
                             additional_vertices_array = np.array(additional_vertices, dtype=float)
                             all_vertices = np.vstack([all_vertices, additional_vertices_array])
-                            print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt ({geom.orientation})")
+                            # print(f"  └─ ✅ {len(additional_vertices)} zusätzliche Vertices an Polygon-Ecken hinzugefügt ({geom.orientation})")
                     
                     # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
                     base_vertex_count = X_grid.size
@@ -2919,8 +2919,8 @@ class FlexibleGridGenerator(ModuleBase):
                                         except Exception:
                                             pass  # Falls Berechnung fehlschlägt, behalte alte Z-Koordinate
                             
-                            if len(boundary_indices) > 0:
-                                print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert ({geom.orientation})")
+                            # if len(boundary_indices) > 0:
+                            #     print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert ({geom.orientation})")
                     
                     # Erstelle Index-Mapping: (i, j) → linearer Index
                     # Für ein strukturiertes Grid: index = i * nx + j

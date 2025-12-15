@@ -643,6 +643,7 @@ class SPL3DPlotRenderer:
         except Exception:
             return None
 
+    @measure_time("PlotSPL3D._render_surfaces_textured")
     def _render_surfaces_textured(
         self,
         geometry,

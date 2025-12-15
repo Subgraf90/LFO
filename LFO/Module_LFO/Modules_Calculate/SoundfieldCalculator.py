@@ -103,6 +103,7 @@ class SoundFieldCalculator(ModuleBase):
         # Keine bandgemittelten Daten verfügbar
         return None, None
 
+    @measure_time("SoundFieldCalculator._calculate_sound_field_complex")
     def _calculate_sound_field_complex(self, capture_arrays: bool = False):
         """
         🚀 VOLLSTÄNDIG VEKTORISIERT: Berechnet das Schallfeld für alle Grid-Punkte gleichzeitig
@@ -133,11 +134,15 @@ class SoundFieldCalculator(ModuleBase):
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
         # Verwende generate_per_surface() um pro Surface Grids zu bekommen (nicht pro Gruppe)
-        surface_grids_grouped: Dict[str, Any] = self._grid_generator.generate_per_surface(
-            enabled_surfaces,
-            resolution=self.settings.resolution,
-            min_points_per_dimension=3
-        )
+        with perf_section(
+            "SoundFieldCalculator._calculate_sound_field_complex.generate_per_surface",
+            n_surfaces=len(enabled_surfaces),
+        ):
+            surface_grids_grouped: Dict[str, Any] = self._grid_generator.generate_per_surface(
+                enabled_surfaces,
+                resolution=self.settings.resolution,
+                min_points_per_dimension=3
+            )
         
         # Prüfe, welche Surfaces fehlen
         enabled_ids = {sid for sid, _ in enabled_surfaces}
@@ -154,24 +159,28 @@ class SoundFieldCalculator(ModuleBase):
         surface_results_data = {}
         
         # Kombiniere alle Grids zu einem gemeinsamen Grid für Rückwärtskompatibilität
-        all_x = []
-        all_y = []
-        for grid in surface_grids_grouped.values():
-            all_x.extend(grid.sound_field_x.tolist())
-            all_y.extend(grid.sound_field_y.tolist())
-        
-        if all_x and all_y:
-            unique_x = np.unique(np.array(all_x))
-            unique_y = np.unique(np.array(all_y))
-            unique_x.sort()
-            unique_y.sort()
+        with perf_section(
+            "SoundFieldCalculator._calculate_sound_field_complex.combine_surface_grids",
+            n_surface_grids=len(surface_grids_grouped),
+        ):
+            all_x = []
+            all_y = []
+            for grid in surface_grids_grouped.values():
+                all_x.extend(grid.sound_field_x.tolist())
+                all_y.extend(grid.sound_field_y.tolist())
             
-            # Erstelle kombiniertes Grid für Rückwärtskompatibilität
-            X_grid_combined, Y_grid_combined = np.meshgrid(unique_x, unique_y, indexing='xy')
-            Z_grid_combined = np.zeros_like(X_grid_combined, dtype=float)
-            surface_mask_combined = np.zeros_like(X_grid_combined, dtype=bool)
-        else:
-            return [], np.array([]), np.array([]), ({} if capture_arrays else None)
+            if all_x and all_y:
+                unique_x = np.unique(np.array(all_x))
+                unique_y = np.unique(np.array(all_y))
+                unique_x.sort()
+                unique_y.sort()
+                
+                # Erstelle kombiniertes Grid für Rückwärtskompatibilität
+                X_grid_combined, Y_grid_combined = np.meshgrid(unique_x, unique_y, indexing='xy')
+                Z_grid_combined = np.zeros_like(X_grid_combined, dtype=float)
+                surface_mask_combined = np.zeros_like(X_grid_combined, dtype=bool)
+            else:
+                return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
         # 🎯 ALTE GRID-POSITIONEN AUSKOMMENTIERT - Verwende nur neue Grids
         # sound_field_x = cartesian_grid.sound_field_x  # ALT

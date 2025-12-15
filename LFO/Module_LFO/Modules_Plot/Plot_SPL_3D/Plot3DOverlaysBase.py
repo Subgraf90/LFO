@@ -448,9 +448,9 @@ class SPL3DOverlayBase:
             # Begrenze den Faktor auf einen sinnvollen Bereich (0.3 bis 3.0)
             zoom_factor = max(0.3, min(3.0, zoom_factor))
             
-            # DEBUG: Ausgabe der Zoom-Berechnung
-            print(f"[DEBUG ZOOM] current_zoom={current_zoom:.3f}, reference_zoom={reference_zoom:.3f}, "
-                  f"raw_factor={raw_factor:.3f}, zoom_factor={zoom_factor:.3f}")
+            # Optionale Debug-Ausgabe der Zoom-Berechnung (deaktiviert im Normalbetrieb)
+            # print(f"[DEBUG ZOOM] current_zoom={current_zoom:.3f}, reference_zoom={reference_zoom:.3f}, "
+            #       f"raw_factor={raw_factor:.3f}, zoom_factor={zoom_factor:.3f}")
             
             return zoom_factor
         except Exception:

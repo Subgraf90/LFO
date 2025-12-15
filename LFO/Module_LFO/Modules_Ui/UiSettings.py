@@ -1039,7 +1039,7 @@ class UiSettings(QtWidgets.QWidget):
                 self.position_plot_length.setStyleSheet("")
                 if self.settings.position_x_axis != value:
                     self.settings.position_x_axis = value
-                    # Aktualisiere Overlays (Achsen neu zeichnen)
+                    # Aktualisiere Overlays (Achsen im 3D-Plot neu zeichnen)
                     try:
                         draw_plots = getattr(self.main_window, "draw_plots", None)
                         if draw_plots and hasattr(draw_plots, "draw_spl_plotter"):
@@ -1048,7 +1048,11 @@ class UiSettings(QtWidgets.QWidget):
                                 plotter.update_overlays(self.settings, self.main_window.container)
                     except Exception as e:
                         print(f"[UiSettings] Fehler beim Aktualisieren der Achsenposition: {e}")
-                    self.main_window.update_speaker_array_calculations()
+                    # Nur Achsenberechnung aktualisieren (X/Y-Achsenplots), ohne komplette SPL-Neuberechnung
+                    try:
+                        self.main_window.calculate_axes(update_plot=True)
+                    except Exception as e:
+                        print(f"[UiSettings] Fehler bei calculate_axes nach Positionsänderung (Länge): {e}")
         except ValueError:
             self.position_plot_length.setStyleSheet("background-color: #FFE4E1;")
             QtCore.QTimer.singleShot(500, lambda: self.reset_position_value(
@@ -1076,7 +1080,7 @@ class UiSettings(QtWidgets.QWidget):
                 self.position_plot_width.setStyleSheet("")
                 if self.settings.position_y_axis != value:
                     self.settings.position_y_axis = value
-                    # Aktualisiere Overlays (Achsen neu zeichnen)
+                    # Aktualisiere Overlays (Achsen im 3D-Plot neu zeichnen)
                     try:
                         draw_plots = getattr(self.main_window, "draw_plots", None)
                         if draw_plots and hasattr(draw_plots, "draw_spl_plotter"):
@@ -1085,7 +1089,11 @@ class UiSettings(QtWidgets.QWidget):
                                 plotter.update_overlays(self.settings, self.main_window.container)
                     except Exception as e:
                         print(f"[UiSettings] Fehler beim Aktualisieren der Achsenposition: {e}")
-                    self.main_window.update_speaker_array_calculations()
+                    # Nur Achsenberechnung aktualisieren (X/Y-Achsenplots), ohne komplette SPL-Neuberechnung
+                    try:
+                        self.main_window.calculate_axes(update_plot=True)
+                    except Exception as e:
+                        print(f"[UiSettings] Fehler bei calculate_axes nach Positionsänderung (Breite): {e}")
         except ValueError:
             self.position_plot_width.setStyleSheet("background-color: #FFE4E1;")
             QtCore.QTimer.singleShot(500, lambda: self.reset_position_value(
