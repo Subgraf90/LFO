@@ -2083,18 +2083,19 @@ class UISurfaceManager(ModuleBase):
                     hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
                     plotter = self.main_window.draw_plots.draw_spl_plotter
                     if plotter:
-                        # Entferne nur den Actor für dieses Surface
+                        # Entferne nur den Actor und alle zugehörigen Caches für dieses Surface
                         for sid in surfaces_to_update:
                             # Entferne horizontale Surface-Actors
-                            if hasattr(plotter, '_surface_actors') and sid in plotter._surface_actors:
-                                actor = plotter._surface_actors[sid]
+                            if hasattr(plotter, '_surface_actors') and isinstance(plotter._surface_actors, dict) and sid in plotter._surface_actors:
+                                actor_entry = plotter._surface_actors[sid]
+                                actor = actor_entry.get("actor") if isinstance(actor_entry, dict) else actor_entry
                                 try:
                                     plotter.plotter.remove_actor(actor)
                                 except Exception:
                                     pass
                                 del plotter._surface_actors[sid]
                             # Entferne auch Texture-Actor falls vorhanden
-                            if hasattr(plotter, '_surface_texture_actors') and sid in plotter._surface_texture_actors:
+                            if hasattr(plotter, '_surface_texture_actors') and isinstance(plotter._surface_texture_actors, dict) and sid in plotter._surface_texture_actors:
                                 tex_data = plotter._surface_texture_actors[sid]
                                 actor = None
                                 if isinstance(tex_data, dict):
@@ -2107,9 +2108,12 @@ class UISurfaceManager(ModuleBase):
                                     except Exception:
                                         pass
                                 del plotter._surface_texture_actors[sid]
+                            # Entferne Texture-Signatur-Cache für dieses Surface
+                            if hasattr(plotter, '_surface_texture_cache') and isinstance(plotter._surface_texture_cache, dict):
+                                plotter._surface_texture_cache.pop(sid, None)
                             
                             # Entferne vertikale Surface-Actors (falls vorhanden)
-                            if hasattr(plotter, '_vertical_surface_meshes'):
+                            if hasattr(plotter, '_vertical_surface_meshes') and isinstance(plotter._vertical_surface_meshes, dict):
                                 actor_name = f"vertical_spl_{sid}"
                                 if actor_name in plotter._vertical_surface_meshes:
                                     actor = plotter._vertical_surface_meshes[actor_name]
@@ -2128,6 +2132,18 @@ class UISurfaceManager(ModuleBase):
                         # (disabled Surfaces werden dort übersprungen und entfernt)
                         if hasattr(plotter, '_update_vertical_spl_surfaces_from_grids'):
                             plotter._update_vertical_spl_surfaces_from_grids()
+
+                # Entferne auch Grid- und Ergebnisdaten aus calculation_spl, damit beim Re-Aktivieren
+                # ein frischer Grid/SPL für dieses Surface berechnet wird.
+                try:
+                    if hasattr(self.container, 'calculation_spl') and isinstance(self.container.calculation_spl, dict):
+                        for sid in surfaces_to_update:
+                            if 'surface_grids' in self.container.calculation_spl:
+                                self.container.calculation_spl['surface_grids'].pop(sid, None)
+                            if 'surface_results' in self.container.calculation_spl:
+                                self.container.calculation_spl['surface_results'].pop(sid, None)
+                except Exception:
+                    pass
     
     def on_surface_hide_changed(self, surface_id, state, skip_calculations=False):
         """Wird aufgerufen, wenn sich der Hide-Status eines Surfaces ändert. Bei Mehrfachauswahl werden alle ausgewählten Surfaces aktualisiert."""
@@ -2194,58 +2210,54 @@ class UISurfaceManager(ModuleBase):
                     plotter = self.main_window.draw_plots.draw_spl_plotter
                     if plotter:
                         # Entferne SPL Plot für versteckte Surfaces
+                        # 🎯 WICHTIG: Immer Actors entfernen, unabhängig vom aktuellen Enable-Status,
+                        # da ein Surface zuvor enabled gewesen sein kann und noch Actors im Plot hält.
                         for sid in surfaces_to_update:
-                            surface = self._get_surface(sid)
-                            if surface:
-                                is_enabled = False
-                                if isinstance(surface, SurfaceDefinition):
-                                    is_enabled = bool(getattr(surface, 'enabled', False))
-                                else:
-                                    is_enabled = bool(surface.get('enabled', False))
-                                
-                                # Wenn enabled und SPL geplottet, entferne SPL Plot für dieses Surface
-                                if is_enabled:
-                                    # Entferne horizontale Surface-Actors
-                                    if hasattr(plotter, '_surface_actors') and sid in plotter._surface_actors:
-                                        actor = plotter._surface_actors[sid]
-                                        try:
-                                            plotter.plotter.remove_actor(actor)
-                                        except Exception:
-                                            pass
-                                        del plotter._surface_actors[sid]
-                                    # Entferne auch Texture-Actor falls vorhanden
-                                    if hasattr(plotter, '_surface_texture_actors') and sid in plotter._surface_texture_actors:
-                                        tex_data = plotter._surface_texture_actors[sid]
-                                        actor = None
-                                        if isinstance(tex_data, dict):
-                                            actor = tex_data.get("actor")
-                                        elif tex_data is not None:
-                                            actor = tex_data
-                                        if actor is not None:
-                                            try:
-                                                plotter.plotter.remove_actor(actor)
-                                            except Exception:
-                                                pass
-                                        del plotter._surface_texture_actors[sid]
-                                    
-                                    # Entferne vertikale Surface-Actors (falls vorhanden)
-                                    # Vertikale Surfaces werden in _vertical_surface_meshes gespeichert
-                                    # mit Actor-Namen im Format "vertical_spl_<surface_id>"
-                                    if hasattr(plotter, '_vertical_surface_meshes'):
-                                        actor_name = f"vertical_spl_{sid}"
-                                        if actor_name in plotter._vertical_surface_meshes:
-                                            actor = plotter._vertical_surface_meshes[actor_name]
-                                            try:
-                                                plotter.plotter.remove_actor(actor)
-                                            except Exception:
-                                                pass
-                                            del plotter._vertical_surface_meshes[actor_name]
-                                    
-                                    # Rufe _update_vertical_spl_surfaces_from_grids auf, um sicherzustellen,
-                                    # dass vertikale Surfaces korrekt aktualisiert werden
-                                    # (hidden Surfaces werden dort übersprungen und entfernt)
-                                    if hasattr(plotter, '_update_vertical_spl_surfaces_from_grids'):
-                                        plotter._update_vertical_spl_surfaces_from_grids()
+                            # Entferne horizontale Surface-Actors
+                            if hasattr(plotter, '_surface_actors') and isinstance(plotter._surface_actors, dict) and sid in plotter._surface_actors:
+                                actor_entry = plotter._surface_actors[sid]
+                                actor = actor_entry.get("actor") if isinstance(actor_entry, dict) else actor_entry
+                                try:
+                                    plotter.plotter.remove_actor(actor)
+                                except Exception:
+                                    pass
+                                del plotter._surface_actors[sid]
+                            # Entferne auch Texture-Actor falls vorhanden
+                            if hasattr(plotter, '_surface_texture_actors') and isinstance(plotter._surface_texture_actors, dict) and sid in plotter._surface_texture_actors:
+                                tex_data = plotter._surface_texture_actors[sid]
+                                actor = None
+                                if isinstance(tex_data, dict):
+                                    actor = tex_data.get("actor")
+                                elif tex_data is not None:
+                                    actor = tex_data
+                                if actor is not None:
+                                    try:
+                                        plotter.plotter.remove_actor(actor)
+                                    except Exception:
+                                        pass
+                                del plotter._surface_texture_actors[sid]
+                            # Entferne Texture-Signatur-Cache für dieses Surface
+                            if hasattr(plotter, '_surface_texture_cache') and isinstance(plotter._surface_texture_cache, dict):
+                                plotter._surface_texture_cache.pop(sid, None)
+                            
+                            # Entferne vertikale Surface-Actors (falls vorhanden)
+                            # Vertikale Surfaces werden in _vertical_surface_meshes gespeichert
+                            # mit Actor-Namen im Format "vertical_spl_<surface_id>"
+                            if hasattr(plotter, '_vertical_surface_meshes') and isinstance(plotter._vertical_surface_meshes, dict):
+                                actor_name = f"vertical_spl_{sid}"
+                                if actor_name in plotter._vertical_surface_meshes:
+                                    actor = plotter._vertical_surface_meshes[actor_name]
+                                    try:
+                                        plotter.plotter.remove_actor(actor)
+                                    except Exception:
+                                        pass
+                                    del plotter._vertical_surface_meshes[actor_name]
+                        
+                        # Rufe _update_vertical_spl_surfaces_from_grids auf, um sicherzustellen,
+                        # dass vertikale Surfaces korrekt aktualisiert werden
+                        # (hidden Surfaces werden dort übersprungen und entfernt)
+                        if hasattr(plotter, '_update_vertical_spl_surfaces_from_grids'):
+                            plotter._update_vertical_spl_surfaces_from_grids()
                         
                         # Aktualisiere Overlays (entfernt Fläche, Achslinien, Rahmen)
                         # Die Achsenlinien werden automatisch entfernt, da das Surface nicht mehr in active_surfaces ist
@@ -2264,91 +2276,121 @@ class UISurfaceManager(ModuleBase):
                                 plotter._last_overlay_signatures.pop('axis', None)
                         if hasattr(plotter, 'update_overlays'):
                             plotter.update_overlays(self.settings, self.container)
+
+                # Entferne auch Grid- und Ergebnisdaten aus calculation_spl, damit beim Unhide
+                # ein frischer Grid/SPL für dieses Surface berechnet wird.
+                try:
+                    if hasattr(self.container, 'calculation_spl') and isinstance(self.container.calculation_spl, dict):
+                        for sid in surfaces_to_update:
+                            if 'surface_grids' in self.container.calculation_spl:
+                                self.container.calculation_spl['surface_grids'].pop(sid, None)
+                            if 'surface_results' in self.container.calculation_spl:
+                                self.container.calculation_spl['surface_results'].pop(sid, None)
+                except Exception:
+                    pass
             else:
                 # Hide deaktiviert: Validiere Surface und berechne/plotte wenn enabled
+                axes_recalc_needed = False
                 for sid in surfaces_to_update:
                     surface = self._get_surface(sid)
-                    if surface:
-                        is_enabled = False
+                    if not surface:
+                        continue
+
+                    # Bestimme Enabled-Zustand bevorzugt aus dem TreeWidget (sichtbarer Zustand),
+                    # da surface.enabled durch Gruppen-Operationen temporär abweichen kann.
+                    is_enabled = False
+                    item = self._find_tree_item_by_id(sid)
+                    if item is not None:
+                        enable_checkbox = self.surface_tree_widget.itemWidget(item, 1)
+                        if enable_checkbox is not None:
+                            is_enabled = (enable_checkbox.checkState() == Qt.Checked)
+                    else:
+                        # Fallback: Modellzustand verwenden
                         if isinstance(surface, SurfaceDefinition):
                             is_enabled = bool(getattr(surface, 'enabled', False))
                         else:
                             is_enabled = bool(surface.get('enabled', False))
-                        
-                        # 🎯 WICHTIG: Validiere Surface IMMER, auch wenn nicht enabled
-                        # (damit UI korrekt aktualisiert wird und Validierungsfehler angezeigt werden)
-                        from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
-                        surface_obj = surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(sid, surface)
-                        validation_result = validate_and_optimize_surface(
-                            surface_obj,
-                            round_to_cm=False,
-                            remove_redundant=False,
-                        )
-                        
-                        # Zusätzliche Prüfung: Triangulation für Surfaces mit 4+ Punkten
-                        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
-                        is_valid_for_spl = validation_result.is_valid
-                        if is_valid_for_spl and len(points) >= 4:
-                            try:
-                                triangles = triangulate_points(points)
-                                if not triangles or len(triangles) == 0:
-                                    is_valid_for_spl = False
-                            except Exception:
+                    
+                    # 🎯 WICHTIG: Validiere Surface IMMER, auch wenn nicht enabled
+                    # (damit UI korrekt aktualisiert wird und Validierungsfehler angezeigt werden)
+                    from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
+                    surface_obj = surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(sid, surface)
+                    validation_result = validate_and_optimize_surface(
+                        surface_obj,
+                        round_to_cm=False,
+                        remove_redundant=False,
+                    )
+                    
+                    # Zusätzliche Prüfung: Triangulation für Surfaces mit 4+ Punkten
+                    points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                    is_valid_for_spl = validation_result.is_valid
+                    if is_valid_for_spl and len(points) >= 4:
+                        try:
+                            triangles = triangulate_points(points)
+                            if not triangles or len(triangles) == 0:
                                 is_valid_for_spl = False
-                        
-                        # Stelle sicher, dass Surface-Definitionen in settings aktualisiert sind
-                        if hasattr(self.settings, 'surface_definitions'):
-                            surface_store = self.settings.surface_definitions
-                            if surface_store is None:
-                                surface_store = {}
-                            if isinstance(surface, SurfaceDefinition):
-                                surface_store[sid] = surface
-                            else:
-                                surface_store[sid] = SurfaceDefinition.from_dict(sid, surface)
-                            self.settings.surface_definitions = surface_store
-                        
-                        # Berechne nur wenn enabled und valid
-                        if is_enabled:
-                            if is_valid_for_spl:
-                                # Surface ist enabled und valid - berechne und plotte
-                                self.calculate_single_surface(sid)
-                            else:
-                                # Surface ist enabled aber invalid - entferne SPL-Daten
-                                self._remove_spl_data_for_surface(sid)
-                            
-                            # Nach der Berechnung auch Overlays aktualisieren, damit XY-Linien gezeichnet werden
-                            # (wenn xy_enabled=True)
-                            if (hasattr(self.main_window, 'draw_plots') and 
-                                hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
-                                plotter = self.main_window.draw_plots.draw_spl_plotter
-                                if plotter:
-                                    # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
-                                    if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
-                                        plotter.overlay_axis._last_axis_state = None
-                                    # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
-                                    if hasattr(plotter, '_last_overlay_signatures'):
-                                        # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
-                                        if isinstance(plotter._last_overlay_signatures, dict):
-                                            plotter._last_overlay_signatures.pop('axis', None)
-                                    if hasattr(plotter, 'update_overlays'):
-                                        plotter.update_overlays(self.settings, self.container)
+                        except Exception:
+                            is_valid_for_spl = False
+                    
+                    # Stelle sicher, dass Surface-Definitionen in settings aktualisiert sind
+                    if hasattr(self.settings, 'surface_definitions'):
+                        surface_store = self.settings.surface_definitions
+                        if surface_store is None:
+                            surface_store = {}
+                        if isinstance(surface, SurfaceDefinition):
+                            surface_store[sid] = surface
                         else:
-                            # Surface ist nicht enabled - nur Overlays aktualisieren (zeigt Surface wieder)
-                            # Aber Validierung wurde bereits ausgeführt, damit UI korrekt aktualisiert wird
-                            if (hasattr(self.main_window, 'draw_plots') and 
-                                hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
-                                plotter = self.main_window.draw_plots.draw_spl_plotter
-                                if plotter:
-                                    # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
-                                    if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
-                                        plotter.overlay_axis._last_axis_state = None
-                                    # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
-                                    if hasattr(plotter, '_last_overlay_signatures'):
-                                        # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
-                                        if isinstance(plotter._last_overlay_signatures, dict):
-                                            plotter._last_overlay_signatures.pop('axis', None)
-                                    if hasattr(plotter, 'update_overlays'):
-                                        plotter.update_overlays(self.settings, self.container)
+                            surface_store[sid] = SurfaceDefinition.from_dict(sid, surface)
+                        self.settings.surface_definitions = surface_store
+                    
+                    # Berechne nur wenn enabled und valid
+                    if is_enabled:
+                        if is_valid_for_spl:
+                            # Surface ist enabled und valid - berechne und plotte
+                            self.calculate_single_surface(sid)
+                        else:
+                            # Surface ist enabled aber invalid - entferne SPL-Daten
+                            self._remove_spl_data_for_surface(sid)
+                        
+                        axes_recalc_needed = True
+
+                        # Nach der Berechnung auch Overlays aktualisieren, damit XY-Linien gezeichnet werden
+                        # (wenn xy_enabled=True)
+                        if (hasattr(self.main_window, 'draw_plots') and 
+                            hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                            plotter = self.main_window.draw_plots.draw_spl_plotter
+                            if plotter:
+                                # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
+                                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                                    plotter.overlay_axis._last_axis_state = None
+                                # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                                if hasattr(plotter, '_last_overlay_signatures'):
+                                    # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                                    if isinstance(plotter._last_overlay_signatures, dict):
+                                        plotter._last_overlay_signatures.pop('axis', None)
+                                if hasattr(plotter, 'update_overlays'):
+                                    plotter.update_overlays(self.settings, self.container)
+                    else:
+                        # Surface ist nicht enabled - nur Overlays aktualisieren (zeigt Surface wieder)
+                        # Aber Validierung wurde bereits ausgeführt, damit UI korrekt aktualisiert wird
+                        if (hasattr(self.main_window, 'draw_plots') and 
+                            hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                            plotter = self.main_window.draw_plots.draw_spl_plotter
+                            if plotter:
+                                # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
+                                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                                    plotter.overlay_axis._last_axis_state = None
+                                # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                                if hasattr(plotter, '_last_overlay_signatures'):
+                                    # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                                    if isinstance(plotter._last_overlay_signatures, dict):
+                                        plotter._last_overlay_signatures.pop('axis', None)
+                                if hasattr(plotter, 'update_overlays'):
+                                    plotter.update_overlays(self.settings, self.container)
+
+                # Wenn mindestens ein Surface wieder sichtbar und enabled ist → Achsen neu berechnen
+                if axes_recalc_needed and hasattr(self.main_window, 'calculate_axes'):
+                    self.main_window.calculate_axes(update_plot=True)
     
     def on_surface_xy_changed(self, surface_id, state, skip_calculations=False):
         """Wird aufgerufen, wenn sich der XY-Status eines Surfaces ändert"""

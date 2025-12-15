@@ -701,10 +701,12 @@ class MainWindow(QtWidgets.QMainWindow):
             # Hier nur zurückgeben, um weitere Verarbeitung zu stoppen
             return
         
+        # Ergebnisse der ersten Berechnung übernehmen
         self.container.set_calculation_SPL(calculator_instance.calculation_spl)
         self._set_spl_show_flag(True)
         
         if update_plot:
+            # SPL einmal berechnen und plotten
             self.plot_spl(update_axes=False)
         
         if update_plot and update_axisplots:

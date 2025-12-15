@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.FlexibleGridGenerator import FlexibleGridGenerator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
@@ -32,6 +33,152 @@ class SoundFieldCalculator(ModuleBase):
         
         # 🎯 GRID-GENERATOR: Flexible Grid-Erstellung
         self._grid_generator = FlexibleGridGenerator(settings)
+
+    def _compute_surface_contribution_for_source(
+        self,
+        cache: Dict[str, Any],
+        speaker_name: str,
+        source_position: np.ndarray,
+        source_position_x: float,
+        source_position_y: float,
+        source_position_z: float,
+        source_azimuth: float,
+        source_level: float,
+        a_source_pa: float,
+        wave_number: float,
+        calculate_frequency: float,
+        source_time: float,
+        polarity_flag: bool,
+    ) -> Optional[np.ndarray]:
+        """
+        Berechnet den Schallfeldbeitrag einer einzelnen Quelle für EIN Surface-Grid.
+        Gibt ein Array in Shape von cache['X'] zurück oder None bei Fehlern.
+        """
+        try:
+            Xg = cache["X"]
+            Yg = cache["Y"]
+            Zg = cache["Z"]
+            points_surface = cache["points"]
+            mask_flat_surface = cache.get("mask_flat")
+
+            x_dist_s = Xg - source_position_x
+            y_dist_s = Yg - source_position_y
+            horizontal_s = np.sqrt(x_dist_s**2 + y_dist_s**2)
+            z_dist_s = Zg - source_position_z
+            source_dists_s = np.sqrt(horizontal_s**2 + z_dist_s**2)
+
+            azimuths_s = np.arctan2(y_dist_s, x_dist_s)
+            azimuths_s = (np.degrees(azimuths_s) + np.degrees(source_azimuth)) % 360
+            azimuths_s = (360 - azimuths_s) % 360
+            azimuths_s = (azimuths_s + 90) % 360
+            elevations_s = np.degrees(np.arctan2(z_dist_s, horizontal_s))
+
+            gains_s, phases_s = self.get_balloon_data_batch(
+                speaker_name,
+                azimuths_s,
+                elevations_s,
+            )
+            if gains_s is None or phases_s is None:
+                return None
+
+            magnitude_linear_s = 10 ** (gains_s / 20)
+            polar_phase_rad_s = np.radians(phases_s)
+
+            source_props_surface = {
+                "magnitude_linear": magnitude_linear_s.reshape(-1),
+                "polar_phase_rad": polar_phase_rad_s.reshape(-1),
+                "source_level": source_level,
+                "a_source_pa": a_source_pa,
+                "wave_number": wave_number,
+                "frequency": calculate_frequency,
+                "source_time": source_time,
+                "polarity": polarity_flag,
+                "distances": source_dists_s.reshape(-1),
+            }
+
+            mask_options_surface = {
+                "min_distance": 0.001,
+            }
+            if mask_flat_surface is not None:
+                mask_options_surface["additional_mask"] = mask_flat_surface
+
+            wave_flat_surface = self._compute_wave_for_points(
+                points_surface,
+                source_position,
+                source_props_surface,
+                mask_options_surface,
+            )
+            return wave_flat_surface.reshape(Xg.shape)
+        except Exception:
+            # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
+            return None
+
+    def _compute_nan_vertices_contribution_for_source(
+        self,
+        coords: np.ndarray,
+        speaker_name: str,
+        source_position: np.ndarray,
+        source_position_x: float,
+        source_position_y: float,
+        source_position_z: float,
+        source_azimuth: float,
+        source_level: float,
+        a_source_pa: float,
+        wave_number: float,
+        calculate_frequency: float,
+        source_time: float,
+        polarity_flag: bool,
+    ) -> Optional[np.ndarray]:
+        """
+        Berechnet den Schallfeldbeitrag einer Quelle für zusätzliche NaN-Refinement-Punkte.
+        Gibt ein 1D-Array (len(coords)) zurück oder None bei Fehlern.
+        """
+        try:
+            if coords.size == 0:
+                return None
+
+            dx_nv = coords[:, 0] - source_position_x
+            dy_nv = coords[:, 1] - source_position_y
+            dz_nv = coords[:, 2] - source_position_z
+            horizontal_nv = np.sqrt(dx_nv**2 + dy_nv**2)
+            dists_nv = np.sqrt(horizontal_nv**2 + dz_nv**2)
+
+            az_nv = (np.degrees(np.arctan2(dy_nv, dx_nv)) + np.degrees(source_azimuth)) % 360
+            az_nv = (360 - az_nv) % 360
+            az_nv = (az_nv + 90) % 360
+            el_nv = np.degrees(np.arctan2(dz_nv, horizontal_nv))
+
+            az_payload = az_nv.reshape(1, -1)
+            el_payload = el_nv.reshape(1, -1)
+            gains_nv, phases_nv = self.get_balloon_data_batch(
+                speaker_name,
+                az_payload,
+                el_payload,
+            )
+            if gains_nv is None or phases_nv is None:
+                return None
+
+            props_nv = {
+                "magnitude_linear": (10 ** (gains_nv.reshape(-1) / 20)),
+                "polar_phase_rad": np.radians(phases_nv.reshape(-1)),
+                "source_level": source_level,
+                "a_source_pa": a_source_pa,
+                "wave_number": wave_number,
+                "frequency": calculate_frequency,
+                "source_time": source_time,
+                "polarity": polarity_flag,
+                "distances": dists_nv,
+            }
+            mask_opts_nv = {"min_distance": 0.001}
+            wave_nv = self._compute_wave_for_points(
+                coords,
+                source_position,
+                props_nv,
+                mask_opts_nv,
+            )
+            return wave_nv.reshape(-1)
+        except Exception:
+            return None
    
     @measure_time("SoundFieldCalculator.calculate_soundfield_pressure")
     def calculate_soundfield_pressure(self):
@@ -349,9 +496,6 @@ class SoundFieldCalculator(ModuleBase):
         # 🎯 NEU: Pufferspeicher für direkt berechnete Surface-Grids (ohne Interpolation)
         surface_results_buffers: Dict[str, np.ndarray] = {}
         surface_grid_cache: Dict[str, Dict[str, Any]] = {}
-        # 🎯 NEU: Refinement-Puffer für NaN-Vertices (pro Surface)
-        nan_vertex_requests: Dict[str, Any] = {}
-        nan_vertex_results_buffers: Dict[str, Dict[str, np.ndarray]] = {}
         if surface_samples:
             for sample in surface_samples:
                 # Planare Flächen: Feldwerte direkt aus dem globalen Grid
@@ -390,27 +534,6 @@ class SoundFieldCalculator(ModuleBase):
                     # Wenn etwas schiefgeht, einfach keinen Buffer anlegen
                     continue
 
-        # 🎯 NEU: Zusätzliche Sample-Punkte für NaN-Vertices (Refinement) aus calculation_spl auslesen
-        if isinstance(self.calculation_spl, dict):
-            try:
-                raw_reqs = self.calculation_spl.get("nan_vertex_requests") or {}
-                if isinstance(raw_reqs, dict):
-                    nan_vertex_requests = raw_reqs
-            except Exception:
-                nan_vertex_requests = {}
-        if nan_vertex_requests:
-            for sid, coords_list in nan_vertex_requests.items():
-                try:
-                    coords = np.asarray(coords_list, dtype=float).reshape(-1, 3)
-                    if coords.size == 0:
-                        continue
-                    nan_vertex_results_buffers[sid] = {
-                        "coords": coords,
-                        "field": np.zeros(coords.shape[0], dtype=complex),
-                    }
-                except Exception:
-                    continue
-        
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
             return [], sound_field_x, sound_field_y, ({} if capture_arrays else None)
@@ -597,116 +720,39 @@ class SoundFieldCalculator(ModuleBase):
                     # Addiere die Welle dieses Lautsprechers zum Gesamt-Schallfeld
                     # Komplexe Addition → Automatische Interferenz (konstruktiv/destruktiv)
                     sound_field_p += wave
-                    # 🎯 NEU: Berechne das Schallfeld direkt auf jedem Surface-Grid
-                    if surface_results_buffers:
-                        for sid, cache in surface_grid_cache.items():
-                            try:
-                                Xg = cache["X"]
-                                Yg = cache["Y"]
-                                Zg = cache["Z"]
-                                points_surface = cache["points"]
-                                mask_flat_surface = cache.get("mask_flat")
-
-                                x_dist_s = Xg - source_position_x[isrc]
-                                y_dist_s = Yg - source_position_y[isrc]
-                                horizontal_s = np.sqrt(x_dist_s**2 + y_dist_s**2)
-                                z_dist_s = Zg - source_position_z[isrc]
-                                source_dists_s = np.sqrt(horizontal_s**2 + z_dist_s**2)
-
-                                azimuths_s = np.arctan2(y_dist_s, x_dist_s)
-                                azimuths_s = (np.degrees(azimuths_s) + np.degrees(source_azimuth[isrc])) % 360
-                                azimuths_s = (360 - azimuths_s) % 360
-                                azimuths_s = (azimuths_s + 90) % 360
-                                elevations_s = np.degrees(np.arctan2(z_dist_s, horizontal_s))
-
-                                gains_s, phases_s = self.get_balloon_data_batch(
-                                    speaker_name,
-                                    azimuths_s,
-                                    elevations_s,
-                                )
-                                if gains_s is None or phases_s is None:
+                    # 🎯 NEU: Berechne das Schallfeld direkt auf jedem Surface-Grid (parallel-ready)
+                    if surface_results_buffers and surface_grid_cache:
+                        max_workers = int(getattr(self.settings, "spl_parallel_surfaces", 0) or 0)
+                        if max_workers <= 0:
+                            max_workers = None  # Default: ThreadPoolExecutor wählt sinnvoll
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            futures = {}
+                            for sid, cache in surface_grid_cache.items():
+                                futures[executor.submit(
+                                    self._compute_surface_contribution_for_source,
+                                    cache=cache,
+                                    speaker_name=speaker_name,
+                                    source_position=source_position,
+                                    source_position_x=source_position_x[isrc],
+                                    source_position_y=source_position_y[isrc],
+                                    source_position_z=source_position_z[isrc],
+                                    source_azimuth=source_azimuth[isrc],
+                                    source_level=source_level[isrc],
+                                    a_source_pa=a_source_pa,
+                                    wave_number=wave_number,
+                                    calculate_frequency=calculate_frequency,
+                                    source_time=source_time[isrc],
+                                    polarity_flag=polarity_flag,
+                                )] = sid
+                            for fut in as_completed(futures):
+                                sid = futures[fut]
+                                try:
+                                    delta_surface = fut.result()
+                                    if delta_surface is not None:
+                                        surface_results_buffers[sid] += delta_surface
+                                except Exception:
+                                    # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
                                     continue
-
-                                magnitude_linear_s = 10 ** (gains_s / 20)
-                                polar_phase_rad_s = np.radians(phases_s)
-
-                                source_props_surface = {
-                                    "magnitude_linear": magnitude_linear_s.reshape(-1),
-                                    "polar_phase_rad": polar_phase_rad_s.reshape(-1),
-                                    "source_level": source_level[isrc],
-                                    "a_source_pa": a_source_pa,
-                                    "wave_number": wave_number,
-                                    "frequency": calculate_frequency,
-                                    "source_time": source_time[isrc],
-                                    "polarity": polarity_flag,
-                                    "distances": source_dists_s.reshape(-1),
-                                }
-
-                                mask_options_surface = {
-                                    "min_distance": 0.001,
-                                }
-                                if mask_flat_surface is not None:
-                                    mask_options_surface["additional_mask"] = mask_flat_surface
-
-                                wave_flat_surface = self._compute_wave_for_points(
-                                    points_surface,
-                                    source_position,
-                                    source_props_surface,
-                                    mask_options_surface,
-                                )
-                                surface_results_buffers[sid] += wave_flat_surface.reshape(Xg.shape)
-                            except Exception:
-                                # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
-                                continue
-                    # 🎯 NEU: Berechne Schallfeld für NaN-Vertex-Refinement-Punkte (pro Surface)
-                    if nan_vertex_results_buffers:
-                        for sid, buf in nan_vertex_results_buffers.items():
-                            try:
-                                coords = buf["coords"]
-                                if coords.size == 0:
-                                    continue
-                                dx_nv = coords[:, 0] - source_position_x[isrc]
-                                dy_nv = coords[:, 1] - source_position_y[isrc]
-                                dz_nv = coords[:, 2] - source_position_z[isrc]
-                                horizontal_nv = np.sqrt(dx_nv**2 + dy_nv**2)
-                                dists_nv = np.sqrt(horizontal_nv**2 + dz_nv**2)
-
-                                az_nv = (np.degrees(np.arctan2(dy_nv, dx_nv)) + np.degrees(source_azimuth[isrc])) % 360
-                                az_nv = (360 - az_nv) % 360
-                                az_nv = (az_nv + 90) % 360
-                                el_nv = np.degrees(np.arctan2(dz_nv, horizontal_nv))
-
-                                az_payload = az_nv.reshape(1, -1)
-                                el_payload = el_nv.reshape(1, -1)
-                                gains_nv, phases_nv = self.get_balloon_data_batch(
-                                    speaker_name,
-                                    az_payload,
-                                    el_payload,
-                                )
-                                if gains_nv is None or phases_nv is None:
-                                    continue
-
-                                props_nv = {
-                                    "magnitude_linear": (10 ** (gains_nv.reshape(-1) / 20)),
-                                    "polar_phase_rad": np.radians(phases_nv.reshape(-1)),
-                                    "source_level": source_level[isrc],
-                                    "a_source_pa": a_source_pa,
-                                    "wave_number": wave_number,
-                                    "frequency": calculate_frequency,
-                                    "source_time": source_time[isrc],
-                                    "polarity": polarity_flag,
-                                    "distances": dists_nv,
-                                }
-                                mask_opts_nv = {"min_distance": 0.001}
-                                wave_nv = self._compute_wave_for_points(
-                                    coords,
-                                    source_position,
-                                    props_nv,
-                                    mask_opts_nv,
-                                )
-                                buf["field"] += wave_nv.reshape(-1)
-                            except Exception:
-                                continue
                     if surface_field_buffers:
                         for sample in surface_samples:
                             # Nur planare Surfaces nutzen die (row,col)-Indizes
@@ -805,36 +851,20 @@ class SoundFieldCalculator(ModuleBase):
                 )
 
         # 🎯 NEU: Verwende direkt berechnete Surface-Grids
-        if not surface_results_buffers:
-            raise ValueError("surface_results_buffers ist leer - keine Surface-Ergebnisse verfügbar")
-        
-        for surface_id, buffer in surface_results_buffers.items():
-            # Prüfe ob Buffer nicht leer ist
-            buffer_array = np.array(buffer, dtype=complex)
-            surface_results_data[surface_id] = {
-                'sound_field_p': buffer_array.tolist(),
-            }
+        # Es kann Fälle geben, in denen keine Flächen aktiv sind (z.B. nur Arrays ohne Flächen).
+        # Dann bleibt surface_results_data leer und wir brechen später im Plot einfach ruhig ab.
+        if surface_results_buffers:
+            for surface_id, buffer in surface_results_buffers.items():
+                # Puffer immer in komplexes Array konvertieren
+                buffer_array = np.asarray(buffer, dtype=complex)
+                surface_results_data[surface_id] = {
+                    "sound_field_p": buffer_array.tolist(),
+                    "is_group_sum": False,
+                }
 
-        # 🎯 NEU: Ergebnisse für NaN-Vertex-Refinement an surface_results_data anhängen
-        if nan_vertex_results_buffers:
-            for sid, buf in nan_vertex_results_buffers.items():
-                try:
-                    coords = np.asarray(buf["coords"], dtype=float)
-                    field = np.asarray(buf["field"], dtype=complex)
-                    if coords.size == 0 or field.size == 0:
-                        continue
-                    entry = surface_results_data.setdefault(sid, {})
-                    entry["nan_vertices"] = {
-                        "coords": coords.tolist(),
-                        "sound_field_p": field.tolist(),
-                    }
-                except Exception:
-                    continue
+        # 🚫 KEINE gruppenweise Summenbildung mehr:
+        # Die berechneten Gridpunkte pro Surface werden unverändert an den Plot übergeben.
 
-        # Nach Verarbeitung Refinement-Requests zurücksetzen, damit nicht endlos weiter verfeinert wird
-        if isinstance(self.calculation_spl, dict):
-            self.calculation_spl.pop("nan_vertex_requests", None)
-        
         if isinstance(self.calculation_spl, dict):
             # 🎯 ALTE DATEN AUSKOMMENTIERT - Verwende nur neue Struktur
             # self.calculation_spl['sound_field_z'] = Z_grid.tolist()  # ALT

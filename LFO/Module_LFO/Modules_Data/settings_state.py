@@ -170,6 +170,9 @@ class Settings:
         self.surface_definitions = self._initialize_surface_definitions()
         self.surface_groups = self._initialize_surface_groups()
         self.active_surface_id = self.DEFAULT_SURFACE_ID
+        # Versionierungszähler für Geometrie-/Surface-Änderungen
+        # Wird erhöht, sobald sich Punkte/Groups/Projektgeometrie ändern.
+        self.geometry_version: int = 0
         self.load_custom_defaults()
         self.speaker_arrays = {}
         self.speaker_array_names = {}
@@ -349,6 +352,8 @@ class Settings:
         if not getattr(surface_data, "group_id", None):
             surface_data.group_id = self.ROOT_SURFACE_GROUP_ID
         self.surface_definitions[surface_id] = surface_data
+        # Geometrie hat sich geändert -> Version hochzählen
+        self.geometry_version += 1
         if make_active:
             self.set_active_surface(surface_id)
         if surface_id == self.DEFAULT_SURFACE_ID:
@@ -360,6 +365,8 @@ class Settings:
         if surface_id in self.surface_definitions:
             was_active = surface_id == self.active_surface_id
             del self.surface_definitions[surface_id]
+            # Geometrie geändert -> Version hochzählen
+            self.geometry_version += 1
             if was_active:
                 if self.surface_definitions:
                     fallback_surface = next(iter(self.surface_definitions))

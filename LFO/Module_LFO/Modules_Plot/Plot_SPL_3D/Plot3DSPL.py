@@ -41,7 +41,7 @@ DEBUG_PLOT3D_TIMING = bool(int(os.environ.get("LFO_DEBUG_PLOT3D_TIMING", "1")))
 # 1 = 4x mehr Faces (jedes Dreieck → 4)
 # 2 = 16x mehr Faces (jedes Dreieck → 4 → 16)
 # 3 = 64x mehr Faces (jedes Dreieck → 4 → 16 → 64)
-PLOT_SUBDIVISION_LEVEL = 2
+PLOT_SUBDIVISION_LEVEL = 1
 
 
 class SPL3DPlotRenderer:
@@ -730,9 +730,13 @@ class SPL3DPlotRenderer:
         norm = Normalize(vmin=cbar_min, vmax=cbar_max)
 
         # --------------------------------------------------------------
-        # Texturen global deaktivieren: nur Triangulation rendern
+        # Texturen je nach Modus:
+        # - Color step: KEINE Texturen → keine zusätzliche Interpolation,
+        #               Werte bleiben strikt auf Rechen-Grid-Auflösung.
+        # - Gradient:   Texturen AKTIV → höhere visuelle Auflösung durch
+        #               feineres Texture-Grid (Interpolation erlaubt).
         # --------------------------------------------------------------
-        disable_textures = True
+        disable_textures = (colorization_mode == "Color step")
         if disable_textures:
             texture_actors = getattr(self, "_surface_texture_actors", {}) or {}
             for sid, tex_data in list(texture_actors.items()):
@@ -776,7 +780,22 @@ class SPL3DPlotRenderer:
                     pass
                 self._surface_texture_actors.pop(sid, None)
                 # 🚀 TEXTUR-CACHE: Auch Cache-Eintrag entfernen
-                self._surface_texture_cache.pop(sid, None)
+                if hasattr(self, "_surface_texture_cache") and isinstance(self._surface_texture_cache, dict):
+                    self._surface_texture_cache.pop(sid, None)
+
+        # Gecachte triangulierte Surface-Meshes entfernen, wenn die zugehörige Surface
+        # deaktiviert oder versteckt wurde. So werden keine alten Meshes für versteckte
+        # Flächen weiterverwendet.
+        if hasattr(self, "_surface_actors") and isinstance(self._surface_actors, dict):
+            for sid, entry in list(self._surface_actors.items()):
+                if sid not in active_ids:
+                    try:
+                        actor = entry.get("actor") if isinstance(entry, dict) else entry
+                        if actor is not None:
+                            self.plotter.remove_actor(actor)
+                    except Exception:
+                        pass
+                    self._surface_actors.pop(sid, None)
 
         # 🎯 WICHTIG: Wenn keine enabled_surfaces vorhanden sind, aber surface_overrides existieren,
         # sollten wir trotzdem fortfahren, um vertikale Flächen zu plotten
@@ -912,18 +931,33 @@ class SPL3DPlotRenderer:
         surface_grids_data = calc_spl.get("surface_grids", {}) or {} if isinstance(calc_spl, dict) else {}
         surface_results_data = calc_spl.get("surface_results", {}) or {} if isinstance(calc_spl, dict) else {}
         
-        # 🎯 ERWEITERE surfaces_to_process: Füge Surfaces hinzu, die Overrides haben, aber nicht in enabled_surfaces sind
-        # Dies ermöglicht das Plotten von vertikalen Flächen, die zwar Grids/Results haben, aber nicht aktiviert sind
-        # WICHTIG: Dies funktioniert auch, wenn enabled_surfaces leer ist (keine Surfaces aktiviert)
+        # 🎯 ERWEITERE surfaces_to_process: Füge Surfaces hinzu, die Overrides haben,
+        # aber nicht in enabled_surfaces sind – z.B. vertikale Flächen aus calculation_spl.
+        # WICHTIG: Surfaces mit hidden=True oder enabled=False werden hier NICHT geplottet.
         override_surface_ids = set(surface_overrides.keys()) if surface_overrides else set()
         enabled_surface_ids = {sid for sid, _, _ in enabled_surfaces} if enabled_surfaces else set()
-        additional_surface_ids = override_surface_ids - enabled_surface_ids
+        surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
+
+        additional_surface_ids: set[str] = set()
+        for sid in (override_surface_ids - enabled_surface_ids):
+            surface_def = surface_definitions.get(sid)
+            if surface_def is None:
+                continue
+            if isinstance(surface_def, SurfaceDefinition):
+                enabled = bool(getattr(surface_def, "enabled", False))
+                hidden = bool(getattr(surface_def, "hidden", False))
+                points = getattr(surface_def, "points", []) or []
+            else:
+                enabled = bool(surface_def.get("enabled", False))
+                hidden = bool(surface_def.get("hidden", False))
+                points = surface_def.get("points", []) or []
+            if not enabled or hidden or len(points) < 3:
+                continue
+            additional_surface_ids.add(sid)
         
         if additional_surface_ids and isinstance(surface_grids_data, dict):
-            surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
             for sid in additional_surface_ids:
                 if sid in surface_grids_data:
-                    # Hole Surface-Definition für zusätzliche Surfaces
                     surface_def = surface_definitions.get(sid)
                     if surface_def:
                         if isinstance(surface_def, SurfaceDefinition):
@@ -1107,52 +1141,46 @@ class SPL3DPlotRenderer:
                                 except Exception as e:
                                     print(f"  └─ StructuredGrid-Plot fehlgeschlagen, fahre mit Triangulation fort: {e}")
                             
-                            # 🚀 OPTIMIERUNG: Vertices entsprechen jetzt Grid-Punkten direkt
-                            # Keine Interpolation nötig - direkte Zuordnung möglich!
-                            # (Xg, Yg bereits oben geladen)
+                            # 🚀 OPTIMIERUNG: Vertices ↔ Grid-Punkte
+                            # Im Color-Step-Modus wollen wir IMMER den schnellsten Pfad nutzen:
+                            # - wenn Vertices exakt dem Rechen-Grid entsprechen → direkte Zuordnung
+                            # - KEIN cKDTree / griddata im Color-Step-Fall
                             surface_mask = np.asarray(grid_data.get("surface_mask", []))
-                            
-                            # Prüfe, ob Vertices direkt Grid-Punkten entsprechen (neue Triangulation)
-                            # Vertices sollten die gleiche Anzahl und Reihenfolge wie X_grid.ravel() haben
                             n_vertices = len(triangulated_vertices)
                             n_grid_points = Xg.size
-                            
+
                             if n_vertices == n_grid_points:
                                 # 🎯 Direkte Zuordnung: Vertices = Grid-Punkte in derselben Reihenfolge
-                                # Direkte Zuordnung: spl_at_verts = spl_values_2d.ravel()
                                 spl_at_verts = spl_values_2d.ravel().copy()
-                                
-                                # Setze NaN für inaktive Grid-Punkte
                                 if surface_mask.size == n_grid_points and surface_mask.shape == Xg.shape:
                                     mask_flat = surface_mask.ravel().astype(bool)
                                     spl_at_verts[~mask_flat] = np.nan
                             else:
-                                # Vertices ≠ Grid-Punkte - verwende Nearest-Map für zusätzliche Vertices
+                                # 🎯 VARIANTE B: Für zusätzliche Vertices immer Nearest-Neighbour auf Gridpunkte.
+                                # Damit bekommen auch Polygon-Ecken im Color-Step-Modus sinnvolle Werte,
+                                # ohne bilineare Glättung (nur diskrete Zuordnung).
                                 try:
                                     from scipy.spatial import cKDTree
-                                    # Erstelle Grid-Punkte für Nearest-Map
-                                    grid_pts = np.column_stack([Xg.ravel(), Yg.ravel(), Zg_check.ravel() if 'Zg_check' in locals() else np.zeros(Xg.size)])
+                                    # Erstelle Grid-Punkte für Nearest-Map (2D reicht hier)
+                                    grid_pts = np.column_stack([Xg.ravel(), Yg.ravel()])
                                     grid_vals = spl_values_2d.ravel()
                                     
-                                    # Filtere nach surface_mask, falls vorhanden
                                     if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
                                         mask_flat = surface_mask.ravel().astype(bool)
                                         grid_pts = grid_pts[mask_flat]
                                         grid_vals = grid_vals[mask_flat]
                                     
-                                    # Erstelle KDTree für Nearest-Neighbor-Suche
                                     tree = cKDTree(grid_pts)
-                                    dists, nn_idx = tree.query(triangulated_vertices, k=1)
+                                    _, nn_idx = tree.query(triangulated_vertices[:, :2], k=1)
                                     spl_at_verts = grid_vals[nn_idx]
                                     
                                     valid_mask = np.isfinite(spl_at_verts)
-                                    n_valid = int(np.sum(valid_mask))
-                                    if n_valid == 0:
+                                    if not np.any(valid_mask):
                                         raise ValueError(f"Surface '{surface_id}': Nearest-Map liefert keine gültigen Werte")
-                                except Exception as e_nn:
+                                except Exception:
                                     from scipy.interpolate import griddata
-                                    points_new = triangulated_vertices
-                                    points_orig = np.column_stack([Xg.ravel(), Yg.ravel(), Zg_check.ravel() if 'Zg_check' in locals() else np.zeros(Xg.size)])
+                                    points_new = triangulated_vertices[:, :2]
+                                    points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
                                     values_orig = spl_values_2d.ravel()
                                     if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
                                         mask_flat = surface_mask.ravel().astype(bool)
@@ -1164,11 +1192,10 @@ class SPL3DPlotRenderer:
                                         values_orig,
                                         points_new,
                                         method='nearest',
-                                        fill_value=np.nan
+                                        fill_value=np.nan,
                                     )
                                     valid_mask = np.isfinite(spl_at_verts)
-                                    n_valid = np.sum(valid_mask)
-                                    if n_valid == 0:
+                                    if not np.any(valid_mask):
                                         raise ValueError(f"Surface '{surface_id}': Griddata(nearest) liefert keine gültigen Werte")
                             
                             # Bestimme Colorbar-Bereich für Visualisierung
@@ -1190,32 +1217,89 @@ class SPL3DPlotRenderer:
                             spl_at_verts_before_clip = spl_at_verts.copy()
                             spl_at_verts = np.clip(spl_at_verts, cbar_min_local, cbar_max_local)
                             
-                            # 🎯 SUBDIVISION: Unterteile jedes Dreieck in 4 kleinere für schärfere Plots
-                            # Dies erhöht die visuelle Auflösung ohne die Berechnungszeit zu erhöhen
-                            # subdivision_level: 0=keine, 1=4x Faces, 2=16x Faces, 3=64x Faces, etc.
-                            subdivision_level = max(0, min(PLOT_SUBDIVISION_LEVEL, 3))  # Limit auf 0-3 für Performance
-                            
-                            if subdivision_level > 0:
+                            # 🎯 SUBDIVISION + MESH-CACHING:
+                            # Wir wollen pro Surface genau EIN Mesh erzeugen und anschließend nur noch die
+                            # plot_scalars aktualisieren. Das reduziert die Kosten von add_mesh/remove_actor.
+                            if not hasattr(self, "_surface_actors") or not isinstance(self._surface_actors, dict):
+                                self._surface_actors = {}
+
+                            cached_entry = self._surface_actors.get(surface_id)
+                            cached_mesh = None
+                            cached_actor = None
+                            cached_signature = None
+                            if isinstance(cached_entry, dict):
+                                cached_mesh = cached_entry.get("mesh")
+                                cached_actor = cached_entry.get("actor")
+                                cached_signature = cached_entry.get("signature")
+                            elif cached_entry is not None:
+                                # Rückwärtskompatibilität: alter Code speicherte direkt den Actor
+                                cached_actor = cached_entry
+
+                            mesh = None
+                            actor = None
+
+                            # Signatur für aktuelles Geometrie-/Subdivision-Setup berechnen
+                            current_signature = None
+                            try:
+                                if triangulated_vertices is not None and triangulated_faces is not None:
+                                    v = np.asarray(triangulated_vertices)
+                                    current_signature = (
+                                        int(PLOT_SUBDIVISION_LEVEL),
+                                        int(v.shape[0]),
+                                        int(len(triangulated_faces)),
+                                        float(np.nanmin(v[:, 0])),
+                                        float(np.nanmax(v[:, 0])),
+                                        float(np.nanmin(v[:, 1])),
+                                        float(np.nanmax(v[:, 1])),
+                                        float(np.nanmin(v[:, 2])),
+                                        float(np.nanmax(v[:, 2])),
+                                    )
+                            except Exception:
+                                current_signature = None
+
+                            # Versuche, ein vorhandenes Mesh wiederzuverwenden
+                            if (
+                                cached_mesh is not None
+                                and cached_signature is not None
+                                and current_signature is not None
+                                and cached_signature == current_signature
+                                and cached_mesh.n_points == spl_at_verts.size
+                            ):
                                 try:
-                                    current_vertices = triangulated_vertices
-                                    current_faces = triangulated_faces
-                                    current_scalars = spl_at_verts
-                                    
-                                    # Iterative Subdivision (mehrfache Anwendung für höhere Level)
-                                    for level in range(subdivision_level):
-                                        current_vertices, current_faces, current_scalars = self._subdivide_triangles(
-                                            current_vertices, current_faces, current_scalars
-                                        )
-                                    
-                                    # Erstelle PyVista PolyData Mesh mit subdividierten Daten
-                                    mesh = pv.PolyData(current_vertices, current_faces)
-                                    mesh["plot_scalars"] = current_scalars
-                                except Exception as e_subdiv:
-                                    raise RuntimeError(f"Surface '{surface_id}': Subdivision fehlgeschlagen: {e_subdiv}")
-                            else:
-                                # Keine Subdivision
-                                mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
-                                mesh["plot_scalars"] = spl_at_verts
+                                    mesh = cached_mesh
+                                    mesh["plot_scalars"] = spl_at_verts
+                                    actor = cached_actor
+                                except Exception:
+                                    mesh = None
+                                    actor = None
+
+                            # Falls kein geeignetes Mesh vorhanden ist, neu erzeugen (inkl. optionaler Subdivision)
+                            if mesh is None:
+                                # 🎯 SUBDIVISION: Unterteile jedes Dreieck in 4 kleinere für schärfere Plots
+                                # subdivision_level: 0=keine, 1=4x Faces, 2=16x Faces, 3=64x Faces, etc.
+                                subdivision_level = max(0, min(PLOT_SUBDIVISION_LEVEL, 3))  # Limit auf 0-3 für Performance
+                                
+                                if subdivision_level > 0:
+                                    try:
+                                        current_vertices = triangulated_vertices
+                                        current_faces = triangulated_faces
+                                        current_scalars = spl_at_verts
+                                        
+                                        # Iterative Subdivision (mehrfache Anwendung für höhere Level)
+                                        for level in range(subdivision_level):
+                                            current_vertices, current_faces, current_scalars = self._subdivide_triangles(
+                                                current_vertices, current_faces, current_scalars
+                                            )
+                                        
+                                        # Erstelle PyVista PolyData Mesh mit subdividierten Daten
+                                        mesh = pv.PolyData(current_vertices, current_faces)
+                                        mesh["plot_scalars"] = current_scalars
+                                    except Exception as e_subdiv:
+                                        raise RuntimeError(f"Surface '{surface_id}': Subdivision fehlgeschlagen: {e_subdiv}")
+                                else:
+                                    # Keine Subdivision
+                                    mesh = pv.PolyData(triangulated_vertices, triangulated_faces)
+                                    mesh["plot_scalars"] = spl_at_verts
 
                             # Versuche zunächst, vorhandene NaN-Ergebnisse aus der Berechnung zu verwenden,
                             # bevor neue Refinement-Requests erzeugt werden.
@@ -1254,16 +1338,6 @@ class SPL3DPlotRenderer:
                                 nan_count = int(np.count_nonzero(nan_mask))
                                 if nan_count > 0:
                                     print(f"  └─ ⚠️ plot_scalars enthält {nan_count}/{total_count} NaN/Inf-Werte (Surface={surface_id})")
-                                    # Sammle NaN-Vertex-Koordinaten für Refinement in der Berechnung
-                                    try:
-                                        nan_vertices = np.asarray(mesh.points, dtype=float)[nan_mask]
-                                        if nan_vertices.size:
-                                            if not hasattr(self, "_nan_vertex_requests") or not isinstance(self._nan_vertex_requests, dict):
-                                                self._nan_vertex_requests = {}
-                                            lst = self._nan_vertex_requests.setdefault(surface_id, [])
-                                            lst.extend(nan_vertices.tolist())
-                                    except Exception:
-                                        pass
                                 else:
                                     finite_vals = scalars_arr[finite_mask]
                                     if finite_vals.size:
@@ -1271,29 +1345,30 @@ class SPL3DPlotRenderer:
                             except Exception as e_debug_scalars:
                                 print(f"  └─ ⚠️ Debug plot_scalars fehlgeschlagen (Surface={surface_id}): {e_debug_scalars}")
                             
-                            # Entferne alten Actor
-                            old_texture_data = self._surface_texture_actors.get(surface_id)
-                            if old_texture_data is not None:
-                                old_actor = old_texture_data.get('actor') if isinstance(old_texture_data, dict) else old_texture_data
-                                if old_actor is not None:
-                                    try:
-                                        self.plotter.remove_actor(old_actor)
-                                    except Exception:
-                                        pass
-                            
-                            # Füge trianguliertes Mesh hinzu
-                            actor_name = f"{self.SURFACE_NAME}_tri_{surface_id}"
-                            actor = self.plotter.add_mesh(
-                                mesh,
-                                name=actor_name,
-                                scalars="plot_scalars",
-                                cmap=cmap_object,
-                                clim=(cbar_min, cbar_max),
-                                smooth_shading=False,  # Kein Smooth Shading für schärfere Plots nach Subdivision
-                                show_scalar_bar=False,
-                                reset_camera=False,
-                                interpolate_before_map=False,  # Keine Interpolation - verwende exakte Vertex-Werte
-                            )
+                            # Falls wir keinen Actor wiederverwenden konnten, jetzt neu hinzufügen
+                            if actor is None:
+                                # Entferne alten Texture-Actor (falls noch vorhanden)
+                                old_texture_data = self._surface_texture_actors.get(surface_id)
+                                if old_texture_data is not None:
+                                    old_actor = old_texture_data.get('actor') if isinstance(old_texture_data, dict) else old_texture_data
+                                    if old_actor is not None:
+                                        try:
+                                            self.plotter.remove_actor(old_actor)
+                                        except Exception:
+                                            pass
+                                
+                                actor_name = f"{self.SURFACE_NAME}_tri_{surface_id}"
+                                actor = self.plotter.add_mesh(
+                                    mesh,
+                                    name=actor_name,
+                                    scalars="plot_scalars",
+                                    cmap=cmap_object,
+                                    clim=(cbar_min, cbar_max),
+                                    smooth_shading=False,  # Kein Smooth Shading für schärfere Plots nach Subdivision
+                                    show_scalar_bar=False,
+                                    reset_camera=False,
+                                    interpolate_before_map=False,  # Keine Interpolation - verwende exakte Vertex-Werte
+                                )
                             
                             # 🎯 Für schärfere Plots: Deaktiviere Interpolation (auch außerhalb step_mode)
                             # Nach Subdivision haben wir bereits mehr Polygone, daher keine zusätzliche Interpolation nötig
@@ -1306,10 +1381,10 @@ class SPL3DPlotRenderer:
                             if hasattr(actor, 'SetPickable'):
                                 actor.SetPickable(False)
                             
-                            # Speichere in _surface_actors (nicht _surface_texture_actors)
-                            if not hasattr(self, '_surface_actors'):
+                            # Speichere Actor UND Mesh in _surface_actors (nicht _surface_texture_actors)
+                            if not hasattr(self, '_surface_actors') or not isinstance(self._surface_actors, dict):
                                 self._surface_actors = {}
-                            self._surface_actors[surface_id] = actor
+                            self._surface_actors[surface_id] = {"actor": actor, "mesh": mesh}
                             
                             # Entferne aus texture_actors falls vorhanden
                             self._surface_texture_actors.pop(surface_id, None)
@@ -1338,9 +1413,27 @@ class SPL3DPlotRenderer:
         """Aktualisiert die SPL-Fläche."""
         t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
 
-        # Sammelcontainer für NaN-Vertices pro Surface (wird in _render_surfaces_textured gefüllt)
-        # Struktur: {surface_id: [[x,y,z], ...], ...}
-        self._nan_vertex_requests = {}
+        # 🎯 GEOMETRIE-VERSION: Wenn sich die Geometrie geändert hat, alten Mesh-Cache verwerfen
+        try:
+            current_geom_version = int(getattr(self.settings, "geometry_version", 0))
+        except Exception:
+            current_geom_version = 0
+        last_geom_version = getattr(self, "_last_geometry_version", None)
+        if last_geom_version is None or last_geom_version != current_geom_version:
+            # Surface-Mesh-Cache leeren, damit bei neuer Geometrie alle Meshes neu aufgebaut werden
+            if hasattr(self, "_surface_actors") and isinstance(self._surface_actors, dict):
+                try:
+                    for sid, entry in list(self._surface_actors.items()):
+                        actor = entry.get("actor") if isinstance(entry, dict) else entry
+                        if actor is not None and hasattr(self, "plotter") and self.plotter is not None:
+                            try:
+                                self.plotter.remove_actor(actor)
+                            except Exception:
+                                pass
+                    self._surface_actors.clear()
+                except Exception:
+                    self._surface_actors = {}
+            self._last_geometry_version = current_geom_version
 
         camera_state = self._camera_state or self._capture_camera()
 
@@ -1668,19 +1761,13 @@ class SPL3DPlotRenderer:
         if mesh is not None and mesh.n_points > 0:
             self.surface_mesh = mesh.copy(deep=True)
 
-        # Entferne existierende Mesh-Actors für horizontale Surfaces
+        # Entferne alten Basis-Actor für den kombinierten SPL-Teppich (falls vorhanden)
         base_actor = self.plotter.renderer.actors.get(self.SURFACE_NAME)
         if base_actor is not None:
             try:
                 self.plotter.remove_actor(base_actor)
             except Exception:
                 pass
-        for sid, actor in list(self._surface_actors.items()):
-            try:
-                self.plotter.remove_actor(actor)
-            except Exception:
-                pass
-            self._surface_actors.pop(sid, None)
         
         # 🎯 Entferne graue Fläche für enabled Surfaces aus dem leeren Plot (falls vorhanden)
         # Dies muss VOR dem Zeichnen der neuen SPL-Daten passieren

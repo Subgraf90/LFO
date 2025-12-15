@@ -81,6 +81,20 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             selected_axis,
             tuple(surface_points_signature),
         )
+
+        # 🐞 DEBUG: Protokolliere, wann und mit welchen Parametern die Achsen gezeichnet werden
+        try:
+            print(
+                "[SPL3DOverlayAxis] draw_axis_lines call – "
+                f"pos_x={state[0]}, pos_y={state[1]}, "
+                f"len={state[2]}, width={state[3]}, "
+                f"axis_3d_transparency={state[4]}, "
+                f"max_surface_dim={state[5]}, "
+                f"selected_axis={selected_axis}, "
+                f"num_active_surfaces={len(active_surfaces)}"
+            )
+        except Exception:
+            pass
         existing_names = self._category_actors.get('axis', [])
         # 🎯 WICHTIG: Beim Laden (_last_axis_state ist None) immer neu zeichnen
         # Prüfe auch, ob Actors fehlen (z. B. nach File-Reload)
@@ -102,117 +116,100 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
         t_clear_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         x_axis, y_axis, length, width, axis_3d_transparency_from_state, max_surface_dim_from_state, selected_axis_from_state, _ = state
 
-        # Strich-Punkt-Pattern
-        dash_dot_pattern = 0xF4F4
-        
-        # Zeichne X-Achsenlinie (y=y_axis, konstant) auf allen aktiven Surfaces
+        # Strich-/Punkt-Pattern für OpenGL-Stipple (line_pattern, wird über die GPU wiederholt)
+        # 0xF0F0 = längere Striche und Lücken, besser sichtbar als 0xF4F4
+        dash_dot_pattern = 0xF0F0
+
+        # ---- X-Achsenlinie (y = y_axis, konstant) pro Surface als gestrichelte Linie ----
         t_x_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-        x_lines_drawn = 0
-        x_segments_total = 0
         for surface_id, surface in active_surfaces:
             intersection_points = self._get_surface_intersection_points_xz(y_axis, surface, settings)
-            if intersection_points is not None:
-                x_coords, z_coords = intersection_points
-                if len(x_coords) >= 2:
-                    # Erstelle 3D-Linie auf dem Surface
-                    points_3d = np.column_stack([x_coords, np.full_like(x_coords, y_axis), z_coords])
-                    # Sortiere nach X-Koordinaten für konsistente Reihenfolge
-                    sort_idx = np.argsort(points_3d[:, 0])
-                    points_3d = points_3d[sort_idx]
-                    
-                    # Füge kleinen Z-Offset hinzu, damit Achsenlinien beim Picking bevorzugt werden
-                    points_3d[:, 2] += self._axis_z_offset
-                    
-                    # Erstelle Strich-Punkt-Linie durch Segmentierung
-                    t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
-                    t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    
-                    # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
-                    t_combine_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    if dash_dot_segments:
-                        combined_mesh = self._combine_line_segments(dash_dot_segments)
-                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        
-                        t_draw_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        if combined_mesh is not None:
-                            # X-Achse: rot wenn ausgewählt, sonst schwarz
-                            line_color = 'red' if selected_axis == 'x' else 'black'
-                            base_line_width = 3.0 if selected_axis == 'x' else 2.5
-                            line_width = self._get_scaled_line_width(base_line_width, apply_zoom=True)
-                            # Keine Tubes für Dash/Dot: verhindert sichtbare Endkappen als Punkte
-                            actor_name = self._add_overlay_mesh(
-                                combined_mesh,
-                                color=line_color,
-                                line_width=line_width,
-                                line_pattern=None,
-                                line_repeat=1,
-                                category='axis',
-                                render_lines_as_tubes=False,
-                            )
-                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                            x_segments_total += len(dash_dot_segments)
-                        else:
-                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    else:
-                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    x_lines_drawn += 1
+            if intersection_points is None:
+                continue
+            x_coords, z_coords = intersection_points
+            if len(x_coords) < 2:
+                continue
+            pts = np.column_stack([x_coords, np.full_like(x_coords, y_axis), z_coords])
+            # Sortiere nach X-Koordinaten für konsistente Reihenfolge
+            sort_idx = np.argsort(pts[:, 0])
+            pts = pts[sort_idx]
+
+            # Kleiner Z-Offset, damit die Linie beim Picking bevorzugt wird
+            pts[:, 2] += self._axis_z_offset
+
+            # Sanftes Ausdünnen pro Surface
+            simplified: List[np.ndarray] = []
+            eps = 1e-4
+            last_pt = None
+            for pt in pts:
+                if last_pt is None or np.linalg.norm(pt - last_pt) > eps:
+                    simplified.append(pt)
+                    last_pt = pt
+            if len(simplified) >= 2:
+                simplified_points = np.vstack(simplified)
+                # Eine Polyline pro Surface, Dash-Muster über line_pattern (wie Surface-Kanten)
+                n_pts = len(simplified_points)
+                lines = np.array([n_pts] + list(range(n_pts)), dtype=np.int64)
+                polyline = self.pv.PolyData(simplified_points)
+                polyline.lines = lines
+
+                line_color = 'red' if selected_axis == 'x' else 'black'
+                base_line_width = 2.0 if selected_axis == 'x' else 1.5
+                # Wie bei Surface-Kanten: nur DPI-Skalierung, kein Zoom-Faktor
+                line_width = self._get_scaled_line_width(base_line_width, apply_zoom=False)
+                self._add_overlay_mesh(
+                    polyline,
+                    color=line_color,
+                    line_width=line_width,
+                    line_pattern=dash_dot_pattern,
+                    line_repeat=1,
+                    category='axis',
+                    render_lines_as_tubes=False,
+                )
         t_x_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-        
-        # Zeichne Y-Achsenlinie (x=x_axis, konstant) auf allen aktiven Surfaces
+
+        # ---- Y-Achsenlinie (x = x_axis, konstant) pro Surface als gestrichelte Linie ----
         t_y_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-        y_lines_drawn = 0
-        y_segments_total = 0
         for surface_id, surface in active_surfaces:
             intersection_points = self._get_surface_intersection_points_yz(x_axis, surface, settings)
-            if intersection_points is not None:
-                y_coords, z_coords = intersection_points
-                if len(y_coords) >= 2:
-                    # Erstelle 3D-Linie auf dem Surface
-                    points_3d = np.column_stack([np.full_like(y_coords, x_axis), y_coords, z_coords])
-                    # Sortiere nach Y-Koordinaten für konsistente Reihenfolge
-                    sort_idx = np.argsort(points_3d[:, 1])
-                    points_3d = points_3d[sort_idx]
-                    
-                    # Füge kleinen Z-Offset hinzu, damit Achsenlinien beim Picking bevorzugt werden
-                    points_3d[:, 2] += self._axis_z_offset
-                    
-                    # Erstelle Strich-Punkt-Linie durch Segmentierung
-                    t_segment_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    dash_dot_segments = self._create_dash_dot_line_segments_optimized(points_3d, dash_length=1.0, dot_length=0.2, gap_length=0.3)
-                    t_segment_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    
-                    # Batch-Zeichnen: Kombiniere alle Segmente in einem Mesh
-                    t_combine_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    if dash_dot_segments:
-                        combined_mesh = self._combine_line_segments(dash_dot_segments)
-                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        
-                        t_draw_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        if combined_mesh is not None:
-                            # Y-Achse: rot wenn ausgewählt, sonst schwarz
-                            line_color = 'red' if selected_axis == 'y' else 'black'
-                            base_line_width = 3.0 if selected_axis == 'y' else 2.5
-                            line_width = self._get_scaled_line_width(base_line_width, apply_zoom=True)
-                            # Keine Tubes für Dash/Dot: verhindert sichtbare Endkappen als Punkte
-                            actor_name = self._add_overlay_mesh(
-                                combined_mesh,
-                                color=line_color,
-                                line_width=line_width,
-                                line_pattern=None,
-                                line_repeat=1,
-                                category='axis',
-                                render_lines_as_tubes=False,
-                            )
-                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                            y_segments_total += len(dash_dot_segments)
-                        else:
-                            t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    else:
-                        t_combine_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                        t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
-                    y_lines_drawn += 1
+            if intersection_points is None:
+                continue
+            y_coords, z_coords = intersection_points
+            if len(y_coords) < 2:
+                continue
+            pts = np.column_stack([np.full_like(y_coords, x_axis), y_coords, z_coords])
+
+            sort_idx = np.argsort(pts[:, 1])
+            pts = pts[sort_idx]
+
+            pts[:, 2] += self._axis_z_offset
+
+            simplified: List[np.ndarray] = []
+            eps = 1e-4
+            last_pt = None
+            for pt in pts:
+                if last_pt is None or np.linalg.norm(pt - last_pt) > eps:
+                    simplified.append(pt)
+                    last_pt = pt
+            if len(simplified) >= 2:
+                simplified_points = np.vstack(simplified)
+                n_pts = len(simplified_points)
+                lines = np.array([n_pts] + list(range(n_pts)), dtype=np.int64)
+                polyline = self.pv.PolyData(simplified_points)
+                polyline.lines = lines
+
+                line_color = 'red' if selected_axis == 'y' else 'black'
+                base_line_width = 2.0 if selected_axis == 'y' else 1.5
+                line_width = self._get_scaled_line_width(base_line_width, apply_zoom=False)
+                self._add_overlay_mesh(
+                    polyline,
+                    color=line_color,
+                    line_width=line_width,
+                    line_pattern=dash_dot_pattern,
+                    line_repeat=1,
+                    category='axis',
+                    render_lines_as_tubes=False,
+                )
         t_y_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
         t_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
@@ -439,7 +436,12 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             dash_start = current_pos
             dash_end = min(current_pos + dash_length, total_length)
             if dash_end > dash_start:
-                dash_points = self._interpolate_line_segment_simple(points_3d, cumulative_distances, dash_start, dash_end)
+                dash_points = self._interpolate_line_segment_simple(
+                    points_3d,
+                    cumulative_distances,
+                    dash_start,
+                    dash_end,
+                )
                 if len(dash_points) >= 2:
                     segments.append(dash_points)
             current_pos = dash_end + gap_length
@@ -447,11 +449,16 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             if current_pos >= total_length:
                 break
             
-            # Punkt-Segment
+            # Punkt-Segment (kurzer Strich)
             dot_start = current_pos
             dot_end = min(current_pos + dot_length, total_length)
             if dot_end > dot_start:
-                dot_points = self._interpolate_line_segment_simple(points_3d, cumulative_distances, dot_start, dot_end)
+                dot_points = self._interpolate_line_segment_simple(
+                    points_3d,
+                    cumulative_distances,
+                    dot_start,
+                    dot_end,
+                )
                 if len(dot_points) >= 2:
                     segments.append(dot_points)
             current_pos = dot_end + gap_length

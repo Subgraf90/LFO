@@ -160,7 +160,7 @@ class UiFile:
         if hasattr(self.main_window, 'calculation_handler'):
             self.main_window.calculation_handler.clear_speaker_position_hashes()
         
-        # 🎯 WICHTIG: Entferne alte Speaker-Actors und lösche Caches beim Laden einer neuen Datei
+        # 🎯 WICHTIG: Entferne alte Speaker-/Surface-Actors und lösche Caches beim Laden einer neuen Datei
         # Alte Daten entfernen, damit neue Daten sauber geladen werden können
         if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
             plotter = self.main_window.draw_plots.draw_spl_plotter
@@ -173,6 +173,56 @@ class UiFile:
                 # (konsistent mit dem Verhalten beim normalen Erstellen einer Fläche und beim Initialisieren)
                 if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
                     plotter.overlay_axis._last_axis_state = None
+                
+                # 🎯 SPL-PLOT-CACHES LÖSCHEN: Force-Neuaufbau aller Oberflächen-Meshes und Texturen
+                # Dies stellt sicher, dass bei einem neuen File keine alten Meshes/Grids wiederverwendet werden.
+                if hasattr(plotter, '_surface_actors'):
+                    try:
+                        # Entferne alle Surface-Actors aus dem Plotter
+                        for sid, entry in list(plotter._surface_actors.items()):
+                            actor = entry.get("actor") if isinstance(entry, dict) else entry
+                            if actor is not None and hasattr(plotter, "plotter") and plotter.plotter is not None:
+                                try:
+                                    plotter.plotter.remove_actor(actor)
+                                except Exception:
+                                    pass
+                        plotter._surface_actors.clear()
+                    except Exception:
+                        plotter._surface_actors = {}
+                if hasattr(plotter, '_surface_texture_actors'):
+                    try:
+                        for sid, tex_entry in list(plotter._surface_texture_actors.items()):
+                            actor = tex_entry.get("actor") if isinstance(tex_entry, dict) else tex_entry
+                            if actor is not None and hasattr(plotter, "plotter") and plotter.plotter is not None:
+                                try:
+                                    plotter.plotter.remove_actor(actor)
+                                except Exception:
+                                    pass
+                        plotter._surface_texture_actors.clear()
+                    except Exception:
+                        plotter._surface_texture_actors = {}
+                if hasattr(plotter, '_surface_texture_cache'):
+                    try:
+                        plotter._surface_texture_cache.clear()
+                    except Exception:
+                        plotter._surface_texture_cache = {}
+
+                # Vertikale SPL-Flächen-Caches und Actors beim Laden ebenfalls löschen,
+                # damit keine alten vertical_spl_* Meshes im neuen Projekt bleiben.
+                if hasattr(plotter, '_vertical_surface_meshes'):
+                    try:
+                        for name, actor in list(plotter._vertical_surface_meshes.items()):
+                            try:
+                                if isinstance(name, str):
+                                    # In _clear_vertical_spl_surfaces werden die Actor-Namen verwendet
+                                    plotter.plotter.remove_actor(name)
+                                elif actor is not None:
+                                    plotter.plotter.remove_actor(actor)
+                            except Exception:
+                                pass
+                        plotter._vertical_surface_meshes.clear()
+                    except Exception:
+                        plotter._vertical_surface_meshes = {}
                 
                 if hasattr(plotter, 'overlay_speakers'):
                     overlay_speakers = plotter.overlay_speakers
