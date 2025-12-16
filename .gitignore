@@ -30,3 +30,12 @@ LFO_bkp37/
 LFO/**/__pycache__/
 LFO/**/.DS_Store
 LFO/**/.pytest_cache/
+
+# Debug-Logs und Cursor-Dateien
+.cursor/
+*.log
+
+# SDE/Soundvision-Dateien (große Binärdateien)
+SDE/
+sde.sde
+*.bal
