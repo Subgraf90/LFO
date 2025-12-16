@@ -277,6 +277,28 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     )
                 )
                 zs = self._to_float_array(getattr(speaker_array, 'source_position_z_flown', None))
+                # #region agent log
+                if zs.size > 0:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "F2",
+                            "location": "PlotSPL3DSpeaker.py:draw_speakers:280",
+                            "message": "Flown positions retrieved for plotting",
+                            "data": {
+                                "array_id": str(array_id),
+                                "array_pos_x": float(array_pos_x),
+                                "array_pos_y": float(array_pos_y),
+                                "array_pos_z": float(array_pos_z),
+                                "zs_first": float(zs[0]) if zs.size > 0 else None,
+                                "zs_size": int(zs.size),
+                                "source_position_z_flown_first": float(getattr(speaker_array, 'source_position_z_flown', [None])[0]) if hasattr(speaker_array, 'source_position_z_flown') and len(getattr(speaker_array, 'source_position_z_flown', [])) > 0 else None
+                            },
+                            "timestamp": int(__import__('time').time() * 1000)
+                        }) + "\n")
+                # #endregion
             else:
                 # Für Stack: Gehäusenullpunkt = Array-Position + Speaker-Position
                 # source_position_calc_x/y/z ist nur für Berechnungen, nicht für den Plot

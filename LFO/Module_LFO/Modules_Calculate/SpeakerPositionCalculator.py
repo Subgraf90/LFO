@@ -282,6 +282,29 @@ class SpeakerPositionCalculator:
             return
         if speaker_array.source_position_z_flown is None:
             return
+        
+        # #region agent log
+        import json
+        import time as time_module
+        array_id = getattr(speaker_array, 'id', 'unknown')
+        array_pos_z = getattr(speaker_array, 'array_position_z', None)
+        source_z_flown_before = [float(v) for v in speaker_array.source_position_z_flown[:3]] if len(speaker_array.source_position_z_flown) >= 3 else [float(v) for v in speaker_array.source_position_z_flown]
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "F1",
+                "location": "SpeakerPositionCalculator.py:calculate_flown_z_center:285",
+                "message": "calculate_flown_z_center ENTRY - flown array",
+                "data": {
+                    "array_id": str(array_id),
+                    "array_position_z": float(array_pos_z) if array_pos_z is not None else None,
+                    "source_position_z_flown_before": source_z_flown_before,
+                    "number_of_sources": int(getattr(speaker_array, 'number_of_sources', 0))
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
             
         # Stelle sicher, dass number_of_sources korrekt ist
         if not hasattr(speaker_array, 'number_of_sources') or speaker_array.number_of_sources <= 0:
@@ -608,7 +631,32 @@ class SpeakerPositionCalculator:
             # Speichere die berechneten Positionen
             speaker_array.source_position_calc_z[i] = middle_z
             speaker_array.source_position_calc_y[i] = middle_y
+            old_top_z = float(speaker_array.source_position_z_flown[i]) if i < len(speaker_array.source_position_z_flown) else None
             speaker_array.source_position_z_flown[i] = top_z
+            
+            # #region agent log
+            if i == 0:  # Nur für ersten Lautsprecher loggen
+                import json
+                import time as time_module
+                array_id = getattr(speaker_array, 'id', 'unknown')
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "F1",
+                        "location": "SpeakerPositionCalculator.py:calculate_flown_z_center:615",
+                        "message": "calculate_flown_z_center - first speaker position calculated",
+                        "data": {
+                            "array_id": str(array_id),
+                            "speaker_idx": int(i),
+                            "old_top_z": float(old_top_z) if old_top_z is not None else None,
+                            "new_top_z": float(top_z),
+                            "middle_z": float(middle_z),
+                            "array_position_z": float(getattr(speaker_array, 'array_position_z', 0.0))
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            # #endregion
 
             flown_segment_info.append({
                 'top_y': float(top_y),
@@ -639,3 +687,25 @@ class SpeakerPositionCalculator:
             prev_angle_point = angle_point_lower
 
         speaker_array._flown_segment_geometry = flown_segment_info
+        
+        # #region agent log
+        import json
+        import time as time_module
+        array_id = getattr(speaker_array, 'id', 'unknown')
+        array_pos_z = getattr(speaker_array, 'array_position_z', None)
+        source_z_flown_after = [float(v) for v in speaker_array.source_position_z_flown[:3]] if len(speaker_array.source_position_z_flown) >= 3 else [float(v) for v in speaker_array.source_position_z_flown]
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "F1",
+                "location": "SpeakerPositionCalculator.py:calculate_flown_z_center:692",
+                "message": "calculate_flown_z_center EXIT - flown array",
+                "data": {
+                    "array_id": str(array_id),
+                    "array_position_z": float(array_pos_z) if array_pos_z is not None else None,
+                    "source_position_z_flown_after": source_z_flown_after
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion

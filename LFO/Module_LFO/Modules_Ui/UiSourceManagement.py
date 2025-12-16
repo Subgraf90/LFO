@@ -4951,7 +4951,28 @@ class Sources(ModuleBase, QObject):
             
             # Bei Flown-Systemen: Setze die absolute Position für alle Quellen (wie die alten Felder)
             if hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown":
+                old_source_z_flown = [float(v) for v in speaker_array.source_position_z_flown[:3]] if hasattr(speaker_array, 'source_position_z_flown') and speaker_array.source_position_z_flown is not None and len(speaker_array.source_position_z_flown) >= 3 else []
                 speaker_array.source_position_z_flown = np.full(speaker_array.number_of_sources, value, dtype=float)
+                # #region agent log
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "F3",
+                        "location": "UiSourceManagement.py:on_ArrayZ_changed:4955",
+                        "message": "Flown array - source_position_z_flown set to array_position_z",
+                        "data": {
+                            "array_id": array_id,
+                            "array_position_z": float(value),
+                            "old_source_z_flown": old_source_z_flown,
+                            "new_source_z_flown": [float(v) for v in speaker_array.source_position_z_flown[:3]],
+                            "number_of_sources": int(speaker_array.number_of_sources)
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+                # #endregion
             
             self.array_z_edit.setText(f"{value:.2f}")
             
