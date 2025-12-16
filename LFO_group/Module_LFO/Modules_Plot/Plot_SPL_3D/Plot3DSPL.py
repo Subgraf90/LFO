@@ -276,7 +276,6 @@ class SPL3DPlotRenderer:
             if surface_id == "layer0_002_tri1":
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     import json
-                    import time
                     f.write(json.dumps({
                         "sessionId": "debug-session",
                         "runId": "run1",
@@ -464,7 +463,6 @@ class SPL3DPlotRenderer:
                     if surface_id == "layer0_002_tri1":
                         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                             import json
-                            import time
                             finite_mask = np.isfinite(spl_at_verts)
                             finite_values = spl_at_verts[finite_mask] if np.any(finite_mask) else np.array([])
                             f.write(json.dumps({
@@ -1465,7 +1463,6 @@ class SPL3DPlotRenderer:
                     # #region agent log
                     try:
                         import json
-                        import time as time_module
                         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                             f.write(json.dumps({
                                 "sessionId": "debug-session",
@@ -1477,7 +1474,7 @@ class SPL3DPlotRenderer:
                                     "group_id": group_id,
                                     "active_group_ids": list(active_group_ids)
                                 },
-                                "timestamp": int(time_module.time() * 1000)
+                                "timestamp": int(time.time() * 1000)
                             }) + "\n")
                     except Exception:
                         pass
@@ -2411,7 +2408,6 @@ class SPL3DPlotRenderer:
                     if sid == "layer0_002_tri1":
                         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                             import json
-                            import time
                             f.write(json.dumps({
                                 "sessionId": "debug-session",
                                 "runId": "run1",
