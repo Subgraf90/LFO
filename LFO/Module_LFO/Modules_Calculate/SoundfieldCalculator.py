@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import time
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.FlexibleGridGenerator import FlexibleGridGenerator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -356,67 +357,227 @@ class SoundFieldCalculator(ModuleBase):
         
         # Kombiniere Z-Grids und Masken aus einzelnen Surface-Grids
         from scipy.interpolate import griddata
-        for surface_id, grid in surface_grids_grouped.items():
-            orientation = getattr(grid.geometry, "orientation", None)
-            
-            # 🎯 IDENTISCHE BEHANDLUNG: Vertikale Flächen haben separate Grids (andere Koordinatenebene)
-            # Sie werden nicht ins kombinierte (x,y)-Grid gemischt, aber gleich behandelt
-            if orientation != "vertical":
-                # Interpoliere Z-Grid
-                points_orig = np.column_stack([grid.X_grid.ravel(), grid.Y_grid.ravel()])
-                z_orig = grid.Z_grid.ravel()
-                mask_orig = grid.surface_mask.ravel()
-                
-                points_new = np.column_stack([X_grid.ravel(), Y_grid.ravel()])
-                
-                # Interpoliere Z-Werte
-                if np.any(mask_orig):
-                    z_interp = griddata(
-                        points_orig[mask_orig],
-                        z_orig[mask_orig],
-                        points_new,
-                        method='nearest',
-                        fill_value=0.0
+
+        # 🔧 PERFORMANCE: Arbeite im kombinierten Grid nur innerhalb der Bounding-Box jeder Surface,
+        # statt für JEDE Surface ALLE Punkte des globalen Grids zu interpolieren.
+        print(f"[DEBUG Interpolate] Starte Interpolation für {len(surface_grids_grouped)} Surfaces")
+        print(
+            f"[DEBUG Interpolate] Globales Grid: X_grid.shape={X_grid.shape}, "
+            f"Y_grid.shape={Y_grid.shape}, total_points={X_grid.size}"
+        )
+
+        # Vorab: flache Views des kombinierten Grids, damit wir Teilbereiche effizient adressieren können
+        X_flat = X_grid.ravel()
+        Y_flat = Y_grid.ravel()
+        Z_combined_flat = Z_grid_combined.ravel()
+        mask_combined_flat = surface_mask_combined.ravel()
+
+        with perf_section(
+            "SoundFieldCalculator._calculate_sound_field_complex.interpolate_surfaces",
+            n_surface_grids=len(surface_grids_grouped),
+        ):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            total_surfaces = len(surface_grids_grouped)
+            t_start_total = time.perf_counter()
+
+            # Max. Threads aus Settings, wie bei generate_per_surface
+            max_workers = int(getattr(self.settings, "spl_parallel_surfaces", 0) or 0)
+            if max_workers <= 0:
+                max_workers = None
+
+            def _interpolate_single_surface(args):
+                surface_id, grid, surface_idx = args
+                t_surface_start = time.perf_counter()
+
+                # Fortschrittsanzeige (nur zur Orientierung)
+                if surface_idx % 10 == 0 or surface_idx <= 5:
+                    elapsed = time.perf_counter() - t_start_total
+                    print(
+                        f"[DEBUG Interpolate] Surface {surface_idx}/{total_surfaces}: "
+                        f"'{surface_id}' (elapsed: {elapsed:.1f}s)"
                     )
-                    Z_grid_combined = np.maximum(Z_grid_combined, z_interp.reshape(X_grid.shape))
-                
-                # Kombiniere Masken
-                mask_interp = griddata(
-                    points_orig,
-                    mask_orig.astype(float),
-                    points_new,
-                    method='nearest',
-                    fill_value=0.0
-                )
-                surface_mask_combined = surface_mask_combined | (mask_interp.reshape(X_grid.shape) > 0.5)
-            
-            # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul (für ALLE Flächen, auch vertikale)
-            # 🎯 NEU: Füge triangulierte Daten hinzu
-            grid_data = {
-                'sound_field_x': grid.sound_field_x.tolist(),
-                'sound_field_y': grid.sound_field_y.tolist(),
-                'X_grid': grid.X_grid.tolist(),
-                'Y_grid': grid.Y_grid.tolist(),
-                'Z_grid': grid.Z_grid.tolist(),
-                'surface_mask': grid.surface_mask.astype(bool).tolist(),
-                'resolution': grid.resolution,
-                'orientation': grid.geometry.orientation,
-                'dominant_axis': getattr(grid.geometry, 'dominant_axis', None),
-            }
-            
-            # 🎯 TRIANGULATION: Füge triangulierte Vertices und Faces hinzu
-            if hasattr(grid, 'triangulated_vertices') and grid.triangulated_vertices is not None:
-                grid_data['triangulated_vertices'] = grid.triangulated_vertices.tolist()
-            if hasattr(grid, 'triangulated_faces') and grid.triangulated_faces is not None:
-                grid_data['triangulated_faces'] = grid.triangulated_faces.tolist()
-            if hasattr(grid, 'triangulated_success'):
-                grid_data['triangulated_success'] = grid.triangulated_success
-            
-            surface_grids_data[surface_id] = grid_data
+
+                orientation = getattr(grid.geometry, "orientation", None)
+
+                idx_bbox = None
+                z_interp_sub = None
+                mask_interp_sub = None
+
+                # 🎯 IDENTISCHE BEHANDLUNG: Vertikale Flächen haben separate Grids (andere Koordinatenebene)
+                # Sie werden nicht ins kombinierte (x,y)-Grid gemischt, aber gleich behandelt
+                if orientation != "vertical":
+                    # Interpoliere nur innerhalb der Bounding-Box der Surface ins kombinierte Grid
+                    t_prep = time.perf_counter()
+
+                    Xg = np.asarray(grid.X_grid, dtype=float)
+                    Yg = np.asarray(grid.Y_grid, dtype=float)
+                    Zg = np.asarray(grid.Z_grid, dtype=float)
+                    mask_orig = np.asarray(grid.surface_mask, dtype=bool).ravel()
+
+                    if Xg.size == 0 or Yg.size == 0 or Zg.size == 0 or not np.any(mask_orig):
+                        # Nichts zu tun für diese Surface
+                        if surface_idx <= 5:
+                            print(
+                                f"[DEBUG Interpolate] Surface '{surface_id}': "
+                                f"übersprungen (leeres Grid oder Maske leer)"
+                            )
+                    else:
+                        # Ursprungs-Punkte (lokales Surface-Grid)
+                        points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
+                        z_orig = Zg.ravel()
+
+                        # Bounding-Box in X/Y bestimmen
+                        min_x = float(Xg.min())
+                        max_x = float(Xg.max())
+                        min_y = float(Yg.min())
+                        max_y = float(Yg.max())
+
+                        # Finde Punkte im globalen Grid innerhalb dieser Bounding-Box
+                        inside_bbox = (
+                            (X_flat >= min_x) & (X_flat <= max_x) &
+                            (Y_flat >= min_y) & (Y_flat <= max_y)
+                        )
+
+                        # Verwende explizite Indizes, damit die Haupt-Thread-Logik Ergebnisse zielgerichtet zurückschreiben kann
+                        idx_bbox = np.nonzero(inside_bbox)[0]
+                        n_bbox = int(idx_bbox.size)
+                        t_prep_duration = (time.perf_counter() - t_prep) * 1000
+
+                        if surface_idx <= 5:
+                            print(
+                                f"[DEBUG Interpolate] Surface '{surface_id}': Vorbereitung {t_prep_duration:.1f}ms, "
+                                f"points_orig.shape={points_orig.shape}, mask_orig.sum()={int(mask_orig.sum())}, "
+                                f"bbox_points={n_bbox}"
+                            )
+
+                        if n_bbox == 0:
+                            # Diese Surface schneidet das globale Grid nicht
+                            idx_bbox = None
+                        else:
+                            points_new_sub = np.column_stack(
+                                [X_flat[idx_bbox], Y_flat[idx_bbox]]
+                            )
+
+                            # Interpoliere Z-Werte (nur aktive Masken-Punkte der Surface)
+                            t_z_start = time.perf_counter()
+                            z_interp_sub = griddata(
+                                points_orig[mask_orig],
+                                z_orig[mask_orig],
+                                points_new_sub,
+                                method='nearest',
+                                fill_value=0.0,
+                            )
+                            t_z_duration = (time.perf_counter() - t_z_start) * 1000
+                            if surface_idx <= 5 or t_z_duration > 100:
+                                print(
+                                    f"[DEBUG Interpolate] Surface '{surface_id}': "
+                                    f"Z-griddata (BBox) {t_z_duration:.1f}ms für {n_bbox} Punkte"
+                                )
+
+                            # Kombiniere Masken (auf gesamter Surface, aber ebenfalls nur in der BBox)
+                            t_mask_start = time.perf_counter()
+                            mask_interp_sub = griddata(
+                                points_orig,
+                                mask_orig.astype(float),
+                                points_new_sub,
+                                method='nearest',
+                                fill_value=0.0,
+                            )
+                            t_mask_duration = (time.perf_counter() - t_mask_start) * 1000
+                            if surface_idx <= 5 or t_mask_duration > 100:
+                                print(
+                                    f"[DEBUG Interpolate] Surface '{surface_id}': "
+                                    f"Mask-griddata (BBox) {t_mask_duration:.1f}ms für {n_bbox} Punkte"
+                                )
+
+                # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul (für ALLE Flächen, auch vertikale)
+                # 🎯 NEU: Füge triangulierte Daten hinzu
+                t_dict_start = time.perf_counter()
+                grid_data = {
+                    'sound_field_x': grid.sound_field_x.tolist(),
+                    'sound_field_y': grid.sound_field_y.tolist(),
+                    'X_grid': grid.X_grid.tolist(),
+                    'Y_grid': grid.Y_grid.tolist(),
+                    'Z_grid': grid.Z_grid.tolist(),
+                    'surface_mask': grid.surface_mask.astype(bool).tolist(),
+                    'resolution': grid.resolution,
+                    'orientation': grid.geometry.orientation,
+                    'dominant_axis': getattr(grid.geometry, 'dominant_axis', None),
+                }
+                t_dict_duration = (time.perf_counter() - t_dict_start) * 1000
+                if surface_idx <= 5 or t_dict_duration > 100:
+                    print(
+                        f"[DEBUG Interpolate] Surface '{surface_id}': "
+                        f"Dict-Erstellung {t_dict_duration:.1f}ms"
+                    )
+
+                # 🎯 TRIANGULATION: Füge triangulierte Vertices und Faces hinzu
+                t_tri_start = time.perf_counter()
+                if hasattr(grid, 'triangulated_vertices') and grid.triangulated_vertices is not None:
+                    grid_data['triangulated_vertices'] = grid.triangulated_vertices.tolist()
+                if hasattr(grid, 'triangulated_faces') and grid.triangulated_faces is not None:
+                    grid_data['triangulated_faces'] = grid.triangulated_faces.tolist()
+                if hasattr(grid, 'triangulated_success'):
+                    grid_data['triangulated_success'] = grid.triangulated_success
+                t_tri_duration = (time.perf_counter() - t_tri_start) * 1000
+                if surface_idx <= 5 or t_tri_duration > 50:
+                    print(
+                        f"[DEBUG Interpolate] Surface '{surface_id}': "
+                        f"Triangulation-Konvertierung {t_tri_duration:.1f}ms"
+                    )
+
+                t_surface_duration = (time.perf_counter() - t_surface_start) * 1000
+                if surface_idx <= 5 or t_surface_duration > 500:
+                    print(
+                        f"[DEBUG Interpolate] Surface '{surface_id}': "
+                        f"GESAMT {t_surface_duration:.1f}ms"
+                    )
+
+                # Rückgabe zur Weiterverarbeitung im Haupt-Thread
+                return surface_id, idx_bbox, z_interp_sub, mask_interp_sub, grid_data
+
+            # Parallel über Surfaces interpolieren und anschließend Ergebnisse konsolidieren
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {}
+                for idx, (surface_id, grid) in enumerate(
+                    surface_grids_grouped.items(), start=1
+                ):
+                    fut = executor.submit(
+                        _interpolate_single_surface,
+                        (surface_id, grid, idx),
+                    )
+                    futures[fut] = surface_id
+
+                for fut in as_completed(futures):
+                    try:
+                        surface_id, idx_bbox, z_interp_sub, mask_interp_sub, grid_data = fut.result()
+                    except Exception as e:
+                        print(
+                            f"⚠️  [SoundFieldCalculator] Surface '{futures[fut]}' "
+                            f"übersprungen (Interpolation-Fehler: {e})"
+                        )
+                        continue
+
+                    # Ergebnisse der Interpolation zurück ins kombinierte Grid schreiben (nur Haupt-Thread!)
+                    if idx_bbox is not None and z_interp_sub is not None:
+                        Z_combined_flat[idx_bbox] = np.maximum(
+                            Z_combined_flat[idx_bbox],
+                            z_interp_sub,
+                        )
+                    if idx_bbox is not None and mask_interp_sub is not None:
+                        mask_combined_flat[idx_bbox] |= (mask_interp_sub > 0.5)
+
+                    surface_grids_data[surface_id] = grid_data
         
-        Z_grid = Z_grid_combined
-        surface_mask = surface_mask_combined
+        print(f"[DEBUG Interpolate] Alle {len(surface_grids_grouped)} Surfaces interpoliert und verarbeitet")
+        
+        # Nach der Bearbeitung über flache Views wieder in die ursprüngliche Grid-Form bringen
+        Z_grid = Z_combined_flat.reshape(X_grid.shape)
+        surface_mask = mask_combined_flat.reshape(X_grid.shape)
         surface_mask_strict = surface_mask_combined.copy()
+        print(f"[DEBUG Interpolate] Z_grid/surface_mask gesetzt, berechne Statistiken...")
+        
         # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
         total_points = int(X_grid.size)
         active_points = int(np.count_nonzero(surface_mask))
@@ -424,8 +585,12 @@ class SoundFieldCalculator(ModuleBase):
         nx_points = len(sound_field_x)
         ny_points = len(sound_field_y)
         
+        print(f"[DEBUG Interpolate] Statistiken: total_points={total_points}, active_points={active_points}, nx={nx_points}, ny={ny_points}")
+        
         # 🐛 DEBUG: Prüfe Z-Koordinaten für schräge Flächen
+        print(f"[DEBUG Interpolate] Prüfe DEBUG_SOUNDFIELD Block (DEBUG_SOUNDFIELD={DEBUG_SOUNDFIELD}, enabled_surfaces={len(enabled_surfaces) if enabled_surfaces else 0})...")
         if DEBUG_SOUNDFIELD and enabled_surfaces:
+            print(f"[DEBUG Interpolate] Starte DEBUG_SOUNDFIELD Block mit {len(enabled_surfaces)} Surfaces...")
             # Importiere Funktionen außerhalb der Schleife
             from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
                 derive_surface_plane,
@@ -491,6 +656,7 @@ class SoundFieldCalculator(ModuleBase):
             except Exception as e:
                 print(f"[SoundFieldCalculator] Symmetrie-Check konnte nicht ausgeführt werden: {e}")
 
+        print(f"[DEBUG Interpolate] Nach DEBUG_SOUNDFIELD Block: Erstelle surface_field_buffers...")
         surface_field_buffers: Dict[str, np.ndarray] = {}
         surface_point_buffers: Dict[str, np.ndarray] = {}
         # 🎯 NEU: Pufferspeicher für direkt berechnete Surface-Grids (ohne Interpolation)
@@ -534,6 +700,8 @@ class SoundFieldCalculator(ModuleBase):
                     # Wenn etwas schiefgeht, einfach keinen Buffer anlegen
                     continue
 
+        print(f"[DEBUG Interpolate] surface_results_buffers erstellt für {len(surface_results_buffers)} Surfaces")
+        
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
             return [], sound_field_x, sound_field_y, ({} if capture_arrays else None)
