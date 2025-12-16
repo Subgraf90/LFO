@@ -56,7 +56,9 @@ logger = logging.getLogger("lfo.main")
 
 class MainWindow(QtWidgets.QMainWindow):
     """
-    Hauptfenster der Anwendung.
+    Hauptfenster der Anwendu
+
+
 
     Diese Klasse repräsentiert das Hauptfenster der Anwendung und verwaltet
     die Benutzeroberfläche sowie die Interaktionen mit anderen Modulen.
