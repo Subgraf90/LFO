@@ -249,6 +249,10 @@ class Settings:
             'update_pressure_axisplot': True,
             'update_pressure_polarplot': True,
             'update_pressure_impulse': True,
+            # Gruppen-Summen-Grid Einstellungen
+            'spl_group_sum_enabled': True,  # Gruppen-Summen-Grid aktivieren
+            'spl_group_min_surfaces': 2,  # Mindestanzahl Surfaces pro Gruppe für Gruppen-Grid
+            'spl_group_max_distance': None,  # Maximaler Abstand zwischen Surfaces (None = automatisch: 2 * resolution)
         }
         for key, value in defaults.items():
             setattr(self, key, value)
@@ -335,6 +339,9 @@ class Settings:
             'update_pressure_impulse': self.update_pressure_impulse,
             'fem_compute_particle_velocity': getattr(self, 'fem_compute_particle_velocity', True),
             'speaker_array_groups': getattr(self, 'speaker_array_groups', {}),
+            'spl_group_sum_enabled': getattr(self, 'spl_group_sum_enabled', True),
+            'spl_group_min_surfaces': getattr(self, 'spl_group_min_surfaces', 2),
+            'spl_group_max_distance': getattr(self, 'spl_group_max_distance', None),
         }
 
     def set_active_surface(self, surface_id):

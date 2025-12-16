@@ -1878,30 +1878,41 @@ class GridBuilder(ModuleBase):
             min_y -= resolution
             max_y += resolution
             
-            # 🎯 ADAPTIVE RESOLUTION: Höhere Dichte am Rand für schärfere Plots
-            # Erstelle feineres Grid am Rand (z.B. halbe Resolution) für bessere Detailwiedergabe
-            edge_resolution_factor = 0.5  # Halbe Resolution am Rand = doppelte Dichte
-            edge_resolution = resolution * edge_resolution_factor
-            edge_width = resolution * 2.0  # Randbereich: 2x Resolution (ca. 2m bei 1m Resolution)
+            # 🎯 ADAPTIVE EDGE-REFINEMENT: Nur bei großen Flächen aktivieren
+            # Für kleine Flächen: Edge-Refinement würde zu vielen Vertices führen
+            # Schwellwert: Wenn Fläche > 4x Resolution², dann Edge-Refinement aktivieren
+            surface_area = width * height
+            edge_refinement_threshold = (resolution * 2.0) ** 2  # 4x Resolution²
             
-            # Erstelle Basis-Grid mit normaler Resolution
-            sound_field_x_coarse = np.arange(min_x, max_x + resolution, resolution)
-            sound_field_y_coarse = np.arange(min_y, max_y + resolution, resolution)
-            
-            # Erstelle feineres Grid am Rand
-            # Links/Rechts: Von min_x bis min_x+edge_width und von max_x-edge_width bis max_x
-            x_fine_left = np.arange(min_x, min_x + edge_width + edge_resolution, edge_resolution)
-            x_fine_right = np.arange(max_x - edge_width, max_x + edge_resolution, edge_resolution)
-            x_middle = np.arange(min_x + edge_width, max_x - edge_width + resolution, resolution)
-            
-            # Oben/Unten: Von min_y bis min_y+edge_width und von max_y-edge_width bis max_y
-            y_fine_bottom = np.arange(min_y, min_y + edge_width + edge_resolution, edge_resolution)
-            y_fine_top = np.arange(max_y - edge_width, max_y + edge_resolution, edge_resolution)
-            y_middle = np.arange(min_y + edge_width, max_y - edge_width + resolution, resolution)
-            
-            # Kombiniere: Entferne Duplikate (wenn edge_width < resolution könnte es Überschneidungen geben)
-            sound_field_x = np.unique(np.concatenate([x_fine_left, x_middle, x_fine_right]))
-            sound_field_y = np.unique(np.concatenate([y_fine_bottom, y_middle, y_fine_top]))
+            if surface_area > edge_refinement_threshold:
+                # 🎯 ADAPTIVE RESOLUTION: Höhere Dichte am Rand für schärfere Plots
+                # Erstelle feineres Grid am Rand (z.B. halbe Resolution) für bessere Detailwiedergabe
+                edge_resolution_factor = 0.5  # Halbe Resolution am Rand = doppelte Dichte
+                edge_resolution = resolution * edge_resolution_factor
+                edge_width = resolution * 2.0  # Randbereich: 2x Resolution (ca. 2m bei 1m Resolution)
+                
+                # Erstelle Basis-Grid mit normaler Resolution
+                sound_field_x_coarse = np.arange(min_x, max_x + resolution, resolution)
+                sound_field_y_coarse = np.arange(min_y, max_y + resolution, resolution)
+                
+                # Erstelle feineres Grid am Rand
+                # Links/Rechts: Von min_x bis min_x+edge_width und von max_x-edge_width bis max_x
+                x_fine_left = np.arange(min_x, min_x + edge_width + edge_resolution, edge_resolution)
+                x_fine_right = np.arange(max_x - edge_width, max_x + edge_resolution, edge_resolution)
+                x_middle = np.arange(min_x + edge_width, max_x - edge_width + resolution, resolution)
+                
+                # Oben/Unten: Von min_y bis min_y+edge_width und von max_y-edge_width bis max_y
+                y_fine_bottom = np.arange(min_y, min_y + edge_width + edge_resolution, edge_resolution)
+                y_fine_top = np.arange(max_y - edge_width, max_y + edge_resolution, edge_resolution)
+                y_middle = np.arange(min_y + edge_width, max_y - edge_width + resolution, resolution)
+                
+                # Kombiniere: Entferne Duplikate (wenn edge_width < resolution könnte es Überschneidungen geben)
+                sound_field_x = np.unique(np.concatenate([x_fine_left, x_middle, x_fine_right]))
+                sound_field_y = np.unique(np.concatenate([y_fine_bottom, y_middle, y_fine_top]))
+            else:
+                # Für kleine Flächen: Kein Edge-Refinement, verwende normale Resolution
+                sound_field_x = np.arange(min_x, max_x + resolution, resolution)
+                sound_field_y = np.arange(min_y, max_y + resolution, resolution)
             
             # Sicherstellen: Mindestens min_points_per_dimension Punkte
             if len(sound_field_x) < min_points_per_dimension:
@@ -3398,12 +3409,46 @@ class FlexibleGridGenerator(ModuleBase):
                                                     break  # Ein Dreieck reicht für benachbarte Ecken
                     
                     if len(faces_list) > 0:
-                        triangulated_vertices = all_vertices  # Alle Grid-Punkte als Vertices
-                        triangulated_faces = np.array(faces_list, dtype=np.int64)
+                        # 🎯 OPTIMIERUNG: Nur Vertices innerhalb der Maske verwenden
+                        # Sammle alle eindeutigen Vertex-Indizes, die in Faces verwendet werden
+                        faces_array_temp = np.array(faces_list, dtype=np.int64)
+                        # Extrahiere Vertex-Indizes aus Faces (Format: [n, v1, v2, v3, n, v4, v5, v6, ...])
+                        vertex_indices_in_faces = []
+                        for i in range(0, len(faces_list), 4):
+                            if i + 3 < len(faces_list):
+                                n_verts = faces_list[i]
+                                if n_verts == 3:
+                                    vertex_indices_in_faces.extend(faces_list[i+1:i+4])
+                        
+                        all_vertex_indices = np.unique(vertex_indices_in_faces)
+                        
+                        # Erstelle Mapping: alter Index → neuer Index
+                        old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
+                        
+                        # Erstelle nur die Vertices, die tatsächlich verwendet werden
+                        triangulated_vertices = all_vertices[all_vertex_indices]
+                        
+                        # Mappe Face-Indizes auf neue Vertex-Indizes
+                        faces_list_mapped = []
+                        for i in range(0, len(faces_list), 4):
+                            if i + 3 < len(faces_list):
+                                n_verts = faces_list[i]
+                                if n_verts == 3:
+                                    v1_old = faces_list[i+1]
+                                    v2_old = faces_list[i+2]
+                                    v3_old = faces_list[i+3]
+                                    faces_list_mapped.extend([
+                                        3,
+                                        old_to_new_index[v1_old],
+                                        old_to_new_index[v2_old],
+                                        old_to_new_index[v3_old]
+                                    ])
+                        
+                        triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
                         triangulated_success = True
                         
-                        n_faces = len(faces_list) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
-                        n_vertices_used = len(np.unique(triangulated_faces[1::4]))  # Eindeutige Vertex-Indizes
+                        n_faces = len(faces_list_mapped) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
+                        n_vertices_used = len(all_vertex_indices)  # Anzahl der tatsächlich verwendeten Vertices
                         expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
                         
                         # 🎯 DEDUPLIKATION: Entferne doppelte Vertices
@@ -3641,41 +3686,98 @@ class FlexibleGridGenerator(ModuleBase):
                 idx_bl = (ii + 1) * nx + jj
                 idx_br = idx_bl + 1
 
-                # Aktive Quadrate: alle vier Ecken liegen innerhalb der Maske
+                # 🎯 SAUBERE RAND-BEHANDLUNG: Vollständige + Rand-Quadrate triangulieren
                 mask_tl = mask_flat[idx_tl]
                 mask_tr = mask_flat[idx_tr]
                 mask_bl = mask_flat[idx_bl]
                 mask_br = mask_flat[idx_br]
 
-                active_mask = mask_tl & mask_tr & mask_bl & mask_br
-                active_quads = int(np.count_nonzero(active_mask))
+                # Vollständige Quadrate: alle vier Ecken in Maske
+                full_mask = mask_tl & mask_tr & mask_bl & mask_br
+                active_quads = int(np.count_nonzero(full_mask))
+                
+                # Rand-Quadrate: 1-3 Ecken in Maske (für saubere Rand-Abschlüsse)
+                partial_mask = (mask_tl | mask_tr | mask_bl | mask_br) & ~full_mask
+                partial_quads = int(np.count_nonzero(partial_mask))
+                
+                faces_list = []
+                all_used_vertex_indices = set()
 
+                # 1. Vollständige Quadrate: 2 Dreiecke pro Quadrat
                 if active_quads > 0:
-                    # Flache Arrays der aktiven Eck-Indizes
-                    tl_active = idx_tl[active_mask].ravel()
-                    tr_active = idx_tr[active_mask].ravel()
-                    bl_active = idx_bl[active_mask].ravel()
-                    br_active = idx_br[active_mask].ravel()
+                    tl_full = idx_tl[full_mask].ravel()
+                    tr_full = idx_tr[full_mask].ravel()
+                    bl_full = idx_bl[full_mask].ravel()
+                    br_full = idx_br[full_mask].ravel()
+                    
+                    # Erstes Dreieck: (tl, tr, bl)
+                    for i in range(len(tl_full)):
+                        faces_list.extend([3, int(tl_full[i]), int(tr_full[i]), int(bl_full[i])])
+                        all_used_vertex_indices.update([int(tl_full[i]), int(tr_full[i]), int(bl_full[i])])
+                    
+                    # Zweites Dreieck: (tr, br, bl)
+                    for i in range(len(tr_full)):
+                        faces_list.extend([3, int(tr_full[i]), int(br_full[i]), int(bl_full[i])])
+                        all_used_vertex_indices.update([int(tr_full[i]), int(br_full[i]), int(bl_full[i])])
+                
+                # 2. Rand-Quadrate: Erstelle Dreiecke nur mit aktiven Ecken
+                if partial_quads > 0:
+                    for quad_idx in np.where(partial_mask)[0]:
+                        i, j = ii.ravel()[quad_idx], jj.ravel()[quad_idx]
+                        tl_idx = int(idx_tl.ravel()[quad_idx])
+                        tr_idx = int(idx_tr.ravel()[quad_idx])
+                        bl_idx = int(idx_bl.ravel()[quad_idx])
+                        br_idx = int(idx_br.ravel()[quad_idx])
+                        
+                        # Sammle aktive Ecken
+                        active_corners = []
+                        if mask_flat[tl_idx]:
+                            active_corners.append(tl_idx)
+                        if mask_flat[tr_idx]:
+                            active_corners.append(tr_idx)
+                        if mask_flat[bl_idx]:
+                            active_corners.append(bl_idx)
+                        if mask_flat[br_idx]:
+                            active_corners.append(br_idx)
+                        
+                        # Erstelle Dreiecke mit aktiven Ecken (mindestens 3 benötigt)
+                        if len(active_corners) >= 3:
+                            # Erstelle Dreiecke: Verwende erste 3 Ecken
+                            faces_list.extend([3, active_corners[0], active_corners[1], active_corners[2]])
+                            all_used_vertex_indices.update(active_corners[:3])
+                            
+                            # Wenn 4 Ecken aktiv: Zweites Dreieck
+                            if len(active_corners) == 4:
+                                faces_list.extend([3, active_corners[0], active_corners[2], active_corners[3]])
+                                all_used_vertex_indices.update([active_corners[0], active_corners[2], active_corners[3]])
 
-                    # Für jedes aktive Quadrat zwei Dreiecke:
-                    # Dreieck 1: (tl, tr, bl)
-                    # Dreieck 2: (tr, br, bl)
-                    n_faces = 2 * active_quads
-                    faces_arr = np.empty((n_faces, 4), dtype=np.int64)
-
-                    # Erstes Dreieck pro Quadrat
-                    faces_arr[0::2, 0] = 3
-                    faces_arr[0::2, 1] = tl_active
-                    faces_arr[0::2, 2] = tr_active
-                    faces_arr[0::2, 3] = bl_active
-                    # Zweites Dreieck pro Quadrat
-                    faces_arr[1::2, 0] = 3
-                    faces_arr[1::2, 1] = tr_active
-                    faces_arr[1::2, 2] = br_active
-                    faces_arr[1::2, 3] = bl_active
-
-                    triangulated_vertices = all_vertices
-                    triangulated_faces = faces_arr.ravel()
+                if len(faces_list) > 0:
+                    # 🎯 OPTIMIERUNG: Nur Vertices innerhalb der Maske verwenden
+                    all_vertex_indices = np.array(sorted(all_used_vertex_indices), dtype=np.int64)
+                    
+                    # Erstelle Mapping: alter Index → neuer Index
+                    old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
+                    
+                    # Erstelle nur die Vertices, die tatsächlich verwendet werden
+                    triangulated_vertices = all_vertices[all_vertex_indices]
+                    
+                    # Mappe Face-Indizes auf neue Vertex-Indizes
+                    faces_arr_mapped = []
+                    for i in range(0, len(faces_list), 4):
+                        if i + 3 < len(faces_list):
+                            n_verts = faces_list[i]
+                            if n_verts == 3:
+                                v1_old = faces_list[i+1]
+                                v2_old = faces_list[i+2]
+                                v3_old = faces_list[i+3]
+                                faces_arr_mapped.extend([
+                                    3,
+                                    old_to_new_index[v1_old],
+                                    old_to_new_index[v2_old],
+                                    old_to_new_index[v3_old]
+                                ])
+                    
+                    triangulated_faces = np.array(faces_arr_mapped, dtype=np.int64)
                     triangulated_success = True
 
                     # 🎯 NACHBEARBEITUNG: Doppelte Vertices entfernen
@@ -3694,11 +3796,12 @@ class FlexibleGridGenerator(ModuleBase):
                         n_verts = 0
                         if triangulated_vertices is not None:
                             n_verts = len(triangulated_vertices)
+                        n_all_vertices = len(all_vertices)
                         print(
                             f"[DEBUG Triangulation] Surface '{geom.surface_id}': "
                             f"{n_tris} Dreiecke, {n_verts} Vertices "
-                            f"(vorher: {n_faces} Dreiecke, {len(all_vertices)} Vertices), "
-                            f"{active_quads} aktive Quadrate"
+                            f"(vorher: {n_all_vertices} Grid-Punkte), "
+                            f"{active_quads} vollständige Quadrate, {partial_quads} Rand-Quadrate"
                         )
         except Exception as e:
             if DEBUG_FLEXIBLE_GRID:
@@ -3719,6 +3822,314 @@ class FlexibleGridGenerator(ModuleBase):
             triangulated_faces=triangulated_faces,
             triangulated_success=triangulated_success,
         )
+
+    def generate_group_sum_grid(
+        self,
+        group_surfaces: List[Tuple[str, Dict]],
+        resolution: Optional[float] = None,
+        min_points_per_dimension: int = 6,
+    ) -> Dict[str, Any]:
+        """
+        Erstellt ein gemeinsames Summen-Grid für eine Gruppe von Surfaces.
+        
+        Args:
+            group_surfaces: Liste von (surface_id, surface_definition) Tupeln für die Gruppe
+            resolution: Basis-Resolution in Metern (wenn None: settings.resolution)
+            min_points_per_dimension: Mindestanzahl Punkte pro Dimension
+        
+        Returns:
+            Dict mit:
+            - "X": X_grid (2D-Array)
+            - "Y": Y_grid (2D-Array)
+            - "Z": Z_grid (2D-Array)
+            - "sound_field_x": 1D-Array X-Koordinaten
+            - "sound_field_y": 1D-Array Y-Koordinaten
+            - "masks": Dict von {surface_id: mask} - Polygon-Maske pro Surface im Gruppen-Grid
+            - "geometries": Dict von {surface_id: SurfaceGeometry}
+        """
+        if resolution is None:
+            resolution = self.settings.resolution
+        
+        if not group_surfaces:
+            return {}
+        
+        # Analysiere Surfaces der Gruppe
+        geometries = self.analyzer.analyze_surfaces(group_surfaces)
+        if not geometries:
+            return {}
+        
+        # 🎯 PRÜFE OB ALLE SURFACES VERTIKAL SIND UND GLEICHE ORIENTIERUNG HABEN
+        all_vertical_same_orientation = False
+        group_dominant_axis = None
+        if len(geometries) > 0:
+            orientations = [geom.orientation for geom in geometries]
+            dominant_axes = [getattr(geom, 'dominant_axis', None) for geom in geometries]
+            
+            if all(o == "vertical" for o in orientations):
+                if len(set(dominant_axes)) == 1 and dominant_axes[0]:
+                    all_vertical_same_orientation = True
+                    group_dominant_axis = dominant_axes[0]
+        
+        # Bounding-Box über alle Points der Gruppe bilden
+        all_x = []
+        all_y = []
+        all_z = []
+        for geom in geometries:
+            pts = geom.points
+            if not pts:
+                continue
+            all_x.extend([float(p.get("x", 0.0)) for p in pts])
+            all_y.extend([float(p.get("y", 0.0)) for p in pts])
+            all_z.extend([float(p.get("z", 0.0)) for p in pts])
+        
+        if not all_x or not all_y:
+            return {}
+        
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+        min_z, max_z = min(all_z), max(all_z)
+        
+        # Stelle sicher, dass wir mindestens min_points_per_dimension abdecken
+        if resolution <= 0:
+            resolution = self.settings.resolution or 1.0
+        
+        # 🎯 FÜR VERTIKALE SURFACES: Erstelle Grid in der richtigen Ebene
+        if all_vertical_same_orientation and group_dominant_axis == "xz":
+            # X-Z-Wand: Grid in X-Z-Ebene (Y ist konstant)
+            nx_target = max(min_points_per_dimension, int(np.ceil((max_x - min_x) / resolution)) + 1)
+            nz_target = max(min_points_per_dimension, int(np.ceil((max_z - min_z) / resolution)) + 1)
+            sound_field_x = np.linspace(min_x, max_x, nx_target)
+            sound_field_z = np.linspace(min_z, max_z, nz_target)
+            X_grid, Z_grid = np.meshgrid(sound_field_x, sound_field_z, indexing="xy")
+            # Y-Grid ist konstant (Mittelwert aller Y-Koordinaten)
+            y_mean = float(np.mean(all_y))
+            Y_grid = np.full_like(X_grid, y_mean, dtype=float)
+            # Für Rückgabe: sound_field_x = X, sound_field_y = Z (für Kompatibilität)
+            sound_field_y = sound_field_z.copy()
+        elif all_vertical_same_orientation and group_dominant_axis == "yz":
+            # Y-Z-Wand: Grid in Y-Z-Ebene (X ist konstant)
+            ny_target = max(min_points_per_dimension, int(np.ceil((max_y - min_y) / resolution)) + 1)
+            nz_target = max(min_points_per_dimension, int(np.ceil((max_z - min_z) / resolution)) + 1)
+            sound_field_y = np.linspace(min_y, max_y, ny_target)
+            sound_field_z = np.linspace(min_z, max_z, nz_target)
+            Y_grid, Z_grid = np.meshgrid(sound_field_y, sound_field_z, indexing="xy")
+            # X-Grid ist konstant (Mittelwert aller X-Koordinaten)
+            x_mean = float(np.mean(all_x))
+            X_grid = np.full_like(Y_grid, x_mean, dtype=float)
+            # Für Rückgabe: sound_field_x = Y, sound_field_y = Z (für Kompatibilität)
+            sound_field_x = sound_field_y.copy()
+            sound_field_y = sound_field_z.copy()
+        else:
+            # Planare oder gemischte Surfaces: Grid in X-Y-Ebene (wie bisher)
+            nx_target = max(min_points_per_dimension, int(np.ceil((max_x - min_x) / resolution)) + 1)
+            ny_target = max(min_points_per_dimension, int(np.ceil((max_y - min_y) / resolution)) + 1)
+            sound_field_x = np.linspace(min_x, max_x, nx_target)
+            sound_field_y = np.linspace(min_y, max_y, ny_target)
+            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing="xy")
+            # Erstelle Z-Grid (initialisiert mit 0)
+            Z_grid = np.zeros_like(X_grid, dtype=float)
+        
+        # Erstelle Masken pro Surface
+        surface_masks: Dict[str, np.ndarray] = {}
+        geometries_dict: Dict[str, SurfaceGeometry] = {}
+        
+        for geom in geometries:
+            surface_id = geom.surface_id
+            geometries_dict[surface_id] = geom
+            
+            pts = geom.points
+            if len(pts) < 3:
+                surface_masks[surface_id] = np.zeros_like(X_grid, dtype=bool)
+                continue
+            
+            poly_x = np.array([p.get("x", 0.0) for p in pts], dtype=float)
+            poly_y = np.array([p.get("y", 0.0) for p in pts], dtype=float)
+            poly_z = np.array([p.get("z", 0.0) for p in pts], dtype=float)
+            
+            # 🎯 Für vertikale Surfaces: Verwende Projektion auf X-Y-Ebene mit Toleranz
+            # Für X-Z-Wände (y ≈ const): Erweitere X-Y-Projektion um Y-Toleranz
+            # Für Y-Z-Wände (x ≈ const): Erweitere X-Y-Projektion um X-Toleranz
+            is_vertical = (geom.orientation == "vertical")
+            eps_line = 1e-6
+            
+            try:
+                from matplotlib.path import Path
+                
+                if is_vertical and hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                    x_span = float(np.ptp(poly_x))
+                    y_span = float(np.ptp(poly_y))
+                    z_span = float(np.ptp(poly_z))
+                    
+                    if geom.dominant_axis == "xz":
+                        # X-Z-Wand: Erstelle Maske in X-Z-Ebene (wenn Grid auch in X-Z-Ebene erstellt wurde)
+                        if all_vertical_same_orientation and group_dominant_axis == "xz":
+                            # Grid ist in X-Z-Ebene: Verwende _points_in_polygon_batch_uv wie bei einzelnen Surfaces
+                            polygon_uv = [
+                                {"x": float(p.get("x", 0.0)), "y": float(p.get("z", 0.0))}
+                                for p in pts
+                            ]
+                            mask_strict = self.builder._points_in_polygon_batch_uv(X_grid, Z_grid, polygon_uv)
+                            # Erweitere Maske wie bei einzelnen Surfaces
+                            mask = self.builder._dilate_mask_minimal(mask_strict)
+                        else:
+                            # Grid ist in X-Y-Ebene: Verwende X-Y-Projektion mit Y-Toleranz (Fallback)
+                            y_mean = float(np.mean(poly_y))
+                            y_tolerance = max(eps_line * 10, y_span * 0.5)
+                            
+                            path = Path(np.column_stack((poly_x, poly_y)))
+                            inside = path.contains_points(np.column_stack((X_grid.ravel(), Y_grid.ravel())))
+                            mask_xy = inside.reshape(X_grid.shape)
+                            
+                            y_diff = np.abs(Y_grid - y_mean)
+                            mask_y_tolerance = y_diff <= y_tolerance
+                            
+                            x_min, x_max = float(np.min(poly_x)), float(np.max(poly_x))
+                            mask_x_range = (X_grid >= x_min) & (X_grid <= x_max)
+                            
+                            mask = (mask_xy | (mask_y_tolerance & mask_x_range))
+                    
+                    elif geom.dominant_axis == "yz":
+                        # Y-Z-Wand: Erstelle Maske in Y-Z-Ebene (wenn Grid auch in Y-Z-Ebene erstellt wurde)
+                        if all_vertical_same_orientation and group_dominant_axis == "yz":
+                            # Grid ist in Y-Z-Ebene: Verwende _points_in_polygon_batch_uv wie bei einzelnen Surfaces
+                            polygon_uv = [
+                                {"x": float(p.get("y", 0.0)), "y": float(p.get("z", 0.0))}
+                                for p in pts
+                            ]
+                            mask_strict = self.builder._points_in_polygon_batch_uv(Y_grid, Z_grid, polygon_uv)
+                            # Erweitere Maske wie bei einzelnen Surfaces
+                            mask = self.builder._dilate_mask_minimal(mask_strict)
+                        else:
+                            # Grid ist in X-Y-Ebene: Verwende X-Y-Projektion mit X-Toleranz (Fallback)
+                            x_mean = float(np.mean(poly_x))
+                            x_tolerance = max(eps_line * 10, x_span * 0.5)
+                            
+                            path = Path(np.column_stack((poly_x, poly_y)))
+                            inside = path.contains_points(np.column_stack((X_grid.ravel(), Y_grid.ravel())))
+                            mask_xy = inside.reshape(X_grid.shape)
+                            
+                            x_diff = np.abs(X_grid - x_mean)
+                            mask_x_tolerance = x_diff <= x_tolerance
+                            
+                            y_min, y_max = float(np.min(poly_y)), float(np.max(poly_y))
+                            mask_y_range = (Y_grid >= y_min) & (Y_grid <= y_max)
+                            
+                            mask = (mask_xy | (mask_x_tolerance & mask_y_range))
+                    else:
+                        # Unbekannte vertikale Orientierung: Fallback auf X-Y-Projektion
+                        path = Path(np.column_stack((poly_x, poly_y)))
+                        inside = path.contains_points(np.column_stack((X_grid.ravel(), Y_grid.ravel())))
+                        mask = inside.reshape(X_grid.shape)
+                else:
+                    # Planare oder schräge Surfaces: Verwende _create_surface_mask wie bei einzelnen Surfaces
+                    # Verwende das bereits vorhandene geom-Objekt direkt (es ist bereits ein SurfaceGeometry)
+                    mask_strict = self.builder._create_surface_mask(X_grid, Y_grid, geom)
+                    # Erweitere Maske wie bei einzelnen Surfaces
+                    mask = self.builder._dilate_mask_minimal(mask_strict)
+            except Exception as e:
+                mask = np.zeros_like(X_grid, dtype=bool)
+            
+            surface_masks[surface_id] = mask
+            
+            # Berechne Z-Werte für diese Surface (nur innerhalb der Maske)
+            if np.any(mask):
+                if is_vertical and hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                    # 🎯 Für vertikale Surfaces: Z-Koordinaten setzen
+                    if geom.dominant_axis == "xz":
+                        # X-Z-Wand: Z hängt von X ab (Y ist konstant)
+                        if all_vertical_same_orientation and group_dominant_axis == "xz":
+                            # Grid ist bereits in X-Z-Ebene: Z_grid enthält bereits Z-Koordinaten
+                            # Keine Interpolation nötig, Z_grid ist bereits korrekt gesetzt
+                            pass
+                        else:
+                            # Grid ist in X-Y-Ebene: Interpoliere Z basierend auf X-Koordinaten
+                            from scipy.interpolate import interp1d
+                            try:
+                                # Erstelle Interpolator für Z(X)
+                                x_unique = np.unique(poly_x)
+                                if len(x_unique) > 1:
+                                    # Für jeden eindeutigen X-Wert: Berechne Mittelwert von Z
+                                    z_mean_by_x = {}
+                                    for x_val in x_unique:
+                                        z_vals = poly_z[poly_x == x_val]
+                                        z_mean_by_x[x_val] = np.mean(z_vals)
+                                    
+                                    x_sorted = np.array(sorted(z_mean_by_x.keys()))
+                                    z_sorted = np.array([z_mean_by_x[x] for x in x_sorted])
+                                    
+                                    # Erstelle Interpolator
+                                    interp_func = interp1d(x_sorted, z_sorted, kind='linear', 
+                                                          bounds_error=False, fill_value='extrapolate')
+                                    
+                                    # Interpoliere Z für alle Punkte innerhalb der Maske
+                                    Z_surface = np.zeros_like(X_grid, dtype=float)
+                                    Z_surface[mask] = interp_func(X_grid[mask])
+                                    
+                                    # Setze Z-Werte (verwende Maximum für überlappende Surfaces)
+                                    Z_grid[mask] = np.maximum(Z_grid[mask], Z_surface[mask])
+                            except Exception as e:
+                                # Fallback: Verwende plane_model wenn verfügbar
+                                if geom.plane_model:
+                                    Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                                    Z_grid[mask] = np.maximum(Z_grid[mask], Z_surface[mask])
+                    elif geom.dominant_axis == "yz":
+                        # Y-Z-Wand: Z hängt von Y ab (X ist konstant)
+                        if all_vertical_same_orientation and group_dominant_axis == "yz":
+                            # Grid ist bereits in Y-Z-Ebene: Z_grid enthält bereits Z-Koordinaten
+                            # Keine Interpolation nötig, Z_grid ist bereits korrekt gesetzt
+                            pass
+                        else:
+                            # Grid ist in X-Y-Ebene: Interpoliere Z basierend auf Y-Koordinaten
+                            from scipy.interpolate import interp1d
+                            try:
+                                # Erstelle Interpolator für Z(Y)
+                                y_unique = np.unique(poly_y)
+                                if len(y_unique) > 1:
+                                    # Für jeden eindeutigen Y-Wert: Berechne Mittelwert von Z
+                                    z_mean_by_y = {}
+                                    for y_val in y_unique:
+                                        z_vals = poly_z[poly_y == y_val]
+                                        z_mean_by_y[y_val] = np.mean(z_vals)
+                                    
+                                    y_sorted = np.array(sorted(z_mean_by_y.keys()))
+                                    z_sorted = np.array([z_mean_by_y[y] for y in y_sorted])
+                                    
+                                    # Erstelle Interpolator
+                                    interp_func = interp1d(y_sorted, z_sorted, kind='linear', 
+                                                          bounds_error=False, fill_value='extrapolate')
+                                    
+                                    # Interpoliere Z für alle Punkte innerhalb der Maske
+                                    Z_surface = np.zeros_like(X_grid, dtype=float)
+                                    Z_surface[mask] = interp_func(Y_grid[mask])
+                                    
+                                    # Setze Z-Werte (verwende Maximum für überlappende Surfaces)
+                                    Z_grid[mask] = np.maximum(Z_grid[mask], Z_surface[mask])
+                            except Exception as e:
+                                # Fallback: Verwende plane_model wenn verfügbar
+                                if geom.plane_model:
+                                    Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                                    Z_grid[mask] = np.maximum(Z_grid[mask], Z_surface[mask])
+                    else:
+                        # Unbekannte vertikale Orientierung: Verwende plane_model wenn verfügbar
+                        if geom.plane_model:
+                            Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                            Z_grid[mask] = np.maximum(Z_grid[mask], Z_surface[mask])
+                elif geom.plane_model:
+                    # Planare oder schräge Surfaces: Verwende plane_model
+                    Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
+                    # Verwende Maximum für überlappende Surfaces (oder Mittelwert)
+                    Z_grid[mask] = np.maximum(Z_grid[mask], Z_surface[mask])
+        
+        return {
+            "X": X_grid,
+            "Y": Y_grid,
+            "Z": Z_grid,
+            "sound_field_x": sound_field_x,
+            "sound_field_y": sound_field_y,
+            "masks": surface_masks,
+            "geometries": geometries_dict,
+            "resolution": resolution,
+        }
 
     def generate_per_group(
         self,

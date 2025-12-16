@@ -224,15 +224,11 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
 
     def _draw_axis_planes(self, x_axis: float, y_axis: float, length: float, width: float, settings) -> None:
         """Zeichnet halbtransparente, quadratische Flächen durch die X- und Y-Achse."""
-        # Berechne Größe basierend auf allen nicht-versteckten Surfaces
-        L_base = self._get_max_surface_dimension(settings)
-        if L_base <= 0.0:
-            return
-        
-        # Faktor 3 der max Dimension: L_base ist bereits max_dim * 1.5, also L = L_base * 2 = max_dim * 3
-        L = L_base * 2.0
-        # Vertikale Höhe soll kürzer sein: Faktor 0.75 der Länge
-        H = L * 0.75
+        # Verwende eine sehr große Größe, damit die Flächen praktisch "unendlich" sind
+        # und immer sichtbar bleiben, unabhängig vom Zoom-Level
+        # 10000 Meter sollte für praktisch alle Anwendungsfälle ausreichen
+        L = 10000.0  # Horizontale Ausdehnung
+        H = 10000.0  # Vertikale Ausdehnung (gleich groß für unbegrenzte Flächen)
 
         # Transparenz: Wert in Prozent (0–100), 10 % Standard
         transparency_pct = float(getattr(settings, "axis_3d_transparency", 10.0))

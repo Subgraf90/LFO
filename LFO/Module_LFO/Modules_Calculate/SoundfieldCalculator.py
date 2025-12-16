@@ -281,6 +281,22 @@ class SoundFieldCalculator(ModuleBase):
         if not enabled_surfaces:
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
+        # 🎯 NEU: Identifiziere Gruppen-Kandidaten für gemeinsame Summen-Grids
+        candidate_groups = self._identify_group_candidates(enabled_surfaces)
+        
+        # Trenne Surfaces in Kandidaten-Gruppen und einzelne Surfaces
+        surfaces_in_candidate_groups: set = set()
+        for group_id, surface_ids in candidate_groups.items():
+            surfaces_in_candidate_groups.update(surface_ids)
+        
+        individual_surfaces = [
+            (sid, sdef) for sid, sdef in enabled_surfaces
+            if sid not in surfaces_in_candidate_groups
+        ]
+        
+        # Erstelle Mapping: surface_id -> surface_definition für schnellen Zugriff
+        surface_def_map = {sid: sdef for sid, sdef in enabled_surfaces}
+        
         # Verwende generate_per_surface() um pro Surface Grids zu bekommen (nicht pro Gruppe)
         with perf_section(
             "SoundFieldCalculator._calculate_sound_field_complex.generate_per_surface",
@@ -702,6 +718,47 @@ class SoundFieldCalculator(ModuleBase):
 
         print(f"[DEBUG Interpolate] surface_results_buffers erstellt für {len(surface_results_buffers)} Surfaces")
         
+        # 🎯 NEU: Erstelle Gruppen-Grids für Kandidaten-Gruppen
+        group_grids: Dict[str, Dict[str, Any]] = {}
+        group_surfaces_map: Dict[str, List[Tuple[str, Dict]]] = {}
+        
+        for group_id, surface_ids in candidate_groups.items():
+            # Sammle Surface-Definitionen für diese Gruppe
+            group_surfaces = [
+                (sid, surface_def_map[sid])
+                for sid in surface_ids
+                if sid in surface_def_map
+            ]
+            
+            if len(group_surfaces) <= 1:
+                continue
+            
+            group_surfaces_map[group_id] = group_surfaces
+            
+            # Erstelle gemeinsames Grid für die Gruppe
+            group_grid = self._grid_generator.generate_group_sum_grid(
+                group_surfaces,
+                resolution=self.settings.resolution,
+                min_points_per_dimension=3
+            )
+            
+            if group_grid:
+                group_grids[group_id] = group_grid
+        
+        # Erstelle Berechnungs-Puffer für Gruppen-Grids
+        group_results_buffers: Dict[str, np.ndarray] = {}
+        for group_id, group_grid in group_grids.items():
+            X_group = group_grid["X"]
+            Y_group = group_grid["Y"]
+            Z_group = group_grid["Z"]
+            
+            if X_group.size == 0 or Y_group.size == 0 or Z_group.size == 0:
+                continue
+            
+            group_results_buffers[group_id] = np.zeros_like(Z_group, dtype=complex)
+        
+        print(f"[DEBUG Groups] {len(group_grids)} Gruppen-Grids erstellt für {sum(len(sids) for sids in candidate_groups.values())} Surfaces")
+        
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
             return [], sound_field_x, sound_field_y, ({} if capture_arrays else None)
@@ -888,7 +945,68 @@ class SoundFieldCalculator(ModuleBase):
                     # Addiere die Welle dieses Lautsprechers zum Gesamt-Schallfeld
                     # Komplexe Addition → Automatische Interferenz (konstruktiv/destruktiv)
                     sound_field_p += wave
+                    # 🎯 NEU: Berechne das Schallfeld für Gruppen-Grids (einmal pro Gruppe)
+                    if group_results_buffers and group_grids:
+                        for group_id, group_grid in group_grids.items():
+                            if group_id not in group_results_buffers:
+                                continue
+                            
+                            X_group = group_grid["X"]
+                            Y_group = group_grid["Y"]
+                            Z_group = group_grid["Z"]
+                            
+                            # Berechne Beitrag dieser Quelle zum Gruppen-Grid
+                            x_dist_g = X_group - source_position_x[isrc]
+                            y_dist_g = Y_group - source_position_y[isrc]
+                            horizontal_g = np.sqrt(x_dist_g**2 + y_dist_g**2)
+                            z_dist_g = Z_group - source_position_z[isrc]
+                            source_dists_g = np.sqrt(horizontal_g**2 + z_dist_g**2)
+                            
+                            azimuths_g = np.arctan2(y_dist_g, x_dist_g)
+                            azimuths_g = (np.degrees(azimuths_g) + np.degrees(source_azimuth[isrc])) % 360
+                            azimuths_g = (360 - azimuths_g) % 360
+                            azimuths_g = (azimuths_g + 90) % 360
+                            elevations_g = np.degrees(np.arctan2(z_dist_g, horizontal_g))
+                            
+                            gains_g, phases_g = self.get_balloon_data_batch(
+                                speaker_name,
+                                azimuths_g,
+                                elevations_g,
+                            )
+                            
+                            if gains_g is not None and phases_g is not None:
+                                magnitude_linear_g = 10 ** (gains_g / 20)
+                                polar_phase_rad_g = np.radians(phases_g)
+                                
+                                source_props_g = {
+                                    "magnitude_linear": magnitude_linear_g.reshape(-1),
+                                    "polar_phase_rad": polar_phase_rad_g.reshape(-1),
+                                    "source_level": source_level[isrc],
+                                    "a_source_pa": a_source_pa,
+                                    "wave_number": wave_number,
+                                    "frequency": calculate_frequency,
+                                    "source_time": source_time[isrc],
+                                    "polarity": polarity_flag,
+                                    "distances": source_dists_g.reshape(-1),
+                                }
+                                
+                                grid_points_g = np.stack((X_group, Y_group, Z_group), axis=-1).reshape(-1, 3)
+                                mask_options_g = {
+                                    "min_distance": 0.001,
+                                }
+                                
+                                wave_flat_g = self._compute_wave_for_points(
+                                    grid_points_g,
+                                    source_position,
+                                    source_props_g,
+                                    mask_options_g,
+                                )
+                                wave_g = wave_flat_g.reshape(source_dists_g.shape)
+                                
+                                group_results_buffers[group_id] += wave_g
+                    
                     # 🎯 NEU: Berechne das Schallfeld direkt auf jedem Surface-Grid (parallel-ready)
+                    # Nur für Surfaces, die NICHT in Kandidaten-Gruppen sind
                     if surface_results_buffers and surface_grid_cache:
                         max_workers = int(getattr(self.settings, "spl_parallel_surfaces", 0) or 0)
                         if max_workers <= 0:
@@ -896,6 +1014,9 @@ class SoundFieldCalculator(ModuleBase):
                         with ThreadPoolExecutor(max_workers=max_workers) as executor:
                             futures = {}
                             for sid, cache in surface_grid_cache.items():
+                                # Überspringe Surfaces, die in Kandidaten-Gruppen sind
+                                if sid in surfaces_in_candidate_groups:
+                                    continue
                                 futures[executor.submit(
                                     self._compute_surface_contribution_for_source,
                                     cache=cache,
@@ -1018,11 +1139,58 @@ class SoundFieldCalculator(ModuleBase):
                     }
                 )
 
-        # 🎯 NEU: Verwende direkt berechnete Surface-Grids
+        # 🎯 NEU: Extrahiere Werte aus Gruppen-Grids für jede Surface
+        for group_id, group_grid in group_grids.items():
+            if group_id not in group_results_buffers:
+                continue
+            
+            group_field_p = group_results_buffers[group_id]
+            surface_masks = group_grid["masks"]
+            group_surfaces = group_surfaces_map.get(group_id, [])
+            
+            # Speichere Gruppen-Grid-Koordinaten für Plotting
+            X_group = group_grid["X"]
+            Y_group = group_grid["Y"]
+            Z_group = group_grid["Z"]  # 🎯 NEU: Hole auch Z-Koordinaten
+            
+            for surface_id, _ in group_surfaces:
+                if surface_id not in surface_masks:
+                    continue
+                
+                mask = surface_masks[surface_id]
+                
+                # Extrahiere Werte nur innerhalb der Surface-Maske
+                # Erstelle Array mit gleicher Shape wie group_field_p
+                surface_field_p = np.zeros_like(group_field_p, dtype=complex)
+                surface_field_p[mask] = group_field_p[mask]
+                
+                # Debug: Prüfe Maske
+                mask_sum = np.sum(mask)
+                if mask_sum == 0:
+                    print(f"[SoundFieldCalculator] ⚠️ WARNUNG: Surface '{surface_id}' hat leere Maske in Gruppe '{group_id}'!")
+                
+                surface_results_data[surface_id] = {
+                    "sound_field_p": surface_field_p.tolist(),
+                    "is_group_sum": True,
+                    "group_id": group_id,
+                    # Speichere Gruppen-Grid-Koordinaten für Plotting
+                    "group_X_grid": X_group.tolist(),
+                    "group_Y_grid": Y_group.tolist(),
+                    "group_Z_grid": Z_group.tolist(),  # 🎯 NEU: Speichere auch Z-Koordinaten für vertikale Surfaces
+                    # Speichere Gruppen-Grid-Maske für korrekte Interpolation
+                    # Konvertiere zu bool-Liste, um sicherzustellen, dass es korrekt gespeichert wird
+                    "group_mask": mask.astype(bool).tolist(),
+                }
+        
+        # 🎯 NEU: Verwende direkt berechnete Surface-Grids (für nicht-Gruppen-Surfaces)
         # Es kann Fälle geben, in denen keine Flächen aktiv sind (z.B. nur Arrays ohne Flächen).
         # Dann bleibt surface_results_data leer und wir brechen später im Plot einfach ruhig ab.
         if surface_results_buffers:
             for surface_id, buffer in surface_results_buffers.items():
+                # Überspringe Surfaces, die bereits aus Gruppen-Grids extrahiert wurden
+                if surface_id in surface_results_data:
+                    continue
+                
                 # Puffer immer in komplexes Array konvertieren
                 buffer_array = np.asarray(buffer, dtype=complex)
                 surface_results_data[surface_id] = {
@@ -1404,6 +1572,334 @@ class SoundFieldCalculator(ModuleBase):
     # ============================================================
     # SURFACE-INTEGRATION: Helper-Methoden
     # ============================================================
+    
+    def _identify_group_candidates(
+        self,
+        enabled_surfaces: List[Tuple[str, Dict]]
+    ) -> Dict[str, List[str]]:
+        """
+        Identifiziert Gruppen mit mehreren Surfaces und prüft, ob sie Kandidaten
+        für gemeinsame Summen-Grids sind.
+        
+        Kriterien für Kandidaten-Gruppe:
+        - Gruppen-Summen-Grid muss aktiviert sein (spl_group_sum_enabled)
+        - Gruppe hat mindestens spl_group_min_surfaces Surfaces
+        - Bounding-Boxen der Surfaces überlappen sich oder Abstand < spl_group_max_distance (oder 2 * resolution)
+        
+        Args:
+            enabled_surfaces: Liste von (surface_id, surface_definition) Tupeln
+            
+        Returns:
+            Dict von {group_id: [surface_id1, surface_id2, ...]} - nur Kandidaten-Gruppen
+        """
+        # 🎯 HEURISTIK: Prüfe ob Gruppen-Summen-Grid aktiviert ist
+        group_sum_enabled = getattr(self.settings, 'spl_group_sum_enabled', True)
+        if not group_sum_enabled:
+            return {}
+        
+        if not hasattr(self.settings, 'surface_groups') or not hasattr(self.settings, 'surface_definitions'):
+            return {}
+        
+        # Erstelle Mapping: surface_id -> group_id
+        surface_to_group: Dict[str, str] = {}
+        for group_id, group in self.settings.surface_groups.items():
+            if isinstance(group, dict):
+                surface_ids = group.get('surface_ids', [])
+            else:
+                surface_ids = getattr(group, 'surface_ids', [])
+            
+            for sid in surface_ids:
+                surface_to_group[sid] = group_id
+        
+        # Gruppiere enabled Surfaces nach Gruppen
+        groups_surfaces: Dict[str, List[Tuple[str, Dict]]] = {}
+        for surface_id, surface_def in enabled_surfaces:
+            group_id = surface_to_group.get(surface_id)
+            if group_id is None:
+                # Surface gehört zu keiner Gruppe -> keine Kandidaten-Gruppe
+                continue
+            
+            if group_id not in groups_surfaces:
+                groups_surfaces[group_id] = []
+            groups_surfaces[group_id].append((surface_id, surface_def))
+        
+        # Prüfe jede Gruppe auf Kandidaten-Kriterien
+        candidate_groups: Dict[str, List[str]] = {}
+        resolution = self.settings.resolution
+        min_surfaces = getattr(self.settings, 'spl_group_min_surfaces', 2)
+        max_distance = getattr(self.settings, 'spl_group_max_distance', None)
+        
+        # Wenn max_distance nicht gesetzt, verwende automatisch 2 * resolution
+        if max_distance is None:
+            distance_threshold = 2.0 * resolution
+        else:
+            distance_threshold = float(max_distance)
+        
+        for group_id, surfaces in groups_surfaces.items():
+            # 🎯 HEURISTIK: Nur Gruppen mit mindestens spl_group_min_surfaces Surfaces betrachten
+            if len(surfaces) < min_surfaces:
+                continue
+            
+            # Berechne Bounding-Boxen, Zentren und Orientierungen für alle Surfaces in der Gruppe
+            # 🎯 VERWENDE SURFACEANALYZER: Für korrekte Orientierungserkennung (wie bei Grid-Erstellung)
+            bboxes: List[Tuple[float, float, float, float, float, float]] = []  # (min_x, max_x, min_y, max_y, min_z, max_z)
+            centers: List[Tuple[float, float, float]] = []  # (center_x, center_y, center_z)
+            orientations: List[Tuple[str, Optional[str]]] = []  # (orientation, dominant_axis)
+            surface_ids_in_group: List[str] = []
+            
+            # Analysiere Surfaces mit SurfaceAnalyzer (wie in FlexibleGridGenerator)
+            from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import derive_surface_plane
+            geometries = self._grid_generator.analyzer.analyze_surfaces(surfaces)
+            geometry_map = {geom.surface_id: geom for geom in geometries}
+            
+            for surface_id, surface_def in surfaces:
+                points = surface_def.get('points', []) if isinstance(surface_def, dict) else getattr(surface_def, 'points', [])
+                if len(points) < 3:
+                    continue
+                
+                xs = [float(p.get('x', 0.0)) for p in points]
+                ys = [float(p.get('y', 0.0)) for p in points]
+                zs = [float(p.get('z', 0.0)) for p in points]
+                
+                if not xs or not ys or not zs:
+                    continue
+                
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                min_z, max_z = min(zs), max(zs)
+                center_x = (min_x + max_x) / 2.0
+                center_y = (min_y + max_y) / 2.0
+                center_z = (min_z + max_z) / 2.0
+                
+                # 🎯 VERWENDE ORIENTIERUNG AUS GEOMETRIE (bereits analysiert)
+                geom = geometry_map.get(surface_id)
+                if geom:
+                    orientation = geom.orientation
+                    dominant_axis = geom.dominant_axis
+                else:
+                    # Fallback: Vereinfachte Orientierungserkennung
+                    x_span = max_x - min_x
+                    y_span = max_y - min_y
+                    z_span = max_z - min_z
+                    eps_line = 1e-6
+                    
+                    if z_span < eps_line:
+                        orientation = "planar"
+                        dominant_axis = None
+                    elif x_span < eps_line and y_span >= eps_line:
+                        orientation = "vertical"
+                        dominant_axis = "yz"
+                    elif y_span < eps_line and x_span >= eps_line:
+                        orientation = "vertical"
+                        dominant_axis = "xz"
+                    else:
+                        orientation = "sloped"
+                        dominant_axis = None
+                
+                bboxes.append((min_x, max_x, min_y, max_y, min_z, max_z))
+                centers.append((center_x, center_y, center_z))
+                orientations.append((orientation, dominant_axis))
+                surface_ids_in_group.append(surface_id)
+            
+            if len(bboxes) <= 1:
+                continue
+            
+            # 🎯 QUICKFIX: Wenn Gruppe vertikale Surfaces enthält, nicht als Gruppe behandeln
+            # Vertikale Surfaces sollen einzeln berechnet werden
+            has_vertical_surfaces = any(orient[0] == "vertical" for orient in orientations)
+            if has_vertical_surfaces:
+                # Überspringe diese Gruppe - vertikale Surfaces werden einzeln berechnet
+                continue
+            
+            # 🎯 NEUE LOGIK: Prüfe ob alle Surfaces nahe beieinander liegen
+            # Verwende Clustering-Ansatz: Surfaces werden nur gruppiert, wenn sie alle
+            # innerhalb des distance_threshold voneinander liegen
+            # 🎯 BERÜCKSICHTIGE ORIENTIERUNG: Für vertikale Surfaces verwende richtige Koordinaten-Ebene
+            
+            # Berechne Distanz-Matrix zwischen allen Surfaces
+            n_surfaces = len(bboxes)
+            max_pairwise_distance = 0.0
+            
+            def compute_surface_distance(bbox_i, bbox_j, orient_i, orient_j, dist_threshold):
+                """Berechne Distanz zwischen zwei Surfaces basierend auf ihrer Orientierung"""
+                min_x_i, max_x_i, min_y_i, max_y_i, min_z_i, max_z_i = bbox_i
+                min_x_j, max_x_j, min_y_j, max_y_j, min_z_j, max_z_j = bbox_j
+                
+                orient_i_type, dominant_i = orient_i
+                orient_j_type, dominant_j = orient_j
+                
+                # Wenn beide Surfaces die gleiche vertikale Orientierung haben
+                if orient_i_type == "vertical" and orient_j_type == "vertical":
+                    if dominant_i == "xz" and dominant_j == "xz":
+                        # Beide X-Z-Wände: Verwende X-Z-Distanz, aber prüfe auch Y-Überlappung/Nähe
+                        overlap_x = not (max_x_i < min_x_j or max_x_j < min_x_i)
+                        overlap_z = not (max_z_i < min_z_j or max_z_j < min_z_i)
+                        overlap_y = not (max_y_i < min_y_j or max_y_j < min_y_i)
+                        
+                        # Wenn Überlappung in X-Z UND Y -> direkt aneinander
+                        if overlap_x and overlap_z and overlap_y:
+                            return 0.0
+                        
+                        # Berechne X-Z-Distanz
+                        if not overlap_x:
+                            dist_x = min(abs(max_x_i - min_x_j), abs(max_x_j - min_x_i))
+                        else:
+                            dist_x = 0.0
+                        
+                        if not overlap_z:
+                            dist_z = min(abs(max_z_i - min_z_j), abs(max_z_j - min_z_i))
+                        else:
+                            dist_z = 0.0
+                        
+                        # Berechne Y-Distanz (für schräge Wände)
+                        if not overlap_y:
+                            dist_y = min(abs(max_y_i - min_y_j), abs(max_y_j - min_y_i))
+                        else:
+                            dist_y = 0.0
+                        
+                        # 🎯 WICHTIG: Für X-Z-Wände ist Y-Distanz weniger kritisch
+                        # Wenn X-Z-Distanz klein ist UND Y sich überlappt oder nahe ist, sind sie zusammen
+                        # Verwende gewichtete Distanz: X-Z-Distanz ist wichtiger, Y-Distanz wird nur addiert wenn signifikant
+                        xz_dist = np.sqrt(dist_x**2 + dist_z**2)
+                        
+                        # Wenn Y sich überlappt, ignoriere Y-Distanz
+                        if overlap_y:
+                            return xz_dist
+                        
+                        # Wenn Y-Distanz sehr klein ist (< dist_threshold), ignoriere sie
+                        # Sonst: Addiere Y-Distanz, aber mit geringerem Gewicht
+                        if dist_y < dist_threshold:
+                            return xz_dist
+                        else:
+                            # Kombiniere X-Z-Distanz mit Y-Distanz (aber Y weniger gewichtet)
+                            return np.sqrt(xz_dist**2 + (dist_y * 0.5)**2)
+                    
+                    elif dominant_i == "yz" and dominant_j == "yz":
+                        # Beide Y-Z-Wände: Verwende Y-Z-Distanz, aber prüfe auch X-Überlappung/Nähe
+                        overlap_y = not (max_y_i < min_y_j or max_y_j < min_y_i)
+                        overlap_z = not (max_z_i < min_z_j or max_z_j < min_z_i)
+                        overlap_x = not (max_x_i < min_x_j or max_x_j < min_x_i)
+                        
+                        # Wenn Überlappung in Y-Z UND X -> direkt aneinander
+                        if overlap_y and overlap_z and overlap_x:
+                            return 0.0
+                        
+                        if not overlap_y:
+                            dist_y = min(abs(max_y_i - min_y_j), abs(max_y_j - min_y_i))
+                        else:
+                            dist_y = 0.0
+                        
+                        if not overlap_z:
+                            dist_z = min(abs(max_z_i - min_z_j), abs(max_z_j - min_z_i))
+                        else:
+                            dist_z = 0.0
+                        
+                        # Berechne X-Distanz (für schräge Wände)
+                        if not overlap_x:
+                            dist_x = min(abs(max_x_i - min_x_j), abs(max_x_j - min_x_i))
+                        else:
+                            dist_x = 0.0
+                        
+                        # 🎯 WICHTIG: Für Y-Z-Wände ist X-Distanz weniger kritisch
+                        yz_dist = np.sqrt(dist_y**2 + dist_z**2)
+                        
+                        # Wenn X sich überlappt, ignoriere X-Distanz
+                        if overlap_x:
+                            return yz_dist
+                        
+                        # Wenn X-Distanz sehr klein ist (< dist_threshold), ignoriere sie
+                        if dist_x < dist_threshold:
+                            return yz_dist
+                        else:
+                            # Kombiniere Y-Z-Distanz mit X-Distanz (aber X weniger gewichtet)
+                            return np.sqrt(yz_dist**2 + (dist_x * 0.5)**2)
+                
+                # Für gemischte Orientierungen oder planare Surfaces: Verwende X-Y-Distanz (oder 3D)
+                # Standard: X-Y-Distanz für planare Surfaces
+                overlap_x = not (max_x_i < min_x_j or max_x_j < min_x_i)
+                overlap_y = not (max_y_i < min_y_j or max_y_j < min_y_i)
+                
+                if overlap_x and overlap_y:
+                    return 0.0
+                
+                if not overlap_x:
+                    dist_x = min(abs(max_x_i - min_x_j), abs(max_x_j - min_x_i))
+                else:
+                    dist_x = 0.0
+                
+                if not overlap_y:
+                    dist_y = min(abs(max_y_i - min_y_j), abs(max_y_j - min_y_i))
+                else:
+                    dist_y = 0.0
+                
+                return np.sqrt(dist_x**2 + dist_y**2)
+            
+            for i in range(n_surfaces):
+                for j in range(i + 1, n_surfaces):
+                    distance = compute_surface_distance(bboxes[i], bboxes[j], orientations[i], orientations[j], distance_threshold)
+                    max_pairwise_distance = max(max_pairwise_distance, distance)
+            
+            # 🎯 KANDIDATEN-KRITERIUM: Alle Surfaces müssen innerhalb distance_threshold liegen
+            # Wenn max_pairwise_distance > distance_threshold, sind nicht alle Surfaces nahe beieinander
+            if max_pairwise_distance <= distance_threshold:
+                # Alle Surfaces liegen nahe beieinander -> Kandidaten-Gruppe
+                candidate_groups[group_id] = surface_ids_in_group
+                if DEBUG_SOUNDFIELD:
+                    print(f"[SoundFieldCalculator] Gruppe '{group_id}': {len(surface_ids_in_group)} Surfaces als Gruppe behandelt (max_dist={max_pairwise_distance:.3f} <= {distance_threshold:.3f})")
+            else:
+                # 🎯 AUFTEILUNG: Surfaces sind zu weit voneinander entfernt
+                # Verwende Clustering, um zusammenhängende Gruppen zu finden
+                if DEBUG_SOUNDFIELD:
+                    print(f"[SoundFieldCalculator] Gruppe '{group_id}': {len(surface_ids_in_group)} Surfaces zu weit voneinander entfernt (max_dist={max_pairwise_distance:.3f} > {distance_threshold:.3f}), teile auf...")
+                # Erstelle Distanz-Matrix (verwende gleiche Logik wie oben)
+                distance_matrix = np.zeros((n_surfaces, n_surfaces))
+                for i in range(n_surfaces):
+                    for j in range(i + 1, n_surfaces):
+                        distance = compute_surface_distance(bboxes[i], bboxes[j], orientations[i], orientations[j], distance_threshold)
+                        distance_matrix[i, j] = distance
+                        distance_matrix[j, i] = distance
+                
+                # Finde zusammenhängende Komponenten (Surfaces innerhalb distance_threshold)
+                # Verwende einfachen Graph-Algorithmus
+                visited = [False] * n_surfaces
+                clusters: List[List[int]] = []
+                
+                for start_idx in range(n_surfaces):
+                    if visited[start_idx]:
+                        continue
+                    
+                    # BFS/DFS: Finde alle Surfaces, die von start_idx erreichbar sind
+                    cluster = []
+                    stack = [start_idx]
+                    visited[start_idx] = True
+                    
+                    while stack:
+                        current = stack.pop()
+                        cluster.append(current)
+                        
+                        for neighbor in range(n_surfaces):
+                            if not visited[neighbor] and distance_matrix[current, neighbor] <= distance_threshold:
+                                visited[neighbor] = True
+                                stack.append(neighbor)
+                    
+                    if len(cluster) >= min_surfaces:
+                        clusters.append(cluster)
+                
+                # Erstelle separate Kandidaten-Gruppen für jeden Cluster
+                for cluster_idx, cluster in enumerate(clusters):
+                    cluster_surface_ids = [surface_ids_in_group[i] for i in cluster]
+                    # Verwende eindeutige Gruppen-ID für Sub-Cluster
+                    sub_group_id = f"{group_id}_cluster_{cluster_idx}"
+                    candidate_groups[sub_group_id] = cluster_surface_ids
+                    if DEBUG_SOUNDFIELD:
+                        print(f"[SoundFieldCalculator]   └─ Sub-Cluster '{sub_group_id}': {len(cluster_surface_ids)} Surfaces")
+                
+                # Wenn keine Cluster gefunden wurden (alle Surfaces zu weit voneinander entfernt)
+                if not clusters:
+                    if DEBUG_SOUNDFIELD:
+                        print(f"[SoundFieldCalculator]   └─ Keine Cluster gefunden, alle Surfaces werden einzeln behandelt")
+        
+        return candidate_groups
     
     def _get_enabled_surfaces(self) -> List[Tuple[str, Dict]]:
         """

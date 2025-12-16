@@ -22,6 +22,7 @@ from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DOverlaysAxis import SPL3DOverlayAxis
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DOverlaysSurfaces import SPL3DOverlaySurfaces
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DOverlaysImpulse import SPL3DOverlayImpulse
+from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DOverlaysCoordinateAxes import SPL3DOverlayCoordinateAxes
 from Module_LFO.Modules_Plot.Plot_SPL_3D.PlotSPL3DSpeaker import SPL3DSpeakerMixin
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DSPL import SPL3DPlotRenderer, SPLTimeControlBar
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DCamera import SPL3DCameraController
@@ -210,6 +211,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         self.overlay_surfaces = SPL3DOverlaySurfaces(self.plotter, pv)
         self.overlay_impulse = SPL3DOverlayImpulse(self.plotter, pv)
         self.overlay_speakers = SPL3DSpeakerMixin(self.plotter, pv)
+        self.overlay_coordinate_axes = SPL3DOverlayCoordinateAxes(self.plotter, pv)
 
         # cbar wird jetzt über colorbar_manager verwaltet
         self.cbar = None  # Wird von colorbar_manager gesetzt
@@ -217,6 +219,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         self.surface_mesh = None  # type: pv.DataSet | None
         # Einzelne Actors pro horizontaler Surface (SPL-Flächen, Mesh-Modus)
         self._surface_actors: dict[str, Any] = {}
+        # Gruppen-Actors für kombinierte Meshes (wenn Gruppen-Summen-Grid aktiviert)
+        self._group_actors: dict[str, Any] = {}
         # Textur-Actors pro horizontaler Surface (Texture-Modus)
         # Struktur: {surface_id: {'actor': actor, 'metadata': {...}}}
         self._surface_texture_actors: dict[str, dict[str, Any]] = {}
@@ -441,6 +445,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 self.overlay_impulse.clear()
             if hasattr(self, "overlay_speakers") and self.overlay_speakers is not None:
                 self.overlay_speakers.clear()
+            if hasattr(self, "overlay_coordinate_axes") and self.overlay_coordinate_axes is not None:
+                self.overlay_coordinate_axes.clear()
             self.has_data = False
             self.surface_mesh = None
             self._last_overlay_signatures = {}
@@ -450,6 +456,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             # 🎯 Setze auch _last_axis_state zurück, damit Achsen nach initialize_empty_scene() neu gezeichnet werden
             if hasattr(self, "overlay_axis") and self.overlay_axis is not None:
                 self.overlay_axis._last_axis_state = None
+            # 🎯 Setze auch _last_axes_state zurück, damit Koordinatenachsen nach initialize_empty_scene() neu gezeichnet werden
+            if hasattr(self, "overlay_coordinate_axes") and self.overlay_coordinate_axes is not None:
+                self.overlay_coordinate_axes._last_axes_state = None
             # Cache zurücksetzen
             if hasattr(self, '_surface_signature_cache'):
                 self._surface_signature_cache.clear()
@@ -690,6 +699,10 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         if 'impulse' in categories_to_refresh:
             with perf_section("PlotSPL3D.update_overlays.draw_impulse"):
                 self.overlay_impulse.draw_impulse_points(settings)
+        
+        # Zeichne Koordinatenachsen (immer aktiviert)
+        with perf_section("PlotSPL3D.update_overlays.draw_coordinate_axes"):
+            self.overlay_coordinate_axes.draw_coordinate_axes(settings, enabled=True)
         
         with perf_section("PlotSPL3D.update_overlays.finalize"):
             self._last_overlay_signatures = signatures
