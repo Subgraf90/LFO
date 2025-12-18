@@ -3856,7 +3856,10 @@ class FlexibleGridGenerator(ModuleBase):
         group_surfaces: List[Tuple[str, Dict]],
         resolution: Optional[float] = None,
         min_points_per_dimension: int = 6,
+<<<<<<< HEAD
         individual_grid_bboxes: Optional[List[Tuple[float, float, float, float, float, float]]] = None,
+=======
+>>>>>>> c10141c8797abc50b0919d94b66f0b1f4daecd30
     ) -> Dict[str, Any]:
         """
         Erstellt ein gemeinsames Summen-Grid für eine Gruppe von Surfaces.
@@ -3899,6 +3902,7 @@ class FlexibleGridGenerator(ModuleBase):
                     all_vertical_same_orientation = True
                     group_dominant_axis = dominant_axes[0]
         
+<<<<<<< HEAD
         # 🎯 OPTIMIERUNG: Verwende Bounding-Boxen der triangulierten Vertices wenn verfügbar
         # Diese enthalten bereits Edge-Refinement und sind die tatsächlichen Vertex-Koordinaten
         if individual_grid_bboxes and len(individual_grid_bboxes) > 0:
@@ -3965,11 +3969,32 @@ class FlexibleGridGenerator(ModuleBase):
             
             # Größeres Padding wenn keine individuellen Grid-BBoxen verfügbar
             padding_factor = 5.0  # 5x Resolution als Padding (sichert auch Edge-Refinement-Vertices ab)
+=======
+        # Bounding-Box über alle Points der Gruppe bilden
+        all_x = []
+        all_y = []
+        all_z = []
+        for geom in geometries:
+            pts = geom.points
+            if not pts:
+                continue
+            all_x.extend([float(p.get("x", 0.0)) for p in pts])
+            all_y.extend([float(p.get("y", 0.0)) for p in pts])
+            all_z.extend([float(p.get("z", 0.0)) for p in pts])
+        
+        if not all_x or not all_y:
+            return {}
+        
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+        min_z, max_z = min(all_z), max(all_z)
+>>>>>>> c10141c8797abc50b0919d94b66f0b1f4daecd30
         
         # Stelle sicher, dass wir mindestens min_points_per_dimension abdecken
         if resolution <= 0:
             resolution = self.settings.resolution or 1.0
         
+<<<<<<< HEAD
         # Erweitere Grid-Bereich um Padding
         padding_x = resolution * padding_factor
         padding_y = resolution * padding_factor
@@ -3982,6 +4007,8 @@ class FlexibleGridGenerator(ModuleBase):
         min_z -= padding_z
         max_z += padding_z
         
+=======
+>>>>>>> c10141c8797abc50b0919d94b66f0b1f4daecd30
         # 🎯 FÜR VERTIKALE SURFACES: Erstelle Grid in der richtigen Ebene
         if all_vertical_same_orientation and group_dominant_axis == "xz":
             # X-Z-Wand: Grid in X-Z-Ebene (Y ist konstant)
