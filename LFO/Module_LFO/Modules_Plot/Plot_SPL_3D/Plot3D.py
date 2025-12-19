@@ -642,6 +642,62 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     key for key, value in signatures.items() 
                     if key != 'speakers_highlights' and value != previous.get(key)
                 }
+            
+            # 🎯 FIX: Prüfe, ob sich der hide-Status eines Arrays geändert hat
+            # (auch wenn die Gesamtsignatur gleich ist, müssen Speakers neu gezeichnet werden)
+            if previous and 'speakers' not in categories_to_refresh:
+                prev_speakers_sig = previous.get('speakers')
+                curr_speakers_sig = signatures.get('speakers')
+                if prev_speakers_sig and curr_speakers_sig:
+                    # Vergleiche hide-Status für jedes Array
+                    prev_hide_dict = {}
+                    curr_hide_dict = {}
+                    # Extrahiere hide-Status aus vorheriger Signatur
+                    if isinstance(prev_speakers_sig, (list, tuple)):
+                        for entry in prev_speakers_sig:
+                            if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                                array_name = str(entry[0])
+                                hide_status = bool(entry[2])
+                                prev_hide_dict[array_name] = hide_status
+                    # Extrahiere hide-Status aus aktueller Signatur
+                    if isinstance(curr_speakers_sig, (list, tuple)):
+                        for entry in curr_speakers_sig:
+                            if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                                array_name = str(entry[0])
+                                hide_status = bool(entry[2])
+                                curr_hide_dict[array_name] = hide_status
+                    # Prüfe, ob sich der hide-Status geändert hat
+                    hide_status_changed = False
+                    all_array_names = set(prev_hide_dict.keys()) | set(curr_hide_dict.keys())
+                    for array_name in all_array_names:
+                        prev_hide = prev_hide_dict.get(array_name, False)
+                        curr_hide = curr_hide_dict.get(array_name, False)
+                        if prev_hide != curr_hide:
+                            hide_status_changed = True
+                            break
+                    if hide_status_changed:
+                        categories_to_refresh.add('speakers')
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "HIDE2",
+                                    "location": "Plot3D.py:update_overlays:hide_status_check",
+                                    "message": "Hide status changed - forcing speakers refresh",
+                                    "data": {
+                                        "prev_hide_dict": prev_hide_dict,
+                                        "curr_hide_dict": curr_hide_dict
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+            
             # #region agent log
             try:
                 log_entry = {

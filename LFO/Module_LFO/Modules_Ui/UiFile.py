@@ -341,8 +341,49 @@ class UiFile:
             # Lade Speaker Arrays
             if 'speaker_arrays' in loaded_data and isinstance(loaded_data['speaker_arrays'], dict):
                 self.settings.speaker_arrays = {}
-                for array_id, array_data in loaded_data['speaker_arrays'].items():
-                    speaker_array = SpeakerArray(array_id)
+                # 🎯 FIX: Vergebe neue eindeutige Array-IDs beim Laden, beginnend mit 1
+                # Dies stellt sicher, dass Array-IDs immer eindeutig sind pro File
+                new_array_id = 1
+                old_to_new_id_mapping = {}  # Mapping von alter zu neuer ID für mögliche spätere Verwendung
+                
+                # Sortiere die Arrays nach ihrer ursprünglichen ID, um eine konsistente Reihenfolge zu gewährleisten
+                sorted_arrays = sorted(loaded_data['speaker_arrays'].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999999)
+                
+                for old_array_id, array_data in sorted_arrays:
+                    # Stelle sicher, dass die neue ID eindeutig ist
+                    # Prüfe sowohl im Dictionary als auch mit get_all_speaker_array_ids()
+                    while new_array_id in self.settings.speaker_arrays or new_array_id in self.settings.get_all_speaker_array_ids():
+                        new_array_id += 1
+                    
+                    # Speichere das Mapping von alter zu neuer ID
+                    old_to_new_id_mapping[old_array_id] = new_array_id
+                    
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "ARRAY_ID_REMAP_START",
+                                "location": "UiFile.py:_load_data:before_remap",
+                                "message": "Before remapping array ID",
+                                "data": {
+                                    "old_array_id": str(old_array_id),
+                                    "old_array_id_type": type(old_array_id).__name__,
+                                    "new_array_id": int(new_array_id),
+                                    "existing_array_ids": list(self.settings.speaker_arrays.keys()),
+                                    "existing_array_ids_from_method": list(self.settings.get_all_speaker_array_ids())
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    # Erstelle das Array mit der neuen eindeutigen ID
+                    speaker_array = SpeakerArray(new_array_id)
                     for key, value in array_data.items():
                         if key == 'source_polar_pattern':
                             pattern = []
@@ -363,7 +404,37 @@ class UiFile:
                         getattr(speaker_array, 'source_azimuth', None)
                     except Exception:
                         pass
-                    self.settings.speaker_arrays[array_id] = speaker_array
+                    self.settings.speaker_arrays[new_array_id] = speaker_array
+                    
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "ARRAY_ID_REMAP",
+                                "location": "UiFile.py:_load_data:remap_array_id",
+                                "message": "Remapping array ID on file load",
+                                "data": {
+                                    "old_array_id": str(old_array_id),
+                                    "new_array_id": int(new_array_id),
+                                    "array_name": str(getattr(speaker_array, 'name', 'Unknown'))
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    new_array_id += 1
+                
+                # 🎯 FIX: Speichere das Mapping für die spätere Verwendung beim Laden der speaker_array_groups
+                # Das Mapping wird später verwendet, wenn speaker_array_groups geladen werden
+                if not hasattr(self, '_array_id_mapping'):
+                    self._array_id_mapping = {}
+                self._array_id_mapping.update(old_to_new_id_mapping)
             
             # Lade Settings
             if 'settings' in loaded_data:
@@ -377,16 +448,41 @@ class UiFile:
                     setattr(self.settings, k, v)  # explizit ins Objekt schreiben
             
             # Lade speaker_array_groups (falls vorhanden) - prüfe sowohl in loaded_data als auch in settings
+            # 🎯 FIX: Aktualisiere die Array-IDs in den Gruppen mit dem Mapping
             speaker_array_groups_loaded = False
+            array_id_mapping = getattr(self, '_array_id_mapping', {})
+            
             if 'speaker_array_groups' in loaded_data:
                 groups_data = loaded_data['speaker_array_groups']
                 if groups_data is not None and isinstance(groups_data, dict):
-                    self.settings.speaker_array_groups = groups_data
+                    # Aktualisiere child_array_ids mit den neuen IDs
+                    updated_groups_data = {}
+                    for group_id, group_data in groups_data.items():
+                        new_group_data = group_data.copy() if isinstance(group_data, dict) else group_data
+                        if isinstance(new_group_data, dict) and 'child_array_ids' in new_group_data and isinstance(new_group_data['child_array_ids'], list):
+                            new_group_data['child_array_ids'] = [
+                                array_id_mapping.get(old_id, old_id)
+                                for old_id in new_group_data['child_array_ids']
+                                if old_id in array_id_mapping or old_id in self.settings.get_all_speaker_array_ids()
+                            ]
+                        updated_groups_data[group_id] = new_group_data
+                    self.settings.speaker_array_groups = updated_groups_data
                     speaker_array_groups_loaded = True
             elif 'settings' in loaded_data and 'speaker_array_groups' in loaded_data['settings']:
                 groups_data = loaded_data['settings']['speaker_array_groups']
                 if groups_data is not None and isinstance(groups_data, dict):
-                    self.settings.speaker_array_groups = groups_data
+                    # Aktualisiere child_array_ids mit den neuen IDs
+                    updated_groups_data = {}
+                    for group_id, group_data in groups_data.items():
+                        new_group_data = group_data.copy() if isinstance(group_data, dict) else group_data
+                        if isinstance(new_group_data, dict) and 'child_array_ids' in new_group_data and isinstance(new_group_data['child_array_ids'], list):
+                            new_group_data['child_array_ids'] = [
+                                array_id_mapping.get(old_id, old_id)
+                                for old_id in new_group_data['child_array_ids']
+                                if old_id in array_id_mapping or old_id in self.settings.get_all_speaker_array_ids()
+                            ]
+                        updated_groups_data[group_id] = new_group_data
+                    self.settings.speaker_array_groups = updated_groups_data
                     speaker_array_groups_loaded = True
             
             # Initialisiere speaker_array_groups, falls nicht vorhanden oder None

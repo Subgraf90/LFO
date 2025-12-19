@@ -2397,6 +2397,31 @@ class Sources(ModuleBase, QObject):
                 new_array_item.setData(0, Qt.UserRole + 1, "array")  # Setze child_type für Array-Erkennung
                 new_array_item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
                 
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "TREEWIDGET_ARRAY_ID_DEBUG",
+                            "location": "UiSourceManagement.py:add_stack:set_treewidget_data",
+                            "message": "Setting array_id in TreeWidget",
+                            "data": {
+                                "array_id": str(array_id) if array_id is not None else None,
+                                "array_id_type": type(array_id).__name__ if array_id is not None else None,
+                                "speaker_array.id": str(getattr(speaker_array, 'id', None)) if speaker_array else None,
+                                "speaker_array.id_type": type(getattr(speaker_array, 'id', None)).__name__ if speaker_array and hasattr(speaker_array, 'id') else None,
+                                "array_id == speaker_array.id": bool(array_id == getattr(speaker_array, 'id', None)) if speaker_array else None,
+                                "item_text": str(array_name)
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                
                 # Setze Checkboxen
                 mute_checkbox = self.create_checkbox(speaker_array.mute)
                 hide_checkbox = self.create_checkbox(speaker_array.hide)
@@ -2410,6 +2435,29 @@ class Sources(ModuleBase, QObject):
                 
                 # Erstelle Speakerspecs Instance
                 speakerspecs_instance = self.create_speakerspecs_instance(array_id)
+                
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "TREEWIDGET_ARRAY_ID_DEBUG",
+                            "location": "UiSourceManagement.py:add_stack:after_create_instance",
+                            "message": "After creating speakerspecs instance",
+                            "data": {
+                                "array_id": str(array_id) if array_id is not None else None,
+                                "instance_id": str(speakerspecs_instance.get('id', None)) if speakerspecs_instance else None,
+                                "instance_id_type": type(speakerspecs_instance.get('id', None)).__name__ if speakerspecs_instance and 'id' in speakerspecs_instance else None,
+                                "array_id == instance_id": bool(array_id == speakerspecs_instance.get('id', None)) if speakerspecs_instance else None
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 # Verwende die temporäre Methode, die keine Signale auslöst
                 temp_add_speakerspecs(array_id, speakerspecs_instance)
@@ -3669,6 +3717,31 @@ class Sources(ModuleBase, QObject):
                         item_array_id = item.data(0, Qt.UserRole)
                         if item_array_id is not None:
                             speaker_array = self.settings.get_speaker_array(item_array_id)
+                            # #region agent log
+                            try:
+                                import json
+                                import time as time_module
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "HIDE_ARRAY_ID_DEBUG",
+                                        "location": "UiSourceManagement.py:update_hide_state:multi_select",
+                                        "message": "Setting hide for array from tree widget",
+                                        "data": {
+                                            "item_array_id": str(item_array_id) if item_array_id is not None else None,
+                                            "item_array_id_type": type(item_array_id).__name__ if item_array_id is not None else None,
+                                            "speaker_array.id": str(getattr(speaker_array, 'id', None)) if speaker_array else None,
+                                            "speaker_array.id_type": type(getattr(speaker_array, 'id', None)).__name__ if speaker_array and hasattr(speaker_array, 'id') else None,
+                                            "hide_value": bool(hide_value),
+                                            "item_text": str(item.text(0)) if item else None,
+                                            "item_array_id == speaker_array.id": bool(item_array_id == getattr(speaker_array, 'id', None)) if speaker_array else None
+                                        },
+                                        "timestamp": int(time_module.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
                             if speaker_array:
                                 speaker_array.hide = hide_value
                                 
@@ -3691,6 +3764,30 @@ class Sources(ModuleBase, QObject):
         else:
             # Einzelauswahl: Normales Verhalten
             speaker_array = self.settings.get_speaker_array(array_id)
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "HIDE_ARRAY_ID_DEBUG",
+                        "location": "UiSourceManagement.py:update_hide_state:single_select",
+                        "message": "Setting hide for array from single select",
+                        "data": {
+                            "array_id": str(array_id) if array_id is not None else None,
+                            "array_id_type": type(array_id).__name__ if array_id is not None else None,
+                            "speaker_array.id": str(getattr(speaker_array, 'id', None)) if speaker_array else None,
+                            "speaker_array.id_type": type(getattr(speaker_array, 'id', None)).__name__ if speaker_array and hasattr(speaker_array, 'id') else None,
+                            "hide_value": bool(hide_value),
+                            "array_id == speaker_array.id": bool(array_id == getattr(speaker_array, 'id', None)) if speaker_array else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             if speaker_array:
                 speaker_array.hide = hide_value
             
@@ -3709,14 +3806,87 @@ class Sources(ModuleBase, QObject):
                     self._update_group_checkbox_state(parent, 2)
                     parent = parent.parent()
         
-        # 🎯 FIX: Leere den Speaker-Cache für dieses Array, damit Positionen neu berechnet werden
-        # Das ist notwendig, weil Hide/Unhide den Hash nicht ändert, aber der Cache alte Positionen
-        # enthalten könnte, die ohne Gehäusegröße berechnet wurden
-        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+        # #region agent log - UNHIDE DEBUG
+        if not hide_value:  # unhide
+            try:
+                import json
+                import time as time_module
+                unhide_array_ids = []
+                if len(selected_items) > 1:
+                    for item in selected_items:
+                        try:
+                            item_type = item.data(0, Qt.UserRole + 1)
+                            if item_type != "group":
+                                item_array_id = item.data(0, Qt.UserRole)
+                                if item_array_id is not None:
+                                    speaker_array_obj = self.settings.get_speaker_array(item_array_id)
+                                    if speaker_array_obj:
+                                        unhide_array_ids.append({
+                                            "item_array_id": str(item_array_id),
+                                            "speaker_array.id": str(getattr(speaker_array_obj, 'id', None)),
+                                            "item_text": str(item.text(0)) if item else None
+                                        })
+                        except RuntimeError:
+                            continue
+                else:
+                    if array_id is not None:
+                        speaker_array_obj = self.settings.get_speaker_array(array_id)
+                        if speaker_array_obj:
+                            unhide_array_ids.append({
+                                "item_array_id": str(array_id),
+                                "speaker_array.id": str(getattr(speaker_array_obj, 'id', None)),
+                                "item_text": "single_select"
+                            })
+                
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "UNHIDE_DEBUG",
+                        "location": "UiSourceManagement.py:update_hide_state:unhide",
+                        "message": "UNHIDE: Array IDs that will be unhidden",
+                        "data": {
+                            "hide_value": bool(hide_value),
+                            "unhide_array_ids": unhide_array_ids,
+                            "num_selected_items": int(len(selected_items))
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+        # #endregion
+        
+        # 🎯 FIX: Leere den Speaker-Cache für dieses Array, wenn hide=True gesetzt wird
+        # Das ist notwendig, damit bei Unhide die Speaker neu aufgebaut werden müssen
+        if hide_value and hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
             plotter = self.main_window.draw_plots.draw_spl_plotter
             if plotter and hasattr(plotter, 'overlay_speakers'):
                 overlay_speakers = plotter.overlay_speakers
                 if overlay_speakers and hasattr(overlay_speakers, 'clear_array_cache'):
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "HIDE_CACHE_CHECK",
+                                "location": "UiSourceManagement.py:update_hide_state:before_clear_cache",
+                                "message": "About to clear cache for array on hide",
+                                "data": {
+                                    "array_id": str(array_id) if array_id is not None else None,
+                                    "array_id_type": type(array_id).__name__ if array_id is not None else None,
+                                    "hide_value": bool(hide_value),
+                                    "num_selected_items": int(len(selected_items)),
+                                    "has_array_id_to_cache_keys": hasattr(overlay_speakers, '_array_id_to_cache_keys'),
+                                    "array_id_to_cache_keys_size": len(getattr(overlay_speakers, '_array_id_to_cache_keys', {}))
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     # Leere Cache für alle betroffenen Arrays
                     if len(selected_items) > 1:
                         for item in selected_items:
@@ -3725,12 +3895,76 @@ class Sources(ModuleBase, QObject):
                                 if item_type != "group":
                                     item_array_id = item.data(0, Qt.UserRole)
                                     if item_array_id is not None:
-                                        overlay_speakers.clear_array_cache(item_array_id)
+                                        # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) statt item_array_id
+                                        speaker_array = self.settings.get_speaker_array(item_array_id)
+                                        if speaker_array:
+                                            speaker_array_id = getattr(speaker_array, 'id', None)
+                                            if speaker_array_id is not None:
+                                                array_id_str = str(speaker_array_id)
+                                            else:
+                                                # Fallback: Wenn speaker_array.id nicht existiert, verwende item_array_id
+                                                array_id_str = str(item_array_id)
+                                        else:
+                                            # Fallback: Wenn speaker_array nicht gefunden, verwende item_array_id
+                                            array_id_str = str(item_array_id)
+                                        overlay_speakers.clear_array_cache(array_id_str)
+                                        # #region agent log
+                                        try:
+                                            import json
+                                            import time as time_module
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "HIDE_CACHE_CLEAR",
+                                                    "location": "UiSourceManagement.py:update_hide_state:clear_cache",
+                                                    "message": "Cleared cache for array on hide",
+                                                    "data": {
+                                                        "array_id": array_id_str,
+                                                        "array_id_type": type(item_array_id).__name__
+                                                    },
+                                                    "timestamp": int(time_module.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
                             except RuntimeError:
                                 continue
                     else:
                         if array_id is not None:
-                            overlay_speakers.clear_array_cache(array_id)
+                            # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) statt array_id Parameter
+                            speaker_array = self.settings.get_speaker_array(array_id)
+                            if speaker_array:
+                                speaker_array_id = getattr(speaker_array, 'id', None)
+                                if speaker_array_id is not None:
+                                    array_id_str = str(speaker_array_id)
+                                else:
+                                    # Fallback: Wenn speaker_array.id nicht existiert, verwende array_id
+                                    array_id_str = str(array_id)
+                            else:
+                                # Fallback: Wenn speaker_array nicht gefunden, verwende array_id
+                                array_id_str = str(array_id)
+                            overlay_speakers.clear_array_cache(array_id_str)
+                            # #region agent log
+                            try:
+                                import json
+                                import time as time_module
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "HIDE_CACHE_CLEAR",
+                                        "location": "UiSourceManagement.py:update_hide_state:clear_cache",
+                                        "message": "Cleared cache for array on hide",
+                                        "data": {
+                                            "array_id": array_id_str,
+                                            "array_id_type": type(array_id).__name__
+                                        },
+                                        "timestamp": int(time_module.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
         
         # Berechnen des beamsteerings, windowing, und Impulse
         # #region agent log
@@ -3972,16 +4206,30 @@ class Sources(ModuleBase, QObject):
         new_pattern = combo.currentText()
         speaker_array.source_polar_pattern[source_index] = new_pattern
         
+        # 🎯 Cache für dieses Array löschen, damit Geometrien neu berechnet werden
+        # (wichtig, da sich der Speaker-Typ geändert hat und die Geometrie anders sein kann)
+        # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) statt speaker_array_id Parameter
+        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+            plotter = self.main_window.draw_plots.draw_spl_plotter
+            if hasattr(plotter, 'overlay_speakers') and hasattr(plotter.overlay_speakers, 'clear_array_cache'):
+                try:
+                    speaker_array_id_to_use = getattr(speaker_array, 'id', None)
+                    if speaker_array_id_to_use is not None:
+                        array_id_str = str(speaker_array_id_to_use)
+                    else:
+                        # Fallback: Wenn speaker_array.id nicht existiert, verwende speaker_array_id Parameter
+                        array_id_str = str(speaker_array_id)
+                    plotter.overlay_speakers.clear_array_cache(array_id_str)
+                except Exception:
+                    pass
+        
         # Aktualisiere die Winkel-Combobox, wenn es sich um ein Flown-Array handelt
         if hasattr(speaker_array, 'configuration') and speaker_array.configuration.lower() != "stack":
             self.update_angle_combobox(speaker_array_id, source_index)
         
-        # Aktualisiere Lautsprecher-Overlays (immer)
-        self.update_speaker_overlays()
-        
-        # Neu berechnen nur wenn autocalc aktiv
-        if self.is_autocalc_active():
-            self.main_window.update_speaker_array_calculations()
+        # Zentrale Aktualisierung aller Berechnungen und Plots
+        # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+        self.main_window.update_speaker_array_calculations()
 
     def on_speakerspecs_item_text_changed(self, item, column):
         try:
@@ -4203,6 +4451,38 @@ class Sources(ModuleBase, QObject):
         Optimiert für symmetrische Arrays.
         """
         try:
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                # Prüfe, welche array_id im TreeWidget gespeichert ist
+                selected_item = self.sources_tree_widget.currentItem()
+                tree_widget_array_id = selected_item.data(0, Qt.UserRole) if selected_item else None
+                speaker_array = self.settings.get_speaker_array(speaker_array_id)
+                speaker_array_id_from_obj = getattr(speaker_array, 'id', None) if speaker_array else None
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "ARRAY_ID_TREEWIDGET_DEBUG",
+                        "location": "UiSourceManagement.py:on_x_position_changed",
+                        "message": "on_x_position_changed called - array_id verification",
+                        "data": {
+                            "speaker_array_id_param": str(speaker_array_id) if speaker_array_id is not None else None,
+                            "speaker_array_id_param_type": type(speaker_array_id).__name__ if speaker_array_id is not None else None,
+                            "tree_widget_array_id": str(tree_widget_array_id) if tree_widget_array_id is not None else None,
+                            "tree_widget_array_id_type": type(tree_widget_array_id).__name__ if tree_widget_array_id is not None else None,
+                            "speaker_array.id": str(speaker_array_id_from_obj) if speaker_array_id_from_obj is not None else None,
+                            "speaker_array.id_type": type(speaker_array_id_from_obj).__name__ if speaker_array_id_from_obj is not None else None,
+                            "source_index": int(source_index),
+                            "raw_text": str(edit.text()),
+                            "ids_match": bool(speaker_array_id == tree_widget_array_id == speaker_array_id_from_obj)
+                        },
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             # Blockiere Signale während der Verarbeitung
             edit.blockSignals(True)
@@ -4225,6 +4505,29 @@ class Sources(ModuleBase, QObject):
             # Aktualisiere den Wert im Array
             speaker_array.source_position_x[source_index] = value
             
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "pre-fix-1",
+                        "hypothesisId": "S1-DETAIL",
+                        "location": "UiSourceManagement.py:on_x_position_changed:after_set",
+                        "message": "Value set in speaker_array.source_position_x",
+                        "data": {
+                            "speaker_array_id": speaker_array_id,
+                            "source_index": source_index,
+                            "new_value": value,
+                            "full_array_preview": list(speaker_array.source_position_x)[:5] if hasattr(speaker_array, 'source_position_x') else None,
+                        },
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             # Hole die Instance für dieses Array
             instance = self.get_speakerspecs_instance(speaker_array_id)
             
@@ -4242,12 +4545,9 @@ class Sources(ModuleBase, QObject):
             self.array_length_edit.setText(f"{source_length:.2f}")
             self.array_length_edit.blockSignals(False)
             
-            # Aktualisiere Lautsprecher-Overlays (immer)
-            self.update_speaker_overlays()
-            
-            # Neu berechnen nur wenn autocalc aktiv
-            if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+            # Zentrale Aktualisierung aller Berechnungen und Plots
+            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+            self.main_window.update_speaker_array_calculations()
             
             self.update_delay_input_fields(speaker_array_id)
             
@@ -4296,12 +4596,9 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
 
-            # Aktualisiere Lautsprecher-Overlays (immer)
-            self.update_speaker_overlays()
-            
-            # Neu berechnen nur wenn autocalc aktiv
-            if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+            # Zentrale Aktualisierung aller Berechnungen und Plots
+            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+            self.main_window.update_speaker_array_calculations()
             
             self.update_delay_input_fields(speaker_array_id)
             
@@ -4359,12 +4656,9 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Aktualisiere Lautsprecher-Overlays (immer)
-            self.update_speaker_overlays()
-            
-            # Neu berechnen nur wenn autocalc aktiv
-            if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+            # Zentrale Aktualisierung aller Berechnungen und Plots
+            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+            self.main_window.update_speaker_array_calculations()
             
             self.update_delay_input_fields(speaker_array_id)
 
@@ -4392,12 +4686,9 @@ class Sources(ModuleBase, QObject):
 
                 self.update_input_fields(self.get_speakerspecs_instance(speaker_array_id))
                 
-                # Aktualisiere Lautsprecher-Overlays (immer)
-                self.update_speaker_overlays()
-                
-                # Neu berechnen nur wenn autocalc aktiv
-                if self.is_autocalc_active():
-                    self.main_window.update_speaker_array_calculations()
+                # Zentrale Aktualisierung aller Berechnungen und Plots
+                # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+                self.main_window.update_speaker_array_calculations()
 
             # Setze den gerundeten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.1f}")
@@ -4436,9 +4727,9 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
-            if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+            # Zentrale Aktualisierung aller Berechnungen und Plots
+            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+            self.main_window.update_speaker_array_calculations()
             
             # Setze den formatierten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.2f}")
@@ -4486,9 +4777,9 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
-            if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+            # Zentrale Aktualisierung aller Berechnungen und Plots
+            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+            self.main_window.update_speaker_array_calculations()
             
             # Setze den formatierten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.2f}")
@@ -4531,9 +4822,9 @@ class Sources(ModuleBase, QObject):
                 speaker_array.delay = value
                 self.settings.update_speaker_array_delay(selected_speaker_array_id, value)
                 
-                # Neu berechnen nur wenn autocalc aktiv (keine Overlay-Aktualisierung)
-                if self.is_autocalc_active():
-                    self.main_window.update_speaker_array_calculations()
+                # Zentrale Aktualisierung aller Berechnungen und Plots
+                # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+                self.main_window.update_speaker_array_calculations()
                 
             except ValueError:
                 pass
@@ -4951,28 +5242,7 @@ class Sources(ModuleBase, QObject):
             
             # Bei Flown-Systemen: Setze die absolute Position für alle Quellen (wie die alten Felder)
             if hasattr(speaker_array, 'configuration') and speaker_array.configuration and speaker_array.configuration.lower() == "flown":
-                old_source_z_flown = [float(v) for v in speaker_array.source_position_z_flown[:3]] if hasattr(speaker_array, 'source_position_z_flown') and speaker_array.source_position_z_flown is not None and len(speaker_array.source_position_z_flown) >= 3 else []
                 speaker_array.source_position_z_flown = np.full(speaker_array.number_of_sources, value, dtype=float)
-                # #region agent log
-                import json
-                import time as time_module
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "F3",
-                        "location": "UiSourceManagement.py:on_ArrayZ_changed:4955",
-                        "message": "Flown array - source_position_z_flown set to array_position_z",
-                        "data": {
-                            "array_id": array_id,
-                            "array_position_z": float(value),
-                            "old_source_z_flown": old_source_z_flown,
-                            "new_source_z_flown": [float(v) for v in speaker_array.source_position_z_flown[:3]],
-                            "number_of_sources": int(speaker_array.number_of_sources)
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-                # #endregion
             
             self.array_z_edit.setText(f"{value:.2f}")
             
@@ -6392,6 +6662,47 @@ class Sources(ModuleBase, QObject):
             # Einzelauswahl: Nur die aktuelle Gruppe
             groups_to_update = [group_item]
         
+        # 🎯 Sammle alle Array-IDs aus den betroffenen Gruppen (für Cache-Löschung)
+        affected_array_ids = []
+        for group in groups_to_update:
+            group_name = group.text(0)
+            # Finde die Gruppe in settings.speaker_array_groups
+            group_id = None
+            if hasattr(self.settings, 'speaker_array_groups'):
+                for gid, gdata in self.settings.speaker_array_groups.items():
+                    if gdata.get('name') == group_name:
+                        group_id = gid
+                        break
+            
+            if group_id:
+                # Hole alle Child-Array-IDs aus der Gruppe
+                group_data = self.settings.speaker_array_groups.get(group_id, {})
+                child_array_ids = group_data.get('child_array_ids', [])
+                affected_array_ids.extend(child_array_ids)
+            
+            # Sammle auch direkt aus TreeWidget-Childs (rekursiv für verschachtelte Strukturen)
+            def collect_array_ids_from_item(item):
+                """Rekursiv sammelt alle Array-IDs aus einem TreeWidget-Item"""
+                array_ids = []
+                try:
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    if item_type != "group":
+                        array_id = item.data(0, Qt.UserRole)
+                        if array_id is not None:
+                            array_ids.append(array_id)
+                    # Rekursiv durch alle Childs
+                    for i in range(item.childCount()):
+                        child = item.child(i)
+                        array_ids.extend(collect_array_ids_from_item(child))
+                except RuntimeError:
+                    pass
+                return array_ids
+            
+            affected_array_ids.extend(collect_array_ids_from_item(group))
+        
+        # Entferne Duplikate
+        affected_array_ids = list(set(affected_array_ids))
+        
         # Wende Hide auf alle Gruppen und deren Childs an
         for group in groups_to_update:
             # Setze Gruppen-Checkbox explizit auf den neuen Zustand
@@ -6415,6 +6726,72 @@ class Sources(ModuleBase, QObject):
             while parent:
                 self._update_group_checkbox_state(parent, 2)
                 parent = parent.parent()
+        
+        # 🎯 FIX: Leere den Speaker-Cache für alle betroffenen Arrays, wenn hide=True gesetzt wird
+        # Das ist notwendig, damit bei Unhide die Speaker neu aufgebaut werden müssen
+        if hide_value and hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+            plotter = self.main_window.draw_plots.draw_spl_plotter
+            if plotter and hasattr(plotter, 'overlay_speakers'):
+                overlay_speakers = plotter.overlay_speakers
+                if overlay_speakers and hasattr(overlay_speakers, 'clear_array_cache'):
+                    # #region agent log
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "CACHE1",
+                            "location": "UiSourceManagement.py:on_group_hide_changed:clear_cache",
+                            "message": "Clearing caches for affected arrays",
+                            "data": {
+                                "affected_array_ids": [str(aid) for aid in affected_array_ids],
+                                "affected_array_ids_types": [type(aid).__name__ for aid in affected_array_ids],
+                                "hide_value": bool(hide_value)
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                    # #endregion
+                    # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) für alle betroffenen Arrays
+                    array_ids_to_clear = []
+                    for array_id in affected_array_ids:
+                        if array_id is not None:
+                            speaker_array = self.settings.get_speaker_array(array_id)
+                            if speaker_array:
+                                speaker_array_id = getattr(speaker_array, 'id', None)
+                                if speaker_array_id is not None:
+                                    array_ids_to_clear.append(str(speaker_array_id))
+                                else:
+                                    # Fallback: Wenn speaker_array.id nicht existiert, verwende array_id
+                                    array_ids_to_clear.append(str(array_id))
+                            else:
+                                # Fallback: Wenn speaker_array nicht gefunden, verwende array_id
+                                array_ids_to_clear.append(str(array_id))
+                    
+                    # #region agent log - update
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "CACHE1_UPDATE",
+                                "location": "UiSourceManagement.py:on_group_hide_changed:clear_cache_updated",
+                                "message": "Clearing caches for affected arrays - using speaker_array.id",
+                                "data": {
+                                    "affected_array_ids_original": [str(aid) for aid in affected_array_ids],
+                                    "array_ids_to_clear": array_ids_to_clear,
+                                    "hide_value": bool(hide_value)
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    for array_id_str in array_ids_to_clear:
+                        overlay_speakers.clear_array_cache(array_id_str)
         
         # 🎯 WICHTIG: Aktualisiere Berechnungen erst NACH allen Zustandsänderungen
         self.main_window.update_speaker_array_calculations()

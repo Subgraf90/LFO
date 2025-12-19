@@ -51,6 +51,43 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         self._box_template_cache: dict[tuple[float, float, float], Any] = {}
         self._box_face_cache: dict[tuple[float, float, float], Tuple[Optional[int], Optional[int]]] = {}
     
+    def _create_speaker_actor_name(self, array_id: str, speaker_idx: int, geom_idx: int | str) -> str:
+        """Erstellt einen eindeutigen Actor-Namen für einen Speaker basierend auf Array-ID, Speaker-Index und Geometrie-Index.
+        
+        Args:
+            array_id: Die eindeutige ID des Arrays (als String)
+            speaker_idx: Der Index des Speakers im Array
+            geom_idx: Der Index der Geometrie (0 für Hauptkörper, oder andere Indizes für zusätzliche Geometrien)
+        
+        Returns:
+            Eindeutiger Actor-Name im Format: {prefix}speaker_{array_id}_{speaker_idx}_{geom_idx}
+        """
+        prefix = f"{self._overlay_prefix}" if self._overlay_prefix else ""
+        actor_name = f"{prefix}speaker_{array_id}_{speaker_idx}_{geom_idx}"
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "ACTOR_NAME",
+                    "location": "PlotSPL3DSpeaker.py:_create_speaker_actor_name",
+                    "message": "Creating unique actor name",
+                    "data": {
+                        "array_id": str(array_id),
+                        "speaker_idx": int(speaker_idx),
+                        "geom_idx": str(geom_idx),
+                        "actor_name": actor_name
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        return actor_name
+    
     def clear_category(self, category: str) -> None:
         """Überschreibt clear_category, um Speaker-spezifische Caches zu behandeln."""
         super().clear_category(category)
@@ -200,14 +237,62 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             # #endregion
             # Rehydriere Actor- und Signatur-Cache aus persistentem Array-Cache,
             # damit unveränderte Speaker ohne Neuaufbau übernommen werden können.
+            # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) statt array_name (Dictionary-Key)
+            # Erstelle Mapping von array_name zu speaker_array.id für korrekten Cache-Zugriff
+            array_name_to_id_mapping: Dict[Any, str] = {}
+            for arr_name, arr in speaker_arrays.items():
+                arr_id = getattr(arr, 'id', None)
+                if arr_id is not None:
+                    array_name_to_id_mapping[arr_name] = str(arr_id)
+                else:
+                    array_name_to_id_mapping[arr_name] = str(arr_name)
+            
             if hasattr(self, "_overlay_array_cache") and self._overlay_array_cache:
-                for (arr_id, sp_idx), entry in self._overlay_array_cache.items():
+                for (arr_id_or_name, sp_idx), entry in self._overlay_array_cache.items():
+                    # 🎯 FIX: Konvertiere arr_id_or_name zu speaker_array.id, falls es array_name ist
+                    # Prüfe, ob arr_id_or_name ein array_name (Dictionary-Key) ist
+                    array_id_for_cache = None
+                    was_array_name = False
+                    if arr_id_or_name in array_name_to_id_mapping:
+                        # arr_id_or_name ist ein array_name (Dictionary-Key) - konvertiere zu speaker_array.id
+                        array_id_for_cache = array_name_to_id_mapping[arr_id_or_name]
+                        was_array_name = True
+                    else:
+                        # arr_id_or_name ist bereits speaker_array.id - verwende direkt
+                        array_id_for_cache = str(arr_id_or_name)
+                    
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "CACHE_REHYDRATE_ID",
+                                "location": "PlotSPL3DSpeaker.py:draw_speakers:rehydrate_cache",
+                                "message": "Rehydrating cache - ID conversion",
+                                "data": {
+                                    "arr_id_or_name_from_cache": str(arr_id_or_name),
+                                    "arr_id_or_name_type": type(arr_id_or_name).__name__,
+                                    "array_id_for_cache": array_id_for_cache,
+                                    "was_array_name": bool(was_array_name),
+                                    "speaker_idx": int(sp_idx)
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
                     actor_entry = entry.get('actor_entry')
                     geom_sig = entry.get('geometry_param_signature')
                     if actor_entry:
-                        old_cache[(arr_id, sp_idx, 0)] = actor_entry
+                        # 🎯 FIX: Verwende array_id_for_cache (speaker_array.id) statt arr_id_or_name
+                        old_cache[(array_id_for_cache, sp_idx, 0)] = actor_entry
                     if geom_sig is not None:
-                        self._speaker_geometry_param_cache[(arr_id, sp_idx)] = geom_sig
+                        # 🎯 FIX: Verwende array_id_for_cache (speaker_array.id) statt arr_id_or_name
+                        self._speaker_geometry_param_cache[(array_id_for_cache, sp_idx)] = geom_sig
 
         # 🚀 OPTIMIERUNG: Sammle alle Speaker für inkrementelles Update und Parallelisierung
         # Arrays und einzelne Speaker werden nur neu gezeichnet, wenn sie erstellt oder geändert wurden
@@ -217,17 +302,25 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         for array_name, speaker_array in speaker_arrays.items():
             # #region agent log
             hide_status = getattr(speaker_array, 'hide', False)
+            array_name_type = type(array_name).__name__
+            array_name_str = str(array_name)
+            speaker_array_id = getattr(speaker_array, 'id', None)
+            speaker_array_id_type = type(speaker_array_id).__name__ if speaker_array_id is not None else None
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 import json
                 f.write(json.dumps({
                     "sessionId": "debug-session",
                     "runId": "run1",
-                    "hypothesisId": "H5",
-                    "location": "PlotSPL3DSpeaker.py:draw_speakers:124",
-                    "message": "Processing speaker array - hide status",
+                    "hypothesisId": "ARRAY_ID_PLOT_DEBUG",
+                    "location": "PlotSPL3DSpeaker.py:draw_speakers:array_loop_start",
+                    "message": "Processing speaker array - array_id mapping",
                     "data": {
-                        "array_name": str(array_name),
-                        "hide": bool(hide_status)
+                        "array_name": array_name_str,
+                        "array_name_type": array_name_type,
+                        "speaker_array.id": str(speaker_array_id) if speaker_array_id is not None else None,
+                        "speaker_array.id_type": speaker_array_id_type,
+                        "hide": bool(hide_status),
+                        "array_name == speaker_array.id": bool(array_name == speaker_array_id)
                     },
                     "timestamp": int(__import__('time').time() * 1000)
                 }) + "\n")
@@ -235,9 +328,58 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             if hide_status:
                 continue
 
-            # Konvertiere zu String für konsistenten Vergleich
-            array_id = str(array_name)  # array_name ist bereits die ID (Key im Dict), konvertiere zu String
+            # 🎯 FIX: Verwende immer speaker_array.id (die "alte" Erkennung) statt array_name (Dictionary-Key)
+            # Dies stellt sicher, dass die ID konsistent ist mit speakerspecs instance und TreeWidget
+            if speaker_array_id is None:
+                # Fallback: Wenn speaker_array.id nicht existiert, verwende array_name
+                array_id = str(array_name)
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "ARRAY_ID_FALLBACK",
+                            "location": "PlotSPL3DSpeaker.py:draw_speakers:array_id_fallback",
+                            "message": "Using array_name as fallback (speaker_array.id is None)",
+                            "data": {
+                                "array_name": array_name_str,
+                                "array_id": str(array_id)
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+            else:
+                # Verwende speaker_array.id (die "alte" Erkennung)
+                array_id = str(speaker_array_id)
+            
             # array_name behalten für Zugriff auf speaker_arrays (da Keys Integer sein können)
+            
+            # #region agent log
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                import json
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "ARRAY_ID_PLOT_DEBUG",
+                    "location": "PlotSPL3DSpeaker.py:draw_speakers:array_id_converted",
+                    "message": "Array ID converted for plotting - using speaker_array.id",
+                    "data": {
+                        "array_name": array_name_str,
+                        "array_name_type": array_name_type,
+                        "array_id": str(array_id),
+                        "array_id_type": type(array_id).__name__,
+                        "speaker_array.id": str(speaker_array_id) if speaker_array_id is not None else None,
+                        "using_speaker_array_id": bool(speaker_array_id is not None),
+                        "will_plot": True
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }) + "\n")
+            # #endregion
 
             configuration = getattr(speaker_array, 'configuration', '')
             config_lower = configuration.lower() if isinstance(configuration, str) else ''
@@ -314,23 +456,21 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                 if xs.size > 0:
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                         import json
+                        xs_raw_preview = list(xs_raw[:5]) if xs_raw.size >= 5 else list(xs_raw) if xs_raw.size > 0 else []
+                        xs_preview = list(xs[:5]) if xs.size >= 5 else list(xs) if xs.size > 0 else []
                         f.write(json.dumps({
                             "sessionId": "debug-session",
                             "runId": "run1",
-                            "hypothesisId": "H3",
+                            "hypothesisId": "H3-DETAIL",
                             "location": "PlotSPL3DSpeaker.py:draw_speakers:158",
-                            "message": "Stack positions calculated",
+                            "message": "Stack positions calculated - full preview",
                             "data": {
                                 "array_id": str(array_id),
-                                "xs_raw_first": float(xs_raw[0]) if xs_raw.size > 0 else None,
-                                "ys_raw_first": float(ys_raw[0]) if ys_raw.size > 0 else None,
-                                "zs_raw_first": float(zs_raw[0]) if zs_raw.size > 0 else None,
-                                "xs_first": float(xs[0]) if xs.size > 0 else None,
-                                "ys_first": float(ys[0]) if ys.size > 0 else None,
-                                "zs_first": float(zs[0]) if zs.size > 0 else None,
+                                "xs_raw_preview": xs_raw_preview,
+                                "xs_preview": xs_preview,
+                                "xs_raw_length": int(xs_raw.size),
+                                "xs_length": int(xs.size),
                                 "array_pos_x": float(array_pos_x),
-                                "array_pos_y": float(array_pos_y),
-                                "array_pos_z": float(array_pos_z)
                             },
                             "timestamp": int(__import__('time').time() * 1000)
                         }) + "\n")
@@ -440,9 +580,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                 if geometries:
                                     # Füge Task hinzu (aber mit needs_rebuild=False, da Geometrien bereits vorhanden)
                                     speaker_tasks.append({
-                                        'array_id': array_id,
-                                        'array_name': array_name,
-                                        'speaker_array': speaker_array,
+                                        'array_id': array_id,  # 🎯 FIX: array_id ist jetzt speaker_array.id (die "alte" Erkennung)
+                                        'speaker_array': speaker_array,  # speaker_array Objekt für direkten Zugriff
                                         'idx': idx,
                                         'x': float(x),
                                         'y': float(y),
@@ -495,14 +634,12 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     }) + "\n")
                 # #endregion
 
-            if config_lower == 'stack' and len(self._stack_geometry_cache) > 0:
-                # Verarbeite Stack-Cache nur wenn Cache vorhanden ist
-
-                # Prüfe jede Stack-Gruppe
+            if config_lower == 'stack':
+                # Prüfe jede Stack-Gruppe (auch wenn Cache leer ist, z.B. nach Hide/Unhide)
                 for stack_group_key, speaker_indices in stack_groups.items():
                     # Prüfe Stack-Signatur
                     stack_signature = self._create_stack_signature(
-                        speaker_array, array_id, stack_group_key, array_pos_x, array_pos_y, array_pos_z, cabinet_lookup
+                        speaker_array, array_id, stack_group_key, array_pos_x, array_pos_y, array_pos_z, cabinet_lookup, speaker_indices
                     )
                     cached_stack_signature = self._stack_signature_cache.get((array_id, stack_group_key))
                     # #region agent log
@@ -529,6 +666,34 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     if cached_stack_signature == stack_signature:
                         # Stack-Signatur stimmt überein - lade alle Speaker dieser Stack-Gruppe aus Cache
                         stack_cache_data = self._stack_geometry_cache.get((array_id, stack_group_key))
+                    else:
+                        # Stack-Signatur stimmt NICHT überein - Speaker müssen neu gezeichnet werden
+                        # Markiere diese Stack-Gruppe als verarbeitet, damit sie nicht doppelt verarbeitet wird
+                        # (aber die Speaker werden später in der normalen Schleife verarbeitet)
+                        stack_groups_processed.add(stack_group_key)
+                        stack_cache_data = None
+                    
+                    if cached_stack_signature == stack_signature and stack_cache_data:
+                        # Stack-Signatur stimmt überein UND Cache-Daten vorhanden - lade alle Speaker dieser Stack-Gruppe aus Cache
+                        # #region agent log
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            import json
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H6",
+                                "location": "PlotSPL3DSpeaker.py:draw_speakers:527",
+                                "message": "Stack signature matches - checking cache",
+                                "data": {
+                                    "array_id": str(array_id),
+                                    "stack_group_key": str(stack_group_key),
+                                    "has_stack_cache_data": stack_cache_data is not None,
+                                    "num_speaker_indices": len(speaker_indices),
+                                    "num_valid_indices": len([i for i in speaker_indices if i in valid_indices])
+                                },
+                                "timestamp": int(__import__('time').time() * 1000)
+                            }) + "\n")
+                        # #endregion
                         if stack_cache_data and isinstance(stack_cache_data, dict):
                             cached_geometries = stack_cache_data.get('geometries', {})
                             cached_stack_pos = stack_cache_data.get('stack_pos', (array_pos_x, array_pos_y, array_pos_z))
@@ -611,57 +776,58 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                     stack_cached_geoms_for_group[idx] = transformed_geoms
 
                             # Wenn alle Speaker aus Cache geladen werden konnten
-                            if len(stack_cached_geoms_for_group) == len([i for i in speaker_indices if i in valid_indices]):
+                            expected_count = len([i for i in speaker_indices if i in valid_indices])
+                            actual_count = len(stack_cached_geoms_for_group)
+                            # #region agent log
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                import json
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H6",
+                                    "location": "PlotSPL3DSpeaker.py:draw_speakers:612",
+                                    "message": "Stack cache loading result",
+                                    "data": {
+                                        "array_id": str(array_id),
+                                        "stack_group_key": str(stack_group_key),
+                                        "expected_count": expected_count,
+                                        "actual_count": actual_count,
+                                        "all_loaded": actual_count == expected_count,
+                                        "speaker_indices": [int(i) for i in speaker_indices],
+                                        "cached_indices": [int(i) for i in stack_cached_geoms_for_group.keys()]
+                                    },
+                                    "timestamp": int(__import__('time').time() * 1000)
+                                }) + "\n")
+                            # #endregion
+                            if actual_count == expected_count:
                                 stack_cached_geometries[stack_group_key] = stack_cached_geoms_for_group
                                 stack_groups_processed.add(stack_group_key)
-
-                                # Füge alle Speaker dieser Stack-Gruppe zu Tasks hinzu (ohne Neuberechnung)
-                                for idx in speaker_indices:
-                                    if idx not in valid_indices:
-                                        continue
-
-                                    x = xs[idx]
-                                    y = ys[idx]
-                                    z = zs[idx]
-
-                                    is_highlighted = False
-                                    if highlight_indices:
-                                        highlight_indices_str = [(str(aid), int(idx_val)) for aid, idx_val in highlight_indices]
-                                        is_highlighted = (array_id, int(idx)) in highlight_indices_str
-                                    elif highlight_array_ids_str:
-                                        is_highlighted = array_id in highlight_array_ids_str
-
-                                    # Verwende transformierte Geometrien aus Cache
-                                    geometries = stack_cached_geoms_for_group.get(idx)
-                                    if geometries:
-                                        speaker_tasks.append({
-                                            'array_id': array_id,
-                                            'array_name': array_name,
-                                            'speaker_array': speaker_array,
-                                            'idx': idx,
-                                            'x': float(x),
-                                            'y': float(y),
-                                            'z': float(z),
-                                            'speaker_name': self._get_speaker_name(speaker_array, idx),
-                                            'configuration': configuration,
-                                            'is_highlighted': is_highlighted,
-                                            'geometry_param_key': (array_id, int(idx)),
-                                            'geometry_param_signature': self._create_geometry_param_signature(
-                                                speaker_array, idx, float(x), float(y), float(z), cabinet_lookup
-                                            ),
-                                            'cached_param_signature': None,
-                                            'needs_rebuild': False,  # Geometrien bereits aus Cache
-                                            'existing_actor': old_cache.get((array_id, int(idx), 0)),
-                                            'cached_geometries': geometries,  # Geometrien bereits vorhanden
-                                            'stack_group_key': stack_group_key,  # Für späteres Speichern
-                                        })
-
-                                # Aktualisiere Stack-Cache mit neuer Position
-                                self._stack_geometry_cache[(array_id, stack_group_key)] = {
-                                    'geometries': {idx: [(mesh.copy(deep=True), exit_idx) for mesh, exit_idx in geoms]
-                                                   for idx, geoms in stack_cached_geoms_for_group.items()},
-                                    'stack_pos': (array_pos_x, array_pos_y, array_pos_z)
-                                }
+                            else:
+                                # 🎯 FIX: Nicht alle Speaker konnten aus Cache geladen werden
+                                # (z.B. nach Hide/Unhide) - ignoriere Cache und zeichne alle neu
+                                # #region agent log
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H6",
+                                        "location": "PlotSPL3DSpeaker.py:draw_speakers:632",
+                                        "message": "Not all speakers loaded from cache - will rebuild",
+                                        "data": {
+                                            "array_id": str(array_id),
+                                            "stack_group_key": str(stack_group_key),
+                                            "expected_count": expected_count,
+                                            "actual_count": actual_count
+                                        },
+                                        "timestamp": int(__import__('time').time() * 1000)
+                                    }) + "\n")
+                                # #endregion
+                                # Entferne diese Stack-Gruppe aus dem Cache, damit sie neu berechnet wird
+                                self._stack_geometry_cache.pop((array_id, stack_group_key), None)
+                                self._stack_signature_cache.pop((array_id, stack_group_key), None)
+                                # Markiere diese Stack-Gruppe als verarbeitet, damit sie nicht doppelt verarbeitet wird
+                                stack_groups_processed.add(stack_group_key)
 
             # 🚀 OPTIMIERUNG: Prüfe ob Array komplett übersprungen werden kann
             # (nur wenn old_cache nicht leer ist, d.h. nicht beim ersten Laden)
@@ -775,9 +941,8 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
 
                     # Sammle Task für dieses Array
                     array_speaker_tasks.append({
-                        'array_id': array_id,
-                        'array_name': array_name,
-                        'speaker_array': speaker_array,
+                        'array_id': array_id,  # 🎯 FIX: array_id ist jetzt speaker_array.id (die "alte" Erkennung)
+                        'speaker_array': speaker_array,  # speaker_array Objekt für direkten Zugriff
                         'idx': idx,
                         'x': float(x),
                         'y': float(y),
@@ -1027,6 +1192,27 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                 if array_id_str not in self._array_id_to_cache_keys:
                                     self._array_id_to_cache_keys[array_id_str] = set()
                                 self._array_id_to_cache_keys[array_id_str].add(cache_key)
+                                # #region agent log
+                                try:
+                                    import json
+                                    import time as time_module
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "CACHE2",
+                                            "location": "PlotSPL3DSpeaker.py:draw_speakers:restore_cache_mapping",
+                                            "message": "Restoring cache mapping for array",
+                                            "data": {
+                                                "array_id": array_id_str,
+                                                "cache_key": str(cache_key)[:100],
+                                                "mapping_size": len(self._array_id_to_cache_keys.get(array_id_str, set()))
+                                            },
+                                            "timestamp": int(time_module.time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                                # #endregion
                                 # Begrenze Cache-Größe
                                 if len(self._speaker_geometry_cache) > self._geometry_cache_max_size:
                                     first_key = next(iter(self._speaker_geometry_cache))
@@ -1122,13 +1308,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         # Sammle alle Flown-Array-Geometrien
         flown_array_geometries: Dict[str, Dict[int, List[Tuple[Any, Optional[int]]]]] = {}
         flown_array_positions: Dict[str, tuple] = {}
-        # Mapping von array_id zu array_name für Zugriff auf speaker_arrays (wird auch für Flown-Arrays benötigt)
-        array_id_to_name: Dict[str, Any] = {}
-        
-        # Erstelle Mapping von array_id zu array_name aus speaker_tasks
-        for task in speaker_tasks:
-            if 'array_name' in task:
-                array_id_to_name[task['array_id']] = task['array_name']
+        # 🎯 FIX: array_id_to_name Mapping nicht mehr benötigt - verwende speaker_array direkt aus tasks
 
         for task in speaker_tasks:
             array_id = task['array_id']
@@ -1183,9 +1363,24 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     }) + "\n")
                 # #endregion
                 # Speichere Array-Signatur
-                # Verwende array_name statt array_id, da Keys in speaker_arrays Integer sein können
-                array_name_for_lookup = array_id_to_name.get(array_id, array_id)
-                speaker_array = speaker_arrays.get(array_name_for_lookup)
+                # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) - hole speaker_array direkt aus tasks
+                # Suche speaker_array aus tasks, da array_id jetzt speaker_array.id ist
+                speaker_array = None
+                for task in speaker_tasks:
+                    if task.get('array_id') == array_id and 'speaker_array' in task:
+                        speaker_array = task['speaker_array']
+                        break
+                
+                # Fallback: Wenn nicht in tasks gefunden, suche in speaker_arrays mit array_id
+                if speaker_array is None:
+                    # Versuche direkten Zugriff mit array_id (da array_id jetzt speaker_array.id ist)
+                    # Aber speaker_arrays Dictionary verwendet möglicherweise noch array_name als Key
+                    # Daher durchsuchen wir alle Arrays
+                    for arr_name, arr in speaker_arrays.items():
+                        if getattr(arr, 'id', None) == array_id or str(getattr(arr, 'id', None)) == str(array_id):
+                            speaker_array = arr
+                            break
+                
                 if speaker_array:
                     array_signature = self._create_array_signature(
                         speaker_array, array_id, array_pos[0], array_pos[1], array_pos[2], cabinet_lookup
@@ -1302,11 +1497,26 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
 
                 # Speichere Stack-Signatur
                 # Verwende array_name statt array_id, da Keys in speaker_arrays Integer sein können
-                array_name_for_lookup = array_id_to_name.get(array_id, array_id)
-                speaker_array = speaker_arrays.get(array_name_for_lookup)
+                # 🎯 FIX: Verwende speaker_array.id (die "alte" Erkennung) - hole speaker_array direkt aus tasks
+                # Suche speaker_array aus tasks, da array_id jetzt speaker_array.id ist
+                speaker_array = None
+                for task in speaker_tasks:
+                    if task.get('array_id') == array_id and 'speaker_array' in task:
+                        speaker_array = task['speaker_array']
+                        break
+                
+                # Fallback: Wenn nicht in tasks gefunden, suche in speaker_arrays
+                if speaker_array is None:
+                    for arr_name, arr in speaker_arrays.items():
+                        if getattr(arr, 'id', None) == array_id or str(getattr(arr, 'id', None)) == str(array_id):
+                            speaker_array = arr
+                            break
+                
                 if speaker_array:
+                    # Hole Speaker-Indizes für diese Stack-Gruppe aus geometries_dict
+                    speaker_indices_for_signature = list(geometries_dict.keys())
                     stack_signature = self._create_stack_signature(
-                        speaker_array, array_id, stack_group_key, stack_pos[0], stack_pos[1], stack_pos[2], cabinet_lookup
+                        speaker_array, array_id, stack_group_key, stack_pos[0], stack_pos[1], stack_pos[2], cabinet_lookup, speaker_indices_for_signature
                     )
                     self._stack_signature_cache[cache_key] = stack_signature
                     # #region agent log
@@ -1348,6 +1558,27 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     # #endregion
 
         # Verarbeite alle Speaker mit ihren Geometrien
+        # #region agent log - PLOT SPEAKER DEBUG
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "PLOT_SPEAKER_DEBUG",
+                    "location": "PlotSPL3DSpeaker.py:draw_speakers:before_speaker_loop",
+                    "message": "About to plot speakers - summary",
+                    "data": {
+                        "total_speaker_tasks": int(len(speaker_tasks)),
+                        "array_ids_in_tasks": list(set([str(task.get('array_id', 'unknown')) for task in speaker_tasks]))
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for task in speaker_tasks:
             array_id = task['array_id']
             idx = task['idx']
@@ -1355,6 +1586,37 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             y = task['y']
             z = task['z']
             is_highlighted = task['is_highlighted']
+            
+            # #region agent log - PLOT SPEAKER DEBUG
+            try:
+                import json
+                import time as time_module
+                speaker_array_obj = task.get('speaker_array')
+                speaker_array_id_from_obj = getattr(speaker_array_obj, 'id', None) if speaker_array_obj else None
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "PLOT_SPEAKER_DEBUG",
+                        "location": "PlotSPL3DSpeaker.py:draw_speakers:plotting_speaker",
+                        "message": "Plotting speaker - array_id check",
+                        "data": {
+                            "task_array_id": str(array_id),
+                            "task_array_id_type": type(array_id).__name__,
+                            "speaker_array.id": str(speaker_array_id_from_obj) if speaker_array_id_from_obj is not None else None,
+                            "speaker_idx": int(idx),
+                            "x": float(x),
+                            "y": float(y),
+                            "z": float(z),
+                            "array_id == speaker_array.id": bool(str(array_id) == str(speaker_array_id_from_obj)) if speaker_array_id_from_obj is not None else None,
+                            "needs_rebuild": bool(task.get('needs_rebuild', True)),
+                            "has_cached_geometries": bool('cached_geometries' in task)
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
             # Hole Geometrien (entweder aus Array-Cache, Cache oder aus parallel berechneten Ergebnissen)
             if 'cached_geometries' in task:
@@ -1485,6 +1747,35 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         edge_color = 'red' if is_highlighted else 'black'
                         # Basis-Linienbreiten: rot identisch mit Surface-Umrandungen (1.0)
                         base_line_width = 1.0 if is_highlighted else 1.0
+                        # 🎯 FIX: Verwende eindeutigen Actor-Namen basierend auf Array-ID, Speaker-Index und Geometrie-Index
+                        unique_actor_name = self._create_speaker_actor_name(array_id, int(idx), 'fallback')
+                        
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "PLOT_ARRAY_ID_DEBUG",
+                                    "location": "PlotSPL3DSpeaker.py:draw_speakers:creating_fallback_actor",
+                                    "message": "Creating fallback actor for speaker",
+                                    "data": {
+                                        "array_id": str(array_id),
+                                        "array_id_type": type(array_id).__name__,
+                                        "speaker_idx": int(idx),
+                                        "unique_actor_name": unique_actor_name,
+                                        "x": float(x),
+                                        "y": float(y),
+                                        "z": float(z)
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        
                         actor_name = self._add_overlay_mesh(
                             mesh_to_add,
                             color=body_color,
@@ -1492,6 +1783,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                             edge_color=edge_color,
                             line_width=self._get_scaled_line_width(base_line_width),
                             category='speakers',
+                            name=unique_actor_name,
                         )
                         # Hole das Actor-Objekt aus dem Renderer
                         actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
@@ -1511,6 +1803,106 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                             signature = existing.get('signature')
                             current_signature = self._speaker_signature_from_mesh(body_mesh, exit_face_index)
                             if signature == current_signature:
+                                # 🎯 FIX: Stelle sicher, dass der Actor-Name konsistent ist
+                                # Wenn der Actor-Name im Cache nicht dem erwarteten eindeutigen Namen entspricht,
+                                # aktualisiere ihn, damit er konsistent ist
+                                expected_actor_name = self._create_speaker_actor_name(array_id, int(idx), geom_idx)
+                                cached_actor_name = existing.get('actor')
+                                
+                                # Prüfe, ob der Actor bereits im Plotter existiert
+                                actor_exists_in_plotter = False
+                                if cached_actor_name and hasattr(self, 'plotter') and self.plotter is not None:
+                                    try:
+                                        actor_exists_in_plotter = cached_actor_name in self.plotter.renderer.actors
+                                    except Exception:
+                                        pass
+                                
+                                if cached_actor_name != expected_actor_name or not actor_exists_in_plotter:
+                                    # #region agent log
+                                    try:
+                                        import json
+                                        import time as time_module
+                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "ACTOR_NAME_FIX",
+                                                "location": "PlotSPL3DSpeaker.py:draw_speakers:fix_actor_name",
+                                                "message": "Fixing inconsistent actor name from cache",
+                                                "data": {
+                                                    "array_id": str(array_id),
+                                                    "speaker_idx": int(idx),
+                                                    "geom_idx": int(geom_idx),
+                                                    "cached_actor_name": str(cached_actor_name),
+                                                    "expected_actor_name": expected_actor_name,
+                                                    "actor_exists_in_plotter": bool(actor_exists_in_plotter)
+                                                },
+                                                "timestamp": int(time_module.time() * 1000)
+                                            }) + "\n")
+                                    except Exception:
+                                        pass
+                                    # #endregion
+                                    
+                                    # Entferne den alten Actor, falls er existiert
+                                    if cached_actor_name:
+                                        try:
+                                            self.plotter.remove_actor(cached_actor_name)
+                                        except Exception:
+                                            pass
+                                    
+                                    # Aktualisiere den Actor-Namen im Cache
+                                    existing['actor'] = expected_actor_name
+                                    
+                                    # Erstelle den Actor neu mit dem korrekten Namen
+                                    existing_mesh = existing.get('mesh')
+                                    if existing_mesh is not None:
+                                        # Erstelle ein neues Mesh, um den Actor hinzuzufügen
+                                        mesh_to_add = existing_mesh.copy(deep=True)
+                                        
+                                        # Setze Edge-Color basierend auf Highlight-Status
+                                        edge_color = 'red' if is_highlighted else 'black'
+                                        base_line_width = 1.0
+                                        line_width = self._get_scaled_line_width(base_line_width)
+                                        
+                                        # Füge den Actor mit dem neuen Namen hinzu
+                                        if exit_face_index == -1 or 'speaker_face' in mesh_to_add.cell_data:
+                                            actor_name = self._add_overlay_mesh(
+                                                mesh_to_add,
+                                                scalars='speaker_face',
+                                                cmap=[body_color, exit_color],
+                                                opacity=1.0,
+                                                edge_color=edge_color,
+                                                line_width=line_width,
+                                                category='speakers',
+                                                name=expected_actor_name,
+                                            )
+                                        elif exit_face_index is not None and mesh_to_add.n_cells > 0:
+                                            scalars = np.zeros(mesh_to_add.n_cells, dtype=int)
+                                            scalars[int(exit_face_index)] = 1
+                                            mesh_to_add.cell_data['speaker_face'] = scalars
+                                            actor_name = self._add_overlay_mesh(
+                                                mesh_to_add,
+                                                scalars='speaker_face',
+                                                cmap=[body_color, exit_color],
+                                                opacity=1.0,
+                                                edge_color=edge_color,
+                                                line_width=line_width,
+                                                category='speakers',
+                                                name=expected_actor_name,
+                                            )
+                                        else:
+                                            actor_name = self._add_overlay_mesh(
+                                                mesh_to_add,
+                                                color=body_color,
+                                                opacity=1.0,
+                                                edge_color=edge_color,
+                                                line_width=line_width,
+                                                category='speakers',
+                                                name=expected_actor_name,
+                                            )
+                                        existing['actor'] = actor_name
+                                        existing['mesh'] = mesh_to_add
+                                
                                 # Aktualisiere actor_obj falls nötig
                                 if 'actor_obj' not in existing:
                                     actor_name = existing.get('actor')
@@ -1544,6 +1936,41 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         base_line_width = 1.0 if is_highlighted else 1.0
                         line_width = self._get_scaled_line_width(base_line_width)
 
+                        # 🎯 FIX: Verwende eindeutigen Actor-Namen basierend auf Array-ID, Speaker-Index und Geometrie-Index
+                        # Dies stellt sicher, dass jeder Actor eine persistente ID hat, die nicht überschrieben wird
+                        unique_actor_name = self._create_speaker_actor_name(array_id, int(idx), geom_idx)
+                        
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            speaker_array_obj = task.get('speaker_array')
+                            speaker_array_id_from_obj = getattr(speaker_array_obj, 'id', None) if speaker_array_obj else None
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "PLOT_ARRAY_ID_DEBUG",
+                                    "location": "PlotSPL3DSpeaker.py:draw_speakers:creating_actor",
+                                    "message": "Creating actor for speaker - array_id check",
+                                    "data": {
+                                        "task_array_id": str(array_id),
+                                        "task_array_id_type": type(array_id).__name__,
+                                        "speaker_array.id": str(speaker_array_id_from_obj) if speaker_array_id_from_obj is not None else None,
+                                        "speaker_idx": int(idx),
+                                        "geom_idx": int(geom_idx) if isinstance(geom_idx, int) else str(geom_idx),
+                                        "unique_actor_name": unique_actor_name,
+                                        "x": float(x),
+                                        "y": float(y),
+                                        "z": float(z),
+                                        "array_id == speaker_array.id": bool(str(array_id) == str(speaker_array_id_from_obj)) if speaker_array_id_from_obj is not None else None
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        
                         if exit_face_index == -1 or has_scalars:
                             # Mesh hat bereits Scalars (merged mesh) - nutze diese
                             actor_name = self._add_overlay_mesh(
@@ -1554,6 +1981,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                 edge_color=edge_color,
                                 line_width=line_width,
                                 category='speakers',
+                                name=unique_actor_name,
                             )
                         elif exit_face_index is not None and mesh_to_add.n_cells > 0:
                             # Einzelnes Mesh - erstelle Scalars für eine Exit-Face
@@ -1568,6 +1996,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                 edge_color=edge_color,
                                 line_width=line_width,
                                 category='speakers',
+                                name=unique_actor_name,
                             )
                         else:
                             actor_name = self._add_overlay_mesh(
@@ -1577,6 +2006,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                 edge_color=edge_color,
                                 line_width=line_width,
                                 category='speakers',
+                                name=unique_actor_name,
                             )
                         # Hole das Actor-Objekt aus dem Renderer
                         actor_obj = self.plotter.renderer.actors.get(actor_name) if actor_name else None
@@ -1586,15 +2016,91 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         new_cache[key]['signature'] = self._speaker_signature_from_mesh(mesh_to_add, exit_face_index)
 
         with perf_section("PlotSPL3DOverlays.draw_speakers.cleanup", total_speakers=total_speakers):
+            # 🎯 FIX: Entferne nur Actors, die zu Arrays gehören, die versteckt sind oder nicht mehr existieren
+            # Arrays, die noch geplottet werden sollen, aber nicht in diesem Durchlauf neu geplottet wurden,
+            # sollten im Cache bleiben
             for key, info in old_cache.items():
                 if key not in new_cache:
+                    # Prüfe, ob das Array noch existiert und nicht versteckt ist
+                    array_id_from_key = str(key[0]) if isinstance(key, tuple) and len(key) > 0 else None
+                    if array_id_from_key:
+                        array_still_visible = False
+                        # Prüfe, ob das Array noch in speaker_arrays vorhanden ist und nicht versteckt ist
+                        for array_name, speaker_array in speaker_arrays.items():
+                            speaker_array_id = getattr(speaker_array, 'id', None)
+                            if speaker_array_id is not None and str(speaker_array_id) == array_id_from_key:
+                                hide_status = getattr(speaker_array, 'hide', False)
+                                if not hide_status:
+                                    array_still_visible = True
+                                break
+                            elif str(array_name) == array_id_from_key:
+                                hide_status = getattr(speaker_array, 'hide', False)
+                                if not hide_status:
+                                    array_still_visible = True
+                                break
+                        
+                        # Wenn das Array noch sichtbar ist, behalte es im Cache (nicht entfernen)
+                        if array_still_visible:
+                            # #region agent log - ACTOR_KEEP_DEBUG
+                            try:
+                                import json
+                                import time as time_module
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "ACTOR_KEEP_DEBUG",
+                                        "location": "PlotSPL3DSpeaker.py:draw_speakers:cleanup",
+                                        "message": "Keeping actor - array still visible",
+                                        "data": {
+                                            "key": str(key),
+                                            "array_id": array_id_from_key,
+                                            "actor_name": str(info.get('actor', 'unknown'))
+                                        },
+                                        "timestamp": int(time_module.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            # Füge zurück zu new_cache, damit es nicht entfernt wird
+                            new_cache[key] = info
+                            if info.get('actor') and info['actor'] not in new_actor_names:
+                                new_actor_names.append(info['actor'])
+                            continue
+                    
+                    # Array ist versteckt oder existiert nicht mehr - entferne Actor
+                    # #region agent log - ACTOR_REMOVAL_DEBUG
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "ACTOR_REMOVAL_DEBUG",
+                                "location": "PlotSPL3DSpeaker.py:draw_speakers:cleanup",
+                                "message": "Removing actor - array hidden or removed",
+                                "data": {
+                                    "key": str(key),
+                                    "array_id": array_id_from_key or "unknown",
+                                    "actor_name": str(info.get('actor', 'unknown')),
+                                    "old_cache_size": len(old_cache),
+                                    "new_cache_size": len(new_cache)
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     self._remove_actor(info['actor'])
 
             self._speaker_actor_cache = new_cache
             self._category_actors['speakers'] = new_actor_names
             # Aktualisiere persistenten Array-Cache basierend auf dem neuen Cache:
+            # 🎯 FIX: Aktualisiere nur die Arrays, die neu geplottet wurden, behalte andere im Cache
             # Speichere pro (array_id, speaker_index) die Hauptgeometrie (geom_idx == 0)
-            new_array_cache: Dict[tuple[str, int], Dict[str, Any]] = {}
+            # WICHTIG: Ersetze nicht den gesamten Cache, sondern aktualisiere nur die geänderten Arrays
+            arrays_updated_in_this_run: set[str] = set()
             for key, info in new_cache.items():
                 if not isinstance(key, tuple) or len(key) < 3:
                     continue
@@ -1603,14 +2109,73 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                 if geom_idx != 0:
                     continue
                 geom_sig = self._speaker_geometry_param_cache.get((array_id, sp_idx))
-                new_array_cache[(array_id, sp_idx)] = {
+                # 🎯 FIX: Stelle sicher, dass array_id als String gespeichert wird (speaker_array.id)
+                array_id_str = str(array_id)
+                arrays_updated_in_this_run.add(array_id_str)
+                self._overlay_array_cache[(array_id_str, sp_idx)] = {
                     'actor_entry': info,
                     'geometry_param_signature': geom_sig,
                 }
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "CACHE_SAVE_ID",
+                            "location": "PlotSPL3DSpeaker.py:draw_speakers:save_to_overlay_cache",
+                            "message": "Saving to overlay_array_cache",
+                            "data": {
+                                "array_id": array_id_str,
+                                "array_id_type": type(array_id_str).__name__,
+                                "speaker_idx": int(sp_idx),
+                                "has_actor_entry": bool(info.get('actor_entry')),
+                                "has_geom_sig": bool(geom_sig is not None)
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+            
+            # 🎯 FIX: Entferne nur die Arrays aus dem Cache, die nicht mehr geplottet werden (hide=True)
+            # Aber behalte Arrays, die noch geplottet werden, aber nicht in diesem Durchlauf aktualisiert wurden
+            arrays_to_remove_from_cache: list[tuple[str, int]] = []
+            for cache_key in list(self._overlay_array_cache.keys()):
+                if not isinstance(cache_key, tuple) or len(cache_key) < 2:
+                    continue
+                cached_array_id, cached_sp_idx = str(cache_key[0]), int(cache_key[1])
+                # Entferne nur, wenn das Array nicht in diesem Durchlauf aktualisiert wurde
+                # UND wenn das Array nicht mehr in speaker_arrays vorhanden ist oder hide=True
+                if cached_array_id not in arrays_updated_in_this_run:
+                    # Prüfe, ob das Array noch existiert und nicht versteckt ist
+                    array_still_exists = False
+                    for array_name, speaker_array in speaker_arrays.items():
+                        speaker_array_id = getattr(speaker_array, 'id', None)
+                        if speaker_array_id is not None and str(speaker_array_id) == cached_array_id:
+                            hide_status = getattr(speaker_array, 'hide', False)
+                            if not hide_status:
+                                array_still_exists = True
+                            break
+                        elif str(array_name) == cached_array_id:
+                            hide_status = getattr(speaker_array, 'hide', False)
+                            if not hide_status:
+                                array_still_exists = True
+                            break
+                    
+                    # Wenn das Array nicht mehr existiert oder versteckt ist, entferne es aus dem Cache
+                    if not array_still_exists:
+                        arrays_to_remove_from_cache.append(cache_key)
+            
+            for cache_key in arrays_to_remove_from_cache:
+                self._overlay_array_cache.pop(cache_key, None)
+            
             # #region agent log
             import json
             import time as time_module
-            cache_size_after = len(new_array_cache)
+            cache_size_after = len(self._overlay_array_cache)
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 f.write(json.dumps({
                     "sessionId": "debug-session",
@@ -1620,12 +2185,13 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     "message": "Cache updated after draw_speakers",
                     "data": {
                         "overlay_array_cache_size_after": cache_size_after,
-                        "new_cache_size": len(new_cache)
+                        "new_cache_size": len(new_cache),
+                        "arrays_updated_in_this_run": list(arrays_updated_in_this_run),
+                        "arrays_removed_from_cache": len(arrays_to_remove_from_cache)
                     },
                     "timestamp": int(time_module.time() * 1000)
                 }) + "\n")
             # #endregion
-            self._overlay_array_cache = new_array_cache
 
         with perf_section("PlotSPL3DOverlays.draw_speakers.update_highlights"):
             # Aktualisiere Edge-Color für hervorgehobene Lautsprecher
@@ -2039,7 +2605,7 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
 
     def _create_stack_signature(self, speaker_array, array_id: str, stack_group_key: tuple,
                                 array_pos_x: float, array_pos_y: float, array_pos_z: float,
-                                cabinet_lookup: Dict) -> tuple:
+                                cabinet_lookup: Dict, speaker_indices: List[int] = None) -> tuple:
         """Erstellt eine Signatur für eine Stack-Gruppe (Stack-Level Cache)."""
         params: List[Any] = [
             round(float(array_pos_x), 4),
@@ -2054,6 +2620,56 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
 
         azimuth = self._array_value(getattr(speaker_array, 'source_azimuth', None), 0)
         params.append(round(float(azimuth), 4) if azimuth is not None else 0.0)
+
+        # 🎯 WICHTIG: Füge Speaker-Positionen und Polar-Patterns zur Signatur hinzu, damit Änderungen erkannt werden
+        if speaker_indices and len(speaker_indices) > 0:
+            try:
+                xs = getattr(speaker_array, 'source_position_x', None)
+                ys = getattr(speaker_array, 'source_position_y', None)
+                zs_stack = getattr(speaker_array, 'source_position_z_stack', None)
+                polar_patterns = getattr(speaker_array, 'source_polar_pattern', None)
+                
+                if xs is not None and ys is not None:
+                    position_tuples = []
+                    pattern_tuples = []
+                    for idx in sorted(speaker_indices):
+                        # Positionen
+                        if isinstance(xs, (list, tuple, np.ndarray)) and isinstance(ys, (list, tuple, np.ndarray)):
+                            if idx < len(xs) and idx < len(ys):
+                                try:
+                                    x_val = round(float(xs[idx]), 4)
+                                    y_val = round(float(ys[idx]), 4)
+                                    z_val = round(float(zs_stack[idx]), 4) if zs_stack is not None and isinstance(zs_stack, (list, tuple, np.ndarray)) and idx < len(zs_stack) else 0.0
+                                    position_tuples.append((x_val, y_val, z_val))
+                                except (ValueError, TypeError, IndexError):
+                                    position_tuples.append((0.0, 0.0, 0.0))
+                            else:
+                                position_tuples.append((0.0, 0.0, 0.0))
+                        else:
+                            position_tuples.append((0.0, 0.0, 0.0))
+                        
+                        # Polar-Patterns (für Typ-Änderungen)
+                        if polar_patterns is not None and isinstance(polar_patterns, (list, tuple, np.ndarray)) and idx < len(polar_patterns):
+                            try:
+                                pattern_val = str(polar_patterns[idx]) if polar_patterns[idx] is not None else ''
+                                pattern_tuples.append(pattern_val)
+                            except (ValueError, TypeError, IndexError):
+                                pattern_tuples.append('')
+                        else:
+                            pattern_tuples.append('')
+                    
+                    params.append(tuple(position_tuples))
+                    params.append(tuple(pattern_tuples))
+                else:
+                    params.append(tuple())
+                    params.append(tuple())
+            except Exception:
+                # Bei Fehler: Leere Tupel hinzufügen, damit Signatur konsistent bleibt
+                params.append(tuple())
+                params.append(tuple())
+        else:
+            params.append(tuple())
+            params.append(tuple())
 
         import hashlib
 

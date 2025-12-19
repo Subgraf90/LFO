@@ -91,11 +91,58 @@ class SPL3DOverlayBase:
         line_repeat: int = 1,
         category: str = 'generic',
         render_lines_as_tubes: Optional[bool] = None,
+        name: Optional[str] = None,
     ) -> str:
-        """Fügt ein Mesh als Overlay hinzu und gibt den Actor-Namen zurück."""
-        prefix = f"{self._overlay_prefix}" if self._overlay_prefix else ""
-        name = f"{prefix}overlay_{self.overlay_counter}"
-        self.overlay_counter += 1
+        """Fügt ein Mesh als Overlay hinzu und gibt den Actor-Namen zurück.
+        
+        Args:
+            name: Optionaler Actor-Name. Wenn nicht angegeben, wird ein automatischer Name generiert.
+        """
+        if name is None:
+            prefix = f"{self._overlay_prefix}" if self._overlay_prefix else ""
+            name = f"{prefix}overlay_{self.overlay_counter}"
+            self.overlay_counter += 1
+        else:
+            # 🎯 FIX: Wenn ein expliziter Name angegeben wird, entferne den Actor, falls er bereits existiert
+            # Dies stellt sicher, dass Actors nicht überschrieben werden, wenn Arrays unhide gesetzt werden
+            if hasattr(self, 'plotter') and self.plotter is not None:
+                try:
+                    existing_actor = self.plotter.renderer.actors.get(name)
+                    if existing_actor is not None:
+                        # #region agent log - ACTOR_REMOVAL_DEBUG
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "ACTOR_REMOVAL_DEBUG",
+                                    "location": "Plot3DOverlaysBase.py:_add_overlay_mesh:remove_existing",
+                                    "message": "Removing existing actor before adding new one",
+                                    "data": {
+                                        "actor_name": str(name),
+                                        "category": str(category)
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        # Entferne den existierenden Actor, damit er nicht überschrieben wird
+                        self.plotter.remove_actor(name)
+                        # Entferne auch aus der Liste der Actor-Namen
+                        if hasattr(self, 'overlay_actor_names') and isinstance(self.overlay_actor_names, list):
+                            if name in self.overlay_actor_names:
+                                self.overlay_actor_names.remove(name)
+                        if hasattr(self, '_category_actors') and isinstance(self._category_actors, dict):
+                            category_actors = self._category_actors.get(category, [])
+                            if isinstance(category_actors, list) and name in category_actors:
+                                category_actors.remove(name)
+                except Exception:
+                    # Ignoriere Fehler beim Entfernen (Actor existiert möglicherweise nicht)
+                    pass
+        
         kwargs = {
             'name': name,
             'opacity': opacity,

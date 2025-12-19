@@ -587,6 +587,36 @@ class MainWindow(QtWidgets.QMainWindow):
                     update_polarplot = getattr(self.settings, "update_pressure_polarplot", True)
                     update_impulse = getattr(self.settings, "update_pressure_impulse", True)
 
+                    # Leichtgewichtige Aktualisierung der Lautsprecher-Overlays
+                    # immer hier zentral ausführen, wenn ein Sources-Widget existiert.
+                    sources_instance = getattr(self, "sources_instance", None)
+                    if sources_instance and hasattr(sources_instance, "update_speaker_overlays"):
+                        try:
+                            # #region agent log
+                            try:
+                                import json
+                                import time as time_module
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "pre-fix-1",
+                                        "hypothesisId": "S2",
+                                        "location": "Main.py:update_speaker_array_calculations",
+                                        "message": "Calling update_speaker_overlays from Main",
+                                        "data": {
+                                            "speaker_array_id": speaker_array_id,
+                                            "has_draw_plots": hasattr(self, "draw_plots"),
+                                        },
+                                        "timestamp": int(time_module.time() * 1000),
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            sources_instance.update_speaker_overlays()
+                        except Exception:
+                            # Overlay-Update darf die Hauptberechnungen nicht blockieren
+                            pass
+
                     is_fem_mode = bool(getattr(self.settings, "spl_plot_fem", False))
                     skipped_fem_run = False
                     if skip_fem_recalc and is_fem_mode:
