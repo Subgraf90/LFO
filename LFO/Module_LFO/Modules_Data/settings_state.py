@@ -485,12 +485,6 @@ class Settings:
         else:
             print(f"No SpeakerArray found with ID {id}.")
 
-    def update_speaker_array_id(self, old_id, new_id):
-        if old_id in self.speaker_arrays:
-            self.speaker_arrays[new_id] = self.speaker_arrays.pop(old_id)
-        else:
-            print(f"No SpeakerArray found with ID {old_id}")
-
     def get_all_speaker_array_ids(self):
         return self.speaker_arrays.keys()
 

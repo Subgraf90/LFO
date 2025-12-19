@@ -190,6 +190,37 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
     def draw_speakers(self, settings, container, cabinet_lookup: Dict) -> None:  # noqa: C901
         with perf_section("PlotSPL3DOverlays.draw_speakers.setup"):
             speaker_arrays = getattr(settings, 'speaker_arrays', {})
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                arrays_info = []
+                if isinstance(speaker_arrays, dict):
+                    for arr_name, arr in speaker_arrays.items():
+                        arr_id = getattr(arr, 'id', arr_name)
+                        config = getattr(arr, 'configuration', 'unknown')
+                        hide = getattr(arr, 'hide', False)
+                        arrays_info.append({
+                            "array_id": str(arr_id),
+                            "configuration": str(config),
+                            "hide": bool(hide)
+                        })
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H3",
+                        "location": "PlotSPL3DSpeaker.py:draw_speakers:entry",
+                        "message": "draw_speakers called - will process all arrays",
+                        "data": {
+                            "num_arrays": len(speaker_arrays) if isinstance(speaker_arrays, dict) else 0,
+                            "arrays_info": arrays_info
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
             # Wenn keine gültigen Arrays vorhanden sind, alle Speaker und den persistenten Array-Cache leeren
             if not isinstance(speaker_arrays, dict) or not speaker_arrays:
@@ -299,6 +330,30 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         speaker_tasks: List[Dict] = []  # Liste aller Speaker, die verarbeitet werden müssen
         total_speakers = 0
 
+        # 🎯 FIX: Prüfe, ob nur bestimmte Arrays neu gezeichnet werden sollen (z.B. bei hide-Status-Änderung)
+        # Wenn _affected_array_ids_for_speakers gesetzt ist, zeichne nur diese Arrays neu
+        affected_array_ids = getattr(self, '_affected_array_ids_for_speakers', None)
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "FIX-CHECK",
+                    "location": "PlotSPL3DSpeaker.py:draw_speakers:affected_check",
+                    "message": "Checking affected_array_ids_for_speakers",
+                    "data": {
+                        "affected_array_ids": list(affected_array_ids) if affected_array_ids else None,
+                        "has_attr": hasattr(self, '_affected_array_ids_for_speakers')
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for array_name, speaker_array in speaker_arrays.items():
             # #region agent log
             hide_status = getattr(speaker_array, 'hide', False)
@@ -320,13 +375,23 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         "speaker_array.id": str(speaker_array_id) if speaker_array_id is not None else None,
                         "speaker_array.id_type": speaker_array_id_type,
                         "hide": bool(hide_status),
-                        "array_name == speaker_array.id": bool(array_name == speaker_array_id)
+                        "array_name == speaker_array.id": bool(array_name == speaker_array_id),
+                        "affected_array_ids": list(affected_array_ids) if affected_array_ids else None,
+                        "is_affected": str(array_name) in affected_array_ids if affected_array_ids else None
                     },
                     "timestamp": int(__import__('time').time() * 1000)
                 }) + "\n")
             # #endregion
             if hide_status:
                 continue
+
+            # 🎯 FIX: Wenn nur bestimmte Arrays betroffen sind, überspringe Arrays, die nicht betroffen sind
+            # ABER: Nur wenn affected_array_ids gesetzt ist (bei hide-Status-Änderung)
+            if affected_array_ids:
+                array_id_to_check = str(speaker_array_id) if speaker_array_id is not None else str(array_name)
+                if array_id_to_check not in affected_array_ids and str(array_name) not in affected_array_ids:
+                    # Array ist nicht betroffen - überspringe es, aber entferne es nicht aus dem Cache
+                    continue
 
             # 🎯 FIX: Verwende immer speaker_array.id (die "alte" Erkennung) statt array_name (Dictionary-Key)
             # Dies stellt sicher, dass die ID konsistent ist mit speakerspecs instance und TreeWidget

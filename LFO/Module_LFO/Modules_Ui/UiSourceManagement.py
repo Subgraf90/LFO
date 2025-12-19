@@ -3250,8 +3250,18 @@ class Sources(ModuleBase, QObject):
                 # Berechne Positionen für jedes Array in der Gruppe
                 self.main_window.speaker_position_calculator(speaker_array)
         
-        # Aktualisiere die Soundfield-Berechnungen (berücksichtigt alle Arrays)
-        self.main_window.update_speaker_array_calculations()
+        # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+        # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+        # und zeichnet nur die betroffenen Arrays neu
+        # Bei Gruppen-Änderungen sind mehrere Arrays betroffen, daher werden alle geänderten Arrays neu gezeichnet
+        self.update_speaker_overlays()
+        
+        # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+        # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+        # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+        if self.is_autocalc_active():
+            # Aktualisiere die Soundfield-Berechnungen (berücksichtigt alle Arrays)
+            self.main_window.update_speaker_array_calculations()
 
     # @measure_time
     def update_beamsteering_input_fields(self):
@@ -4686,9 +4696,18 @@ class Sources(ModuleBase, QObject):
 
                 self.update_input_fields(self.get_speakerspecs_instance(speaker_array_id))
                 
-                # Zentrale Aktualisierung aller Berechnungen und Plots
-                # (inkl. Overlays) immer über Main.update_speaker_array_calculations
-                self.main_window.update_speaker_array_calculations()
+                # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+                # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+                # und zeichnet nur die betroffenen Arrays neu
+                self.update_speaker_overlays()
+                
+                # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+                # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+                # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+                if self.is_autocalc_active():
+                    # Zentrale Aktualisierung aller Berechnungen und Plots
+                    # (inkl. Overlays) immer über Main.update_speaker_array_calculations
+                    self.main_window.update_speaker_array_calculations()
 
             # Setze den gerundeten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.1f}")
@@ -5111,26 +5130,15 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # #region agent log
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H1",
-                    "location": "UiSourceManagement.py:on_ArrayX_changed:4810",
-                    "message": "After cache clear - before update_speaker_overlays",
-                    "data": {
-                        "array_id": array_id,
-                        "autocalc_active": bool(self.is_autocalc_active())
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-            # #endregion
             
-            # Aktualisiere Lautsprecher-Overlays (immer)
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
             
-            # Neu berechnen nur wenn autocalc aktiv
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5202,10 +5210,14 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # Aktualisiere Lautsprecher-Overlays (immer)
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
             
-            # Neu berechnen nur wenn autocalc aktiv
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5277,10 +5289,14 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # Aktualisiere Lautsprecher-Overlays (immer)
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
             
-            # Neu berechnen nur wenn autocalc aktiv
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5464,9 +5480,64 @@ class Sources(ModuleBase, QObject):
 
             # Setze den X-Wert für alle Quellen im Array
             speaker_array.source_position_x = np.full(speaker_array.number_of_sources, new_x, dtype=float)
+            
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1",
+                        "location": "UiSourceManagement.py:on_flown_x_position_changed:before_update",
+                        "message": "Flown X position changed - before updates",
+                        "data": {
+                            "array_id": str(selected_array_id),
+                            "new_x": float(new_x),
+                            "will_call_update_speaker_overlays": False,
+                            "will_call_update_speaker_array_calculations": True
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
                 
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1",
+                        "location": "UiSourceManagement.py:on_flown_x_position_changed:after_update",
+                        "message": "Flown X position changed - after update",
+                        "data": {
+                            "array_id": str(selected_array_id),
+                            "autocalc_active": bool(self.is_autocalc_active()),
+                            "called_update_speaker_overlays_first": True,
+                            "called_update_speaker_array_calculations": bool(self.is_autocalc_active())
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             self.position_x_edit.setText(f"{new_x:.2f}")
             self.position_x_edit.blockSignals(False)
             
@@ -5508,8 +5579,17 @@ class Sources(ModuleBase, QObject):
             # Setze den Y-Wert für alle Quellen im Array
             speaker_array.source_position_y = np.full(speaker_array.number_of_sources, new_y, dtype=float)
                 
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.position_y_edit.setText(f"{new_y:.2f}")
             self.position_y_edit.blockSignals(False)
             
@@ -5557,8 +5637,17 @@ class Sources(ModuleBase, QObject):
                 speaker_array.number_of_sources, new_z, dtype=float
             )
                 
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.position_z_edit.setText(f"{new_z:.2f}")
             self.position_z_edit.blockSignals(False)
             
@@ -5608,9 +5697,18 @@ class Sources(ModuleBase, QObject):
             # Setze den Site-Wert für alle Quellen im Array
             for i in range(speaker_array.number_of_sources):
                 speaker_array.source_site[i] = new_site
-                
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.position_site_edit.setText(f"{new_site:.2f}")
             self.position_site_edit.blockSignals(False)
             
@@ -5650,9 +5748,18 @@ class Sources(ModuleBase, QObject):
             
             # Setze den Azimuth-Wert für alle Quellen im Array
             speaker_array.source_azimuth = np.full(speaker_array.number_of_sources, new_azimuth, dtype=float)
-                
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
+            
             self.position_azimuth_edit.setText(f"{new_azimuth:.2f}")
             self.position_azimuth_edit.blockSignals(False)
             
@@ -6664,6 +6771,7 @@ class Sources(ModuleBase, QObject):
         
         # 🎯 Sammle alle Array-IDs aus den betroffenen Gruppen (für Cache-Löschung)
         affected_array_ids = []
+        affected_array_configs = []  # Für Debugging: Sammle Konfigurationen
         for group in groups_to_update:
             group_name = group.text(0)
             # Finde die Gruppe in settings.speaker_array_groups
@@ -6679,6 +6787,12 @@ class Sources(ModuleBase, QObject):
                 group_data = self.settings.speaker_array_groups.get(group_id, {})
                 child_array_ids = group_data.get('child_array_ids', [])
                 affected_array_ids.extend(child_array_ids)
+                # Sammle Konfigurationen für Debugging
+                for arr_id in child_array_ids:
+                    arr = self.settings.get_speaker_array(arr_id)
+                    if arr:
+                        config = getattr(arr, 'configuration', 'unknown')
+                        affected_array_configs.append(f"{arr_id}:{config}")
             
             # Sammle auch direkt aus TreeWidget-Childs (rekursiv für verschachtelte Strukturen)
             def collect_array_ids_from_item(item):
@@ -6698,10 +6812,39 @@ class Sources(ModuleBase, QObject):
                     pass
                 return array_ids
             
-            affected_array_ids.extend(collect_array_ids_from_item(group))
+            tree_array_ids = collect_array_ids_from_item(group)
+            affected_array_ids.extend(tree_array_ids)
+            # Sammle Konfigurationen für TreeWidget-Arrays
+            for arr_id in tree_array_ids:
+                arr = self.settings.get_speaker_array(arr_id)
+                if arr:
+                    config = getattr(arr, 'configuration', 'unknown')
+                    affected_array_configs.append(f"{arr_id}:{config}")
         
         # Entferne Duplikate
         affected_array_ids = list(set(affected_array_ids))
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H5",
+                    "location": "UiSourceManagement.py:on_group_hide_changed:affected_arrays",
+                    "message": "Collected affected array IDs from group",
+                    "data": {
+                        "affected_array_ids": [str(aid) for aid in affected_array_ids],
+                        "affected_array_configs": affected_array_configs,
+                        "group_names": [g.text(0) for g in groups_to_update],
+                        "hide_value": bool(hide_value)
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         # Wende Hide auf alle Gruppen und deren Childs an
         for group in groups_to_update:
@@ -6794,6 +6937,29 @@ class Sources(ModuleBase, QObject):
                         overlay_speakers.clear_array_cache(array_id_str)
         
         # 🎯 WICHTIG: Aktualisiere Berechnungen erst NACH allen Zustandsänderungen
+        # Die Berechnungen müssen ausgeführt werden, wenn enabled Arrays versteckt werden.
+        # ABER: draw_speakers() sollte nur die betroffenen Arrays neu zeichnen.
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H1-FIX",
+                    "location": "UiSourceManagement.py:on_group_hide_changed:before_update_calculations",
+                    "message": "About to call update_speaker_array_calculations",
+                    "data": {
+                        "affected_array_ids": [str(aid) for aid in affected_array_ids],
+                        "hide_value": bool(hide_value),
+                        "num_groups": len(groups_to_update)
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.main_window.update_speaker_array_calculations()
 
     def change_array_color(self, item, update_calculations=True):

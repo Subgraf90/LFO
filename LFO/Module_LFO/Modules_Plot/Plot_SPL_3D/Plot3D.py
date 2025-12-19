@@ -635,48 +635,149 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             except Exception:
                 pass
             # #endregion
-            if not previous:
-                categories_to_refresh = set(signatures.keys())
-            else:
-                categories_to_refresh = {
-                    key for key, value in signatures.items() 
-                    if key != 'speakers_highlights' and value != previous.get(key)
-                }
             
-            # 🎯 FIX: Prüfe, ob sich der hide-Status eines Arrays geändert hat
+            # 🎯 FIX: Prüfe IMMER, ob sich der hide-Status eines Arrays geändert hat
             # (auch wenn die Gesamtsignatur gleich ist, müssen Speakers neu gezeichnet werden)
-            if previous and 'speakers' not in categories_to_refresh:
+            # Diese Prüfung muss VOR der normalen Signatur-Vergleichung stattfinden,
+            # damit wir die betroffenen Array-IDs tracken können
+            affected_array_ids_for_speakers = set()
+            hide_status_changed = False
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "FIX-DEBUG",
+                        "location": "Plot3D.py:update_overlays:before_hide_check",
+                        "message": "About to check hide status changes",
+                        "data": {
+                            "has_previous": previous is not None,
+                            "has_prev_speakers_sig": previous.get('speakers') is not None if previous else False,
+                            "has_curr_speakers_sig": signatures.get('speakers') is not None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if previous:
                 prev_speakers_sig = previous.get('speakers')
                 curr_speakers_sig = signatures.get('speakers')
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "FIX-DEBUG",
+                            "location": "Plot3D.py:update_overlays:hide_check_start",
+                            "message": "Starting hide status comparison",
+                            "data": {
+                                "prev_speakers_sig_type": type(prev_speakers_sig).__name__ if prev_speakers_sig else None,
+                                "prev_speakers_sig_length": len(prev_speakers_sig) if isinstance(prev_speakers_sig, (list, tuple)) else None,
+                                "curr_speakers_sig_type": type(curr_speakers_sig).__name__ if curr_speakers_sig else None,
+                                "curr_speakers_sig_length": len(curr_speakers_sig) if isinstance(curr_speakers_sig, (list, tuple)) else None
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 if prev_speakers_sig and curr_speakers_sig:
-                    # Vergleiche hide-Status für jedes Array
-                    prev_hide_dict = {}
-                    curr_hide_dict = {}
-                    # Extrahiere hide-Status aus vorheriger Signatur
+                    # 🎯 FIX: Vergleiche die gesamte Signatur für jedes Array, nicht nur hide-Status
+                    # So erkennen wir auch Parameter-Änderungen (z.B. Position)
+                    prev_sig_dict = {}
+                    curr_sig_dict = {}
+                    # Extrahiere vollständige Signatur aus vorheriger Signatur
                     if isinstance(prev_speakers_sig, (list, tuple)):
                         for entry in prev_speakers_sig:
                             if isinstance(entry, (list, tuple)) and len(entry) >= 3:
                                 array_name = str(entry[0])
-                                hide_status = bool(entry[2])
-                                prev_hide_dict[array_name] = hide_status
-                    # Extrahiere hide-Status aus aktueller Signatur
+                                prev_sig_dict[array_name] = entry  # Speichere gesamte Signatur
+                    # Extrahiere vollständige Signatur aus aktueller Signatur
                     if isinstance(curr_speakers_sig, (list, tuple)):
                         for entry in curr_speakers_sig:
                             if isinstance(entry, (list, tuple)) and len(entry) >= 3:
                                 array_name = str(entry[0])
-                                hide_status = bool(entry[2])
-                                curr_hide_dict[array_name] = hide_status
-                    # Prüfe, ob sich der hide-Status geändert hat
-                    hide_status_changed = False
-                    all_array_names = set(prev_hide_dict.keys()) | set(curr_hide_dict.keys())
+                                curr_sig_dict[array_name] = entry  # Speichere gesamte Signatur
+                    
+                    # Prüfe, ob sich die Signatur für jedes Array geändert hat
+                    # 🎯 FIX: Tracke welche Arrays betroffen sind (hide-Status oder Parameter-Änderung)
+                    all_array_names = set(prev_sig_dict.keys()) | set(curr_sig_dict.keys())
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H2",
+                                "location": "Plot3D.py:update_overlays:before_array_comparison",
+                                "message": "Before comparing array signatures",
+                                "data": {
+                                    "all_array_names": list(all_array_names),
+                                    "prev_sig_dict_keys": list(prev_sig_dict.keys()),
+                                    "curr_sig_dict_keys": list(curr_sig_dict.keys()),
+                                    "num_arrays": len(all_array_names)
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     for array_name in all_array_names:
-                        prev_hide = prev_hide_dict.get(array_name, False)
-                        curr_hide = curr_hide_dict.get(array_name, False)
-                        if prev_hide != curr_hide:
-                            hide_status_changed = True
-                            break
+                        prev_sig = prev_sig_dict.get(array_name)
+                        curr_sig = curr_sig_dict.get(array_name)
+                        
+                        # Wenn Array in einer Signatur fehlt, wurde es hinzugefügt oder entfernt
+                        if prev_sig is None or curr_sig is None:
+                            affected_array_ids_for_speakers.add(array_name)
+                            continue
+                        
+                        # Vergleiche vollständige Signatur
+                        if prev_sig != curr_sig:
+                            affected_array_ids_for_speakers.add(array_name)
+                            # #region agent log
+                            try:
+                                import json
+                                import time as time_module
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H2",
+                                        "location": "Plot3D.py:update_overlays:signature_diff",
+                                        "message": "Signature changed for array - adding to affected_array_ids",
+                                        "data": {
+                                            "array_name": str(array_name),
+                                            "prev_sig_preview": str(prev_sig)[:200] if prev_sig else None,
+                                            "curr_sig_preview": str(curr_sig)[:200] if curr_sig else None,
+                                            "prev_sig_length": len(prev_sig) if isinstance(prev_sig, (list, tuple)) else None,
+                                            "curr_sig_length": len(curr_sig) if isinstance(curr_sig, (list, tuple)) else None
+                                        },
+                                        "timestamp": int(time_module.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            # Prüfe speziell hide-Status-Änderung
+                            if len(prev_sig) >= 3 and len(curr_sig) >= 3:
+                                prev_hide = bool(prev_sig[2])
+                                curr_hide = bool(curr_sig[2])
+                                if prev_hide != curr_hide:
+                                    hide_status_changed = True
                     if hide_status_changed:
-                        categories_to_refresh.add('speakers')
+                        # 🎯 FIX: Speichere betroffene Array-IDs in overlay_speakers, damit draw_speakers() darauf zugreifen kann
+                        if hasattr(self, 'overlay_speakers'):
+                            # Konvertiere alle Array-IDs zu Strings, um Konsistenz zu gewährleisten
+                            affected_array_ids_str = {str(aid) for aid in affected_array_ids_for_speakers}
+                            self.overlay_speakers._affected_array_ids_for_speakers = affected_array_ids_str
                         # #region agent log
                         try:
                             import json
@@ -685,18 +786,60 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                                 f.write(json.dumps({
                                     "sessionId": "debug-session",
                                     "runId": "run1",
-                                    "hypothesisId": "HIDE2",
+                                    "hypothesisId": "HIDE2-FIX",
                                     "location": "Plot3D.py:update_overlays:hide_status_check",
-                                    "message": "Hide status changed - forcing speakers refresh",
+                                    "message": "Hide status changed - setting affected_array_ids_for_speakers",
                                     "data": {
                                         "prev_hide_dict": prev_hide_dict,
-                                        "curr_hide_dict": curr_hide_dict
+                                        "curr_hide_dict": curr_hide_dict,
+                                        "affected_array_ids_for_speakers": list(affected_array_ids_for_speakers),
+                                        "has_overlay_speakers": hasattr(self, 'overlay_speakers')
                                     },
                                     "timestamp": int(time_module.time() * 1000)
                                 }) + "\n")
                         except Exception:
                             pass
                         # #endregion
+            
+            if not previous:
+                categories_to_refresh = set(signatures.keys())
+            else:
+                categories_to_refresh = {
+                    key for key, value in signatures.items() 
+                    if key != 'speakers_highlights' and value != previous.get(key)
+                }
+            
+            # 🎯 FIX: Wenn sich Parameter oder hide-Status geändert haben, füge 'speakers' zu categories_to_refresh hinzu
+            # UND setze die betroffenen Array-IDs, auch wenn die Signatur bereits als geändert markiert wurde
+            if affected_array_ids_for_speakers:
+                categories_to_refresh.add('speakers')
+                # 🎯 FIX: Setze betroffene Array-IDs, damit nur diese Arrays neu gezeichnet werden
+                if hasattr(self, 'overlay_speakers'):
+                    # Konvertiere alle Array-IDs zu Strings, um Konsistenz zu gewährleisten
+                    affected_array_ids_str = {str(aid) for aid in affected_array_ids_for_speakers}
+                    self.overlay_speakers._affected_array_ids_for_speakers = affected_array_ids_str
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "PARAM-FIX",
+                                "location": "Plot3D.py:update_overlays:set_affected_arrays",
+                                "message": "Setting affected_array_ids_for_speakers for parameter/hide changes",
+                                "data": {
+                                    "affected_array_ids_for_speakers": list(affected_array_ids_for_speakers),
+                                    "affected_array_ids_str": list(affected_array_ids_str),
+                                    "hide_status_changed": hide_status_changed,
+                                    "has_overlay_speakers": hasattr(self, 'overlay_speakers')
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
             
             # #region agent log
             try:
@@ -809,6 +952,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 with perf_section("PlotSPL3D.update_overlays.build_cabinet_lookup"):
                     cabinet_lookup = self.overlay_speakers.build_cabinet_lookup(container)
                 self.overlay_speakers.draw_speakers(settings, container, cabinet_lookup)
+                # 🎯 FIX: Setze _affected_array_ids_for_speakers zurück, damit es nicht bei der nächsten Aktualisierung verwendet wird
+                if hasattr(self.overlay_speakers, '_affected_array_ids_for_speakers'):
+                    self.overlay_speakers._affected_array_ids_for_speakers = None
         else:
             # Auch wenn sich die Speaker-Definitionen nicht geändert haben,
             # müssen wir die Highlights aktualisieren, falls sich die Highlight-IDs geändert haben

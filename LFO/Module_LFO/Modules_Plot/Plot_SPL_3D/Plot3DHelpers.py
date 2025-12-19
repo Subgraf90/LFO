@@ -232,6 +232,28 @@ class SPL3DHelpers:
                 
                 configuration = str(getattr(array, 'configuration', '') or '').lower()
                 hide = bool(getattr(array, 'hide', False))
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H2",
+                            "location": "Plot3DHelpers.py:_compute_overlay_signatures:processing_array",
+                            "message": "Processing array for signature",
+                            "data": {
+                                "array_id": array_id_str,
+                                "configuration": configuration,
+                                "hide": hide,
+                                "array_name": str(name)
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 # Hole Array-Positionen
                 array_pos_x = getattr(array, 'array_position_x', 0.0)

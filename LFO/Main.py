@@ -596,16 +596,27 @@ class MainWindow(QtWidgets.QMainWindow):
                             try:
                                 import json
                                 import time as time_module
+                                # Sammle alle Array-IDs und Konfigurationen für Debugging
+                                all_array_ids = []
+                                all_array_configs = []
+                                if hasattr(self.settings, 'speaker_arrays'):
+                                    for arr_name, arr in self.settings.speaker_arrays.items():
+                                        arr_id = getattr(arr, 'id', arr_name)
+                                        config = getattr(arr, 'configuration', 'unknown')
+                                        all_array_ids.append(str(arr_id))
+                                        all_array_configs.append(f"{arr_id}:{config}")
                                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                                     f.write(json.dumps({
                                         "sessionId": "debug-session",
-                                        "runId": "pre-fix-1",
-                                        "hypothesisId": "S2",
-                                        "location": "Main.py:update_speaker_array_calculations",
-                                        "message": "Calling update_speaker_overlays from Main",
+                                        "runId": "run1",
+                                        "hypothesisId": "H4",
+                                        "location": "Main.py:update_speaker_array_calculations:before_update_overlays",
+                                        "message": "About to call update_speaker_overlays - will affect all arrays",
                                         "data": {
                                             "speaker_array_id": speaker_array_id,
                                             "has_draw_plots": hasattr(self, "draw_plots"),
+                                            "all_array_ids": all_array_ids,
+                                            "all_array_configs": all_array_configs
                                         },
                                         "timestamp": int(time_module.time() * 1000),
                                     }) + "\n")
