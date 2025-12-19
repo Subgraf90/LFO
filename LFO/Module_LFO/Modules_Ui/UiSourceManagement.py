@@ -69,6 +69,29 @@ class Sources(ModuleBase, QObject):
     
     def update_speaker_overlays(self):
         """Aktualisiert nur die Lautsprecher-Overlays im Plot, ohne Neuberechnung."""
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            import traceback
+            stack_trace = ''.join(traceback.format_stack()[-5:-1])  # Letzte 4 Stack-Frames
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "MULTIPLE_UPDATE",
+                    "location": "UiSourceManagement.py:update_speaker_overlays:entry",
+                    "message": "update_speaker_overlays called - tracking call source",
+                    "data": {
+                        "stack_trace": stack_trace,
+                        "has_draw_plots": hasattr(self.main_window, 'draw_plots'),
+                        "has_draw_spl_plotter": hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter')
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if (hasattr(self.main_window, 'draw_plots') and 
             hasattr(self.main_window.draw_plots, 'draw_spl_plotter') and
             hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays')):
@@ -2113,7 +2136,7 @@ class Sources(ModuleBase, QObject):
                     azimuth_input.setEnabled(False)
                 instance['gridLayout_sources'].addWidget(azimuth_input, 4, source_index + 3)
                 azimuth_input.editingFinished.connect(
-                    lambda i=source_index, edit=azimuth_input: self.on_source_azimuth_changed(edit, i, instance['id'])
+                    lambda i=source_index, edit=azimuth_input: self.on_stack_azimuth_changed(edit, i, instance['id'])
                 )
 
                 # Delay Eingabefeld
@@ -4685,13 +4708,38 @@ class Sources(ModuleBase, QObject):
                 edit.setText(f"{speaker_array.source_position_z_stack[source_index]:.2f}")
             edit.blockSignals(False)
 
-    def on_source_azimuth_changed(self, edit, source_index, speaker_array_id):
+    def on_stack_azimuth_changed(self, edit, source_index, speaker_array_id):
         try:
             # Runde den Wert auf 1 Dezimalstelle
             value = round(float(edit.text()) if edit.text() else 0, 1)
             
             speaker_array = self.settings.get_speaker_array(speaker_array_id)
             if speaker_array and speaker_array.source_azimuth[source_index] != value:
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    old_value = speaker_array.source_azimuth[source_index]
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "AZIMUTH_STACK",
+                            "location": "UiSourceManagement.py:on_stack_azimuth_changed:before_change",
+                            "message": "Stack azimuth changed - before update",
+                            "data": {
+                                "array_id": str(speaker_array_id),
+                                "source_index": int(source_index),
+                                "old_azimuth": float(old_value),
+                                "new_azimuth": float(value),
+                                "configuration": str(getattr(speaker_array, 'configuration', 'unknown'))
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                
                 speaker_array.source_azimuth[source_index] = value
 
                 self.update_input_fields(self.get_speakerspecs_instance(speaker_array_id))
@@ -5137,8 +5185,8 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5216,8 +5264,8 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5295,8 +5343,8 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5510,8 +5558,8 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5585,8 +5633,8 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5643,8 +5691,8 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5698,14 +5746,21 @@ class Sources(ModuleBase, QObject):
             for i in range(speaker_array.number_of_sources):
                 speaker_array.source_site[i] = new_site
             
+            # 🎯 FIX: Bei Flown-Arrays: Bei Änderung von site/azi/zwischenwinkel muss das gesamte Array neu erstellt werden
+            # Cache löschen und neu aufbauen, damit alle Komponenten neu gerechnet werden
+            array_id = getattr(speaker_array, 'id', selected_array_id)
+            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                    self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+            
             # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5749,14 +5804,21 @@ class Sources(ModuleBase, QObject):
             # Setze den Azimuth-Wert für alle Quellen im Array
             speaker_array.source_azimuth = np.full(speaker_array.number_of_sources, new_azimuth, dtype=float)
             
+            # 🎯 FIX: Bei Flown-Arrays: Bei Änderung von site/azi/zwischenwinkel muss das gesamte Array neu erstellt werden
+            # Cache löschen und neu aufbauen, damit alle Komponenten neu gerechnet werden
+            array_id = getattr(speaker_array, 'id', selected_array_id)
+            if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                    self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+            
             # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
             if self.is_autocalc_active():
                 self.main_window.update_speaker_array_calculations()
             
@@ -5789,8 +5851,48 @@ class Sources(ModuleBase, QObject):
             # Setze den neuen Winkel
             speaker_array.source_angle[source_index] = new_angle
             
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: Bei Flown-Arrays: Bei Änderung von Zwischenwinkel (source_angle) muss das gesamte Array neu erstellt werden
+            # Cache löschen und neu aufbauen, damit alle Komponenten neu gerechnet werden
+            configuration = getattr(speaker_array, 'configuration', '').lower()
+            if configuration == 'flown':
+                array_id = getattr(speaker_array, 'id', array_id)
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "ANGLE_FLOWN",
+                                    "location": "UiSourceManagement.py:on_source_angle_changed:before_cache_clear",
+                                    "message": "Flown array angle changed - clearing cache for entire array",
+                                    "data": {
+                                        "array_id": str(array_id),
+                                        "source_index": int(source_index),
+                                        "new_angle": float(new_angle),
+                                        "configuration": configuration
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+            
+            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # Bei Flown-Arrays: Bei Änderung von site/azi/achsen/zwischenwinkel soll das gesamte Array neu geplottet werden
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
+            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            if self.is_autocalc_active():
+                # Aktualisiere die Berechnung
+                self.main_window.update_speaker_array_calculations()
             
         except Exception as e:
             print(f"Fehler beim Ändern des Winkels: {str(e)}")

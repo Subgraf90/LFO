@@ -648,7 +648,9 @@ class DrawPlotsMainwindow(ModuleBase):
         if not self.container.calculation_spl.get("show_in_plot", True):
             if draw_spl_plotter is not None:
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
-                draw_spl_plotter.update_overlays(self.settings, self.container)
+                # 🎯 FIX: update_overlays() entfernt - Overlays (Lautsprecher) werden nur bei UI-Parameteränderungen aktualisiert
+                # SPL-Plots sollen nur ihre eigenen Aufgaben ausführen
+                # draw_spl_plotter.update_overlays(self.settings, self.container)
                 self.colorbar_canvas.draw()
             if update_axes:
                 self.draw_spl_plot_xaxis.initialize_empty_plots()
@@ -715,7 +717,9 @@ class DrawPlotsMainwindow(ModuleBase):
             # Keine Daten - zeige leere Szene
             if draw_spl_plotter is not None:
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
-                draw_spl_plotter.update_overlays(self.settings, self.container)
+                # 🎯 FIX: update_overlays() entfernt - Overlays (Lautsprecher) werden nur bei UI-Parameteränderungen aktualisiert
+                # SPL-Plots sollen nur ihre eigenen Aufgaben ausführen
+                # draw_spl_plotter.update_overlays(self.settings, self.container)
                 # Zeit-Fader immer anzeigen wenn "SPL over time" aktiv ist
                 if time_mode_enabled:
                     # Zeige Zeit-Fader auch ohne Daten

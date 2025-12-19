@@ -549,10 +549,15 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             valid_indices = np.nonzero(valid_mask)[0]
 
             # 🚀 OPTIMIERUNG: Array-Level Cache für Flown Arrays
+            # 🎯 FIX: Cache nur für hide/unhide verwenden, nicht für Geometrieänderungen
             array_can_be_skipped = False
             array_cached_geometries: Dict[int, List[Tuple[Any, Optional[int]]]] = {}  # Cache für alle Speaker eines Arrays
 
-            # Prüfe Array-Cache auch wenn old_cache leer ist (wichtig für ersten Lauf nach Neuberechnung)
+            # 🎯 FIX: Deaktiviere Array-Cache für Flown-Arrays bei Geometrieänderungen
+            # Cache wird nur noch für hide/unhide verwendet
+            # Wenn sich Geometrieparameter ändern (z.B. array_position_z), soll der Cache nicht verwendet werden
+            # Prüfe, ob sich nur der hide-Status geändert hat
+            use_array_cache = False
             if config_lower == 'flown' and len(self._array_geometry_cache) > 0:
                 # Prüfe Array-Signatur
                 array_signature = self._create_array_signature(
@@ -560,7 +565,24 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                 )
                 cached_array_signature = self._array_signature_cache.get(array_id)
 
+                # 🎯 FIX: Verwende Cache nur, wenn sich nur der hide-Status geändert hat
+                # Wenn sich Geometrieparameter geändert haben, soll der Cache nicht verwendet werden
+                # Die Signatur enthält alle Geometrieparameter, daher wird die Änderung erkannt
+                # Wenn die Signaturen übereinstimmen, bedeutet das, dass sich nur der hide-Status geändert hat
                 if cached_array_signature == array_signature:
+                    use_array_cache = True
+                else:
+                    # 🎯 FIX: Wenn sich die Signatur geändert hat, bedeutet das, dass sich Geometrieparameter geändert haben
+                    # In diesem Fall soll der Cache nicht verwendet werden
+                    use_array_cache = False
+                    # Lösche den Cache für dieses Array, damit er nicht mehr verwendet wird
+                    if array_id in self._array_geometry_cache:
+                        del self._array_geometry_cache[array_id]
+                    if array_id in self._array_signature_cache:
+                        del self._array_signature_cache[array_id]
+
+            # 🎯 FIX: Verwende Array-Cache nur, wenn sich nur der hide-Status geändert hat
+            if use_array_cache:
                     # Array-Signatur stimmt überein - lade alle Speaker aus Array-Cache
                     array_cache_data = self._array_geometry_cache.get(array_id)
                     if array_cache_data and isinstance(array_cache_data, dict):
@@ -627,6 +649,27 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         # Wenn alle Speaker aus Cache geladen werden konnten, überspringe Array
                         if len(array_cached_geometries) == len(valid_indices):
                             array_can_be_skipped = True
+                            # #region agent log
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                import json
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H1",
+                                    "location": "PlotSPL3DSpeaker.py:draw_speakers:array_can_be_skipped",
+                                    "message": "Array can be skipped - all speakers from cache",
+                                    "data": {
+                                        "array_id": str(array_id),
+                                        "cached_count": int(len(array_cached_geometries)),
+                                        "valid_indices_count": int(len(valid_indices)),
+                                        "cached_indices": [int(i) for i in array_cached_geometries.keys()],
+                                        "valid_indices": [int(i) for i in valid_indices],
+                                        "old_array_pos": [float(old_array_x), float(old_array_y), float(old_array_z)],
+                                        "new_array_pos": [float(array_pos_x), float(array_pos_y), float(array_pos_z)]
+                                    },
+                                    "timestamp": int(__import__('time').time() * 1000)
+                                }) + "\n")
+                            # #endregion
                             # Füge alle Speaker zum neuen Cache hinzu (ohne Neuberechnung)
                             for idx in valid_indices:
                                 x = xs[idx]
@@ -643,6 +686,27 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                                 # Verwende transformierte Geometrien aus Cache
                                 geometries = array_cached_geometries.get(idx)
                                 if geometries:
+                                    # #region agent log
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        import json
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "H1",
+                                            "location": "PlotSPL3DSpeaker.py:draw_speakers:adding_task_from_array_cache",
+                                            "message": "Adding task from array cache",
+                                            "data": {
+                                                "array_id": str(array_id),
+                                                "idx": int(idx),
+                                                "x": float(x),
+                                                "y": float(y),
+                                                "z": float(z),
+                                                "has_geometries": bool(geometries),
+                                                "has_existing_actor": bool(old_cache.get((array_id, int(idx), 0)))
+                                            },
+                                            "timestamp": int(__import__('time').time() * 1000)
+                                        }) + "\n")
+                                    # #endregion
                                     # Füge Task hinzu (aber mit needs_rebuild=False, da Geometrien bereits vorhanden)
                                     speaker_tasks.append({
                                         'array_id': array_id,  # 🎯 FIX: array_id ist jetzt speaker_array.id (die "alte" Erkennung)
@@ -1059,6 +1123,9 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     total_speakers += len(array_speaker_tasks)
             else:
                 # Beim ersten Laden (old_cache leer) - verarbeite alle Speaker
+                # 🎯 FIX: Überspringe, wenn Array bereits aus Cache geladen wurde
+                if array_can_be_skipped:
+                    continue
                 for idx in valid_indices:
                     total_speakers += 1
                     x = xs[idx]
@@ -1404,12 +1471,45 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         for array_id, geometries_dict in flown_array_geometries.items():
             if geometries_dict:
                 array_pos = flown_array_positions.get(array_id, (0.0, 0.0, 0.0))
-                # Speichere im Array-Cache (tiefe Kopie für Cache)
-                self._array_geometry_cache[array_id] = {
-                    'geometries': {idx: [(mesh.copy(deep=True), exit_idx) for mesh, exit_idx in geoms]
-                                  for idx, geoms in geometries_dict.items()},
-                    'array_pos': array_pos
-                }
+                # 🎯 FIX: Speichere im Array-Cache nur, wenn sich nur der hide-Status geändert hat
+                # Wenn sich Geometrieparameter geändert haben, soll der Cache nicht gespeichert werden
+                # Prüfe, ob sich nur der hide-Status geändert hat (durch Signatur-Vergleichung)
+                should_cache = False
+                # Hole speaker_array für Signatur-Vergleichung
+                speaker_array_for_sig = None
+                for task in speaker_tasks:
+                    if task.get('array_id') == array_id and 'speaker_array' in task:
+                        speaker_array_for_sig = task['speaker_array']
+                        break
+                if speaker_array_for_sig is None:
+                    # Fallback: Suche in speaker_arrays
+                    for arr_name, arr in speaker_arrays.items():
+                        if getattr(arr, 'id', None) == array_id or str(getattr(arr, 'id', None)) == str(array_id):
+                            speaker_array_for_sig = arr
+                            break
+                
+                if speaker_array_for_sig and array_id in self._array_signature_cache:
+                    current_signature = self._create_array_signature(
+                        speaker_array_for_sig, array_id, array_pos[0], array_pos[1], array_pos[2], cabinet_lookup
+                    )
+                    cached_signature = self._array_signature_cache.get(array_id)
+                    # Wenn Signaturen übereinstimmen, bedeutet das, dass sich nur der hide-Status geändert hat
+                    if cached_signature == current_signature:
+                        should_cache = True
+                
+                # Speichere im Array-Cache nur, wenn sich nur der hide-Status geändert hat
+                if should_cache:
+                    self._array_geometry_cache[array_id] = {
+                        'geometries': {idx: [(mesh.copy(deep=True), exit_idx) for mesh, exit_idx in geoms]
+                                      for idx, geoms in geometries_dict.items()},
+                        'array_pos': array_pos
+                    }
+                else:
+                    # 🎯 FIX: Lösche Cache, wenn sich Geometrieparameter geändert haben
+                    if array_id in self._array_geometry_cache:
+                        del self._array_geometry_cache[array_id]
+                    if array_id in self._array_signature_cache:
+                        del self._array_signature_cache[array_id]
                 # #region agent log
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     import json
@@ -1450,7 +1550,9 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     array_signature = self._create_array_signature(
                         speaker_array, array_id, array_pos[0], array_pos[1], array_pos[2], cabinet_lookup
                     )
-                    self._array_signature_cache[array_id] = array_signature
+                    # 🎯 FIX: Speichere Array-Signatur nur, wenn Cache verwendet werden soll
+                    if should_cache:
+                        self._array_signature_cache[array_id] = array_signature
 
         # 🚀 OPTIMIERUNG: Speichere Stack-Gruppen im Stack-Cache nach Berechnung
         # Sammle alle Stack-Gruppen-Geometrien
@@ -1687,9 +1789,51 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
             if 'cached_geometries' in task:
                 # Geometrien bereits aus Array-Cache geladen
                 geometries = task['cached_geometries']
+                # #region agent log
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1",
+                        "location": "PlotSPL3DSpeaker.py:draw_speakers:using_cached_geometries",
+                        "message": "Using cached geometries from array cache",
+                        "data": {
+                            "array_id": str(array_id),
+                            "idx": int(idx),
+                            "x": float(x),
+                            "y": float(y),
+                            "z": float(z),
+                            "has_geometries": bool(geometries)
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }) + "\n")
+                # #endregion
             else:
                 # Hole aus geometries_results (parallel berechnet oder aus Cache transformiert)
                 geometries = geometries_results.get(task['geometry_param_key'])
+                # #region agent log
+                if idx == 0:  # Nur für idx 0 loggen
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H1",
+                            "location": "PlotSPL3DSpeaker.py:draw_speakers:using_geometries_results",
+                            "message": "Using geometries from results (idx 0)",
+                            "data": {
+                                "array_id": str(array_id),
+                                "idx": int(idx),
+                                "x": float(x),
+                                "y": float(y),
+                                "z": float(z),
+                                "has_geometries": bool(geometries),
+                                "has_cached_geometries": bool('cached_geometries' in task)
+                            },
+                            "timestamp": int(__import__('time').time() * 1000)
+                        }) + "\n")
+                # #endregion
 
             if not task['needs_rebuild'] and task['existing_actor']:
                 # 🚀 OPTIMIERUNG 2: Speaker existiert bereits - nur Highlight aktualisieren
@@ -2634,7 +2778,19 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
     def _create_array_signature(self, speaker_array, array_id: str,
                                 array_pos_x: float, array_pos_y: float, array_pos_z: float,
                                 cabinet_lookup: Dict) -> tuple:
-        """Erstellt eine Signatur für ein Flown-Array (Array-Level Cache)."""
+        """Erstellt eine Signatur für ein Flown-Array (Array-Level Cache).
+        
+        Diese Signatur wird verwendet, um zu prüfen, ob alle Speaker-Geometrien eines Flown-Arrays
+        aus dem Cache geladen werden können (ohne Neuberechnung). Wenn sich die Signatur ändert,
+        müssen die Geometrien neu berechnet werden.
+        
+        Die Signatur enthält alle Parameter, die die Geometrie beeinflussen:
+        - Array-Positionen (array_pos_x/y/z)
+        - Azimuth (source_azimuth)
+        - Site (source_site) - Position entlang der Kurve
+        - Angle (source_angle) - Zwischenwinkel
+        - Speaker-Namen und Cabinet-Hashes
+        """
         params: List[Any] = [
             round(float(array_pos_x), 4),
             round(float(array_pos_y), 4),
@@ -2643,6 +2799,14 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
 
         azimuth = self._array_value(getattr(speaker_array, 'source_azimuth', None), 0)
         params.append(round(float(azimuth), 4) if azimuth is not None else 0.0)
+        
+        # 🎯 FIX: source_site und source_angle zur Array-Signatur hinzufügen
+        # Diese Parameter beeinflussen die Geometrie und müssen daher in der Signatur enthalten sein
+        site = self._array_value(getattr(speaker_array, 'source_site', None), 0)
+        params.append(round(float(site), 4) if site is not None else 0.0)
+        
+        angle = self._array_value(getattr(speaker_array, 'source_angle', None), 0)
+        params.append(round(float(angle), 4) if angle is not None else 0.0)
 
         speaker_names: List[str] = []
         for idx in range(getattr(speaker_array, 'number_of_sources', 0)):

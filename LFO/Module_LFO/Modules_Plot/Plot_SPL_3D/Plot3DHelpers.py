@@ -347,6 +347,9 @@ class SPL3DHelpers:
                 
                 azimuth = _to_tuple(getattr(array, 'source_azimuth', None))
                 angles = _to_tuple(getattr(array, 'source_angle', None))
+                # 🎯 FIX: source_site für Flown-Arrays zur Signatur hinzufügen
+                # (wird für Flown-Arrays verwendet, um die Position entlang der Kurve zu bestimmen)
+                site = _to_tuple(getattr(array, 'source_site', None)) if configuration == 'flown' else None
                 polar_pattern = _to_str_tuple(getattr(array, 'source_polar_pattern', None))
                 source_types = _to_str_tuple(getattr(array, 'source_type', None))
                 
@@ -355,10 +358,36 @@ class SPL3DHelpers:
                     tuple(ys) if ys else tuple(),
                     tuple(zs_stack) if zs_stack is not None else tuple(),
                     tuple(zs_flown) if zs_flown is not None else tuple(),
-                    tuple(azimuth) if azimuth else tuple(),
+                    tuple(azimuth) if azimuth else tuple(),  # Index 4 in sources tuple
                     tuple(angles) if angles else tuple(),
+                    tuple(site) if site is not None else tuple(),  # 🎯 FIX: source_site zur Signatur hinzufügen
                     (round(float(array_pos_x), 4), round(float(array_pos_y), 4), round(float(array_pos_z), 4)),
                 )
+                # #region agent log - Debug Azimuth in signature
+                try:
+                    import json
+                    import time as time_module
+                    azimuth_preview = list(azimuth)[:5] if azimuth and len(azimuth) > 0 else []
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "AZIMUTH_SIG",
+                            "location": "Plot3DHelpers.py:_compute_overlay_signatures:azimuth_in_signature",
+                            "message": "Azimuth included in signature",
+                            "data": {
+                                "array_id": array_id_str,
+                                "configuration": configuration,
+                                "azimuth_preview": azimuth_preview,
+                                "azimuth_length": len(azimuth) if azimuth else 0,
+                                "sources_length": len(sources),
+                                "sources_structure": "xs, ys, zs_stack, zs_flown, azimuth[4], angles, site, array_pos"
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 speakers_signature.append(
                     (
                         array_id_str,  # 🎯 FIX: Verwende array.id (die "alte" Erkennung) statt name

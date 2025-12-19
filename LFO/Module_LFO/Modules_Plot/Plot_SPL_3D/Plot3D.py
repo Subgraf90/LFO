@@ -570,6 +570,38 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            import traceback
+            stack_trace = ''.join(traceback.format_stack()[-5:-1])  # Letzte 4 Stack-Frames
+            current_time = int(time_module.time() * 1000)
+            if not hasattr(self, '_last_update_overlays_time'):
+                self._last_update_overlays_time = {}
+            last_time = self._last_update_overlays_time.get('time', 0)
+            time_diff = current_time - last_time
+            self._last_update_overlays_time['time'] = current_time
+            self._last_update_overlays_time['count'] = self._last_update_overlays_time.get('count', 0) + 1
+            
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "MULTIPLE_UPDATE",
+                    "location": "Plot3D.py:update_overlays:entry",
+                    "message": "update_overlays called - tracking call source and timing",
+                    "data": {
+                        "stack_trace": stack_trace,
+                        "time_since_last_call_ms": time_diff,
+                        "call_count": self._last_update_overlays_time.get('count', 0),
+                        "is_rapid_call": time_diff < 100
+                    },
+                    "timestamp": current_time
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         t_start = time.perf_counter()
         
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
@@ -772,6 +804,40 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                                 curr_hide = bool(curr_sig[2])
                                 if prev_hide != curr_hide:
                                     hide_status_changed = True
+                            
+                            # #region agent log - Debug Azimuth-Änderungen
+                            try:
+                                import json
+                                import time as time_module
+                                # Extrahiere Azimuth-Werte aus den Signaturen für Vergleich
+                                prev_azimuth = None
+                                curr_azimuth = None
+                                if len(prev_sig) >= 4 and isinstance(prev_sig[3], (list, tuple)) and len(prev_sig[3]) >= 5:
+                                    prev_azimuth = prev_sig[3][4]  # sources[4] = azimuth tuple
+                                if len(curr_sig) >= 4 and isinstance(curr_sig[3], (list, tuple)) and len(curr_sig[3]) >= 5:
+                                    curr_azimuth = curr_sig[3][4]  # sources[4] = azimuth tuple
+                                
+                                if prev_azimuth != curr_azimuth:
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "AZIMUTH_DEBUG",
+                                            "location": "Plot3D.py:update_overlays:azimuth_comparison",
+                                            "message": "Azimuth changed detected in signature comparison",
+                                            "data": {
+                                                "array_name": str(array_name),
+                                                "prev_azimuth": list(prev_azimuth)[:5] if isinstance(prev_azimuth, (list, tuple)) else None,
+                                                "curr_azimuth": list(curr_azimuth)[:5] if isinstance(curr_azimuth, (list, tuple)) else None,
+                                                "prev_azimuth_length": len(prev_azimuth) if isinstance(prev_azimuth, (list, tuple)) else None,
+                                                "curr_azimuth_length": len(curr_azimuth) if isinstance(curr_azimuth, (list, tuple)) else None,
+                                                "azimuth_changed": True
+                                            },
+                                            "timestamp": int(time_module.time() * 1000)
+                                        }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
                     if hide_status_changed:
                         # 🎯 FIX: Speichere betroffene Array-IDs in overlay_speakers, damit draw_speakers() darauf zugreifen kann
                         if hasattr(self, 'overlay_speakers'):
@@ -949,6 +1015,40 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         
         if 'speakers' in categories_to_refresh:
             with perf_section("PlotSPL3D.update_overlays.draw_speakers"):
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    affected_array_ids = getattr(self.overlay_speakers, '_affected_array_ids_for_speakers', None)
+                    # Prüfe, ob dies ein wiederholter Aufruf ist (innerhalb kurzer Zeit)
+                    current_time = int(time_module.time() * 1000)
+                    if not hasattr(self, '_last_draw_speakers_time'):
+                        self._last_draw_speakers_time = {}
+                    last_time = self._last_draw_speakers_time.get('time', 0)
+                    time_diff = current_time - last_time
+                    self._last_draw_speakers_time['time'] = current_time
+                    self._last_draw_speakers_time['count'] = self._last_draw_speakers_time.get('count', 0) + 1
+                    
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "MULTIPLE_PLOT",
+                            "location": "Plot3D.py:update_overlays:draw_speakers",
+                            "message": "About to draw_speakers - checking for multiple plot calls",
+                            "data": {
+                                "affected_array_ids": list(affected_array_ids) if affected_array_ids else None,
+                                "categories_to_refresh": list(categories_to_refresh),
+                                "speakers_in_refresh": 'speakers' in categories_to_refresh,
+                                "time_since_last_call_ms": time_diff,
+                                "call_count": self._last_draw_speakers_time.get('count', 0),
+                                "is_rapid_call": time_diff < 100  # Weniger als 100ms seit letztem Aufruf
+                            },
+                            "timestamp": current_time
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 with perf_section("PlotSPL3D.update_overlays.build_cabinet_lookup"):
                     cabinet_lookup = self.overlay_speakers.build_cabinet_lookup(container)
                 self.overlay_speakers.draw_speakers(settings, container, cabinet_lookup)

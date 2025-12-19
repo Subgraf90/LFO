@@ -623,7 +623,9 @@ class MainWindow(QtWidgets.QMainWindow):
                             except Exception:
                                 pass
                             # #endregion
-                            sources_instance.update_speaker_overlays()
+                            # 🎯 FIX: update_speaker_overlays() wurde entfernt, da es jetzt in den Handlern aufgerufen wird
+                            # Dies verhindert doppelte Aufrufe von update_overlays()
+                            # sources_instance.update_speaker_overlays()
                         except Exception:
                             # Overlay-Update darf die Hauptberechnungen nicht blockieren
                             pass
