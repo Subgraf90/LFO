@@ -3889,6 +3889,11 @@ class Sources(ModuleBase, QObject):
                 pass
         # #endregion
         
+        # 🎯 FIX: update_speaker_overlays() aufrufen, damit der Plot aktualisiert wird
+        # Die Signatur-Vergleichung in update_overlays() erkennt die Hide-Status-Änderung
+        # und zeichnet nur die betroffenen Arrays neu
+        self.update_speaker_overlays()
+        
         # 🎯 FIX: Leere den Speaker-Cache für dieses Array, wenn hide=True gesetzt wird
         # Das ist notwendig, damit bei Unhide die Speaker neu aufgebaut werden müssen
         if hide_value and hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
@@ -4021,6 +4026,12 @@ class Sources(ModuleBase, QObject):
                 "timestamp": int(time_module.time() * 1000)
             }) + "\n")
         # #endregion
+        
+        # 🎯 FIX: update_speaker_overlays() aufrufen, damit der Plot aktualisiert wird
+        # Die Signatur-Vergleichung in update_overlays() erkennt die Hide-Status-Änderung
+        # und zeichnet nur die betroffenen Arrays neu
+        self.update_speaker_overlays()
+        
         # 🎯 FIX: Erzwinge Neuberechnung der Positionen, indem der Hash gelöscht wird
         # Das stellt sicher, dass calculate_stack_center() aufgerufen wird und die Gehäusegröße berücksichtigt
         if array_id is not None and hasattr(self.main_window, 'calculation_handler'):
@@ -4260,9 +4271,18 @@ class Sources(ModuleBase, QObject):
         if hasattr(speaker_array, 'configuration') and speaker_array.configuration.lower() != "stack":
             self.update_angle_combobox(speaker_array_id, source_index)
         
-        # Zentrale Aktualisierung aller Berechnungen und Plots
-        # (inkl. Overlays) immer über Main.update_speaker_array_calculations
-        self.main_window.update_speaker_array_calculations()
+        # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+        # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+        if hasattr(self.main_window, 'speaker_position_calculator'):
+            self.main_window.speaker_position_calculator(speaker_array)
+        
+        # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+        # damit die Positionen korrekt sind, bevor geplottet wird
+        self.update_speaker_overlays()
+        
+        # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+        if self.is_autocalc_active():
+            self.main_window.update_speaker_array_calculations()
 
     def on_speakerspecs_item_text_changed(self, item, column):
         try:
@@ -4467,8 +4487,37 @@ class Sources(ModuleBase, QObject):
                         speaker_array.source_position_z_flown = np.full(
                             speaker_array.number_of_sources, base_top, dtype=float
                         )
+                        
+                        # 🎯 FIX: Bei Flown-Arrays: Cache löschen, speaker_position_calculator aufrufen, dann plot aktualisieren
+                        array_id = getattr(speaker_array, 'id', selected_speaker_array_id)
+                        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                            if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                                self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+                        
+                        # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen
+                        if hasattr(self.main_window, 'speaker_position_calculator'):
+                            self.main_window.speaker_position_calculator(speaker_array)
+                        
+                        # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen
+                        self.update_speaker_overlays()
                     
-                    self.main_window.update_speaker_array_calculations()     
+                    # Für Stack-Arrays: Auch speaker_position_calculator und update_speaker_overlays aufrufen
+                    else:
+                        array_id = getattr(speaker_array, 'id', selected_speaker_array_id)
+                        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                            if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                                self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+                        
+                        # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen
+                        if hasattr(self.main_window, 'speaker_position_calculator'):
+                            self.main_window.speaker_position_calculator(speaker_array)
+                        
+                        # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen
+                        self.update_speaker_overlays()
+                    
+                    # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+                    if self.is_autocalc_active():
+                        self.main_window.update_speaker_array_calculations()     
                 
                     speakerspecs_instance = self.get_speakerspecs_instance(selected_speaker_array_id)
                     if speakerspecs_instance:
@@ -4578,9 +4627,17 @@ class Sources(ModuleBase, QObject):
             self.array_length_edit.setText(f"{source_length:.2f}")
             self.array_length_edit.blockSignals(False)
             
-            # Zentrale Aktualisierung aller Berechnungen und Plots
-            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen
+            # (für Stack-Arrays: bei Änderung einzelner Quellen-Positionen)
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
             self.update_delay_input_fields(speaker_array_id)
             
@@ -4629,9 +4686,17 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
 
-            # Zentrale Aktualisierung aller Berechnungen und Plots
-            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen
+            # (für Stack-Arrays: bei Änderung einzelner Quellen-Positionen)
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
             self.update_delay_input_fields(speaker_array_id)
             
@@ -4689,9 +4754,17 @@ class Sources(ModuleBase, QObject):
             if instance and instance['state']:
                 self.apply_symmetric_values(instance)
             
-            # Zentrale Aktualisierung aller Berechnungen und Plots
-            # (inkl. Overlays) immer über Main.update_speaker_array_calculations
-            self.main_window.update_speaker_array_calculations()
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen
+            # (für Stack-Arrays: bei Änderung einzelner Quellen-Positionen)
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
             self.update_delay_input_fields(speaker_array_id)
 
@@ -4744,7 +4817,35 @@ class Sources(ModuleBase, QObject):
 
                 self.update_input_fields(self.get_speakerspecs_instance(speaker_array_id))
                 
-                # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+                # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+                # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "STACK_AZI_DEBUG",
+                            "location": "UiSourceManagement.py:on_stack_azimuth_changed:before_speaker_pos_calc",
+                            "message": "About to call speaker_position_calculator for Stack Array azimuth change",
+                            "data": {
+                                "array_id": str(speaker_array_id),
+                                "source_index": int(source_index),
+                                "new_azimuth": float(value),
+                                "has_speaker_position_calculator": hasattr(self.main_window, 'speaker_position_calculator')
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                if hasattr(self.main_window, 'speaker_position_calculator'):
+                    self.main_window.speaker_position_calculator(speaker_array)
+                
+                # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+                # damit die Positionen korrekt sind, bevor geplottet wird
                 # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
                 # und zeichnet nur die betroffenen Arrays neu
                 self.update_speaker_overlays()
@@ -5178,8 +5279,34 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "STACK_POS_DEBUG",
+                        "location": "UiSourceManagement.py:on_ArrayX_changed:before_speaker_pos_calc",
+                        "message": "About to call speaker_position_calculator for Stack Array X position change",
+                        "data": {
+                            "array_id": str(array_id),
+                            "new_array_pos_x": float(value),
+                            "has_speaker_position_calculator": hasattr(self.main_window, 'speaker_position_calculator')
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
             
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5258,7 +5385,34 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "STACK_POS_DEBUG",
+                        "location": "UiSourceManagement.py:on_ArrayY_changed:before_speaker_pos_calc",
+                        "message": "About to call speaker_position_calculator for Stack Array Y position change",
+                        "data": {
+                            "array_id": str(array_id),
+                            "new_array_pos_y": float(value),
+                            "has_speaker_position_calculator": hasattr(self.main_window, 'speaker_position_calculator')
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5337,7 +5491,34 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "STACK_POS_DEBUG",
+                        "location": "UiSourceManagement.py:on_ArrayZ_changed:before_speaker_pos_calc",
+                        "message": "About to call speaker_position_calculator for Stack Array Z position change",
+                        "data": {
+                            "array_id": str(array_id),
+                            "new_array_pos_z": float(value),
+                            "has_speaker_position_calculator": hasattr(self.main_window, 'speaker_position_calculator')
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5529,30 +5710,13 @@ class Sources(ModuleBase, QObject):
             # Setze den X-Wert für alle Quellen im Array
             speaker_array.source_position_x = np.full(speaker_array.number_of_sources, new_x, dtype=float)
             
-            # #region agent log
-            try:
-                import json
-                import time as time_module
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H1",
-                        "location": "UiSourceManagement.py:on_flown_x_position_changed:before_update",
-                        "message": "Flown X position changed - before updates",
-                        "data": {
-                            "array_id": str(selected_array_id),
-                            "new_x": float(new_x),
-                            "will_call_update_speaker_overlays": False,
-                            "will_call_update_speaker_array_calculations": True
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-                
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5626,8 +5790,14 @@ class Sources(ModuleBase, QObject):
             
             # Setze den Y-Wert für alle Quellen im Array
             speaker_array.source_position_y = np.full(speaker_array.number_of_sources, new_y, dtype=float)
-                
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5684,8 +5854,14 @@ class Sources(ModuleBase, QObject):
             speaker_array.source_position_z_flown = np.full(
                 speaker_array.number_of_sources, new_z, dtype=float
             )
-                
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5753,7 +5929,56 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # (speaker_position_calculator wird normalerweise in update_speaker_array_calculations() aufgerufen,
+            # aber für das Plotting müssen die Positionen bereits korrekt sein)
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "SITE_POS_CALC",
+                        "location": "UiSourceManagement.py:on_flown_site_changed:before_speaker_pos_calc",
+                        "message": "About to call speaker_position_calculator for site change",
+                        "data": {
+                            "array_id": str(array_id),
+                            "new_site": float(new_site),
+                            "has_speaker_position_calculator": hasattr(self.main_window, 'speaker_position_calculator')
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "SITE_POS_CALC",
+                        "location": "UiSourceManagement.py:on_flown_site_changed:after_speaker_pos_calc",
+                        "message": "After calling speaker_position_calculator for site change",
+                        "data": {
+                            "array_id": str(array_id),
+                            "new_site": float(new_site)
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # und zeichnet nur die betroffenen Arrays neu
             self.update_speaker_overlays()
@@ -5811,9 +6036,13 @@ class Sources(ModuleBase, QObject):
                 if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
                     self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
-            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
-            # und zeichnet nur die betroffenen Arrays neu
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
@@ -5882,7 +6111,13 @@ class Sources(ModuleBase, QObject):
                         # #endregion
                         self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
             
-            # 🎯 FIX: update_speaker_overlays() IMMER zuerst aufrufen (vor der Prüfung für calc)
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
             # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
             # Bei Flown-Arrays: Bei Änderung von site/azi/achsen/zwischenwinkel soll das gesamte Array neu geplottet werden
             self.update_speaker_overlays()
@@ -7062,6 +7297,12 @@ class Sources(ModuleBase, QObject):
         except Exception:
             pass
         # #endregion
+        
+        # 🎯 FIX: update_speaker_overlays() aufrufen, damit der Plot aktualisiert wird
+        # Die Signatur-Vergleichung in update_overlays() erkennt die Hide-Status-Änderung
+        # und zeichnet nur die betroffenen Arrays neu
+        self.update_speaker_overlays()
+        
         self.main_window.update_speaker_array_calculations()
 
     def change_array_color(self, item, update_calculations=True):
@@ -7462,10 +7703,85 @@ class Sources(ModuleBase, QObject):
                     speaker_array.source_angle.extend([None] * (speaker_array.number_of_sources - len(speaker_array.source_angle)))
             
             # Setze den neuen Winkel
-            speaker_array.source_angle[source_index] = angle_text
+            # Konvertiere angle_text zu float, falls es ein String ist
+            try:
+                new_angle = float(angle_text) if isinstance(angle_text, str) else angle_text
+            except (ValueError, TypeError):
+                new_angle = 0.0
             
-            # Aktualisiere die Berechnung
-            self.main_window.update_speaker_array_calculations()
+            speaker_array.source_angle[source_index] = new_angle
+            
+            # 🎯 FIX: Bei Flown-Arrays: Bei Änderung von Zwischenwinkel (source_angle) muss das gesamte Array neu erstellt werden
+            # Cache löschen und neu aufbauen, damit alle Komponenten neu gerechnet werden
+            configuration = getattr(speaker_array, 'configuration', '').lower()
+            if configuration == 'flown':
+                array_id_str = getattr(speaker_array, 'id', array_id)
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "ANGLE_CHANGED_FLOWN",
+                                    "location": "UiSourceManagement.py:on_angle_changed:before_cache_clear",
+                                    "message": "Flown array angle changed (from combo) - clearing cache for entire array",
+                                    "data": {
+                                        "array_id": str(array_id_str),
+                                        "source_index": int(source_index),
+                                        "new_angle": float(new_angle),
+                                        "angle_text": str(angle_text),
+                                        "configuration": configuration
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id_str)
+            
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "ANGLE_CHANGED_DEBUG",
+                        "location": "UiSourceManagement.py:on_angle_changed:before_speaker_pos_calc",
+                        "message": "About to call speaker_position_calculator for angle change (from combo)",
+                        "data": {
+                            "array_id": str(array_id),
+                            "source_index": int(source_index),
+                            "new_angle": float(new_angle),
+                            "configuration": configuration,
+                            "has_speaker_position_calculator": hasattr(self.main_window, 'speaker_position_calculator')
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # Bei Flown-Arrays: Bei Änderung von site/azi/achsen/zwischenwinkel soll das gesamte Array neu geplottet werden
+            self.update_speaker_overlays()
+            
+            # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            if self.is_autocalc_active():
+                self.main_window.update_speaker_array_calculations()
             
         except Exception as e:
             print(f"Fehler beim Ändern des Winkels: {str(e)}")

@@ -114,6 +114,39 @@ class CalculationHandler:
         array_id = speaker_array.id
         current_hash = self.get_physical_params_hash(speaker_array)
         
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            has_old_hash = array_id in self._speaker_position_hashes
+            old_hash = self._speaker_position_hashes.get(array_id, None)
+            hash_changed = has_old_hash and old_hash != current_hash
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "POS_CALC_LOGIC",
+                    "location": "CalculationHandler.py:should_recalculate_speaker_positions",
+                    "message": "Checking if speaker positions need recalculation",
+                    "data": {
+                        "array_id": str(array_id),
+                        "has_old_hash": bool(has_old_hash),
+                        "hash_changed": bool(hash_changed),
+                        "old_hash_preview": str(old_hash[:16]) + "..." if old_hash else None,
+                        "current_hash_preview": str(current_hash[:16]) + "...",
+                        "will_recalculate": not has_old_hash or hash_changed,
+                        "source_site_first": float(speaker_array.source_site[0]) if hasattr(speaker_array, 'source_site') and len(speaker_array.source_site) > 0 else None,
+                        "source_azimuth_first": float(speaker_array.source_azimuth[0]) if hasattr(speaker_array, 'source_azimuth') and len(speaker_array.source_azimuth) > 0 else None,
+                        "array_pos_x": float(getattr(speaker_array, 'array_position_x', 0.0)),
+                        "array_pos_y": float(getattr(speaker_array, 'array_position_y', 0.0)),
+                        "array_pos_z": float(getattr(speaker_array, 'array_position_z', 0.0))
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # Wenn kein gespeicherter Hash existiert, muss berechnet werden
         if array_id not in self._speaker_position_hashes:
             self._speaker_position_hashes[array_id] = current_hash

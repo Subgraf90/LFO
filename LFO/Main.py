@@ -440,13 +440,52 @@ class MainWindow(QtWidgets.QMainWindow):
                 "message": "should_recalculate_speaker_positions result",
                 "data": {
                     "array_id": array_id,
-                    "should_recalculate": bool(should_recalc)
+                    "should_recalculate": bool(should_recalc),
+                    "source_site_first": float(speaker_array.source_site[0]) if hasattr(speaker_array, 'source_site') and len(speaker_array.source_site) > 0 else None,
+                    "source_azimuth_first": float(speaker_array.source_azimuth[0]) if hasattr(speaker_array, 'source_azimuth') and len(speaker_array.source_azimuth) > 0 else None
                 },
                 "timestamp": int(time_module.time() * 1000)
             }) + "\n")
         # #endregion
         if not should_recalc:
+            # #region agent log
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "POS_CALC_LOGIC",
+                    "location": "Main.py:speaker_position_calculator:skip",
+                    "message": "Skipping speaker_position_calculator - using cached positions",
+                    "data": {
+                        "array_id": array_id,
+                        "has_source_position_calc_x": hasattr(speaker_array, 'source_position_calc_x') and speaker_array.source_position_calc_x is not None,
+                        "has_source_position_calc_y": hasattr(speaker_array, 'source_position_calc_y') and speaker_array.source_position_calc_y is not None,
+                        "has_source_position_calc_z": hasattr(speaker_array, 'source_position_calc_z') and speaker_array.source_position_calc_z is not None,
+                        "source_position_calc_x_first": float(speaker_array.source_position_calc_x[0]) if hasattr(speaker_array, 'source_position_calc_x') and len(speaker_array.source_position_calc_x) > 0 else None,
+                        "source_position_calc_y_first": float(speaker_array.source_position_calc_y[0]) if hasattr(speaker_array, 'source_position_calc_y') and len(speaker_array.source_position_calc_y) > 0 else None,
+                        "source_position_calc_z_first": float(speaker_array.source_position_calc_z[0]) if hasattr(speaker_array, 'source_position_calc_z') and len(speaker_array.source_position_calc_z) > 0 else None
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+            # #endregion
             return
+        
+        # #region agent log
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "POS_CALC_LOGIC",
+                "location": "Main.py:speaker_position_calculator:before_calc",
+                "message": "About to calculate speaker positions - geometry changed",
+                "data": {
+                    "array_id": array_id,
+                    "source_site_first": float(speaker_array.source_site[0]) if hasattr(speaker_array, 'source_site') and len(speaker_array.source_site) > 0 else None,
+                    "source_azimuth_first": float(speaker_array.source_azimuth[0]) if hasattr(speaker_array, 'source_azimuth') and len(speaker_array.source_azimuth) > 0 else None
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
         
         speaker_position_calculator = SpeakerPositionCalculator(self.container)
         speaker_position_calculator.calculate_stack_center(speaker_array)
@@ -455,14 +494,17 @@ class MainWindow(QtWidgets.QMainWindow):
             f.write(json.dumps({
                 "sessionId": "debug-session",
                 "runId": "run1",
-                "hypothesisId": "H6",
-                "location": "Main.py:speaker_position_calculator:414",
-                "message": "calculate_stack_center completed",
+                "hypothesisId": "POS_CALC_LOGIC",
+                "location": "Main.py:speaker_position_calculator:after_calc",
+                "message": "calculate_stack_center completed - positions saved",
                 "data": {
                     "array_id": array_id,
                     "source_position_calc_x_first": float(speaker_array.source_position_calc_x[0]) if hasattr(speaker_array, 'source_position_calc_x') and len(speaker_array.source_position_calc_x) > 0 else None,
                     "source_position_calc_y_first": float(speaker_array.source_position_calc_y[0]) if hasattr(speaker_array, 'source_position_calc_y') and len(speaker_array.source_position_calc_y) > 0 else None,
-                    "source_position_calc_z_first": float(speaker_array.source_position_calc_z[0]) if hasattr(speaker_array, 'source_position_calc_z') and len(speaker_array.source_position_calc_z) > 0 else None
+                    "source_position_calc_z_first": float(speaker_array.source_position_calc_z[0]) if hasattr(speaker_array, 'source_position_calc_z') and len(speaker_array.source_position_calc_z) > 0 else None,
+                    "calc_x_length": len(speaker_array.source_position_calc_x) if hasattr(speaker_array, 'source_position_calc_x') else 0,
+                    "calc_y_length": len(speaker_array.source_position_calc_y) if hasattr(speaker_array, 'source_position_calc_y') else 0,
+                    "calc_z_length": len(speaker_array.source_position_calc_z) if hasattr(speaker_array, 'source_position_calc_z') else 0
                 },
                 "timestamp": int(time_module.time() * 1000)
             }) + "\n")
@@ -655,6 +697,31 @@ class MainWindow(QtWidgets.QMainWindow):
                     # Plots werden aktualisiert, wenn SPL, Polar oder Impulse berechnet werden
                     should_update_plots = update_soundfield or update_polarplot or update_impulse
 
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "POS_CALC_LOGIC",
+                                "location": "Main.py:update_speaker_array_calculations:before_tasks",
+                                "message": "About to execute tasks including speaker_position_calculator",
+                                "data": {
+                                    "speaker_array_id": speaker_array_id,
+                                    "has_speaker_array": speaker_array is not None,
+                                    "will_call_speaker_position_calculator": True,
+                                    "update_soundfield": bool(update_soundfield),
+                                    "update_polarplot": bool(update_polarplot),
+                                    "update_impulse": bool(update_impulse)
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
                     tasks = [
                         ("Updating speaker positions", lambda: self.speaker_position_calculator(speaker_array)),
                         ("Calculating beam steering", lambda up=should_update_plots: self.beamsteering_calculator(speaker_array, speaker_array_id, update_plot=up)),

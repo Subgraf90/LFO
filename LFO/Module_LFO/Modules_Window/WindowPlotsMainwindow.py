@@ -767,9 +767,10 @@ class DrawPlotsMainwindow(ModuleBase):
             sound_field_values,
             self.settings.colorization_mode,
         )
-        # 🎯 WICHTIG: update_overlays NACH update_spl_plot aufrufen, damit draw_surfaces
-        # die Textur-Actors findet und die graue Fläche entfernt
-        draw_spl_plotter.update_overlays(self.settings, self.container)
+        # 🎯 FIX: update_overlays() wurde entfernt, da es bereits von den UI-Handlern aufgerufen wird
+        # (z.B. on_flown_site_changed() ruft update_speaker_overlays() auf)
+        # Dies verhindert doppeltes Plotten mit falschen Positionen
+        # draw_spl_plotter.update_overlays(self.settings, self.container)
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
         # damit der Fader nicht von initialize_empty_scene() versteckt wird

@@ -947,6 +947,35 @@ class SoundFieldCalculator(ModuleBase):
                 'source_position_calc_z',
                 getattr(speaker_array, 'source_position_z', None),
             )
+            
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                using_calc_x = hasattr(speaker_array, 'source_position_calc_x') and speaker_array.source_position_calc_x is not None
+                using_calc_y = hasattr(speaker_array, 'source_position_calc_y') and speaker_array.source_position_calc_y is not None
+                using_calc_z = hasattr(speaker_array, 'source_position_calc_z') and speaker_array.source_position_calc_z is not None
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "POS_CALC_LOGIC",
+                        "location": "SoundfieldCalculator.py:_calculate_sound_field_complex:using_positions",
+                        "message": "Using calculated positions for sound field calculation",
+                        "data": {
+                            "array_key": str(array_key),
+                            "using_calc_x": bool(using_calc_x),
+                            "using_calc_y": bool(using_calc_y),
+                            "using_calc_z": bool(using_calc_z),
+                            "source_position_x_first": float(source_position_x[0]) if source_position_x is not None and len(source_position_x) > 0 else None,
+                            "source_position_y_first": float(source_position_y[0]) if source_position_y is not None and len(source_position_y) > 0 else None,
+                            "source_position_z_first": float(source_position_z[0]) if source_position_z is not None and len(source_position_z) > 0 else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
         
             source_azimuth = np.deg2rad(speaker_array.source_azimuth)
