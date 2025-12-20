@@ -4851,12 +4851,13 @@ class Sources(ModuleBase, QObject):
                 self.update_speaker_overlays()
                 
                 # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-                # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-                # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+                # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+                # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+                # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
                 if self.is_autocalc_active():
                     # Zentrale Aktualisierung aller Berechnungen und Plots
                     # (inkl. Overlays) immer über Main.update_speaker_array_calculations
-                    self.main_window.update_speaker_array_calculations()
+                    self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=True)
 
             # Setze den gerundeten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.1f}")
@@ -5054,8 +5055,24 @@ class Sources(ModuleBase, QObject):
             beamsteering = BeamSteering(speaker_array, self.container.data, self.settings)
             beamsteering.calculate(selected_speaker_array_id)
             
+            # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
+            # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen
+            # Daher rufen wir es hier auf, damit die Positionen für das Plotting korrekt sind, und überspringen es dann in update_speaker_array_calculations()
+            speaker_pos_calc_called = False
+            if hasattr(self.main_window, 'speaker_position_calculator'):
+                self.main_window.speaker_position_calculator(speaker_array)
+                speaker_pos_calc_called = True
+            
+            # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
+            # damit die Positionen korrekt sind, bevor geplottet wird
+            # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
+            # und zeichnet nur die betroffenen Arrays neu
+            self.update_speaker_overlays()
+            
             # Aktualisiere die Berechnungen nur einmal am Ende
-            self.main_window.update_speaker_array_calculations()
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
+            self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=speaker_pos_calc_called)
             
             self.update_input_fields(speakerspecs_instance)
 
@@ -5314,8 +5331,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=True)
             
         except ValueError:
             if hasattr(self, 'main_window'):
@@ -5420,8 +5438,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=True)
             
         except ValueError:
             if hasattr(self, 'main_window'):
@@ -5526,8 +5545,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=True)
             
         except ValueError:
             if hasattr(self, 'main_window'):
@@ -5712,8 +5732,12 @@ class Sources(ModuleBase, QObject):
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen
+            # Daher rufen wir es hier auf, damit die Positionen für das Plotting korrekt sind, und überspringen es dann in update_speaker_array_calculations()
+            speaker_pos_calc_called = False
             if hasattr(self.main_window, 'speaker_position_calculator'):
                 self.main_window.speaker_position_calculator(speaker_array)
+                speaker_pos_calc_called = True
             
             # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
             # damit die Positionen korrekt sind, bevor geplottet wird
@@ -5724,8 +5748,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=speaker_pos_calc_called)
             
             # #region agent log
             try:
@@ -5793,8 +5818,12 @@ class Sources(ModuleBase, QObject):
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen
+            # Daher rufen wir es hier auf, damit die Positionen für das Plotting korrekt sind, und überspringen es dann in update_speaker_array_calculations()
+            speaker_pos_calc_called = False
             if hasattr(self.main_window, 'speaker_position_calculator'):
                 self.main_window.speaker_position_calculator(speaker_array)
+                speaker_pos_calc_called = True
             
             # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
             # damit die Positionen korrekt sind, bevor geplottet wird
@@ -5805,8 +5834,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=speaker_pos_calc_called)
             
             self.position_y_edit.setText(f"{new_y:.2f}")
             self.position_y_edit.blockSignals(False)
@@ -5857,8 +5887,12 @@ class Sources(ModuleBase, QObject):
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen
+            # Daher rufen wir es hier auf, damit die Positionen für das Plotting korrekt sind, und überspringen es dann in update_speaker_array_calculations()
+            speaker_pos_calc_called = False
             if hasattr(self.main_window, 'speaker_position_calculator'):
                 self.main_window.speaker_position_calculator(speaker_array)
+                speaker_pos_calc_called = True
             
             # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
             # damit die Positionen korrekt sind, bevor geplottet wird
@@ -5869,8 +5903,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=speaker_pos_calc_called)
             
             self.position_z_edit.setText(f"{new_z:.2f}")
             self.position_z_edit.blockSignals(False)
@@ -6038,8 +6073,12 @@ class Sources(ModuleBase, QObject):
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen
+            # Daher rufen wir es hier auf, damit die Positionen für das Plotting korrekt sind, und überspringen es dann in update_speaker_array_calculations()
+            speaker_pos_calc_called = False
             if hasattr(self.main_window, 'speaker_position_calculator'):
                 self.main_window.speaker_position_calculator(speaker_array)
+                speaker_pos_calc_called = True
             
             # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
             # damit die Positionen korrekt sind, bevor geplottet wird
@@ -6048,8 +6087,9 @@ class Sources(ModuleBase, QObject):
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
             # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
             # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=speaker_pos_calc_called)
             
             self.position_azimuth_edit.setText(f"{new_azimuth:.2f}")
             self.position_azimuth_edit.blockSignals(False)
@@ -6113,8 +6153,12 @@ class Sources(ModuleBase, QObject):
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
+            # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen
+            # Daher rufen wir es hier auf, damit die Positionen für das Plotting korrekt sind, und überspringen es dann in update_speaker_array_calculations()
+            speaker_pos_calc_called = False
             if hasattr(self.main_window, 'speaker_position_calculator'):
                 self.main_window.speaker_position_calculator(speaker_array)
+                speaker_pos_calc_called = True
             
             # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
             # damit die Positionen korrekt sind, bevor geplottet wird
@@ -6123,11 +6167,12 @@ class Sources(ModuleBase, QObject):
             self.update_speaker_overlays()
             
             # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
-            # (update_speaker_array_calculations() ruft auch update_speaker_overlays() auf,
-            # aber die Signatur-Vergleichung verhindert doppeltes Zeichnen)
+            # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
+            # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
+            # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
             if self.is_autocalc_active():
                 # Aktualisiere die Berechnung
-                self.main_window.update_speaker_array_calculations()
+                self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=speaker_pos_calc_called)
             
         except Exception as e:
             print(f"Fehler beim Ändern des Winkels: {str(e)}")

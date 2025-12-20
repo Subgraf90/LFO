@@ -201,10 +201,11 @@ class SpeakerPositionCalculator:
             if len(speaker_array.source_position_calc_x) == speaker_array.number_of_sources and \
                len(speaker_array.source_position_calc_y) == speaker_array.number_of_sources and \
                len(speaker_array.source_position_calc_z) == speaker_array.number_of_sources:
-                for i in range(speaker_array.number_of_sources):
-                    speaker_array.source_position_calc_x[i] += array_pos_x
-                    speaker_array.source_position_calc_y[i] += array_pos_y
-                    speaker_array.source_position_calc_z[i] += array_pos_z
+                # 🚀 OPTIMIERUNG: Vektorisierte Addition mit numpy (viel schneller als Loop)
+                import numpy as np
+                speaker_array.source_position_calc_x = (np.array(speaker_array.source_position_calc_x) + array_pos_x).tolist()
+                speaker_array.source_position_calc_y = (np.array(speaker_array.source_position_calc_y) + array_pos_y).tolist()
+                speaker_array.source_position_calc_z = (np.array(speaker_array.source_position_calc_z) + array_pos_z).tolist()
 
 
     def calculate_stack_z_center(self, speaker_array):
@@ -517,28 +518,37 @@ class SpeakerPositionCalculator:
             speaker_array.source_position_z_flown = [first_value] * speaker_array.number_of_sources
         
         # Berechne den Gesamtwinkel für jeden Lautsprecher
-        total_angles = [0.0] * speaker_array.number_of_sources
-        
         # Hole die Neigung des ersten Lautsprechers (source_site)
         first_site = 0.0
         if hasattr(speaker_array, 'source_site') and speaker_array.number_of_sources > 0:
             if len(speaker_array.source_site) > 0:
                 first_site = speaker_array.source_site[0]
         
-        # Für den ersten Lautsprecher ist der Gesamtwinkel gleich seiner Neigung (source_site)
-        total_angles[0] = first_site
-        
+        # 🚀 OPTIMIERUNG: Vektorisierte Berechnung mit numpy.cumsum (viel schneller als nested loops)
         # Für die restlichen Lautsprecher: Gesamtwinkel = Neigung des ersten Lautsprechers - Summe der Zwischenwinkel
         # Beachte: Wir subtrahieren die Winkel, da ein positiver source_angle bedeutet, dass der Lautsprecher stärker nach unten zeigt
-        for i in range(1, speaker_array.number_of_sources):
-            # Starte mit der Neigung des ersten Lautsprechers
-            total_angles[i] = first_site
+        import numpy as np
+        if hasattr(speaker_array, 'source_angle') and len(speaker_array.source_angle) > 0:
+            # Erstelle Array mit source_angle Werten
+            # source_angle beginnt bei Index 1 (Index 0 hat keinen Zwischenwinkel)
+            # Für Lautsprecher i: Summe der Winkel von Index 1 bis i
+            source_angles_array = np.zeros(speaker_array.number_of_sources)
+            max_angle_idx = min(len(speaker_array.source_angle), speaker_array.number_of_sources)
+            for j in range(1, max_angle_idx + 1):
+                if j < len(speaker_array.source_angle):
+                    source_angles_array[j] = speaker_array.source_angle[j]
             
-            # Subtrahiere die Zwischenwinkel zu den oberen Lautsprechern
-            if hasattr(speaker_array, 'source_angle'):
-                for j in range(1, i+1):  # Für alle Lautsprecher von 1 bis i
-                    if j < len(speaker_array.source_angle):
-                        total_angles[i] -= speaker_array.source_angle[j]
+            # Berechne kumulative Summe der Zwischenwinkel für jeden Lautsprecher
+            # cumulative_angles[i] = Summe von source_angles_array[1] bis source_angles_array[i]
+            cumulative_angles = np.cumsum(source_angles_array)
+            
+            # Setze total_angles = first_site - kumulative Summe
+            # Für Lautsprecher 0: total_angles[0] = first_site - 0 = first_site
+            # Für Lautsprecher i: total_angles[i] = first_site - Summe(source_angle[1] bis source_angle[i])
+            total_angles = (first_site - cumulative_angles).tolist()
+        else:
+            # Keine source_angle vorhanden - alle haben first_site
+            total_angles = [first_site] * speaker_array.number_of_sources
         
         # Importiere math für trigonometrische Funktionen
         import math

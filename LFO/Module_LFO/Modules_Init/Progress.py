@@ -148,30 +148,108 @@ class ProgressSession:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.finish()
+        # 🛡️ SICHERHEIT: Prüfe ob Dialog noch existiert, bevor finish aufgerufen wird
+        if self._dialog is not None:
+            self.finish()
 
     def _on_cancelled(self) -> None:
         self._cancelled = True
 
     def _process_events(self) -> None:
-        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents)
+        # 🛡️ SICHERHEIT: Prüfe ob Dialog noch existiert und gültig ist, bevor processEvents aufgerufen wird
+        # Vermeide processEvents während der Dialog gelöscht wird oder die App beendet wird
+        if self._dialog is None:
+            return
+        
+        # 🎯 DEAKTIVIERT: processEvents() kann Segmentation Faults verursachen, wenn Qt in ungültigem Zustand ist
+        # Stattdessen verwenden wir einen Timer-basierten Ansatz oder verzichten komplett auf processEvents
+        # Dies verhindert Crashes, kann aber zu weniger responsivem UI führen
+        # 
+        # ALTERNATIVE: processEvents() nur sehr selten aufrufen oder komplett deaktivieren
+        # Für jetzt: komplett deaktiviert, um Segmentation Faults zu vermeiden
+        return
+        
+        # CODE UNTEN WIRD NICHT AUSGEFÜHRT (nur als Backup für zukünftige Implementierung):
+        try:
+            # Prüfe ob Dialog noch gültig ist (nicht gelöscht)
+            if not hasattr(self._dialog, 'isVisible'):
+                return
+            
+            app = QtWidgets.QApplication.instance()
+            if app is None:
+                return
+            
+            # Prüfe ob App noch läuft (nicht während Shutdown)
+            if not hasattr(app, 'processEvents'):
+                return
+            
+            # Verwende ProcessEventsFlag.AllEvents, aber mit Timeout um Deadlocks zu vermeiden
+            # Verwende ExcludeUserInputEvents um zu vermeiden, dass Benutzerinteraktionen während der Berechnung verarbeitet werden
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents, 0)
+        except (RuntimeError, AttributeError, TypeError):
+            # Dialog wurde bereits gelöscht, App ist nicht mehr verfügbar, oder anderer Fehler - ignoriere
+            pass
+        except Exception:
+            # Alle anderen Fehler abfangen (z.B. Segmentation Fault wird als Exception abgefangen)
+            pass
 
     def update(self, message: Optional[str] = None) -> None:
-        if message and self._status_label:
-            self._status_label.setText(message)
-        self._process_events()
+        # 🛡️ SICHERHEIT: Prüfe ob Dialog und Label noch existieren
+        if self._dialog is None:
+            return
+        try:
+            if message and self._status_label:
+                self._status_label.setText(message)
+            self._process_events()
+        except RuntimeError:
+            # Dialog wurde bereits gelöscht - ignoriere
+            pass
 
     def advance(self, steps: int = 1) -> None:
         if steps < 1:
             steps = 1
         self._completed = min(self._total_steps, self._completed + steps)
-        self._dialog.setValue(self._completed)
-        self._process_events()
+        # 🛡️ SICHERHEIT: Prüfe ob Dialog noch existiert und gültig ist, bevor setValue aufgerufen wird
+        if self._dialog is None:
+            return
+        try:
+            # Prüfe ob Dialog noch gültig ist
+            if not hasattr(self._dialog, 'setValue'):
+                self._dialog = None
+                return
+            
+            if self._dialog.isVisible():
+                self._dialog.setValue(self._completed)
+                # Nur processEvents aufrufen, wenn Dialog noch sichtbar ist
+                self._process_events()
+        except (RuntimeError, AttributeError, TypeError):
+            # Dialog wurde bereits gelöscht - ignoriere
+            self._dialog = None
+        except Exception:
+            # Alle anderen Fehler abfangen (z.B. Segmentation Fault wird als Exception abgefangen)
+            self._dialog = None
 
     def finish(self) -> None:
-        self._dialog.setValue(self._total_steps)
-        self._dialog.close()
-        self._dialog.deleteLater()
+        # 🛡️ SICHERHEIT: Prüfe ob Dialog noch existiert, bevor Operationen ausgeführt werden
+        if self._dialog is None:
+            return
+        try:
+            # Prüfe ob Dialog noch gültig ist
+            if not hasattr(self._dialog, 'setValue'):
+                self._dialog = None
+                return
+            
+            self._dialog.setValue(self._total_steps)
+            self._dialog.close()
+            self._dialog.deleteLater()
+            # Setze _dialog auf None, damit weitere Aufrufe erkannt werden
+            self._dialog = None
+        except (RuntimeError, AttributeError, TypeError):
+            # Dialog wurde bereits gelöscht - ignoriere
+            self._dialog = None
+        except Exception:
+            # Alle anderen Fehler abfangen (z.B. Segmentation Fault wird als Exception abgefangen)
+            self._dialog = None
 
     def is_cancelled(self) -> bool:
         return self._cancelled

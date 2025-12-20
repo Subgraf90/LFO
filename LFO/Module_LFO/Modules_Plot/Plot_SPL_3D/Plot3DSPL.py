@@ -1057,24 +1057,25 @@ class SPL3DPlotRenderer:
         
         return h.hexdigest()
 
-    def _update_surface_scalars(self, flat_scalars: np.ndarray) -> bool:
-        """Aktualisiert die Skalare des Surface-Meshes."""
-        if self.surface_mesh is None:
-            return False
-
-        if flat_scalars.size == self.surface_mesh.n_points:
-            self.surface_mesh.point_data['plot_scalars'] = flat_scalars
-            if hasattr(self.surface_mesh, "modified"):
-                self.surface_mesh.modified()
-            return True
-
-        if flat_scalars.size == self.surface_mesh.n_cells:
-            self.surface_mesh.cell_data['plot_scalars'] = flat_scalars
-            if hasattr(self.surface_mesh, "modified"):
-                self.surface_mesh.modified()
-            return True
-
-        return False
+    # ⚠️ AUSKOMMENTIERT: Ungenutzte Methode - keine Verwendung im Codebase gefunden
+    # def _update_surface_scalars(self, flat_scalars: np.ndarray) -> bool:
+    #     """Aktualisiert die Skalare des Surface-Meshes."""
+    #     if self.surface_mesh is None:
+    #         return False
+    #
+    #     if flat_scalars.size == self.surface_mesh.n_points:
+    #         self.surface_mesh.point_data['plot_scalars'] = flat_scalars
+    #         if hasattr(self.surface_mesh, "modified"):
+    #             self.surface_mesh.modified()
+    #         return True
+    #
+    #     if flat_scalars.size == self.surface_mesh.n_cells:
+    #         self.surface_mesh.cell_data['plot_scalars'] = flat_scalars
+    #         if hasattr(self.surface_mesh, "modified"):
+    #             self.surface_mesh.modified()
+    #         return True
+    #
+    #     return False
 
     @staticmethod
     def _project_point_to_polyline(x: float, y: float, poly_x: np.ndarray, poly_y: np.ndarray) -> tuple[float, float]:
@@ -1124,119 +1125,122 @@ class SPL3DPlotRenderer:
         
         return (best_x, best_y)
 
-    def get_texture_metadata(self, surface_id: str) -> Optional[dict[str, Any]]:
-        """
-        Gibt die Metadaten einer Texture-Surface zurück.
-        
-        Args:
-            surface_id: ID der Surface
-            
-        Returns:
-            Dict mit Metadaten oder None, falls Surface nicht gefunden wurde.
-            Metadaten enthalten:
-            - 'actor': PyVista Actor
-            - 'grid': StructuredGrid mit Weltkoordinaten
-            - 'texture': PyVista Texture-Objekt
-            - 'grid_bounds': (xmin, xmax, ymin, ymax, zmin, zmax)
-            - 'world_coords_x': 1D-Array der X-Koordinaten in Metern
-            - 'world_coords_y': 1D-Array der Y-Koordinaten in Metern
-            - 'world_coords_grid_x': 2D-Meshgrid der X-Koordinaten
-            - 'world_coords_grid_y': 2D-Meshgrid der Y-Koordinaten
-            - 'texture_resolution': Auflösung in Metern
-            - 'texture_size': (H, W) in Pixeln
-            - 'image_shape': (H, W, 4) Shape des Bildes
-            - 'polygon_bounds': Dict mit xmin, xmax, ymin, ymax
-            - 'polygon_points': Original Polygon-Punkte
-            - 't_coords': Textur-Koordinaten (n_points, 2)
-            - 'surface_id': Surface-ID
-        """
-        texture_data = self._surface_texture_actors.get(surface_id)
-        if texture_data is None:
-            return None
-        if isinstance(texture_data, dict) and 'metadata' in texture_data:
-            return texture_data['metadata']
-        if isinstance(texture_data, dict) and 'actor' in texture_data:
-            # Neue Struktur: Dict mit Metadaten
-            return texture_data
-        # Alte Struktur: Nur Actor (für Rückwärtskompatibilität)
-        return None
-
-    def get_texture_world_coords(self, surface_id: str, texture_u: float, texture_v: float) -> Optional[tuple[float, float, float]]:
-        """
-        Konvertiert Textur-Koordinaten (u, v) zu Weltkoordinaten (x, y, z).
-        
-        Args:
-            surface_id: ID der Surface
-            texture_u: U-Koordinate [0, 1] (horizontal)
-            texture_v: V-Koordinate [0, 1] (vertikal)
-            
-        Returns:
-            (x, y, z) Weltkoordinaten in Metern oder None bei Fehler
-        """
-        metadata = self.get_texture_metadata(surface_id)
-        if metadata is None:
-            return None
-        
-        try:
-            bounds = metadata.get('grid_bounds')
-            if bounds is None or len(bounds) < 6:
-                return None
-            
-            xmin, xmax = bounds[0], bounds[1]
-            ymin, ymax = bounds[2], bounds[3]
-            zmin, zmax = bounds[4], bounds[5]
-            
-            # Konvertiere normalisierte Textur-Koordinaten zu Weltkoordinaten
-            x = xmin + texture_u * (xmax - xmin)
-            y = ymin + texture_v * (ymax - ymin)
-            z = zmin  # Für horizontale Surfaces ist Z konstant
-            
-            return (x, y, z)
-        except Exception:
-            return None
-
-    def get_world_coords_to_texture_coords(self, surface_id: str, world_x: float, world_y: float) -> Optional[tuple[float, float]]:
-        """
-        Konvertiert Weltkoordinaten (x, y) zu Textur-Koordinaten (u, v).
-        
-        Args:
-            surface_id: ID der Surface
-            world_x: X-Koordinate in Metern
-            world_y: Y-Koordinate in Metern
-            
-        Returns:
-            (u, v) Textur-Koordinaten [0, 1] oder None bei Fehler
-        """
-        metadata = self.get_texture_metadata(surface_id)
-        if metadata is None:
-            return None
-        
-        try:
-            bounds = metadata.get('grid_bounds')
-            if bounds is None or len(bounds) < 6:
-                return None
-            
-            xmin, xmax = bounds[0], bounds[1]
-            ymin, ymax = bounds[2], bounds[3]
-            
-            # Konvertiere Weltkoordinaten zu normalisierten Textur-Koordinaten
-            if xmax > xmin:
-                u = (world_x - xmin) / (xmax - xmin)
-            else:
-                u = 0.0
-            
-            if ymax > ymin:
-                v = (world_y - ymin) / (ymax - ymin)
-            else:
-                v = 0.0
-            
-            # Clippe auf [0, 1]
-            u = max(0.0, min(1.0, u))
-            v = max(0.0, min(1.0, v))
-            
-            return (u, v)
-        except Exception:
-            return None
+    # ⚠️ AUSKOMMENTIERT: Ungenutzte Methoden - nur intern verwendet, keine externen Aufrufe gefunden
+    # Diese Methoden könnten für zukünftige Features (Koordinaten-Konvertierung, Picking) vorgesehen sein.
+    # 
+    # def get_texture_metadata(self, surface_id: str) -> Optional[dict[str, Any]]:
+    #     """
+    #     Gibt die Metadaten einer Texture-Surface zurück.
+    #     
+    #     Args:
+    #         surface_id: ID der Surface
+    #         
+    #     Returns:
+    #         Dict mit Metadaten oder None, falls Surface nicht gefunden wurde.
+    #         Metadaten enthalten:
+    #         - 'actor': PyVista Actor
+    #         - 'grid': StructuredGrid mit Weltkoordinaten
+    #         - 'texture': PyVista Texture-Objekt
+    #         - 'grid_bounds': (xmin, xmax, ymin, ymax, zmin, zmax)
+    #         - 'world_coords_x': 1D-Array der X-Koordinaten in Metern
+    #         - 'world_coords_y': 1D-Array der Y-Koordinaten in Metern
+    #         - 'world_coords_grid_x': 2D-Meshgrid der X-Koordinaten
+    #         - 'world_coords_grid_y': 2D-Meshgrid der Y-Koordinaten
+    #         - 'texture_resolution': Auflösung in Metern
+    #         - 'texture_size': (H, W) in Pixeln
+    #         - 'image_shape': (H, W, 4) Shape des Bildes
+    #         - 'polygon_bounds': Dict mit xmin, xmax, ymin, ymax
+    #         - 'polygon_points': Original Polygon-Punkte
+    #         - 't_coords': Textur-Koordinaten (n_points, 2)
+    #         - 'surface_id': Surface-ID
+    #     """
+    #     texture_data = self._surface_texture_actors.get(surface_id)
+    #     if texture_data is None:
+    #         return None
+    #     if isinstance(texture_data, dict) and 'metadata' in texture_data:
+    #         return texture_data['metadata']
+    #     if isinstance(texture_data, dict) and 'actor' in texture_data:
+    #         # Neue Struktur: Dict mit Metadaten
+    #         return texture_data
+    #     # Alte Struktur: Nur Actor (für Rückwärtskompatibilität)
+    #     return None
+    #
+    # def get_texture_world_coords(self, surface_id: str, texture_u: float, texture_v: float) -> Optional[tuple[float, float, float]]:
+    #     """
+    #     Konvertiert Textur-Koordinaten (u, v) zu Weltkoordinaten (x, y, z).
+    #     
+    #     Args:
+    #         surface_id: ID der Surface
+    #         texture_u: U-Koordinate [0, 1] (horizontal)
+    #         texture_v: V-Koordinate [0, 1] (vertikal)
+    #         
+    #     Returns:
+    #         (x, y, z) Weltkoordinaten in Metern oder None bei Fehler
+    #     """
+    #     metadata = self.get_texture_metadata(surface_id)
+    #     if metadata is None:
+    #         return None
+    #     
+    #     try:
+    #         bounds = metadata.get('grid_bounds')
+    #         if bounds is None or len(bounds) < 6:
+    #             return None
+    #         
+    #         xmin, xmax = bounds[0], bounds[1]
+    #         ymin, ymax = bounds[2], bounds[3]
+    #         zmin, zmax = bounds[4], bounds[5]
+    #         
+    #         # Konvertiere normalisierte Textur-Koordinaten zu Weltkoordinaten
+    #         x = xmin + texture_u * (xmax - xmin)
+    #         y = ymin + texture_v * (ymax - ymin)
+    #         z = zmin  # Für horizontale Surfaces ist Z konstant
+    #         
+    #         return (x, y, z)
+    #     except Exception:
+    #         return None
+    #
+    # def get_world_coords_to_texture_coords(self, surface_id: str, world_x: float, world_y: float) -> Optional[tuple[float, float]]:
+    #     """
+    #     Konvertiert Weltkoordinaten (x, y) zu Textur-Koordinaten (u, v).
+    #     
+    #     Args:
+    #         surface_id: ID der Surface
+    #         world_x: X-Koordinate in Metern
+    #         world_y: Y-Koordinate in Metern
+    #         
+    #     Returns:
+    #         (u, v) Textur-Koordinaten [0, 1] oder None bei Fehler
+    #     """
+    #     metadata = self.get_texture_metadata(surface_id)
+    #     if metadata is None:
+    #         return None
+    #     
+    #     try:
+    #         bounds = metadata.get('grid_bounds')
+    #         if bounds is None or len(bounds) < 6:
+    #             return None
+    #         
+    #         xmin, xmax = bounds[0], bounds[1]
+    #         ymin, ymax = bounds[2], bounds[3]
+    #         
+    #         # Konvertiere Weltkoordinaten zu normalisierten Textur-Koordinaten
+    #         if xmax > xmin:
+    #             u = (world_x - xmin) / (xmax - xmin)
+    #         else:
+    #             u = 0.0
+    #         
+    #         if ymax > ymin:
+    #             v = (world_y - ymin) / (ymax - ymin)
+    #         else:
+    #             v = 0.0
+    #         
+    #         # Clippe auf [0, 1]
+    #         u = max(0.0, min(1.0, u))
+    #         v = max(0.0, min(1.0, v))
+    #         
+    #         return (u, v)
+    #     except Exception:
+    #         return None
 
     @measure_time("PlotSPL3D._render_surfaces_textured")
     def _render_surfaces_textured(
