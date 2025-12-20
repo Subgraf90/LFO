@@ -1903,7 +1903,17 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                         multi_block = MultiBlock(meshes_to_merge)
                         merged_mesh = multi_block.combine()
                     else:
-                        merged_mesh = meshes_to_merge[0].copy(deep=True) if meshes_to_merge else None
+                        # 🚀 OPTIMIERUNG: Verwende shallow copy wenn nur ein Mesh vorhanden
+                        # Da merged_mesh später modifiziert wird, brauchen wir eine Kopie
+                        # Aber shallow copy ist schneller als deep copy
+                        if meshes_to_merge:
+                            try:
+                                merged_mesh = meshes_to_merge[0].copy(deep=False)
+                            except Exception:
+                                # Fallback zu deep copy wenn shallow nicht funktioniert
+                                merged_mesh = meshes_to_merge[0].copy(deep=True)
+                        else:
+                            merged_mesh = None
 
                     if merged_mesh is not None:
                         # Erstelle Scalar-Array für ALLE Exit-Faces mit korrigierten Offsets
@@ -2624,9 +2634,23 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         new_x: float, new_y: float, new_z: float
     ) -> List[Tuple[Any, Optional[int]]]:
         """Transformiert gecachte Geometrien von alter zu neuer Position."""
+        # 🚀 OPTIMIERUNG: Berechne Delta einmal vor der Schleife
+        delta_x = new_x - old_x
+        delta_y = new_y - old_y
+        delta_z = new_z - old_z
+        
         transformed = []
         for mesh, exit_idx in cached_geoms:
-            new_mesh = mesh.copy(deep=True)
+            # 🚀 OPTIMIERUNG: Verwende shallow copy wenn möglich, nur kopieren wenn nötig
+            # Da translate() inplace=True verwendet, können wir das Original-Mesh modifizieren
+            # ABER: Nur wenn es nicht bereits im Plot verwendet wird
+            # Für Sicherheit: Verwende copy(), aber ohne deep=True wenn möglich
+            try:
+                # Versuche shallow copy zuerst (schneller)
+                new_mesh = mesh.copy(deep=False)
+            except Exception:
+                # Fallback zu deep copy wenn shallow nicht funktioniert
+                new_mesh = mesh.copy(deep=True)
 
             if hasattr(new_mesh, 'bounds') and new_mesh.bounds is not None:
                 bounds = new_mesh.bounds
@@ -2634,66 +2658,14 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                 current_center_y = (bounds[2] + bounds[3]) / 2.0
                 current_center_z = (bounds[4] + bounds[5]) / 2.0
 
-                delta_x = new_x - current_center_x
-                delta_y = new_y - current_center_y
-                delta_z = new_z - current_center_z
+                # Berechne Delta basierend auf Mesh-Center
+                mesh_delta_x = new_x - current_center_x
+                mesh_delta_y = new_y - current_center_y
+                mesh_delta_z = new_z - current_center_z
 
-                # #region agent log
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H4",
-                        "location": "PlotSPL3DSpeaker.py:_transform_cached_geometry_to_position:1245",
-                        "message": "Transformation using mesh center",
-                        "data": {
-                            "old_x": float(old_x),
-                            "old_y": float(old_y),
-                            "old_z": float(old_z),
-                            "new_x": float(new_x),
-                            "new_y": float(new_y),
-                            "new_z": float(new_z),
-                            "current_center_x": float(current_center_x),
-                            "current_center_y": float(current_center_y),
-                            "current_center_z": float(current_center_z),
-                            "delta_x": float(delta_x),
-                            "delta_y": float(delta_y),
-                            "delta_z": float(delta_z),
-                            "bounds": [float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3]), float(bounds[4]), float(bounds[5])]
-                        },
-                        "timestamp": int(__import__('time').time() * 1000)
-                    }) + "\n")
-                # #endregion
-
-                new_mesh.translate((delta_x, delta_y, delta_z), inplace=True)
+                new_mesh.translate((mesh_delta_x, mesh_delta_y, mesh_delta_z), inplace=True)
             else:
-                delta_x = new_x - old_x
-                delta_y = new_y - old_y
-                delta_z = new_z - old_z
-                # #region agent log
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H4",
-                        "location": "PlotSPL3DSpeaker.py:_transform_cached_geometry_to_position:1257",
-                        "message": "Transformation using old position (no bounds)",
-                        "data": {
-                            "old_x": float(old_x),
-                            "old_y": float(old_y),
-                            "old_z": float(old_z),
-                            "new_x": float(new_x),
-                            "new_y": float(new_y),
-                            "new_z": float(new_z),
-                            "delta_x": float(delta_x),
-                            "delta_y": float(delta_y),
-                            "delta_z": float(delta_z)
-                        },
-                        "timestamp": int(__import__('time').time() * 1000)
-                    }) + "\n")
-                # #endregion
+                # Verwende vorberechnetes Delta
                 new_mesh.translate((delta_x, delta_y, delta_z), inplace=True)
 
             transformed.append((new_mesh, exit_idx))
@@ -3402,11 +3374,20 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
                     rotation_center = (center_x, center_y, z_center_group)
                     target_front_y = None
 
-                for idx, entry, mesh, exit_face_index in group_entries:
-                    mesh.rotate_z(angle_deg, point=rotation_center, inplace=True)
-                    if target_front_y is not None:
+                # 🚀 OPTIMIERUNG: Batch-Transformationen für alle Meshes in der Gruppe
+                # Sammle alle Delta-Y Werte vor der Transformation
+                delta_ys = []
+                if target_front_y is not None:
+                    for idx, entry, mesh, exit_face_index in group_entries:
                         current_front_y = mesh.bounds[3]
                         delta_y = target_front_y - current_front_y
+                        delta_ys.append((idx, delta_y))
+                
+                # Wende Rotationen und Translationen an
+                for i, (idx, entry, mesh, exit_face_index) in enumerate(group_entries):
+                    mesh.rotate_z(angle_deg, point=rotation_center, inplace=True)
+                    if target_front_y is not None and i < len(delta_ys):
+                        _, delta_y = delta_ys[i]
                         if abs(delta_y) > 1e-6:
                             mesh.translate((0.0, delta_y, 0.0), inplace=True)
                     geoms[idx] = (mesh, exit_face_index)

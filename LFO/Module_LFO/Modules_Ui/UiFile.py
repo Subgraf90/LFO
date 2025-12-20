@@ -435,6 +435,18 @@ class UiFile:
                 if not hasattr(self, '_array_id_mapping'):
                     self._array_id_mapping = {}
                 self._array_id_mapping.update(old_to_new_id_mapping)
+                
+                # 🎯 FIX: Berechne Speaker-Positionen für alle geladenen Arrays
+                # Dies ist notwendig, da speaker_position_calculator nicht mehr in update_speaker_array_calculations aufgerufen wird
+                if hasattr(self.main_window, 'speaker_position_calculator'):
+                    for array_id, speaker_array in self.settings.speaker_arrays.items():
+                        try:
+                            self.main_window.speaker_position_calculator(speaker_array)
+                        except Exception as e:
+                            # Fehler beim Berechnen einer Position sollte das Laden nicht verhindern
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.warning(f"Fehler beim Berechnen der Speaker-Positionen für Array {array_id}: {e}")
             
             # Lade Settings
             if 'settings' in loaded_data:

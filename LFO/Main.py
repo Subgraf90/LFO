@@ -102,7 +102,6 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # 🎯 TRACKING: Set zum Verfolgen von Arrays, die bereits speaker_position_calculator durchlaufen haben
         # Verhindert doppelte Aufrufe innerhalb derselben UI-Aktion
-        self._recently_calculated_speaker_positions: set[int] = set()
         
         # Calculation Handler für Berechnungslogik
         self.calculation_handler = CalculationHandler(self.settings)
@@ -433,106 +432,6 @@ class MainWindow(QtWidgets.QMainWindow):
             }) + "\n")
         # #endregion
         
-        # 🎯 TRACKING: Prüfe, ob dieses Array bereits im Set ist (wenn ja, wurde es bereits berechnet)
-        was_already_tracked = False
-        if array_id is not None:
-            was_already_tracked = array_id in self._recently_calculated_speaker_positions
-        
-        # Prüfe über CalculationHandler, ob Neuberechnung nötig ist
-        should_recalc = self.calculation_handler.should_recalculate_speaker_positions(speaker_array, debug=False)
-        
-        # 🎯 TRACKING: Wenn das Array bereits im Set war und keine Neuberechnung nötig ist, überspringe die Berechnung
-        # WICHTIG: Wenn should_recalc=True (Parameter haben sich geändert), muss die Berechnung trotzdem durchgeführt werden
-        if was_already_tracked and not should_recalc:
-                # #region agent log
-                try:
-                    import json
-                    import time as time_module
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "TRACKING",
-                            "location": "Main.py:speaker_position_calculator:skip_duplicate",
-                            "message": "Skipping duplicate speaker_position_calculator call",
-                            "data": {
-                                "array_id": array_id,
-                                "should_recalc": should_recalc
-                            },
-                            "timestamp": int(time_module.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
-                return
-        
-        # 🎯 TRACKING: Markiere dieses Array als bereits berechnet, um doppelte Aufrufe zu vermeiden
-        # WICHTIG: Das Set wird NICHT geleert nach der Berechnung, sondern bleibt bestehen
-        # Füge Array zum Set hinzu NACH der Prüfung, damit die Prüfung korrekt funktioniert
-        if array_id is not None:
-            self._recently_calculated_speaker_positions.add(array_id)
-            # #region agent log
-            try:
-                import json
-                import time as time_module
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "TRACKING",
-                        "location": "Main.py:speaker_position_calculator:tracking_add",
-                        "message": "Processing speaker_position_calculator (array already in tracking set)",
-                        "data": {
-                            "array_id": array_id,
-                            "was_already_tracked": was_already_tracked,
-                            "should_recalc": should_recalc,
-                            "recently_calculated_arrays": list(self._recently_calculated_speaker_positions)
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "H6",
-                "location": "Main.py:speaker_position_calculator:410",
-                "message": "should_recalculate_speaker_positions result",
-                "data": {
-                    "array_id": array_id,
-                    "should_recalculate": bool(should_recalc),
-                    "source_site_first": float(speaker_array.source_site[0]) if hasattr(speaker_array, 'source_site') and len(speaker_array.source_site) > 0 else None,
-                    "source_azimuth_first": float(speaker_array.source_azimuth[0]) if hasattr(speaker_array, 'source_azimuth') and len(speaker_array.source_azimuth) > 0 else None
-                },
-                "timestamp": int(time_module.time() * 1000)
-            }) + "\n")
-        # #endregion
-        if not should_recalc:
-            # #region agent log
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "POS_CALC_LOGIC",
-                    "location": "Main.py:speaker_position_calculator:skip",
-                    "message": "Skipping speaker_position_calculator - using cached positions",
-                    "data": {
-                        "array_id": array_id,
-                        "has_source_position_calc_x": hasattr(speaker_array, 'source_position_calc_x') and speaker_array.source_position_calc_x is not None,
-                        "has_source_position_calc_y": hasattr(speaker_array, 'source_position_calc_y') and speaker_array.source_position_calc_y is not None,
-                        "has_source_position_calc_z": hasattr(speaker_array, 'source_position_calc_z') and speaker_array.source_position_calc_z is not None,
-                        "source_position_calc_x_first": float(speaker_array.source_position_calc_x[0]) if hasattr(speaker_array, 'source_position_calc_x') and len(speaker_array.source_position_calc_x) > 0 else None,
-                        "source_position_calc_y_first": float(speaker_array.source_position_calc_y[0]) if hasattr(speaker_array, 'source_position_calc_y') and len(speaker_array.source_position_calc_y) > 0 else None,
-                        "source_position_calc_z_first": float(speaker_array.source_position_calc_z[0]) if hasattr(speaker_array, 'source_position_calc_z') and len(speaker_array.source_position_calc_z) > 0 else None
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-            # #endregion
-            return
-        
         # #region agent log
         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
             f.write(json.dumps({
@@ -791,38 +690,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     # #endregion
                     
                     tasks = []
-                    # 🎯 TRACKING: Prüfe, ob dieses Array bereits berechnet wurde (z.B. von einem Handler)
-                    # Wenn ja, überspringe speaker_position_calculator auch wenn skip_speaker_pos_calc=False
-                    array_already_calculated = speaker_array_id in self._recently_calculated_speaker_positions
-                    should_skip_pos_calc = skip_speaker_pos_calc or array_already_calculated
-                    
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "TRACKING",
-                                "location": "Main.py:update_speaker_array_calculations:tracking_check",
-                                "message": "Checking if speaker_position_calculator should be skipped",
-                                "data": {
-                                    "speaker_array_id": speaker_array_id,
-                                    "skip_speaker_pos_calc": skip_speaker_pos_calc,
-                                    "array_already_calculated": array_already_calculated,
-                                    "should_skip_pos_calc": should_skip_pos_calc,
-                                    "recently_calculated_arrays": list(self._recently_calculated_speaker_positions)
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
-                    
-                    # 🚀 OPTIMIERUNG: Füge speaker_position_calculator nur hinzu, wenn nicht übersprungen werden soll
-                    if not should_skip_pos_calc:
-                        tasks.append(("Updating speaker positions", lambda: self.speaker_position_calculator(speaker_array)))
+                    # speaker_position_calculator wird NICHT hier aufgerufen, da er bereits direkt nach Eingabeänderungen
+                    # von den UI-Handlern aufgerufen wird (z.B. on_ArrayX_changed, on_stack_azimuth_changed, etc.)
                     
                     # Füge immer beam steering und windowing hinzu
                     tasks.append(("Calculating beam steering", lambda up=should_update_plots: self.beamsteering_calculator(speaker_array, speaker_array_id, update_plot=up)))
@@ -883,11 +752,6 @@ class MainWindow(QtWidgets.QMainWindow):
                         self.run_tasks_with_progress("Updating array calculations", tasks)
                     except ProgressCancelled:
                         return
-                    # 🎯 TRACKING: Set wird NICHT geleert nach der Berechnung
-                    # Das Set bleibt bestehen, bis ein neuer Handler aufgerufen wird
-                    # Dies verhindert doppelte Aufrufe, wenn mehrere update_speaker_array_calculations() 
-                    # Aufrufe schnell hintereinander erfolgen
-                    # Das Set wird automatisch geleert, wenn speaker_position_calculator() erneut aufgerufen wird
 
                     if not update_axisplot:
                         self.draw_plots.show_empty_axes()

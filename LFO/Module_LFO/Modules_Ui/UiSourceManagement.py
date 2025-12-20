@@ -4817,6 +4817,13 @@ class Sources(ModuleBase, QObject):
 
                 self.update_input_fields(self.get_speakerspecs_instance(speaker_array_id))
                 
+                # 🎯 WICHTIG: Cache für dieses Array leeren, damit Geometrien neu berechnet werden
+                # Der Azimuth beeinflusst die Positionen der Stack-Lautsprecher
+                array_id = getattr(speaker_array, 'id', speaker_array_id)
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                        self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+                
                 # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
                 # damit die Positionen korrekt berechnet sind, bevor geplottet wird
                 # #region agent log
@@ -4842,22 +4849,150 @@ class Sources(ModuleBase, QObject):
                     pass
                 # #endregion
                 if hasattr(self.main_window, 'speaker_position_calculator'):
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "STACK_AZI_POS_CALC",
+                                "location": "UiSourceManagement.py:on_stack_azimuth_changed:before_pos_calc",
+                                "message": "About to call speaker_position_calculator",
+                                "data": {
+                                    "array_id": str(speaker_array_id),
+                                    "source_index": int(source_index),
+                                    "new_azimuth": float(value),
+                                    "has_source_position_calc_x": hasattr(speaker_array, 'source_position_calc_x') and speaker_array.source_position_calc_x is not None,
+                                    "has_source_position_calc_y": hasattr(speaker_array, 'source_position_calc_y') and speaker_array.source_position_calc_y is not None,
+                                    "has_source_position_calc_z": hasattr(speaker_array, 'source_position_calc_z') and speaker_array.source_position_calc_z is not None
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     self.main_window.speaker_position_calculator(speaker_array)
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "STACK_AZI_POS_CALC",
+                                "location": "UiSourceManagement.py:on_stack_azimuth_changed:after_pos_calc",
+                                "message": "speaker_position_calculator completed",
+                                "data": {
+                                    "array_id": str(speaker_array_id),
+                                    "has_source_position_calc_x": hasattr(speaker_array, 'source_position_calc_x') and speaker_array.source_position_calc_x is not None,
+                                    "has_source_position_calc_y": hasattr(speaker_array, 'source_position_calc_y') and speaker_array.source_position_calc_y is not None,
+                                    "has_source_position_calc_z": hasattr(speaker_array, 'source_position_calc_z') and speaker_array.source_position_calc_z is not None,
+                                    "source_position_calc_x_first": float(speaker_array.source_position_calc_x[0]) if hasattr(speaker_array, 'source_position_calc_x') and len(speaker_array.source_position_calc_x) > 0 else None,
+                                    "source_position_calc_y_first": float(speaker_array.source_position_calc_y[0]) if hasattr(speaker_array, 'source_position_calc_y') and len(speaker_array.source_position_calc_y) > 0 else None,
+                                    "source_position_calc_z_first": float(speaker_array.source_position_calc_z[0]) if hasattr(speaker_array, 'source_position_calc_z') and len(speaker_array.source_position_calc_z) > 0 else None
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                 
                 # 🎯 FIX: update_speaker_overlays() NACH speaker_position_calculator aufrufen,
                 # damit die Positionen korrekt sind, bevor geplottet wird
                 # Die Signatur-Vergleichung in update_overlays() erkennt dann, welche Arrays sich geändert haben
                 # und zeichnet nur die betroffenen Arrays neu
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "STACK_AZI_UPDATE_OVERLAYS",
+                            "location": "UiSourceManagement.py:on_stack_azimuth_changed:before_update_overlays",
+                            "message": "About to call update_speaker_overlays",
+                            "data": {
+                                "array_id": str(speaker_array_id),
+                                "is_autocalc_active": self.is_autocalc_active()
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 self.update_speaker_overlays()
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "STACK_AZI_UPDATE_OVERLAYS",
+                            "location": "UiSourceManagement.py:on_stack_azimuth_changed:after_update_overlays",
+                            "message": "update_speaker_overlays completed",
+                            "data": {
+                                "array_id": str(speaker_array_id),
+                                "is_autocalc_active": self.is_autocalc_active()
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 # DANN prüfen, ob autocalc aktiv ist und ggf. Berechnungen durchführen
                 # (update_speaker_array_calculations() ruft NICHT mehr update_speaker_overlays() auf,
                 # um doppelte Aufrufe zu vermeiden - daher müssen wir es hier aufrufen)
                 # 🚀 OPTIMIERUNG: Überspringe speaker_position_calculator in update_speaker_array_calculations(), da es bereits aufgerufen wurde
                 if self.is_autocalc_active():
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "STACK_AZI_UPDATE_CALC",
+                                "location": "UiSourceManagement.py:on_stack_azimuth_changed:before_update_calc",
+                                "message": "About to call update_speaker_array_calculations",
+                                "data": {
+                                    "array_id": str(speaker_array_id),
+                                    "skip_speaker_pos_calc": True
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     # Zentrale Aktualisierung aller Berechnungen und Plots
                     # (inkl. Overlays) immer über Main.update_speaker_array_calculations
                     self.main_window.update_speaker_array_calculations(skip_speaker_pos_calc=True)
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "STACK_AZI_UPDATE_CALC",
+                                "location": "UiSourceManagement.py:on_stack_azimuth_changed:after_update_calc",
+                                "message": "update_speaker_array_calculations completed",
+                                "data": {
+                                    "array_id": str(speaker_array_id)
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
 
             # Setze den gerundeten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.1f}")
