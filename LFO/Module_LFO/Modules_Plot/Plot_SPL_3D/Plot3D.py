@@ -510,6 +510,20 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         self._clear_vertical_spl_surfaces()
                     except Exception:
                         pass
+                
+                # 🎯 NEU: Gruppen-Surface-Actors entfernen (spl_surface_group_*)
+                if hasattr(self, "_group_actors") and isinstance(self._group_actors, dict):
+                    for group_id, group_actor in list(self._group_actors.items()):
+                        try:
+                            actor_name = f"{self.SURFACE_NAME}_group_{group_id}"
+                            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                                if actor_name in self.plotter.renderer.actors:
+                                    self.plotter.remove_actor(actor_name)
+                            elif group_actor is not None:
+                                self.plotter.remove_actor(group_actor)
+                        except Exception:
+                            pass
+                    self._group_actors.clear()
 
             # SPL-interne Zustände zurücksetzen
             self.has_data = False
