@@ -2296,19 +2296,25 @@ class UISurfaceManager(ModuleBase):
         # Prüfe, ob Surface aktiviert oder deaktiviert wurde
         if not skip_calculations:
             if enable_value:
-                # Surface aktiviert: Nur dieses Surface neu berechnen (wenn autocalc aktiv und nicht hidden)
-                for sid in surfaces_to_update:
-                    surface = self._get_surface(sid)
-                    if surface:
-                        is_hidden = False
-                        if isinstance(surface, SurfaceDefinition):
-                            is_hidden = bool(getattr(surface, 'hidden', False))
-                        else:
-                            is_hidden = bool(surface.get('hidden', False))
-                        
-                        # Nur berechnen wenn nicht hidden
-                        if not is_hidden:
-                            self.calculate_single_surface(sid)
+                # 🎯 VEREINFACHT: Surface aktiviert → trigger zentrale Validierung
+                # update_plots_for_surface_state() prüft automatisch:
+                # - ob Surface hidden ist (wird nicht berechnet)
+                # - ob aktiver Speaker vorhanden ist (Neuberechnung vs. Plot-Update)
+                # - kategorisiert alle Surfaces korrekt
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
+                else:
+                    # Fallback: Einzelne Surface-Berechnung (nur wenn nicht hidden)
+                    for sid in surfaces_to_update:
+                        surface = self._get_surface(sid)
+                        if surface:
+                            is_hidden = False
+                            if isinstance(surface, SurfaceDefinition):
+                                is_hidden = bool(getattr(surface, 'hidden', False))
+                            else:
+                                is_hidden = bool(surface.get('hidden', False))
+                            if not is_hidden:
+                                self.calculate_single_surface(sid)
             else:
                 # Surface deaktiviert: Nur SPL Plot auf diesem Surface entfernen, andere Plots belassen
                 if (hasattr(self.main_window, 'draw_plots') and 
@@ -2518,7 +2524,9 @@ class UISurfaceManager(ModuleBase):
                         # Wichtig: axis_signature in _compute_overlay_signatures verwendet _get_active_xy_surfaces,
                         # die nur Surfaces mit hidden=False zurückgibt. Wenn hidden=True wird,
                         # ändert sich die Signatur automatisch, und update_overlays ruft draw_axis_lines auf.
-                        # Zusätzlich setzen wir _last_axis_state zurück, um sicherzustellen, dass neu gezeichnet wird.
+                        # 🎯 FIX: Setze Signatur zurück, damit Axis-Linien bei Hide entfernt werden
+                        # Die Achsenlinien werden automatisch entfernt, da das Surface nicht mehr in active_surfaces ist
+                        # (hidden Surfaces werden von _get_active_xy_surfaces gefiltert)
                         if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
                             # Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
                             plotter.overlay_axis._last_axis_state = None
@@ -2529,6 +2537,15 @@ class UISurfaceManager(ModuleBase):
                                 plotter._last_overlay_signatures.pop('axis', None)
                         if hasattr(plotter, 'update_overlays'):
                             plotter.update_overlays(self.settings, self.container)
+                            # 🎯 FIX: Render explizit aufrufen, damit Axis-Linien sofort entfernt werden
+                            if hasattr(plotter, 'render'):
+                                plotter.render()
+                        
+                        # 🎯 NEU: Bei Hide → Axis Plot aktualisieren (ohne versteckte Surfaces)
+                        # Dies stellt sicher, dass Axis Plot ohne die Daten des versteckten Surfaces aktualisiert wird
+                        if hasattr(self.main_window, 'calculate_axes'):
+                            print(f"[PLOT] Surface hide → calculate_axes() (Axis Plot ohne versteckte Surfaces)")
+                            self.main_window.calculate_axes(update_plot=True)
 
                 # Entferne auch Grid- und Ergebnisdaten aus calculation_spl, damit beim Unhide
                 # ein frischer Grid/SPL für dieses Surface berechnet wird.
@@ -2564,56 +2581,19 @@ class UISurfaceManager(ModuleBase):
                     pass
                 # #endregion
                 
+                # 🎯 WICHTIG: Validiere Surfaces beim Unhide (damit UI korrekt aktualisiert wird)
+                # Die Validierung muss hier bleiben, da sie die Surface-Definitionen aktualisiert
                 axes_recalc_needed = False
                 for sid in surfaces_to_update:
                     surface = self._get_surface(sid)
                     if not surface:
                         continue
-
-                    # Bestimme Enabled-Zustand bevorzugt aus dem TreeWidget (sichtbarer Zustand),
-                    # da surface.enabled durch Gruppen-Operationen temporär abweichen kann.
-                    is_enabled = False
-                    item = self._find_tree_item_by_id(sid)
-                    if item is not None:
-                        enable_checkbox = self.surface_tree_widget.itemWidget(item, 1)
-                        if enable_checkbox is not None:
-                            is_enabled = (enable_checkbox.checkState() == Qt.Checked)
-                    else:
-                        # Fallback: Modellzustand verwenden
-                        if isinstance(surface, SurfaceDefinition):
-                            is_enabled = bool(getattr(surface, 'enabled', False))
-                        else:
-                            is_enabled = bool(surface.get('enabled', False))
                     
-                    # 🎯 WICHTIG: Validiere Surface IMMER, auch wenn nicht enabled
+                    # 🎯 WICHTIG: Validiere Surface IMMER beim Unhide, auch wenn nicht enabled
                     # (damit UI korrekt aktualisiert wird und Validierungsfehler angezeigt werden)
-                    # 🎯 FIX: optimize_invalid=False, damit Z-Koordinaten nach Gruppen-Offset nicht überschrieben werden
-                    # 🎯 FIX: Validierung nur bei Surfaces mit mehr als 3 Punkten (3 Punkte definieren immer eine Ebene)
                     from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points, SurfaceValidationResult
                     surface_obj = surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(sid, surface)
                     points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
-                    
-                    # #region agent log - Prüfe Punkte vor Validierung
-                    try:
-                        import json
-                        import time as time_module
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H4",
-                                "location": "UISurfaceManager.py:_on_surface_hide_changed:before_validation",
-                                "message": "Points before validation",
-                                "data": {
-                                    "surface_id": str(sid),
-                                    "points_count": len(points),
-                                    "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if len(points) > 0 else []
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     if len(points) <= 3:
                         # 3 oder weniger Punkte: Immer gültig (3 Punkte definieren immer eine Ebene)
@@ -2635,32 +2615,7 @@ class UISurfaceManager(ModuleBase):
                             optimize_invalid=False,  # 🎯 FIX: Verhindere Überschreibung der Z-Koordinaten nach Gruppen-Offset
                         )
                     
-                    # #region agent log - Prüfe Punkte nach Validierung
-                    try:
-                        import json
-                        import time as time_module
-                        points_after_validation = validation_result.optimized_points
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H4",
-                                "location": "UISurfaceManager.py:_on_surface_hide_changed:after_validation",
-                                "message": "Points after validation",
-                                "data": {
-                                    "surface_id": str(sid),
-                                    "points_count": len(points_after_validation),
-                                    "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points_after_validation[:3]] if len(points_after_validation) > 0 else [],
-                                    "points_changed": points != points_after_validation
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
-                    
                     # Zusätzliche Prüfung: Triangulation für Surfaces mit 4+ Punkten
-                    points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
                     is_valid_for_spl = validation_result.is_valid
                     if is_valid_for_spl and len(points) >= 4:
                         try:
@@ -2671,29 +2626,6 @@ class UISurfaceManager(ModuleBase):
                             is_valid_for_spl = False
                     
                     # Stelle sicher, dass Surface-Definitionen in settings aktualisiert sind
-                    # #region agent log - VALIDIERUNG: Punkte vor Settings-Update nach Validierung
-                    try:
-                        import json
-                        import time as time_module
-                        points_before_settings_update = validation_result.optimized_points
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "POINTS_TRACE",
-                                "location": "UISurfaceManager.py:_on_surface_hide_changed:before_settings_update_after_validation",
-                                "message": "VALIDATION: Points before settings update (after validation)",
-                                "data": {
-                                    "surface_id": str(sid),
-                                    "points_count": len(points_before_settings_update) if points_before_settings_update else 0,
-                                    "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points_before_settings_update[:3]] if points_before_settings_update and len(points_before_settings_update) > 0 else []
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
-                    
                     if hasattr(self.settings, 'surface_definitions'):
                         surface_store = self.settings.surface_definitions
                         if surface_store is None:
@@ -2703,108 +2635,104 @@ class UISurfaceManager(ModuleBase):
                         else:
                             surface_store[sid] = SurfaceDefinition.from_dict(sid, surface)
                         self.settings.surface_definitions = surface_store
-                        
-                        # #region agent log - VALIDIERUNG: Punkte nach Settings-Update nach Validierung
-                        try:
-                            import json
-                            import time as time_module
-                            stored_surface_after = surface_store.get(sid)
-                            if stored_surface_after:
-                                stored_points_after = stored_surface_after.points if isinstance(stored_surface_after, SurfaceDefinition) else stored_surface_after.get('points', [])
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "POINTS_TRACE",
-                                        "location": "UISurfaceManager.py:_on_surface_hide_changed:after_settings_update_after_validation",
-                                        "message": "VALIDATION: Points after settings update (after validation)",
-                                        "data": {
-                                            "surface_id": str(sid),
-                                            "stored_points_count": len(stored_points_after) if stored_points_after else 0,
-                                            "stored_points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in stored_points_after[:3]] if stored_points_after and len(stored_points_after) > 0 else [],
-                                            "points_match": len(stored_points_after) == len(points_before_settings_update) if stored_points_after and points_before_settings_update else False
-                                        },
-                                        "timestamp": int(time_module.time() * 1000)
-                                    }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                     
-                    # Berechne nur wenn enabled und valid
-                    if is_enabled:
-                        if is_valid_for_spl:
-                            # Surface ist enabled und valid - berechne und plotte
-                            # #region agent log
-                            try:
-                                import json
-                                import time
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "H",
-                                        "location": "UISurfaceManager.py:2377",
-                                        "message": "Calling calculate_single_surface for unhidden surface",
-                                        "data": {
-                                            "surface_id": sid,
-                                            "is_enabled": is_enabled,
-                                            "is_valid_for_spl": is_valid_for_spl
-                                        },
-                                        "timestamp": int(time.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
-                            
-                            self.calculate_single_surface(sid)
-                        else:
-                            # Surface ist enabled aber invalid - entferne SPL-Daten
-                            self._remove_spl_data_for_surface(sid)
-                        
-                        axes_recalc_needed = True
-
-                        # Nach der Berechnung auch Overlays aktualisieren, damit XY-Linien gezeichnet werden
-                        # (wenn xy_enabled=True)
-                        if (hasattr(self.main_window, 'draw_plots') and 
-                            hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
-                            plotter = self.main_window.draw_plots.draw_spl_plotter
-                            if plotter:
-                                # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
-                                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
-                                    plotter.overlay_axis._last_axis_state = None
-                                # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
-                                if hasattr(plotter, '_last_overlay_signatures'):
-                                    # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
-                                    if isinstance(plotter._last_overlay_signatures, dict):
-                                        plotter._last_overlay_signatures.pop('axis', None)
-                                if hasattr(plotter, 'update_overlays'):
-                                    plotter.update_overlays(self.settings, self.container)
+                    # Wenn Surface enabled aber invalid ist → entferne SPL-Daten
+                    item = self._find_tree_item_by_id(sid)
+                    is_enabled = False
+                    if item is not None:
+                        enable_checkbox = self.surface_tree_widget.itemWidget(item, 1)
+                        if enable_checkbox is not None:
+                            is_enabled = (enable_checkbox.checkState() == Qt.Checked)
                     else:
-                        # Surface ist nicht enabled - nur Overlays aktualisieren (zeigt Surface wieder)
-                        # Aber Validierung wurde bereits ausgeführt, damit UI korrekt aktualisiert wird
-                        if (hasattr(self.main_window, 'draw_plots') and 
-                            hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
-                            plotter = self.main_window.draw_plots.draw_spl_plotter
-                            if plotter:
-                                # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
-                                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
-                                    plotter.overlay_axis._last_axis_state = None
-                                # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
-                                if hasattr(plotter, '_last_overlay_signatures'):
-                                    # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
-                                    if isinstance(plotter._last_overlay_signatures, dict):
-                                        plotter._last_overlay_signatures.pop('axis', None)
-                                if hasattr(plotter, 'update_overlays'):
-                                    plotter.update_overlays(self.settings, self.container)
+                        if isinstance(surface, SurfaceDefinition):
+                            is_enabled = bool(getattr(surface, 'enabled', False))
+                        else:
+                            is_enabled = bool(surface.get('enabled', False))
+                    
+                    if is_enabled and not is_valid_for_spl:
+                        # Surface ist enabled aber invalid - entferne SPL-Daten
+                        self._remove_spl_data_for_surface(sid)
+                    
+                    # Prüfe ob Surface xy_enabled hat (für Axis-Berechnung)
+                    is_xy_enabled = False
+                    if isinstance(surface, SurfaceDefinition):
+                        is_xy_enabled = bool(getattr(surface, 'xy_enabled', True))
+                    else:
+                        is_xy_enabled = bool(surface.get('xy_enabled', True))
+                    
+                    if is_enabled:
+                        axes_recalc_needed = True
+                    elif is_xy_enabled:
+                        # Surface hat xy_enabled → Axis-Berechnung nötig, auch wenn nicht enabled
+                        axes_recalc_needed = True
+                
+                # 🎯 NEU: Beim Unhide → Axis Lines neu plotten (auch wenn xy checkbox aktiviert wird)
+                # Setze Signatur zurück, damit Axis Lines definitiv neu gezeichnet werden
+                if (hasattr(self.main_window, 'draw_plots') and 
+                    hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                    plotter = self.main_window.draw_plots.draw_spl_plotter
+                    if plotter:
+                        # Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
+                        if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                            plotter.overlay_axis._last_axis_state = None
+                        # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                        if hasattr(plotter, '_last_overlay_signatures'):
+                            # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                            if isinstance(plotter._last_overlay_signatures, dict):
+                                plotter._last_overlay_signatures.pop('axis', None)
+                        # Aktualisiere Overlays (zeichnet Axis Lines neu)
+                        if hasattr(plotter, 'update_overlays'):
+                            plotter.update_overlays(self.settings, self.container)
+                            # Render explizit aufrufen, damit Axis Lines sofort sichtbar sind
+                            if hasattr(plotter, 'render'):
+                                plotter.render()
+                
+                # 🎯 VEREINFACHT: Nach Unhide → trigger zentrale Validierung
+                # update_plots_for_surface_state() prüft automatisch:
+                # - ob Surfaces enabled sind (wird berechnet vs. Empty Plot)
+                # - ob aktiver Speaker vorhanden ist (Neuberechnung vs. Plot-Update)
+                # - kategorisiert alle Surfaces korrekt
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+                    print(f"[PLOT] Surface unhide → update_plots_for_surface_state()")
+                    self.main_window.draw_plots.update_plots_for_surface_state()
+                elif axes_recalc_needed:
+                    # Fallback: Nur Overlays aktualisieren (wenn keine zentrale Methode verfügbar)
+                    if (hasattr(self.main_window, 'draw_plots') and 
+                        hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                        plotter = self.main_window.draw_plots.draw_spl_plotter
+                        if plotter:
+                            # Setze Signatur zurück, damit Achsenlinien neu gezeichnet werden
+                            if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                                plotter.overlay_axis._last_axis_state = None
+                            # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                            if hasattr(plotter, '_last_overlay_signatures'):
+                                # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                                if isinstance(plotter._last_overlay_signatures, dict):
+                                    plotter._last_overlay_signatures.pop('axis', None)
+                            if hasattr(plotter, 'update_overlays'):
+                                plotter.update_overlays(self.settings, self.container)
 
-                # 🎯 WICHTIG: Nach Unhide Plot komplett aktualisieren, um sicherzustellen,
-                # dass Surfaces die aus Gruppen entfernt wurden korrekt geplottet werden
-                # (calculate_single_surface ruft plot_spl auf, aber update_plots_for_surface_state
-                # stellt sicher, dass alle Surfaces korrekt kategorisiert und geplottet werden)
+                # 🎯 NEU: Nach Unhide → Axis-Berechnung und Plot-Update, wenn xy_enabled=True
+                # Dies stellt sicher, dass XY-Achsenlinien für das Surface neu erstellt werden
                 if axes_recalc_needed:
-                    # Wenn mindestens ein Surface wieder sichtbar und enabled ist → Achsen neu berechnen
-                    if hasattr(self.main_window, 'calculate_axes'):
-                        self.main_window.calculate_axes(update_plot=True)
+                    # Prüfe ob mindestens ein Surface xy_enabled hat
+                    has_xy_enabled_surface = False
+                    for sid in surfaces_to_update:
+                        surface = self._get_surface(sid)
+                        if surface:
+                            if isinstance(surface, SurfaceDefinition):
+                                is_xy_enabled = bool(getattr(surface, 'xy_enabled', True))
+                            else:
+                                is_xy_enabled = bool(surface.get('xy_enabled', True))
+                            if is_xy_enabled:
+                                has_xy_enabled_surface = True
+                                break
+                    
+                    if has_xy_enabled_surface:
+                        # Axis Calc und Plot aktualisieren, wenn xy_enabled Surfaces vorhanden
+                        if hasattr(self.main_window, 'calculate_axes'):
+                            print(f"[PLOT] Surface unhide + xy_enabled → calculate_axes() (Axis-Berechnung)")
+                            self.main_window.calculate_axes(update_plot=True)
                     
                     # Stelle sicher, dass Plot komplett aktualisiert wird
                     # (wichtig wenn Surface aus Gruppe entfernt wurde)
@@ -2867,6 +2795,9 @@ class UISurfaceManager(ModuleBase):
                             # Aktualisiere Overlays (zeichnet Linie auf Surface)
                             if hasattr(plotter, 'update_overlays'):
                                 plotter.update_overlays(self.settings, self.container)
+                                # 🎯 NEU: Render explizit aufrufen, damit Axis Lines sofort sichtbar sind
+                                if hasattr(plotter, 'render'):
+                                    plotter.render()
                     
                     # XY Plot aktualisieren, wenn es Änderungen gegeben hat
                     if hasattr(self.main_window, 'calculate_axes') and is_enabled:
@@ -2894,6 +2825,9 @@ class UISurfaceManager(ModuleBase):
                             # Aktualisiere Overlays (entfernt Achsenlinien auf diesem Surface)
                             if hasattr(plotter, 'update_overlays'):
                                 plotter.update_overlays(self.settings, self.container)
+                                # 🎯 NEU: Render explizit aufrufen, damit Axis Lines sofort entfernt werden
+                                if hasattr(plotter, 'render'):
+                                    plotter.render()
                     
                     # Entferne Daten aus XY Plot für dieses Surface
                 if hasattr(self.main_window, 'calculate_axes'):
@@ -3115,6 +3049,80 @@ class UISurfaceManager(ModuleBase):
                 # Item wurde gelöscht, überspringe
                 continue
         
+        # 🎯 FIX: Setze Signatur zurück, damit XY-Achsenlinien bei Hide entfernt werden
+        # Die Achsenlinien werden automatisch entfernt, da versteckte Surfaces nicht mehr in active_surfaces sind
+        # (hidden Surfaces werden von _get_active_xy_surfaces gefiltert)
+        if hide_value:
+            if (hasattr(self.main_window, 'draw_plots') and 
+                hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                plotter = self.main_window.draw_plots.draw_spl_plotter
+                if plotter:
+                    # Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
+                    if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                        plotter.overlay_axis._last_axis_state = None
+                    # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                    if hasattr(plotter, '_last_overlay_signatures'):
+                        # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                        if isinstance(plotter._last_overlay_signatures, dict):
+                            plotter._last_overlay_signatures.pop('axis', None)
+            
+            # 🎯 NEU: Bei Hide → Axis Plot aktualisieren (ohne versteckte Surfaces)
+            # Dies stellt sicher, dass Axis Plot ohne die Daten der versteckten Surfaces aktualisiert wird
+            if hasattr(self.main_window, 'calculate_axes'):
+                print(f"[PLOT] Gruppe hide → calculate_axes() (Axis Plot ohne versteckte Surfaces)")
+                self.main_window.calculate_axes(update_plot=True)
+        else:
+            # 🎯 NEU: Bei Unhide → Axis Lines neu plotten (auch wenn xy checkbox aktiviert wird)
+            # Setze Signatur zurück, damit Axis Lines definitiv neu gezeichnet werden
+            if (hasattr(self.main_window, 'draw_plots') and 
+                hasattr(self.main_window.draw_plots, 'draw_spl_plotter')):
+                plotter = self.main_window.draw_plots.draw_spl_plotter
+                if plotter:
+                    # Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
+                    if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                        plotter.overlay_axis._last_axis_state = None
+                    # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                    if hasattr(plotter, '_last_overlay_signatures'):
+                        # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                        if isinstance(plotter._last_overlay_signatures, dict):
+                            plotter._last_overlay_signatures.pop('axis', None)
+                    # Aktualisiere Overlays (zeichnet Axis Lines neu)
+                    if hasattr(plotter, 'update_overlays'):
+                        plotter.update_overlays(self.settings, self.container)
+                        # Render explizit aufrufen, damit Axis Lines sofort sichtbar sind
+                        if hasattr(plotter, 'render'):
+                            plotter.render()
+            
+            # 🎯 NEU: Bei Unhide → Prüfe ob xy_enabled Surfaces vorhanden sind
+            # Wenn ja, Axis Calc und Plot aktualisieren
+            has_xy_enabled_surface = False
+            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+            if isinstance(surface_definitions, dict):
+                all_surface_ids = []
+                for group in groups_to_update:
+                    group_id_data = group.data(0, Qt.UserRole)
+                    group_id = group_id_data.get("id") if isinstance(group_id_data, dict) else group_id_data
+                    if group_id:
+                        all_surface_ids.extend(self._collect_all_surfaces_from_group(group_id, surface_definitions))
+                
+                # Prüfe ob mindestens ein Surface xy_enabled hat
+                for sid in all_surface_ids:
+                    surface = self._get_surface(sid)
+                    if surface:
+                        if isinstance(surface, SurfaceDefinition):
+                            is_xy_enabled = bool(getattr(surface, 'xy_enabled', True))
+                        else:
+                            is_xy_enabled = bool(surface.get('xy_enabled', True))
+                        if is_xy_enabled:
+                            has_xy_enabled_surface = True
+                            break
+                
+                if has_xy_enabled_surface:
+                    # Axis Calc und Plot aktualisieren, wenn xy_enabled Surfaces vorhanden
+                    if hasattr(self.main_window, 'calculate_axes'):
+                        print(f"[PLOT] Gruppe unhide + xy_enabled → calculate_axes() (Axis-Berechnung)")
+                        self.main_window.calculate_axes(update_plot=True)
+        
         # 🎯 WICHTIG: Aktualisiere Plots und Overlays erst NACH allen Zustandsänderungen
         if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
             self.main_window.draw_plots.update_plots_for_surface_state()
@@ -3184,7 +3192,11 @@ class UISurfaceManager(ModuleBase):
                 and hasattr(self.main_window.draw_plots, 'draw_spl_plotter')
                 and hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays')
             ):
-                self.main_window.draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
+                plotter = self.main_window.draw_plots.draw_spl_plotter
+                plotter.update_overlays(self.settings, self.container)
+                # 🎯 NEU: Render explizit aufrufen, damit Axis Lines sofort sichtbar/entfernt sind
+                if hasattr(plotter, 'render'):
+                    plotter.render()
             # Zusätzlich: Achsen-SPL neu berechnen, wenn Bedingungen erfüllt
             if hasattr(self.main_window, 'calculate_axes'):
                 # Beim Aktivieren der Gruppe: nur wenn Gruppe sichtbar und enabled

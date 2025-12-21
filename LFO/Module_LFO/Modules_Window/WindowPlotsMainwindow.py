@@ -735,12 +735,32 @@ class DrawPlotsMainwindow(ModuleBase):
                         if not is_mute and not is_hide:
                             has_active_speaker = True
         
+        # 🎯 NEU: Prüfe ob für enabled Surfaces SPL-Daten fehlen
+        # Wenn ein Surface enabled wird, aber keine SPL-Daten vorhanden sind, sollte neu berechnet werden
+        needs_recalculation = False
+        if enabled_surfaces:
+            calc_spl = getattr(self.container, 'calculation_spl', {}) if hasattr(self.container, 'calculation_spl') else {}
+            if isinstance(calc_spl, dict):
+                surface_grids_data = calc_spl.get('surface_grids', {})
+                surface_results_data = calc_spl.get('surface_results', {})
+                
+                # Prüfe ob für mindestens ein enabled Surface keine SPL-Daten vorhanden sind
+                for surface_id in enabled_surfaces:
+                    has_grid_data = isinstance(surface_grids_data, dict) and surface_id in surface_grids_data
+                    has_result_data = isinstance(surface_results_data, dict) and surface_id in surface_results_data
+                    if not has_grid_data and not has_result_data:
+                        needs_recalculation = True
+                        print(f"[PLOT] Surface {surface_id} enabled, aber keine SPL-Daten vorhanden → Neuberechnung nötig")
+                        break
+        
         # Trigger Berechnung oder Plot-Update
         # 🚀 OPTIMIERUNG: Flag setzen, um zu verhindern, dass update_overlays() doppelt aufgerufen wird
         plot_spl_called = False
         
         if has_active_speaker and hasattr(self.main_window, 'update_speaker_array_calculations'):
-            # 🎯 KORREKTUR: Neuberechnung nur wenn aktiver Speaker vorhanden ist (nicht mute, nicht hide)
+            # 🎯 KORREKTUR: Neuberechnung wenn:
+            # 1. Aktiver Speaker vorhanden ist (nicht mute, nicht hide)
+            # 2. ODER wenn enabled Surfaces vorhanden sind, aber keine SPL-Daten (needs_recalculation)
             # Wenn ein Surface von disabled auf enabled gestellt wird und ein aktiver Speaker vorhanden ist,
             # soll dieses Surface berechnet werden
             # update_speaker_array_calculations() ruft intern plot_spl() auf (über calculate_spl()),
@@ -748,6 +768,12 @@ class DrawPlotsMainwindow(ModuleBase):
             print(f"[PLOT] Aktiver Speaker vorhanden → update_speaker_array_calculations() (Neuberechnung)")
             self.main_window.update_speaker_array_calculations()
             plot_spl_called = True  # plot_spl() wird intern aufgerufen
+        elif needs_recalculation and hasattr(self.main_window, 'update_speaker_array_calculations'):
+            # 🎯 NEU: Auch wenn kein aktiver Speaker, aber enabled Surfaces ohne SPL-Daten → Neuberechnung
+            # (kann vorkommen wenn Speaker später aktiviert wird)
+            print(f"[PLOT] Enabled Surfaces ohne SPL-Daten → update_speaker_array_calculations() (Neuberechnung)")
+            self.main_window.update_speaker_array_calculations()
+            plot_spl_called = True
         elif hasattr(self.main_window, 'plot_spl'):
             # Nur Plot-Update (wenn bereits Daten vorhanden, aber kein aktiver Speaker)
             # plot_spl() ruft bereits update_overlays() intern auf,
