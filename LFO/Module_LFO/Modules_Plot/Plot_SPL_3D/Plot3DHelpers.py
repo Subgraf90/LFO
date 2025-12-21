@@ -246,7 +246,12 @@ class SPL3DHelpers:
                 overlay_for_signature = self.overlay_axis
             elif hasattr(self, 'overlay_surfaces'):
                 overlay_for_signature = self.overlay_surfaces
-            if overlay_for_signature and hasattr(overlay_for_signature, '_get_active_xy_surfaces'):
+            # 🎯 NEU: Verwende _get_active_xy_surfaces_for_axis_lines() für Signatur-Berechnung
+            # Damit ändert sich die Signatur auch, wenn nur xy_enabled geändert wird (auch bei disabled Surfaces)
+            if overlay_for_signature and hasattr(overlay_for_signature, '_get_active_xy_surfaces_for_axis_lines'):
+                active_surfaces = overlay_for_signature._get_active_xy_surfaces_for_axis_lines(settings)
+            elif overlay_for_signature and hasattr(overlay_for_signature, '_get_active_xy_surfaces'):
+                # Fallback für Kompatibilität
                 active_surfaces = overlay_for_signature._get_active_xy_surfaces(settings)
                 for surface_id, surface in active_surfaces:
                     if isinstance(surface, SurfaceDefinition):

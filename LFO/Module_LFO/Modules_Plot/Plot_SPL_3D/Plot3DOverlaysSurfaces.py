@@ -495,14 +495,9 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         pass
                     # #endregion
                     disabled_surface_ids.append(str(surface_id))
-                    # 🎯 WICHTIG: Verwende einen deutlich höheren Z-Offset für disabled Polygone,
-                    # damit sie über den SPL-Plots liegen und sichtbar sind
-                    # closed_coords_array hat bereits z_offset (0.005m) angewendet, füge zusätzlich 0.01m hinzu
-                    # Gesamt: 0.015m über SPL-Plots (die bei Z=0 liegen)
-                    disabled_coords_with_offset = closed_coords_array.copy()
-                    if len(disabled_coords_with_offset.shape) == 2 and disabled_coords_with_offset.shape[1] >= 3:
-                        disabled_coords_with_offset[:, 2] += 0.01  # Erhöhe Z um 1cm zusätzlich (statt 1mm)
-                    disabled_surface_points.append(disabled_coords_with_offset)
+                    # 🎯 ENTFERNT: Zusätzlicher Z-Offset für disabled Polygone nicht mehr nötig
+                    # Verwende den normalen z_offset (0.005m) wie bei enabled Surfaces
+                    disabled_surface_points.append(closed_coords_array)
                     
                     if is_active:
                         active_disabled_points_list.append(closed_coords_array)
@@ -691,13 +686,9 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             # Disabled Surfaces werden bereits als gestrichelte Linien gezeichnet, aber hier als graue Flächen
             if disabled_surface_points:
                 for idx, points in enumerate(disabled_surface_points):
-                    # Verwende die Punkte OHNE zusätzlichen Z-Offset (für Flächen)
-                    # (disabled_surface_points hat bereits +0.01m Offset, entferne es für Flächen)
-                    points_for_face = points.copy()
-                    if len(points_for_face.shape) == 2 and points_for_face.shape[1] >= 3:
-                        points_for_face[:, 2] -= 0.01  # Entferne zusätzlichen Z-Offset für Flächen
-                    n_pts = len(points_for_face)
-                    enabled_points_for_empty_plot.append(points_for_face)
+                    # Verwende die Punkte direkt (kein zusätzlicher Z-Offset mehr nötig)
+                    n_pts = len(points)
+                    enabled_points_for_empty_plot.append(points)
                     face = [n_pts] + [point_offset + i for i in range(n_pts)]
                     enabled_faces_for_empty_plot.extend(face)
                     point_offset += n_pts

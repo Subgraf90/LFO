@@ -370,6 +370,33 @@ class SPL3DOverlayBase:
         
         return active_surfaces
     
+    def _get_active_xy_surfaces_for_axis_lines(self, settings) -> List[Tuple[str, Any]]:
+        """Sammelt alle aktiven Surfaces für Axis-Linien (xy_enabled=True, hidden=False).
+        
+        Diese Methode filtert NUR nach xy_enabled und hidden, NICHT nach enabled.
+        Das ermöglicht, dass Axis-Linien auch auf disabled Surfaces gezeichnet werden können.
+        """
+        active_surfaces = []
+        surface_store = getattr(settings, 'surface_definitions', {})
+        
+        if not isinstance(surface_store, dict):
+            return active_surfaces
+        
+        for surface_id, surface in surface_store.items():
+            if isinstance(surface, SurfaceDefinition):
+                xy_enabled = getattr(surface, 'xy_enabled', True)
+                hidden = surface.hidden
+            else:
+                xy_enabled = surface.get('xy_enabled', True)
+                hidden = surface.get('hidden', False)
+            
+            # 🎯 NEU: Nur xy_enabled und hidden prüfen, nicht enabled
+            # Damit können Axis-Linien auch auf disabled Surfaces gezeichnet werden
+            if xy_enabled and not hidden:
+                active_surfaces.append((str(surface_id), surface))
+        
+        return active_surfaces
+    
     def _get_dpi_scale_factor(self) -> float:
         """Berechnet den DPI-Skalierungsfaktor für Linienbreiten.
         

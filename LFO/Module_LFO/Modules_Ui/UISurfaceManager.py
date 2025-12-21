@@ -2799,8 +2799,10 @@ class UISurfaceManager(ModuleBase):
                                 if hasattr(plotter, 'render'):
                                     plotter.render()
                     
-                    # XY Plot aktualisieren, wenn es Änderungen gegeben hat
-                    if hasattr(self.main_window, 'calculate_axes') and is_enabled:
+                    # 🎯 NEU: XY Plot aktualisieren, wenn xy_enabled geändert wird (auch wenn nicht enabled)
+                    # Dies stellt sicher, dass Axis Calc und Plot für das Surface ausgeführt werden
+                    if hasattr(self.main_window, 'calculate_axes'):
+                        print(f"[PLOT] Surface xy_enabled aktiviert → calculate_axes() (Axis-Berechnung)")
                         self.main_window.calculate_axes(update_plot=True)
                 else:
                     # XY Checkbox deaktiviert: Achsenlinien auf dem Surface entfernen
@@ -2829,8 +2831,10 @@ class UISurfaceManager(ModuleBase):
                                 if hasattr(plotter, 'render'):
                                     plotter.render()
                     
-                    # Entferne Daten aus XY Plot für dieses Surface
-                if hasattr(self.main_window, 'calculate_axes'):
+                    # 🎯 NEU: XY Plot aktualisieren, wenn xy_enabled deaktiviert wird (auch wenn nicht enabled)
+                    # Dies stellt sicher, dass Axis Calc und Plot für das Surface ausgeführt werden
+                    if hasattr(self.main_window, 'calculate_axes'):
+                        print(f"[PLOT] Surface xy_enabled deaktiviert → calculate_axes() (Axis-Berechnung)")
                         self.main_window.calculate_axes(update_plot=True)
     
     def on_group_enable_changed(self, group_item, state):
@@ -3193,6 +3197,14 @@ class UISurfaceManager(ModuleBase):
                 and hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays')
             ):
                 plotter = self.main_window.draw_plots.draw_spl_plotter
+                # 🎯 NEU: Setze Signatur zurück, damit draw_axis_lines definitiv neu zeichnet
+                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                    plotter.overlay_axis._last_axis_state = None
+                # Setze auch die overlay_signature zurück, damit update_overlays die Änderung erkennt
+                if hasattr(plotter, '_last_overlay_signatures'):
+                    # Entferne 'axis' aus der Signatur, damit es neu berechnet wird
+                    if isinstance(plotter._last_overlay_signatures, dict):
+                        plotter._last_overlay_signatures.pop('axis', None)
                 plotter.update_overlays(self.settings, self.container)
                 # 🎯 NEU: Render explizit aufrufen, damit Axis Lines sofort sichtbar/entfernt sind
                 if hasattr(plotter, 'render'):

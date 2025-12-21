@@ -47,7 +47,9 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
         max_surface_dim = self._get_max_surface_dimension(settings)
         
         # Erstelle Signatur der aktiven Surface-Punkte, damit Änderungen erkannt werden
-        active_surfaces = self._get_active_xy_surfaces(settings)
+        # 🎯 NEU: Verwende _get_active_xy_surfaces_for_axis_lines() statt _get_active_xy_surfaces()
+        # Damit werden Axis-Linien auch auf disabled Surfaces gezeichnet, wenn xy_enabled=True
+        active_surfaces = self._get_active_xy_surfaces_for_axis_lines(settings)
         surface_points_signature = []
         for surface_id, surface in active_surfaces:
             if isinstance(surface, SurfaceDefinition):
