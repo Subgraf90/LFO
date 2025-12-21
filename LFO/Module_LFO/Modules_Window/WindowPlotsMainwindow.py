@@ -299,6 +299,7 @@ class DrawPlotsMainwindow(ModuleBase):
         Args:
             preserve_camera: Wenn True, bleibt die aktuelle Kameraperspektive erhalten.
         """
+        print(f"[PLOT] show_empty_plots() aufgerufen (preserve_camera={preserve_camera}, view={view})")
         # Aktuelle Splittergrößen sichern, damit das Layout später unverändert bleibt
         top_sizes = self.horizontal_splitter_top.sizes() if self.horizontal_splitter_top else []
         bottom_sizes = self.horizontal_splitter_bottom.sizes() if self.horizontal_splitter_bottom else []
@@ -311,7 +312,21 @@ class DrawPlotsMainwindow(ModuleBase):
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
             if not preserve_camera and view == "top":
                 plotter.set_view_top()
+            # 🎯 FIX: Setze Signatur zurück VOR update_overlays(), damit draw_surfaces() definitiv neu gezeichnet wird
+            # Das Problem: update_overlays() prüft container.calculation_spl (das noch vorhanden ist),
+            # setzt create_empty_plot_surfaces=False, und die Signatur-Prüfung verhindert dann das erneute Zeichnen
+            if hasattr(plotter, 'overlay_surfaces'):
+                plotter.overlay_surfaces._last_surfaces_state = None
             plotter.update_overlays(self.settings, self.container)
+            # 🎯 FIX: Setze Signatur erneut zurück NACH update_overlays(), damit draw_surfaces() mit create_empty_plot_surfaces=True definitiv neu gezeichnet wird
+            # (update_overlays() könnte die Signatur bereits gesetzt haben)
+            if hasattr(plotter, 'overlay_surfaces'):
+                plotter.overlay_surfaces._last_surfaces_state = None
+                # Erstelle graue Flächen für enabled Surfaces (nur im leeren Plot)
+                # Dies stellt sicher, dass bei disabled Checkbox der graue Empty Plot korrekt angezeigt wird
+                plotter.overlay_surfaces.draw_surfaces(self.settings, self.container, create_empty_plot_surfaces=True)
+            # 🎯 FIX: Render explizit aufrufen, damit Änderungen sofort sichtbar sind
+            plotter.render()
             self.colorbar_canvas.draw()
 
         self.draw_spl_plot_xaxis.initialize_empty_plots()
@@ -527,6 +542,7 @@ class DrawPlotsMainwindow(ModuleBase):
         - Empty Plot wenn keine enabled Surfaces vorhanden
         - Overlay-Update für visuelle Darstellung
         """
+        print(f"[PLOT] update_plots_for_surface_state() aufgerufen")
         # ============================================================
         # SCHRITT 1: Analysiere Surface-Status
         # ============================================================
@@ -541,13 +557,105 @@ class DrawPlotsMainwindow(ModuleBase):
         empty_plot_surfaces = []   # Für Empty Plot: disabled + nicht-hidden
         hidden_surfaces = []       # Nicht geplottet: hidden
         
+        # #region agent log
+        import json
+        import time as time_module
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "WindowPlotsMainwindow.py:update_plots_for_surface_state:before_surface_loop",
+                    "message": "Start surface categorization",
+                    "data": {
+                        "total_surfaces": len(surface_definitions),
+                        "surface_ids": list(surface_definitions.keys())[:5]  # First 5 for brevity
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        # 🎯 NEU: Erstelle Mapping von group_id zu Gruppen-Status für schnellen Zugriff
+        surface_groups = getattr(self.settings, 'surface_groups', {})
+        group_status: dict[str, dict[str, bool]] = {}  # group_id -> {'enabled': bool, 'hidden': bool}
+        if isinstance(surface_groups, dict):
+            for group_id, group_data in surface_groups.items():
+                if hasattr(group_data, 'enabled'):
+                    group_status[group_id] = {
+                        'enabled': bool(group_data.enabled),
+                        'hidden': bool(getattr(group_data, 'hidden', False))
+                    }
+                elif isinstance(group_data, dict):
+                    group_status[group_id] = {
+                        'enabled': bool(group_data.get('enabled', True)),
+                        'hidden': bool(group_data.get('hidden', False))
+                    }
+        
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "WindowPlotsMainwindow.py:update_plots_for_surface_state:group_status",
+                    "message": "Group status loaded",
+                    "data": {
+                        "group_status": {k: v for k, v in list(group_status.items())[:5]}  # First 5 for brevity
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for surface_id, surface_def in surface_definitions.items():
             if hasattr(surface_def, "enabled") and hasattr(surface_def, "hidden"):
                 enabled = bool(surface_def.enabled)
                 hidden = bool(surface_def.hidden)
+                group_id = getattr(surface_def, 'group_id', None)
             else:
                 enabled = bool(surface_def.get('enabled', False)) if isinstance(surface_def, dict) else False
                 hidden = bool(surface_def.get('hidden', False)) if isinstance(surface_def, dict) else False
+                group_id = surface_def.get('group_id') if isinstance(surface_def, dict) else None
+            
+            # 🎯 NEU: Berücksichtige Gruppen-Status (wie in draw_surfaces)
+            if group_id and group_id in group_status:
+                group_enabled = group_status[group_id]['enabled']
+                group_hidden = group_status[group_id]['hidden']
+                
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "A",
+                            "location": "WindowPlotsMainwindow.py:update_plots_for_surface_state:group_override",
+                            "message": "Surface group status override",
+                            "data": {
+                                "surface_id": str(surface_id),
+                                "group_id": group_id,
+                                "surface_enabled": enabled,
+                                "surface_hidden": hidden,
+                                "group_enabled": group_enabled,
+                                "group_hidden": group_hidden
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                
+                # Wenn Gruppe hidden ist → Surface komplett überspringen
+                if group_hidden:
+                    hidden = True
+                # Wenn Gruppe disabled ist → Surface als disabled behandeln
+                elif not group_enabled:
+                    enabled = False
             
             if hidden:
                 hidden_surfaces.append(surface_id)
@@ -559,15 +667,51 @@ class DrawPlotsMainwindow(ModuleBase):
         # ============================================================
         # SCHRITT 2: Entscheide Berechnung oder Empty Plot
         # ============================================================
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "WindowPlotsMainwindow.py:update_plots_for_surface_state:surface_categorization",
+                    "message": "Surface categorization complete",
+                    "data": {
+                        "enabled_count": len(enabled_surfaces),
+                        "empty_plot_count": len(empty_plot_surfaces),
+                        "hidden_count": len(hidden_surfaces),
+                        "enabled_ids": enabled_surfaces[:5],  # First 5 for brevity
+                        "empty_plot_ids": empty_plot_surfaces[:5]
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         has_enabled_surface = len(enabled_surfaces) > 0
+        has_empty_plot_surface = len(empty_plot_surfaces) > 0
+        has_any_visible_surface = has_enabled_surface or has_empty_plot_surface
+        
+        print(f"[PLOT] Surface-Status: enabled={len(enabled_surfaces)}, empty_plot={len(empty_plot_surfaces)}, hidden={len(hidden_surfaces)}")
+        
+        if not has_any_visible_surface:
+            # Alle Surfaces sind versteckt → SPL Plot komplett entfernen
+            # (keine Surfaces zum Zeichnen, auch keine Empty Plot Surfaces)
+            print(f"[PLOT] Alle Surfaces versteckt → initialize_empty_scene()")
+            plotter = self._get_current_spl_plotter()
+            if plotter is not None:
+                plotter.initialize_empty_scene(preserve_camera=True)
+                # Keine Surfaces zeichnen, da alle versteckt sind
+                plotter.update_overlays(self.settings, self.container)
+                plotter.render()
+                self.colorbar_canvas.draw()
+            return
         
         if not has_enabled_surface:
-            # Keine enabled Surfaces → Empty Plot
+            # Keine enabled Surfaces, aber es gibt disabled Surfaces → Empty Plot
+            # show_empty_plots() ruft bereits update_overlays() und draw_surfaces() mit create_empty_plot_surfaces=True auf
+            print(f"[PLOT] Keine enabled Surfaces → show_empty_plots()")
             self.show_empty_plots()
-            
-            # Overlays aktualisieren (zeigt disabled Surfaces als gestrichelt)
-            if self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
-                self.draw_spl_plotter.update_overlays(self.settings, self.container)
             return
         
         # ============================================================
@@ -576,34 +720,45 @@ class DrawPlotsMainwindow(ModuleBase):
         # SoundfieldCalculator holt sich enabled Surfaces automatisch via _get_enabled_surfaces()
         # (filtert bereits auf enabled + nicht-hidden)
         
-        # Prüfe ob aktiver Speaker vorhanden ist
+        # Prüfe ob aktiver Speaker vorhanden ist (nicht mute, nicht hide)
         has_active_speaker = False
         speaker_array_id = None
         if hasattr(self.main_window, 'sources_instance') and self.main_window.sources_instance:
             if hasattr(self.main_window, 'get_selected_speaker_array_id'):
                 speaker_array_id = self.main_window.get_selected_speaker_array_id()
-                if (speaker_array_id is not None and 
-                    self.settings.get_speaker_array(speaker_array_id) is not None):
-                    has_active_speaker = True
+                if speaker_array_id is not None:
+                    speaker_array = self.settings.get_speaker_array(speaker_array_id)
+                    if speaker_array is not None:
+                        # 🎯 KORREKTUR: Prüfe ob Speaker aktiv ist (nicht mute, nicht hide)
+                        is_mute = getattr(speaker_array, 'mute', False)
+                        is_hide = getattr(speaker_array, 'hide', False)
+                        if not is_mute and not is_hide:
+                            has_active_speaker = True
         
         # Trigger Berechnung oder Plot-Update
         # 🚀 OPTIMIERUNG: Flag setzen, um zu verhindern, dass update_overlays() doppelt aufgerufen wird
         plot_spl_called = False
+        
         if has_active_speaker and hasattr(self.main_window, 'update_speaker_array_calculations'):
-            # Neuberechnung mit aktiver Quelle
+            # 🎯 KORREKTUR: Neuberechnung nur wenn aktiver Speaker vorhanden ist (nicht mute, nicht hide)
+            # Wenn ein Surface von disabled auf enabled gestellt wird und ein aktiver Speaker vorhanden ist,
+            # soll dieses Surface berechnet werden
             # update_speaker_array_calculations() ruft intern plot_spl() auf (über calculate_spl()),
             # was wiederum update_overlays() aufruft, daher ist der Aufruf am Ende redundant
+            print(f"[PLOT] Aktiver Speaker vorhanden → update_speaker_array_calculations() (Neuberechnung)")
             self.main_window.update_speaker_array_calculations()
             plot_spl_called = True  # plot_spl() wird intern aufgerufen
         elif hasattr(self.main_window, 'plot_spl'):
-            # Nur Plot-Update (wenn bereits Daten vorhanden)
+            # Nur Plot-Update (wenn bereits Daten vorhanden, aber kein aktiver Speaker)
             # plot_spl() ruft bereits update_overlays() intern auf,
             # daher müssen wir es am Ende NICHT erneut aufrufen
+            print(f"[PLOT] Kein aktiver Speaker → plot_spl() (Plot-Update)")
             self.main_window.plot_spl(update_axes=False)
             plot_spl_called = True
         else:
             # Keine Source vorhanden, aber Surfaces existieren → zeige leeren Plot mit Surfaces
             # Stelle sicher, dass der Plotter initialisiert ist
+            print(f"[PLOT] Keine Source vorhanden → initialize_empty_scene()")
             if self.draw_spl_plotter is not None:
                 self.draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
         
@@ -618,6 +773,9 @@ class DrawPlotsMainwindow(ModuleBase):
         # da plot_spl() bereits update_overlays() intern aufruft (verhindert doppelte Aufrufe)
         if not plot_spl_called and self.draw_spl_plotter and hasattr(self.draw_spl_plotter, 'update_overlays'):
             self.draw_spl_plotter.update_overlays(self.settings, self.container)
+            # 🎯 FIX: Render explizit aufrufen, damit Änderungen sofort sichtbar sind
+            if hasattr(self.draw_spl_plotter, 'render'):
+                self.draw_spl_plotter.render()
 
     def plot_spl(self, settings, speaker_array_id, update_axes=True, reset_camera=False):
         """
@@ -629,6 +787,7 @@ class DrawPlotsMainwindow(ModuleBase):
             update_axes: Wenn True, werden auch X/Y-Achsen und Polar aktualisiert
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
+        print(f"[PLOT] plot_spl() aufgerufen (speaker_array_id={speaker_array_id}, update_axes={update_axes})")
         plot_mode = getattr(settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
         self.settings = settings
         self._update_plot_mode_availability()
@@ -711,9 +870,54 @@ class DrawPlotsMainwindow(ModuleBase):
             surface_grids_data = calc_spl.get('surface_grids', {})
             surface_results_data = calc_spl.get('surface_results', {})
         
+        # #region agent log
+        import json
+        import time as time_module
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "WindowPlotsMainwindow.py:plot_spl:data_check",
+                    "message": "Data validation check before plot",
+                    "data": {
+                        "has_data": has_data,
+                        "has_surface_data": has_surface_data,
+                        "time_mode_enabled": time_mode_enabled,
+                        "field_key": field_key,
+                        "calc_spl_keys": list(calc_spl.keys()) if isinstance(calc_spl, dict) else None,
+                        "sound_field_x_len": len(calc_spl.get('sound_field_x', [])) if isinstance(calc_spl, dict) else 0,
+                        "sound_field_y_len": len(calc_spl.get('sound_field_y', [])) if isinstance(calc_spl, dict) else 0,
+                        "field_data_len": len(calc_spl.get(field_key, [])) if isinstance(calc_spl, dict) else 0
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # 🎯 WICHTIG: Wenn keine globalen Daten vorhanden sind, aber Surface-Daten existieren,
         # sollten wir trotzdem plotten (z.B. für vertikale Flächen)
         if not has_data and not has_surface_data:
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "A",
+                        "location": "WindowPlotsMainwindow.py:plot_spl:early_return",
+                        "message": "EARLY RETURN - no data and no surface data",
+                        "data": {
+                            "has_data": has_data,
+                            "has_surface_data": has_surface_data
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # Keine Daten - zeige leere Szene
             if draw_spl_plotter is not None:
                 draw_spl_plotter.initialize_empty_scene(preserve_camera=True)
@@ -760,6 +964,27 @@ class DrawPlotsMainwindow(ModuleBase):
                 # Sollte nicht erreicht werden, da wir bereits oben return haben
                 return
 
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "B",
+                    "location": "WindowPlotsMainwindow.py:plot_spl:calling_update_spl_plot",
+                    "message": "Calling update_spl_plot",
+                    "data": {
+                        "sound_field_x_shape": np.array(sound_field_x).shape if hasattr(sound_field_x, '__len__') else None,
+                        "sound_field_y_shape": np.array(sound_field_y).shape if hasattr(sound_field_y, '__len__') else None,
+                        "sound_field_values_shape": np.array(sound_field_values).shape if hasattr(sound_field_values, '__len__') else None,
+                        "colorization_mode": self.settings.colorization_mode
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # 3D-Plot aktualisieren
         draw_spl_plotter.update_spl_plot(
             sound_field_x,
@@ -767,10 +992,13 @@ class DrawPlotsMainwindow(ModuleBase):
             sound_field_values,
             self.settings.colorization_mode,
         )
-        # 🎯 FIX: update_overlays() wurde entfernt, da es bereits von den UI-Handlern aufgerufen wird
-        # (z.B. on_flown_site_changed() ruft update_speaker_overlays() auf)
-        # Dies verhindert doppeltes Plotten mit falschen Positionen
-        # draw_spl_plotter.update_overlays(self.settings, self.container)
+        # 🎯 FIX: update_overlays() aufrufen, damit Surface-Overlays (Linien) gezeichnet werden
+        # update_spl_plot() zeichnet die SPL-Flächen, aber update_overlays() zeichnet die Surface-Linien
+        if hasattr(draw_spl_plotter, 'update_overlays'):
+            draw_spl_plotter.update_overlays(self.settings, self.container)
+            # Render explizit aufrufen, damit Änderungen sofort sichtbar sind
+            if hasattr(draw_spl_plotter, 'render'):
+                draw_spl_plotter.render()
         
         # WICHTIG: update_time_control() NACH update_spl_plot() aufrufen,
         # damit der Fader nicht von initialize_empty_scene() versteckt wird

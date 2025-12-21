@@ -228,6 +228,11 @@ class SurfaceDockWidget(QDockWidget):
             self._loading_points = True
             self.points_tree.clear()
             self._loading_points = False
+        else:
+            # 🎯 FIX: Lade Punkte neu, wenn ein Surface ausgewählt ist
+            # Dies stellt sicher, dass die UI die aktualisierten Punkte anzeigt
+            if self.current_surface_id:
+                self._load_points_for_surface(self.current_surface_id)
 
         self._activate_surface(self.current_surface_id)
 
@@ -562,9 +567,28 @@ class SurfaceDockWidget(QDockWidget):
                 self._loading_surfaces = False
         elif column == 1:
             enabled = item.checkState(1) == Qt.Checked
+            # 🎯 VEREINFACHT: Verwende die gleiche Logik wie on_group_enable_changed()
+            # Dies stellt sicher, dass alle Child-Surfaces korrekt aktualisiert werden
+            # bevor update_plots_for_surface_state() aufgerufen wird
             if self.surface_manager:
+                # Setze Gruppen-Status
                 self.surface_manager.set_surface_group_enabled(group_id, enabled)
-            self._apply_group_check_state(item, column, enabled)
+                # Aktualisiere alle Child-Checkboxen und Surface-Daten
+                # (wie in on_group_enable_changed(), um Konsistenz zu gewährleisten)
+                if hasattr(self.surface_manager, '_update_group_child_checkboxes'):
+                    state = Qt.Checked if enabled else Qt.Unchecked
+                    self.surface_manager._update_group_child_checkboxes(
+                        item, column, enabled, 
+                        update_data=True, 
+                        skip_calculations=True, 
+                        skip_state_update=True
+                    )
+                    # Aktualisiere Gruppen-Checkbox-Zustand nach Child-Updates
+                    if hasattr(self.surface_manager, '_update_group_checkbox_state'):
+                        self.surface_manager._update_group_checkbox_state(item, column)
+            else:
+                # Fallback: Nur UI-Checkboxen aktualisieren
+                self._apply_group_check_state(item, column, enabled)
             
             # 🎯 Trigger Calc/Plot Update: Enable-Status der Gruppe ändert sich
             # (Enable-Status-Änderung einer Gruppe beeinflusst alle Surfaces in der Gruppe)
@@ -573,9 +597,28 @@ class SurfaceDockWidget(QDockWidget):
                     self.main_window.draw_plots.update_plots_for_surface_state()
         elif column == 2:
             hidden = item.checkState(2) == Qt.Checked
+            # 🎯 VEREINFACHT: Verwende die gleiche Logik wie on_group_hide_changed()
+            # Dies stellt sicher, dass alle Child-Surfaces korrekt aktualisiert werden
+            # bevor update_plots_for_surface_state() aufgerufen wird
             if self.surface_manager:
+                # Setze Gruppen-Status
                 self.surface_manager.set_surface_group_hidden(group_id, hidden)
-            self._apply_group_check_state(item, column, hidden)
+                # Aktualisiere alle Child-Checkboxen und Surface-Daten
+                # (wie in on_group_hide_changed(), um Konsistenz zu gewährleisten)
+                if hasattr(self.surface_manager, '_update_group_child_checkboxes'):
+                    state = Qt.Checked if hidden else Qt.Unchecked
+                    self.surface_manager._update_group_child_checkboxes(
+                        item, column, hidden, 
+                        update_data=True, 
+                        skip_calculations=True, 
+                        skip_state_update=True
+                    )
+                    # Aktualisiere Gruppen-Checkbox-Zustand nach Child-Updates
+                    if hasattr(self.surface_manager, '_update_group_checkbox_state'):
+                        self.surface_manager._update_group_checkbox_state(item, column)
+            else:
+                # Fallback: Nur UI-Checkboxen aktualisieren
+                self._apply_group_check_state(item, column, hidden)
             
             # 🎯 Trigger Calc/Plot Update: Hide-Status der Gruppe ändert sich
             # (Hide-Status-Änderung einer Gruppe beeinflusst alle Surfaces in der Gruppe)
@@ -1161,6 +1204,29 @@ class SurfaceDockWidget(QDockWidget):
             return
 
         points: List[SurfacePoint] = self._surface_points(surface)
+        
+        # #region agent log
+        try:
+            import json
+            import time
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H4",
+                    "location": "WindowSurfaceWidget.py:_load_points_for_surface:points_loaded",
+                    "message": "Points loaded for surface in UI",
+                    "data": {
+                        "surface_id": surface_id,
+                        "points_count": len(points) if points else 0,
+                        "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if points and len(points) > 0 else []
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for index, point in enumerate(points):
             self._append_point_item(index, point)
 
@@ -1377,6 +1443,35 @@ class SurfaceDockWidget(QDockWidget):
         if points is None and create:
             points = []
             SurfaceDockWidget._surface_set(surface, "points", points)
+        
+        # #region agent log - VALIDIERUNG: Punkte beim Abruf aus Surface
+        try:
+            import json
+            import time
+            surface_id = None
+            if isinstance(surface, SurfaceDefinition):
+                surface_id = getattr(surface, 'id', None) or getattr(surface, 'name', None)
+            elif isinstance(surface, dict):
+                surface_id = surface.get('id') or surface.get('name')
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "POINTS_TRACE",
+                    "location": "WindowSurfaceWidget.py:_surface_points:points_retrieved",
+                    "message": "VALIDATION: Points retrieved from surface",
+                    "data": {
+                        "surface_id": str(surface_id) if surface_id else "unknown",
+                        "points_count": len(points) if points else 0,
+                        "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if points and len(points) > 0 else [],
+                        "create": create
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         return points or []
 
     def _validate_surface_planarity(

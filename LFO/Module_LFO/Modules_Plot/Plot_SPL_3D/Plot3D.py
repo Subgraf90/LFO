@@ -243,12 +243,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         # Guard gegen reentrante Render-Aufrufe (z. B. Kamera-Callbacks).
         self._is_rendering = False
 
-        # Verzögertes Rendering: Timer für Batch-Updates (500ms)
-        self._render_timer = QtCore.QTimer(self)
-        self._render_timer.setSingleShot(True)
-        self._render_timer.timeout.connect(self._delayed_render)
-        self._pending_render = False
-
         # initialize_empty_scene(preserve_camera=False) setzt bereits die Top-Ansicht via set_view_top()
         # daher ist der explizite Aufruf hier nicht nötig und würde den Zoom unnötig zweimal ändern
         self.initialize_empty_scene(preserve_camera=False)
@@ -570,6 +564,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
+        print(f"[DEBUG disabled_polygons] update_overlays aufgerufen")
         # #region agent log
         try:
             import json
@@ -875,6 +870,33 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     if key != 'speakers_highlights' and value != previous.get(key)
                 }
             
+            # #region agent log - Prüfe ob axis-Signatur geändert wurde
+            try:
+                import json
+                import time as time_module
+                axis_sig = signatures.get('axis')
+                prev_axis_sig = previous.get('axis')
+                axis_changed = axis_sig != prev_axis_sig if prev_axis_sig else True
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H2",
+                        "location": "Plot3D.py:update_overlays:axis_signature_check",
+                        "message": "Axis signature comparison",
+                        "data": {
+                            "axis_signature_changed": axis_changed,
+                            "has_previous_axis_signature": prev_axis_sig is not None,
+                            "axis_in_categories_to_refresh": 'axis' in categories_to_refresh,
+                            "axis_signature_preview": str(axis_sig)[:200] if axis_sig else None,
+                            "prev_axis_signature_preview": str(prev_axis_sig)[:200] if prev_axis_sig else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             # 🎯 FIX: Wenn sich Parameter oder hide-Status geändert haben, füge 'speakers' zu categories_to_refresh hinzu
             # UND setze die betroffenen Array-IDs, auch wenn die Signatur bereits als geändert markiert wurde
             if affected_array_ids_for_speakers:
@@ -976,6 +998,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 self.overlay_axis.draw_axis_lines(settings, selected_axis=self._axis_selected)
         
         if 'surfaces' in categories_to_refresh:
+            print(f"[DEBUG disabled_polygons] update_overlays: 'surfaces' in categories_to_refresh, rufe draw_surfaces auf")
             with perf_section("PlotSPL3D.update_overlays.draw_surfaces"):
                 # Prüfe ob SPL-Daten vorhanden sind, um zu entscheiden ob enabled Surfaces gezeichnet werden sollen
                 create_empty_plot_surfaces = False
@@ -1082,8 +1105,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             if (not getattr(self, "_did_initial_overlay_zoom", False)) and 'surfaces' in categories_to_refresh:
                 self._zoom_to_default_surface()
             
-            # Verzögertes Rendering: Timer starten/stoppen für Batch-Updates
-            self._schedule_render()
             if not self._rotate_active and not self._pan_active:
                 self._save_camera_state()
         t_end = time.perf_counter()
@@ -1123,19 +1144,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             self._is_rendering = False
             if DEBUG_PLOT3D_TIMING:
                 t_end = time.perf_counter()
-
-    def _schedule_render(self):
-        """Plant ein verzögertes Rendering (500ms), um mehrere schnelle Updates zu bündeln."""
-        self._pending_render = True
-        # Stoppe laufenden Timer und starte neu (debouncing)
-        self._render_timer.stop()
-        self._render_timer.start(500)  # 500ms Verzögerung
-
-    def _delayed_render(self):
-        """Führt das verzögerte Rendering aus, wenn der Timer abgelaufen ist."""
-        if self._pending_render:
-            self._pending_render = False
-            self.render()
 
     # Vertikale SPL-Flächen sind jetzt in SPL3DPlotRenderer (Plot3DSPL.py)
 

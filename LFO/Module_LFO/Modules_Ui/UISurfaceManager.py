@@ -865,6 +865,34 @@ class UISurfaceManager(ModuleBase):
         
         # Nur Validierung (keine Korrektur) beim Laden
         surface_store = getattr(self.settings, 'surface_definitions', {})
+        
+        # #region agent log - VALIDIERUNG: Surface-Punkte vor load_surfaces
+        try:
+            import json
+            import time as time_module
+            # Logge Punkte aller Surfaces vor load_surfaces
+            for surface_id, surface in surface_store.items():
+                if isinstance(surface, SurfaceDefinition):
+                    points = getattr(surface, 'points', [])
+                else:
+                    points = surface.get('points', [])
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "POINTS_TRACE",
+                        "location": "UISurfaceManager.py:load_surfaces:points_before_load",
+                        "message": "VALIDATION: Points before load_surfaces",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "points_count": len(points) if points else 0,
+                            "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if points and len(points) > 0 else []
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if surface_store:
             try:
                 from Module_LFO.Modules_Data.SurfaceValidator import validate_surface_geometry
@@ -952,6 +980,35 @@ class UISurfaceManager(ModuleBase):
         self.surface_tree_widget.blockSignals(False)
         # Nach dem Laden keine Auswahl markieren → Highlight-Liste leeren
         setattr(self.settings, "active_surface_highlight_ids", [])
+        
+        # #region agent log - VALIDIERUNG: Surface-Punkte nach load_surfaces
+        try:
+            import json
+            import time as time_module
+            # Logge Punkte aller Surfaces nach load_surfaces
+            surface_store_after = getattr(self.settings, 'surface_definitions', {})
+            for surface_id, surface in surface_store_after.items():
+                if isinstance(surface, SurfaceDefinition):
+                    points = getattr(surface, 'points', [])
+                else:
+                    points = surface.get('points', [])
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "POINTS_TRACE",
+                        "location": "UISurfaceManager.py:load_surfaces:points_after_load",
+                        "message": "VALIDATION: Points after load_surfaces",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "points_count": len(points) if points else 0,
+                            "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if points and len(points) > 0 else []
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+        except Exception:
+            pass
+        # #endregion
     
     def _load_surfaces_without_progress(self, default_surface_id, surface_store, root_group_id):
         """Lädt Surfaces ohne Fortschrittsanzeige (Fallback)"""
@@ -2151,7 +2208,36 @@ class UISurfaceManager(ModuleBase):
     def _get_surface(self, surface_id):
         """Holt ein Surface aus den Settings"""
         surface_store = getattr(self.settings, 'surface_definitions', {})
-        return surface_store.get(surface_id)
+        surface = surface_store.get(surface_id)
+        
+        # #region agent log - VALIDIERUNG: Surface-Punkte beim Abruf
+        try:
+            import json
+            import time as time_module
+            if surface:
+                if isinstance(surface, SurfaceDefinition):
+                    points = getattr(surface, 'points', [])
+                else:
+                    points = surface.get('points', [])
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "POINTS_TRACE",
+                        "location": "UISurfaceManager.py:_get_surface:points_retrieved",
+                        "message": "VALIDATION: Points retrieved from settings",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "points_count": len(points) if points else 0,
+                            "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if points and len(points) > 0 else []
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        return surface
     
     # ---- Event Handlers ---------------------------------------------
     
@@ -2501,13 +2587,77 @@ class UISurfaceManager(ModuleBase):
                     
                     # 🎯 WICHTIG: Validiere Surface IMMER, auch wenn nicht enabled
                     # (damit UI korrekt aktualisiert wird und Validierungsfehler angezeigt werden)
-                    from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
+                    # 🎯 FIX: optimize_invalid=False, damit Z-Koordinaten nach Gruppen-Offset nicht überschrieben werden
+                    # 🎯 FIX: Validierung nur bei Surfaces mit mehr als 3 Punkten (3 Punkte definieren immer eine Ebene)
+                    from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points, SurfaceValidationResult
                     surface_obj = surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(sid, surface)
-                    validation_result = validate_and_optimize_surface(
-                        surface_obj,
-                        round_to_cm=False,
-                        remove_redundant=False,
-                    )
+                    points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+                    
+                    # #region agent log - Prüfe Punkte vor Validierung
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H4",
+                                "location": "UISurfaceManager.py:_on_surface_hide_changed:before_validation",
+                                "message": "Points before validation",
+                                "data": {
+                                    "surface_id": str(sid),
+                                    "points_count": len(points),
+                                    "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if len(points) > 0 else []
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    if len(points) <= 3:
+                        # 3 oder weniger Punkte: Immer gültig (3 Punkte definieren immer eine Ebene)
+                        validation_result = SurfaceValidationResult(
+                            is_valid=True,
+                            optimized_points=points,
+                            removed_points_count=0,
+                            rounded_points_count=0,
+                            error_message=None,
+                            rigid_axis=None,
+                            orientation=None,
+                            invalid_fields=[],
+                        )
+                    else:
+                        validation_result = validate_and_optimize_surface(
+                            surface_obj,
+                            round_to_cm=False,
+                            remove_redundant=False,
+                            optimize_invalid=False,  # 🎯 FIX: Verhindere Überschreibung der Z-Koordinaten nach Gruppen-Offset
+                        )
+                    
+                    # #region agent log - Prüfe Punkte nach Validierung
+                    try:
+                        import json
+                        import time as time_module
+                        points_after_validation = validation_result.optimized_points
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H4",
+                                "location": "UISurfaceManager.py:_on_surface_hide_changed:after_validation",
+                                "message": "Points after validation",
+                                "data": {
+                                    "surface_id": str(sid),
+                                    "points_count": len(points_after_validation),
+                                    "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points_after_validation[:3]] if len(points_after_validation) > 0 else [],
+                                    "points_changed": points != points_after_validation
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     
                     # Zusätzliche Prüfung: Triangulation für Surfaces mit 4+ Punkten
                     points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
@@ -2521,6 +2671,29 @@ class UISurfaceManager(ModuleBase):
                             is_valid_for_spl = False
                     
                     # Stelle sicher, dass Surface-Definitionen in settings aktualisiert sind
+                    # #region agent log - VALIDIERUNG: Punkte vor Settings-Update nach Validierung
+                    try:
+                        import json
+                        import time as time_module
+                        points_before_settings_update = validation_result.optimized_points
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "POINTS_TRACE",
+                                "location": "UISurfaceManager.py:_on_surface_hide_changed:before_settings_update_after_validation",
+                                "message": "VALIDATION: Points before settings update (after validation)",
+                                "data": {
+                                    "surface_id": str(sid),
+                                    "points_count": len(points_before_settings_update) if points_before_settings_update else 0,
+                                    "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points_before_settings_update[:3]] if points_before_settings_update and len(points_before_settings_update) > 0 else []
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
                     if hasattr(self.settings, 'surface_definitions'):
                         surface_store = self.settings.surface_definitions
                         if surface_store is None:
@@ -2530,6 +2703,32 @@ class UISurfaceManager(ModuleBase):
                         else:
                             surface_store[sid] = SurfaceDefinition.from_dict(sid, surface)
                         self.settings.surface_definitions = surface_store
+                        
+                        # #region agent log - VALIDIERUNG: Punkte nach Settings-Update nach Validierung
+                        try:
+                            import json
+                            import time as time_module
+                            stored_surface_after = surface_store.get(sid)
+                            if stored_surface_after:
+                                stored_points_after = stored_surface_after.points if isinstance(stored_surface_after, SurfaceDefinition) else stored_surface_after.get('points', [])
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "POINTS_TRACE",
+                                        "location": "UISurfaceManager.py:_on_surface_hide_changed:after_settings_update_after_validation",
+                                        "message": "VALIDATION: Points after settings update (after validation)",
+                                        "data": {
+                                            "surface_id": str(sid),
+                                            "stored_points_count": len(stored_points_after) if stored_points_after else 0,
+                                            "stored_points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in stored_points_after[:3]] if stored_points_after and len(stored_points_after) > 0 else [],
+                                            "points_match": len(stored_points_after) == len(points_before_settings_update) if stored_points_after and points_before_settings_update else False
+                                        },
+                                        "timestamp": int(time_module.time() * 1000)
+                                    }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                     
                     # Berechne nur wenn enabled und valid
                     if is_enabled:
@@ -2701,83 +2900,115 @@ class UISurfaceManager(ModuleBase):
                         self.main_window.calculate_axes(update_plot=True)
     
     def on_group_enable_changed(self, group_item, state):
-        """Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
-        # Wenn PartiallyChecked geklickt wird, setze auf Checked (alle aktivieren)
-        if state == Qt.PartiallyChecked:
-            enable_value = True
-        else:
-            enable_value = (state == Qt.Checked)
-        group_id_data = group_item.data(0, Qt.UserRole)
-        if isinstance(group_id_data, dict):
-            group_id = group_id_data.get("id")
-        else:
-            group_id = group_id_data
-        print(f"[DEBUG on_group_enable_changed] Gruppe '{group_id}': enable_value={enable_value}, childCount={group_item.childCount()}")
+        """
+        Wird aufgerufen, wenn sich der Enable-Status einer Gruppe ändert.
         
-        # Prüfe, ob mehrere Items ausgewählt sind
+        Vorgaben:
+        - Gruppencheckbox gilt für alle untergeordneten Items
+        - Disable gewählt: Surface Items mit Empty Plot plotten
+        - Enable gewählt: Berechnung und SPL Plot für die neu enableten Flächen durchführen
+        """
+        # Bestimme Enable-Status (PartiallyChecked → aktivieren)
+        enable_value = (state == Qt.Checked) if state != Qt.PartiallyChecked else True
+        
+        # Sammle alle zu aktualisierenden Gruppen (Mehrfachauswahl unterstützen)
         selected_items = self.surface_tree_widget.selectedItems()
-        groups_to_update = []
+        groups_to_update = [group_item]  # Standard: nur aktuelle Gruppe
         
         if len(selected_items) > 1:
             # Mehrfachauswahl: Sammle alle ausgewählten Gruppen
-            for item in selected_items:
-                try:
-                    item_type = item.data(0, Qt.UserRole + 1)
-                    if item_type == "group":
-                        groups_to_update.append(item)
-                except RuntimeError:
-                    # Item wurde gelöscht, überspringe
-                    continue
-        else:
-            # Einzelauswahl: Nur die aktuelle Gruppe
-            groups_to_update = [group_item]
+            groups_to_update = [
+                item for item in selected_items
+                if item.data(0, Qt.UserRole + 1) == "group"
+            ]
         
-        # Wende Enable auf alle Gruppen an
+        # Aktualisiere alle betroffenen Gruppen
         for group in groups_to_update:
             try:
-                # Setze Gruppen-Checkbox explizit auf den neuen Zustand
+                # Extrahiere Gruppen-ID
+                group_id_data = group.data(0, Qt.UserRole)
+                group_id = group_id_data.get("id") if isinstance(group_id_data, dict) else group_id_data
+                
+                if not group_id:
+                    continue
+                
+                # 1. Setze Gruppen-Checkbox (verhindere Signal-Rekursion)
                 group_checkbox = self.surface_tree_widget.itemWidget(group, 1)
                 if group_checkbox:
                     group_checkbox.blockSignals(True)
-                    # Verwende setCheckState für tristate-Checkboxen
                     group_checkbox.setCheckState(Qt.Checked if enable_value else Qt.Unchecked)
                     group_checkbox.blockSignals(False)
                 
-                group_id_data = group.data(0, Qt.UserRole)
-                if isinstance(group_id_data, dict):
-                    group_id = group_id_data.get("id")
-                else:
-                    group_id = group_id_data
+                # 2. Aktualisiere Datenmodell (rekursiv für alle Child-Gruppen und Surfaces)
+                # set_surface_group_enabled() aktualisiert bereits alle untergeordneten Items
+                self._group_controller.set_surface_group_enabled(group_id, enable_value)
                 
-                if group_id:
-                    self._group_controller.set_surface_group_enabled(group_id, enable_value)
+                # 3. Aktualisiere lokalen Cache
+                if group_id in self.surface_groups:
+                    self.surface_groups[group_id]['enabled'] = enable_value
+                
+                # 4. Aktualisiere UI-Checkboxen aller Child-Items (rekursiv)
+                # update_data=True: Aktualisiere auch Daten, da _update_group_child_checkboxes
+                # für untergeordnete Gruppen ebenfalls update_data=True verwendet
+                self._update_group_child_checkboxes(
+                    group, 1, enable_value,
+                    update_data=True,  # Aktualisiere Daten für Konsistenz
+                    skip_calculations=True,  # Berechnungen am Ende einmalig
+                    skip_state_update=True  # Checkbox-Status wird unten aktualisiert
+                )
+                
+                # 5. Aktualisiere Gruppen-Checkbox-Zustand basierend auf Children
+                self._update_group_checkbox_state(group, 1)
+                
+                # 6. Aktualisiere Parent-Gruppen rekursiv (für korrekte PartiallyChecked-Anzeige)
+                parent = group.parent()
+                while parent:
+                    self._update_group_checkbox_state(parent, 1)
+                    parent = parent.parent()
+                
+                # 7. 🎯 NEU: Entferne SPL-Daten aus calculation_spl, wenn Gruppe disabled wird
+                # Damit werden die SPL Plot Actors entfernt und beim Enable neu berechnet
+                if not enable_value:
+                    try:
+                        if hasattr(self.container, 'calculation_spl') and isinstance(self.container.calculation_spl, dict):
+                            # Sammle alle Surfaces der Gruppe (rekursiv)
+                            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+                            if isinstance(surface_definitions, dict):
+                                all_surface_ids = self._collect_all_surfaces_from_group(group_id, surface_definitions)
+                                
+                                # Entferne SPL-Daten für alle Surfaces der Gruppe
+                                for sid in all_surface_ids:
+                                    if 'surface_grids' in self.container.calculation_spl:
+                                        self.container.calculation_spl['surface_grids'].pop(sid, None)
+                                    if 'surface_results' in self.container.calculation_spl:
+                                        self.container.calculation_spl['surface_results'].pop(sid, None)
+                                
+                                # Entferne auch Gruppen-Ergebnisse (wenn vorhanden)
+                                if 'surface_results' in self.container.calculation_spl:
+                                    surface_results = self.container.calculation_spl['surface_results']
+                                    if isinstance(surface_results, dict):
+                                        # Entferne alle Ergebnisse, die zu dieser Gruppe gehören
+                                        keys_to_remove = [
+                                            key for key, result_data in surface_results.items()
+                                            if isinstance(result_data, dict) and result_data.get('group_id') == group_id
+                                        ]
+                                        for key in keys_to_remove:
+                                            surface_results.pop(key, None)
+                    except Exception:
+                        pass
                     
-                    # Speichere Status in lokalem Cache
-                    if group_id in self.surface_groups:
-                        self.surface_groups[group_id]['enabled'] = enable_value
-                    
-                    # Aktualisiere alle Child-Checkboxen (ohne Berechnungen, bis alle Zustände gespeichert sind)
-                    # skip_state_update=True: Überspringe _update_group_checkbox_state, da wir die Checkbox bereits explizit gesetzt haben
-                    # update_data=True: WICHTIG - aktualisiere die tatsächlichen Surface-Daten
-                    self._update_group_child_checkboxes(group, 1, enable_value, update_data=True, skip_calculations=True, skip_state_update=True)
-                    
-                    # Aktualisiere Gruppen-Checkbox-Zustand explizit NACH allen Child-Updates
-                    # (um sicherzustellen, dass der Zustand korrekt ist, auch wenn alle Childs aktualisiert wurden)
-                    # WICHTIG: Dies muss NACH der Datenaktualisierung erfolgen, damit der korrekte Zustand gelesen wird
-                    self._update_group_checkbox_state(group, 1)
-                    
-                    # Aktualisiere Parent-Gruppen rekursiv
-                    parent = group.parent()
-                    while parent:
-                        self._update_group_checkbox_state(parent, 1)
-                        parent = parent.parent()
             except RuntimeError:
-                # Item wurde gelöscht, überspringe
+                # Item wurde während der Aktualisierung gelöscht
                 continue
         
-        # 🎯 WICHTIG: Aktualisiere Berechnungen erst NACH allen Zustandsänderungen
-        if hasattr(self.main_window, 'update_speaker_array_calculations'):
-            self.main_window.update_speaker_array_calculations()
+        # 🎯 Plot-Aktualisierung: Disable → Empty Plot, Enable → Berechnung + SPL Plot
+        # update_plots_for_surface_state() entscheidet automatisch:
+        # - Keine enabled Surfaces → Empty Plot
+        # - Enabled Surfaces + aktiver Speaker → Neuberechnung + SPL Plot
+        # - Enabled Surfaces + kein aktiver Speaker → Plot-Update (falls Daten vorhanden)
+        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+            self.main_window.draw_plots.update_plots_for_surface_state()
+            
     
     def on_group_hide_changed(self, group_item, state):
         """Wird aufgerufen, wenn sich der Hide-Status einer Gruppe ändert. Bei Mehrfachauswahl werden alle ausgewählten Gruppen aktualisiert."""
@@ -2848,6 +3079,38 @@ class UISurfaceManager(ModuleBase):
                     while parent:
                         self._update_group_checkbox_state(parent, 2)
                         parent = parent.parent()
+                    
+                    # 🎯 NEU: Entferne SPL-Daten aus calculation_spl, wenn Gruppe hidden wird
+                    # Damit werden die SPL Plot Actors entfernt und beim Unhide neu berechnet
+                    if hide_value:
+                        try:
+                            if hasattr(self.container, 'calculation_spl') and isinstance(self.container.calculation_spl, dict):
+                                # Sammle alle Surfaces der Gruppe (rekursiv)
+                                surface_definitions = getattr(self.settings, 'surface_definitions', {})
+                                if isinstance(surface_definitions, dict):
+                                    all_surface_ids = self._collect_all_surfaces_from_group(group_id, surface_definitions)
+                                    
+                                    # Entferne SPL-Daten für alle Surfaces der Gruppe
+                                    for sid in all_surface_ids:
+                                        if 'surface_grids' in self.container.calculation_spl:
+                                            self.container.calculation_spl['surface_grids'].pop(sid, None)
+                                        if 'surface_results' in self.container.calculation_spl:
+                                            self.container.calculation_spl['surface_results'].pop(sid, None)
+                                    
+                                    # Entferne auch Gruppen-Ergebnisse (wenn vorhanden)
+                                    if 'surface_results' in self.container.calculation_spl:
+                                        surface_results = self.container.calculation_spl['surface_results']
+                                        if isinstance(surface_results, dict):
+                                            # Entferne alle Ergebnisse, die zu dieser Gruppe gehören
+                                            keys_to_remove = [
+                                                key for key, result_data in surface_results.items()
+                                                if isinstance(result_data, dict) and result_data.get('group_id') == group_id
+                                            ]
+                                            for key in keys_to_remove:
+                                                surface_results.pop(key, None)
+                        except Exception:
+                            pass
+                    
             except RuntimeError:
                 # Item wurde gelöscht, überspringe
                 continue
@@ -3056,11 +3319,26 @@ class UISurfaceManager(ModuleBase):
         self.points_tree.clear()
         
         # Validiere Surface um ungültige Felder zu bestimmen
-        validation_result = validate_and_optimize_surface(
-            surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
-            round_to_cm=False,
-            remove_redundant=False,
-        )
+        # 🎯 FIX: Validierung nur bei Surfaces mit mehr als 3 Punkten (3 Punkte definieren immer eine Ebene)
+        from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, SurfaceValidationResult
+        if len(points) <= 3:
+            # 3 oder weniger Punkte: Immer gültig (3 Punkte definieren immer eine Ebene)
+            validation_result = SurfaceValidationResult(
+                is_valid=True,
+                optimized_points=points,
+                removed_points_count=0,
+                rounded_points_count=0,
+                error_message=None,
+                rigid_axis=None,
+                orientation=None,
+                invalid_fields=[],
+            )
+        else:
+            validation_result = validate_and_optimize_surface(
+                surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
+                round_to_cm=False,
+                remove_redundant=False,
+            )
         invalid_fields_set = {(idx, coord) for idx, coord in (validation_result.invalid_fields or [])}
         
         for index, point in enumerate(points):
@@ -3312,11 +3590,29 @@ class UISurfaceManager(ModuleBase):
                     hidden = surface.get('hidden', False)
                 
                 # Validiere Surface
-                validation_result = validate_and_optimize_surface(
-                    surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
-                    round_to_cm=False,  # Keine automatische Rundung beim manuellen Editieren
-                    remove_redundant=False,  # Keine automatische Entfernung beim manuellen Editieren
-                )
+                # 🎯 FIX: Validierung nur bei Surfaces mit mehr als 3 Punkten (3 Punkte definieren immer eine Ebene)
+                # 🎯 FIX: Überspringe Validierung bei Gruppen-Offsets (wird nur bei manuellen Änderungen in der UI benötigt)
+                from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, SurfaceValidationResult
+                
+                if len(points) <= 3:
+                    # Bei 3 oder weniger Punkten: Immer gültig (3 Punkte definieren immer eine Ebene)
+                    validation_result = SurfaceValidationResult(
+                        is_valid=True,
+                        optimized_points=points,
+                        removed_points_count=0,
+                        rounded_points_count=0,
+                        error_message=None,
+                        rigid_axis=None,
+                        orientation=None,
+                        invalid_fields=[],
+                    )
+                else:
+                    # Nur bei manuellen Änderungen in der UI: Validiere Surface (nur bei mehr als 3 Punkten)
+                    validation_result = validate_and_optimize_surface(
+                        surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
+                        round_to_cm=False,  # Keine automatische Rundung beim manuellen Editieren
+                        remove_redundant=False,  # Keine automatische Entfernung beim manuellen Editieren
+                    )
                 
                 # 🎯 ZUSÄTZLICHE PRÜFUNG: Für Surfaces mit 4 oder mehr Punkten prüfe ob Triangulation möglich ist
                 # (auch 4 Punkte müssen trianguliert werden können, wenn sie nicht planar sind)
@@ -3515,11 +3811,30 @@ class UISurfaceManager(ModuleBase):
             return
         
         # Validiere Surface
-        validation_result = validate_and_optimize_surface(
-            surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
-            round_to_cm=False,
-            remove_redundant=False,
-        )
+        # 🎯 FIX: Validierung nur bei Surfaces mit mehr als 3 Punkten (3 Punkte definieren immer eine Ebene)
+        # 🎯 FIX: Überspringe Validierung bei Gruppen-Offsets (wird nur bei manuellen Änderungen in der UI benötigt)
+        from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, SurfaceValidationResult
+        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+        
+        if len(points) <= 3:
+            # Bei 3 oder weniger Punkten: Immer gültig (3 Punkte definieren immer eine Ebene)
+            validation_result = SurfaceValidationResult(
+                is_valid=True,
+                optimized_points=points,
+                removed_points_count=0,
+                rounded_points_count=0,
+                error_message=None,
+                rigid_axis=None,
+                orientation=None,
+                invalid_fields=[],
+            )
+        else:
+            # Nur bei manuellen Änderungen in der UI: Validiere Surface (nur bei mehr als 3 Punkten)
+            validation_result = validate_and_optimize_surface(
+                surface if isinstance(surface, SurfaceDefinition) else SurfaceDefinition.from_dict(surface_id, surface),
+                round_to_cm=False,
+                remove_redundant=False,
+            )
         
         # Erstelle Set von ungültigen Feldern für schnellen Lookup
         invalid_fields_set = {(idx, coord) for idx, coord in (validation_result.invalid_fields or [])}
@@ -3630,253 +3945,172 @@ class UISurfaceManager(ModuleBase):
     
     # ---- Group Management --------------------------------------------
     
-    def save_original_positions_for_group(self, group_item):
-        """Speichert die ursprünglichen Positionen für alle Surfaces in einer Gruppe"""
-        if not group_item:
-            return
-        
-        # Finde die Gruppen-ID
-        group_id = group_item.data(0, Qt.UserRole)
-        
-        # Hole oder erstelle Gruppen-Daten
-        if group_id not in self.surface_groups:
-            group = self._group_controller.get_group(group_id)
-            if group:
-                self.surface_groups[group_id] = {
-                    'name': group.name,
-                    'enabled': group.enabled,
-                    'hidden': group.hidden,
-                    'child_surface_ids': [],
-                    'original_surface_positions': {}
-                }
-        
-        # Hole oder erstelle ursprüngliche Positionen
-        original_positions = self.surface_groups[group_id].get('original_surface_positions', {})
-        
-        # Speichere ursprüngliche Positionen für alle Child-Surfaces
-        child_count = group_item.childCount()
-        for i in range(child_count):
-            child_item = group_item.child(i)
-            child_type = child_item.data(0, Qt.UserRole + 1)
-            
-            if child_type == "surface":
-                surface_id = child_item.data(0, Qt.UserRole)
-                if isinstance(surface_id, dict):
-                    surface_id = surface_id.get('id')
-                
-                if surface_id is not None and surface_id not in original_positions:
-                    surface = self._get_surface(surface_id)
-                    if surface:
-                        # Berechne Zentrum der Surface-Punkte als Position
-                        points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
-                        if points:
-                            x_coords = [p.get('x', 0.0) for p in points]
-                            y_coords = [p.get('y', 0.0) for p in points]
-                            z_coords = [p.get('z', 0.0) for p in points]
-                            
-                            center_x = sum(x_coords) / len(x_coords) if x_coords else 0.0
-                            center_y = sum(y_coords) / len(y_coords) if y_coords else 0.0
-                            center_z = sum(z_coords) / len(z_coords) if z_coords else 0.0
-                            
-                            original_positions[surface_id] = {
-                                'x': center_x,
-                                'y': center_y,
-                                'z': center_z
-                            }
-        
-        # Speichere aktualisierte ursprüngliche Positionen
-        self.surface_groups[group_id]['original_surface_positions'] = original_positions
     
     def load_group_values(self, group_item):
-        """Lädt die aktuellen Werte der Gruppe in die Eingabefelder"""
+        """Lädt die aktuellen Offset-Werte der Gruppe in die UI-Felder"""
         if not group_item:
-            return
-        
-        group_id = group_item.data(0, Qt.UserRole)
-        
-        if group_id not in self.surface_groups:
-            # Initialisiere mit Standardwerten
+            # Reset auf 0.00
             self.group_rel_x_edit.setText("0.00")
             self.group_rel_y_edit.setText("0.00")
             self.group_rel_z_edit.setText("0.00")
             return
         
-        group_data = self.surface_groups[group_id]
+        group_id = group_item.data(0, Qt.UserRole)
+        if not group_id:
+            self.group_rel_x_edit.setText("0.00")
+            self.group_rel_y_edit.setText("0.00")
+            self.group_rel_z_edit.setText("0.00")
+            return
         
-        # Lade relative Positionen
-        rel_pos = group_data.get('relative_position', {'x': 0.0, 'y': 0.0, 'z': 0.0})
-        self.group_rel_x_edit.setText(f"{rel_pos.get('x', 0.0):.2f}")
-        self.group_rel_y_edit.setText(f"{rel_pos.get('y', 0.0):.2f}")
-        self.group_rel_z_edit.setText(f"{rel_pos.get('z', 0.0):.2f}")
+        # Setze immer auf 0.00 (Offset ist relativ, wird nicht gespeichert)
+        self.group_rel_x_edit.setText("0.00")
+        self.group_rel_y_edit.setText("0.00")
+        self.group_rel_z_edit.setText("0.00")
     
     def apply_group_changes_by_id(self, group_id):
-        """Wendet die Gruppen-Änderungen auf alle Child-Surfaces an (verwendet group_id statt group_item)"""
+        """
+        Wendet die eingegebenen Offset-Werte auf alle Surfaces der Gruppe an.
+        Danach werden die Surfaces neu geplottet (SPL Calc wenn autocalc aktiv, XY Axis wenn aktiv).
+        """
+        # 1. VALIDIERUNG: Prüfe group_id und hole Gruppe
         if not group_id:
             return
         
-        # Hole die eingegebenen Werte
-        try:
-            rel_x = float(self.group_rel_x_edit.text())
-            rel_y = float(self.group_rel_y_edit.text())
-            rel_z = float(self.group_rel_z_edit.text())
-        except ValueError:
-            print("Fehler: Ungültige Eingabewerte")
+        group = self._group_controller.get_group(group_id)
+        if not group:
+            print(f"Gruppe '{group_id}' nicht gefunden")
             return
         
-        # Stelle sicher, dass Gruppen-Daten existieren
-        if group_id not in self.surface_groups:
-            group = self._group_controller.get_group(group_id)
-            if group:
-                self.surface_groups[group_id] = {
-                    'name': group.name,
-                    'enabled': group.enabled,
-                    'hidden': group.hidden,
-                    'child_surface_ids': [],
-                    'original_surface_positions': {}
-                }
+        # 2. EINGABE: Lese Offset-Werte aus UI
+        try:
+            offset_x = float(self.group_rel_x_edit.text())
+            offset_y = float(self.group_rel_y_edit.text())
+            offset_z = float(self.group_rel_z_edit.text())
+        except ValueError:
+            print("Ungültige Offset-Werte")
+            return
         
-        # Speichere die relativen Werte in der Gruppe
-        self.surface_groups[group_id]['relative_position'] = {
-            'x': rel_x,
-            'y': rel_y,
-            'z': rel_z
-        }
+        # Prüfe ob überhaupt ein Offset vorhanden ist
+        if abs(offset_x) < 1e-9 and abs(offset_y) < 1e-9 and abs(offset_z) < 1e-9:
+            # Kein Offset - nichts zu tun
+            return
         
-        # Hole ursprüngliche Surface-Positionen (sollten bereits beim Hinzufügen zur Gruppe gespeichert sein)
-        original_positions = self.surface_groups[group_id].get('original_surface_positions', {})
+        # 3. SURFACES: Hole alle Surfaces der Gruppe
+        surface_ids = group.surface_ids
+        if not surface_ids:
+            print(f"Gruppe '{group_id}' hat keine Surfaces")
+            return
         
-        # Versuche, das Tree-Item zu finden, falls es noch existiert
-        group_item = None
-        if hasattr(self, 'surface_tree_widget') and self.surface_tree_widget:
-            group_item = self._find_tree_item_by_id(group_id)
+        # 4. OFFSET ANWENDEN: Für jedes Surface alle Punkte verschieben
+        # 🎯 WICHTIG: Surfaces können sich Punkt-Referenzen teilen!
+        # Daher müssen wir jeden Punkt nur EINMAL verschieben, auch wenn er von mehreren Surfaces verwendet wird.
+        surface_store = getattr(self.settings, 'surface_definitions', {})
+        updated_surfaces = []
         
-        # Sammle alle Child-Surface-IDs
-        child_surface_ids = []
+        # 🎯 LÖSUNG: Sammle alle eindeutigen Punkt-Referenzen (basierend auf id() der Dict-Objekte)
+        # und verschiebe jeden Punkt nur einmal
+        processed_points = set()  # Set von id(point) um doppelte Verschiebung zu vermeiden
         
-        # Versuche zuerst, die IDs aus dem Tree-Item zu holen (falls es noch existiert)
-        if group_item:
-            try:
-                child_count = group_item.childCount()
-                for i in range(child_count):
-                    child_item = group_item.child(i)
-                    child_type = child_item.data(0, Qt.UserRole + 1)
-                    
-                    if child_type == "surface":
-                        surface_id = child_item.data(0, Qt.UserRole)
-                        if isinstance(surface_id, dict):
-                            surface_id = surface_id.get('id')
-                        
-                        if surface_id is not None:
-                            child_surface_ids.append(surface_id)
-            except RuntimeError:
-                # Item wurde gelöscht, verwende Fallback
-                group_item = None
-        
-        # Fallback: Hole Child-Surface-IDs aus der Gruppe oder aus gespeicherten Daten
-        if not child_surface_ids:
-            # Versuche aus gespeicherten Daten
-            if 'child_surface_ids' in self.surface_groups[group_id]:
-                child_surface_ids = self.surface_groups[group_id]['child_surface_ids']
+        for surface_id in surface_ids:
+            surface = surface_store.get(surface_id)
+            if not surface:
+                continue
             
-            # Falls immer noch leer, hole aus der Gruppe selbst
-            if not child_surface_ids:
-                group = self._group_controller.get_group(group_id)
-                if group:
-                    child_surface_ids = getattr(group, 'surface_ids', [])
-                    # Speichere für zukünftige Verwendung
-                    self.surface_groups[group_id]['child_surface_ids'] = child_surface_ids
-        
-        # Speichere die Child-Surface-IDs für zukünftige Verwendung
-        self.surface_groups[group_id]['child_surface_ids'] = child_surface_ids
-        
-        # Sammle ursprüngliche Positionen für alle Surfaces
-        for surface_id in child_surface_ids:
-            if surface_id not in original_positions:
-                surface = self._get_surface(surface_id)
-                if surface:
-                    points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
-                    if points:
-                        x_coords = [p.get('x', 0.0) for p in points]
-                        y_coords = [p.get('y', 0.0) for p in points]
-                        z_coords = [p.get('z', 0.0) for p in points]
-                        
-                        center_x = sum(x_coords) / len(x_coords) if x_coords else 0.0
-                        center_y = sum(y_coords) / len(y_coords) if y_coords else 0.0
-                        center_z = sum(z_coords) / len(z_coords) if z_coords else 0.0
-                        
-                        original_positions[surface_id] = {
-                            'x': center_x,
-                            'y': center_y,
-                            'z': center_z
-                        }
-        
-        # Speichere aktualisierte ursprüngliche Positionen
-        if original_positions:
-            self.surface_groups[group_id]['original_surface_positions'] = original_positions
-        
-        # Wende die Änderungen auf alle Child-Surfaces an
-        # WICHTIG: Die relativen Werte werden zu den AKTUELLEN Surface-Punkt-Werten hinzugefügt
-        for surface_id in child_surface_ids:
-            surface = self._get_surface(surface_id)
-            if surface:
-                points = surface.points if isinstance(surface, SurfaceDefinition) else surface.get('points', [])
+            # Hole Punkte
+            if isinstance(surface, SurfaceDefinition):
+                points = surface.points
+            else:
+                points = surface.get('points', [])
+            
+            if not points:
+                continue
+            
+            # Wende Offset auf alle Punkte an - aber nur wenn der Punkt noch nicht verarbeitet wurde
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
                 
-                # #region agent log
-                import json
-                import time as time_module
-                first_point_before = points[0].copy() if points else {}
-                # #endregion
-                
-                # Addiere relative Positionen zu allen Punkten
-                for point in points:
-                    # #region agent log
-                    point_before = point.copy()
-                    # #endregion
-                    point['x'] = point.get('x', 0.0) + rel_x
-                    point['y'] = point.get('y', 0.0) + rel_y
-                    point['z'] = point.get('z', 0.0) + rel_z
-                    # #region agent log
-                    if point == points[0]:  # Log nur für ersten Punkt
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H2",
-                                "location": "UISurfaceManager.py:apply_group_changes_by_id:3763",
-                                "message": "Group apply changes - RELATIVE addition",
-                                "data": {
-                                    "group_id": str(group_id),
-                                    "surface_id": str(surface_id),
-                                    "relative_x": float(rel_x),
-                                    "relative_y": float(rel_y),
-                                    "relative_z": float(rel_z),
-                                    "point_before": {
-                                        "x": float(point_before.get('x', 0.0)),
-                                        "y": float(point_before.get('y', 0.0)),
-                                        "z": float(point_before.get('z', 0.0))
-                                    },
-                                    "point_after": {
-                                        "x": float(point.get('x', 0.0)),
-                                        "y": float(point.get('y', 0.0)),
-                                        "z": float(point.get('z', 0.0))
-                                    }
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    # #endregion
-                
-                # Aktualisiere Surface
+                # Prüfe ob dieser Punkt bereits verarbeitet wurde (gleiche Referenz)
+                point_id = id(point)
+                if point_id not in processed_points:
+                    # Punkt noch nicht verarbeitet - verschiebe ihn
+                    point['x'] = point.get('x', 0.0) + offset_x
+                    point['y'] = point.get('y', 0.0) + offset_y
+                    point['z'] = point.get('z', 0.0) + offset_z
+                    processed_points.add(point_id)
+            
+            # Aktualisiere plane_model (wichtig für SPL-Berechnung)
+            plane_model, _ = derive_surface_plane(points)
+            if isinstance(surface, SurfaceDefinition):
+                surface.plane_model = plane_model
+            else:
+                surface['plane_model'] = plane_model
+            
+            updated_surfaces.append(surface_id)
+        
+        if not updated_surfaces:
+            return
+        
+        # 5. PLOT UPDATE: Trigger Neuberechnung und Plot-Update
+        # Prüfe ob autocalc aktiv
+        if self.is_autocalc_active():
+            # SPL Calc + Plot (ruft intern update_overlays auf)
+            if hasattr(self.main_window, 'update_speaker_array_calculations'):
+                self.main_window.update_speaker_array_calculations()
+        else:
+            # Nur Plot-Update (Overlays für XY Axis)
+            if hasattr(self.main_window, 'draw_plots'):
+                if hasattr(self.main_window.draw_plots, 'update_plots_for_surface_state'):
+                    self.main_window.draw_plots.update_plots_for_surface_state()
+                elif hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'update_overlays'):
+                        self.main_window.draw_plots.draw_spl_plotter.update_overlays(
+                            self.settings, 
+                            self.container
+                        )
+        
+        # 6. SURFACE-RAHMEN & XY-ACHSEN: Aktualisiere Surface-Rahmen und XY-Achsen-Plots/Linien
+        # Surface-Rahmen aktualisieren (Overlays)
+        if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+            plotter = self.main_window.draw_plots.draw_spl_plotter
+            if plotter and hasattr(plotter, 'update_overlays'):
+                # Setze Signatur zurück, damit Surface-Rahmen und XY-Achsen-Linien neu gezeichnet werden
+                if hasattr(plotter, 'overlay_axis') and hasattr(plotter.overlay_axis, '_last_axis_state'):
+                    plotter.overlay_axis._last_axis_state = None
+                if hasattr(plotter, '_last_overlay_signatures'):
+                    if isinstance(plotter._last_overlay_signatures, dict):
+                        # Entferne 'axis' und 'surfaces' aus der Signatur, damit sie neu berechnet werden
+                        plotter._last_overlay_signatures.pop('axis', None)
+                        plotter._last_overlay_signatures.pop('surfaces', None)
+                # Aktualisiere Overlays (Surface-Rahmen und XY-Achsen-Linien)
+                plotter.update_overlays(self.settings, self.container)
+        
+        # XY-Achsen-Plots neu berechnen und zeichnen
+        # (nur wenn Surfaces enabled sind und XY-Achsen aktiviert sind)
+        if hasattr(self.main_window, 'calculate_axes'):
+            # Prüfe ob mindestens ein Surface enabled ist und XY-Achsen aktiviert hat
+            surface_store = getattr(self.settings, 'surface_definitions', {})
+            has_enabled_xy_surface = False
+            for surface_id in updated_surfaces:
+                surface = surface_store.get(surface_id)
+                if not surface:
+                    continue
                 if isinstance(surface, SurfaceDefinition):
-                    surface.points = points
+                    is_enabled = surface.enabled
+                    is_hidden = surface.hidden
+                    xy_enabled = getattr(surface, 'xy_enabled', False)
                 else:
-                    surface['points'] = points
-        
-        # Aktualisiere Berechnungen
-        if hasattr(self.main_window, 'update_speaker_array_calculations'):
-            self.main_window.update_speaker_array_calculations()
-        
-        # Aktualisiere TreeWidget
-        self.load_surfaces()
+                    is_enabled = surface.get('enabled', False)
+                    is_hidden = surface.get('hidden', False)
+                    xy_enabled = surface.get('xy_enabled', False)
+                
+                if is_enabled and not is_hidden and xy_enabled:
+                    has_enabled_xy_surface = True
+                    break
+            
+            if has_enabled_xy_surface:
+                # Berechne und zeichne XY-Achsen-Plots neu
+                self.main_window.calculate_axes(update_plot=True)
     
     # ---- Context Menu -----------------------------------------------
     
@@ -4736,9 +4970,51 @@ class _SurfaceGroupController:
     
     def set_surface_group_enabled(self, group_id: str, enabled: bool):
         group = self._ensure_group_object(group_id)
+        # #region agent log
+        try:
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "I",
+                    "location": "UISurfaceManager.py:set_surface_group_enabled:entry",
+                    "message": "set_surface_group_enabled called",
+                    "data": {
+                        "group_id": str(group_id),
+                        "enabled": bool(enabled),
+                        "group_is_none": group is None,
+                        "group_enabled_before": bool(group.enabled) if group is not None and hasattr(group, 'enabled') else None,
+                        "surface_ids": list(group.surface_ids) if group is not None and hasattr(group, 'surface_ids') else []
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if not group:
             return
         group.enabled = bool(enabled)
+        # #region agent log
+        try:
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "I",
+                    "location": "UISurfaceManager.py:set_surface_group_enabled:after_set",
+                    "message": "set_surface_group_enabled after setting group.enabled",
+                    "data": {
+                        "group_id": str(group_id),
+                        "enabled": bool(enabled),
+                        "group_enabled_after": bool(group.enabled) if group is not None and hasattr(group, 'enabled') else None
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         for child_group_id in group.child_groups:
             self.set_surface_group_enabled(child_group_id, enabled)
         for surface_id in group.surface_ids:
@@ -4843,13 +5119,92 @@ class _SurfaceGroupController:
         return None
     
     def _set_surface_enabled(self, surface_id: str, enabled: bool):
+        # #region agent log
+        try:
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "I",
+                    "location": "UISurfaceManager.py:_set_surface_enabled:entry",
+                    "message": "_set_surface_enabled called",
+                    "data": {
+                        "surface_id": str(surface_id),
+                        "enabled": bool(enabled)
+                    },
+                    "timestamp": int(__import__('time').time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         set_enabled = getattr(self.settings, "set_surface_enabled", None)
         if callable(set_enabled):
             try:
                 set_enabled(surface_id, enabled)
+                # #region agent log
+                try:
+                    import json
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "I",
+                            "location": "UISurfaceManager.py:_set_surface_enabled:via_settings",
+                            "message": "_set_surface_enabled via settings.set_surface_enabled",
+                            "data": {
+                                "surface_id": str(surface_id),
+                                "enabled": bool(enabled)
+                            },
+                            "timestamp": int(__import__('time').time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 return
             except KeyError:
                 pass
         surface = self._ensure_surface_object(surface_id)
         if surface:
+            # #region agent log
+            try:
+                import json
+                enabled_before = bool(surface.enabled) if hasattr(surface, 'enabled') else None
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "I",
+                        "location": "UISurfaceManager.py:_set_surface_enabled:before_set",
+                        "message": "Before setting surface.enabled",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "enabled_before": enabled_before,
+                            "enabled_new": bool(enabled)
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             surface.enabled = bool(enabled)
+            # #region agent log
+            try:
+                import json
+                enabled_after = bool(surface.enabled) if hasattr(surface, 'enabled') else None
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "I",
+                        "location": "UISurfaceManager.py:_set_surface_enabled:after_set",
+                        "message": "After setting surface.enabled",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "enabled_after": enabled_after
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion

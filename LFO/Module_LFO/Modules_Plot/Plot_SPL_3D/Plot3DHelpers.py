@@ -20,11 +20,94 @@ except Exception:
 
 def has_valid_data(x, y, pressure) -> bool:
     """Prüft, ob die Daten gültig sind (nicht None und nicht leer)."""
+    # #region agent log
+    import json
+    import time as time_module
+    try:
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "C",
+                "location": "Plot3DHelpers.py:has_valid_data:entry",
+                "message": "has_valid_data called",
+                "data": {
+                    "x_is_none": x is None,
+                    "y_is_none": y is None,
+                    "pressure_is_none": pressure is None,
+                    "x_type": str(type(x)),
+                    "y_type": str(type(y)),
+                    "pressure_type": str(type(pressure))
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    
     if x is None or y is None or pressure is None:
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "C",
+                    "location": "Plot3DHelpers.py:has_valid_data:return_false_none",
+                    "message": "has_valid_data returning False - None values",
+                    "data": {
+                        "x_is_none": x is None,
+                        "y_is_none": y is None,
+                        "pressure_is_none": pressure is None
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         return False
     try:
-        return len(x) > 0 and len(y) > 0 and len(pressure) > 0
+        x_len = len(x) if hasattr(x, '__len__') else 0
+        y_len = len(y) if hasattr(y, '__len__') else 0
+        pressure_len = len(pressure) if hasattr(pressure, '__len__') else 0
+        result = x_len > 0 and y_len > 0 and pressure_len > 0
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "C",
+                    "location": "Plot3DHelpers.py:has_valid_data:return",
+                    "message": "has_valid_data result",
+                    "data": {
+                        "x_len": x_len,
+                        "y_len": y_len,
+                        "pressure_len": pressure_len,
+                        "result": result
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        return result
     except TypeError:
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "C",
+                    "location": "Plot3DHelpers.py:has_valid_data:return_false_typeerror",
+                    "message": "has_valid_data returning False - TypeError",
+                    "data": {},
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         return False
 
 

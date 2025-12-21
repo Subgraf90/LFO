@@ -25,6 +25,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     prepare_plot_geometry,
     prepare_vertical_plot_geometry,
     VerticalPlotGeometry,
+    _evaluate_plane_on_grid,
 )
 from Module_LFO.Modules_Init.Logging import measure_time
 from Module_LFO.Modules_Plot.Plot_SPL_3D.Plot3DHelpers import (
@@ -148,6 +149,190 @@ class SPL3DPlotRenderer:
             vertices = np.array(triangulated_vertices_list, dtype=float)
             faces = np.array(triangulated_faces_list, dtype=np.int64)
             
+            # 🎯 FIX: Aktualisiere Vertices-Z-Koordinaten basierend auf aktuellen Surface-Punkten
+            # Wenn eine Gruppe verschoben wird, müssen die Vertices-Z-Koordinaten aktualisiert werden
+            # WICHTIG: Verwende settings.surface_definitions direkt, da dort die aktualisierten Punkte und plane_model gespeichert sind
+            try:
+                # Verwende self.settings.surface_definitions direkt (nicht getattr, da es immer vorhanden sein sollte)
+                if not hasattr(self.settings, 'surface_definitions'):
+                    surface_definitions = {}
+                else:
+                    surface_definitions = self.settings.surface_definitions or {}
+                
+                if isinstance(surface_definitions, dict) and surface_id in surface_definitions:
+                    surface_def = surface_definitions[surface_id]
+                    if isinstance(surface_def, SurfaceDefinition):
+                        points = getattr(surface_def, 'points', [])
+                        plane_model = getattr(surface_def, 'plane_model', None)
+                    else:
+                        points = surface_def.get('points', [])
+                        plane_model = surface_def.get('plane_model', None)
+                    
+                    if points and len(points) >= 3 and plane_model:
+                        # Berechne neue Z-Koordinaten basierend auf plane_model
+                        # Verwende X- und Y-Koordinaten der Vertices
+                        vertices_x = vertices[:, 0]
+                        vertices_y = vertices[:, 1]
+                        vertices_z_old = vertices[:, 2].copy()  # Speichere alte Z-Koordinaten für Vergleich
+                        
+                        # Erstelle temporäre Grids für vektorisierte Auswertung
+                        # Da _evaluate_plane_on_grid 2D-Arrays erwartet, müssen wir die Vertices als 2D-Arrays behandeln
+                        # Für einzelne Vertices können wir evaluate_surface_plane verwenden, aber das ist langsamer
+                        # Stattdessen verwenden wir eine vektorisierte Version direkt
+                        mode = plane_model.get("mode", "constant")
+                        if mode == "constant":
+                            new_z = np.full_like(vertices_x, float(plane_model.get("base", 0.0)))
+                        elif mode == "x":
+                            slope = float(plane_model.get("slope", 0.0))
+                            intercept = float(plane_model.get("intercept", 0.0))
+                            new_z = slope * vertices_x + intercept
+                        elif mode == "y":
+                            slope = float(plane_model.get("slope", 0.0))
+                            intercept = float(plane_model.get("intercept", 0.0))
+                            new_z = slope * vertices_y + intercept
+                        elif mode == "xy":
+                            slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
+                            slope_y = float(plane_model.get("slope_y", 0.0))
+                            intercept = float(plane_model.get("intercept", 0.0))
+                            new_z = slope_x * vertices_x + slope_y * vertices_y + intercept
+                        else:
+                            new_z = np.full_like(vertices_x, float(plane_model.get("base", 0.0)))
+                        
+                        # Aktualisiere Z-Koordinaten der Vertices
+                        vertices = np.column_stack([vertices_x, vertices_y, new_z])
+                        
+                        # #region agent log - VALIDIERUNG: Vertices-Z-Koordinaten vor und nach Aktualisierung
+                        try:
+                            import json
+                            import time
+                            # Berechne Differenz zwischen alten und neuen Z-Koordinaten
+                            z_diff = new_z - vertices_z_old
+                            z_diff_min = float(np.min(z_diff)) if len(z_diff) > 0 else 0.0
+                            z_diff_max = float(np.max(z_diff)) if len(z_diff) > 0 else 0.0
+                            z_diff_mean = float(np.mean(z_diff)) if len(z_diff) > 0 else 0.0
+                            
+                            # Prüfe ob alle Vertices linear verschoben wurden (Differenz sollte konstant sein für lineare Verschiebung)
+                            z_diff_std = float(np.std(z_diff)) if len(z_diff) > 0 else 0.0
+                            is_linear_shift = z_diff_std < 0.0001  # Wenn Standardabweichung sehr klein, ist es eine lineare Verschiebung
+                            
+                            # Prüfe ob plane_model aus settings.surface_definitions korrekt geladen wurde
+                            points_from_settings = points
+                            plane_model_from_settings = plane_model
+                            
+                            # Berechne erwartete Z-Werte aus den Surface-Punkten für Vergleich
+                            if points_from_settings and len(points_from_settings) >= 3:
+                                points_z_values = [float(p.get('z', 0.0)) for p in points_from_settings]
+                                points_z_min = min(points_z_values) if points_z_values else 0.0
+                                points_z_max = max(points_z_values) if points_z_values else 0.0
+                            else:
+                                points_z_min = None
+                                points_z_max = None
+                            
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "VALIDATION",
+                                    "location": "Plot3DSPL.py:_combine_group_meshes:vertices_z_updated_validation",
+                                    "message": "VALIDATION: Vertices Z-coordinates updated from plane_model with comparison",
+                                    "data": {
+                                        "surface_id": surface_id,
+                                        "plane_mode": mode,
+                                        "plane_model": plane_model_from_settings,
+                                        "points_count_from_settings": len(points_from_settings) if points_from_settings else 0,
+                                        "points_z_min": points_z_min,
+                                        "points_z_max": points_z_max,
+                                        "vertices_count": len(vertices) if vertices is not None else 0,
+                                        "vertices_z_min_old": float(np.min(vertices_z_old)) if len(vertices_z_old) > 0 else None,
+                                        "vertices_z_max_old": float(np.max(vertices_z_old)) if len(vertices_z_old) > 0 else None,
+                                        "vertices_z_min_new": float(np.min(new_z)) if len(new_z) > 0 else None,
+                                        "vertices_z_max_new": float(np.max(new_z)) if len(new_z) > 0 else None,
+                                        "z_diff_min": z_diff_min,
+                                        "z_diff_max": z_diff_max,
+                                        "z_diff_mean": z_diff_mean,
+                                        "z_diff_std": z_diff_std,
+                                        "is_linear_shift": is_linear_shift,
+                                        "vertices_z_sample_old": [float(v) for v in vertices_z_old[:5]] if len(vertices_z_old) > 0 else [],
+                                        "vertices_z_sample_new": [float(v) for v in new_z[:5]] if len(new_z) > 0 else [],
+                                        "vertices_z_diff_sample": [float(d) for d in z_diff[:5]] if len(z_diff) > 0 else [],
+                                        "vertices_x_sample": [float(v) for v in vertices_x[:5]] if len(vertices_x) > 0 else [],
+                                        "vertices_y_sample": [float(v) for v in vertices_y[:5]] if len(vertices_y) > 0 else []
+                                    },
+                                    "timestamp": int(time.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        
+                        # #region agent log
+                        try:
+                            import json
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "FIX",
+                                    "location": "Plot3DSPL.py:_combine_group_meshes:vertices_z_updated",
+                                    "message": "Vertices Z-coordinates updated from plane_model",
+                                    "data": {
+                                        "surface_id": surface_id,
+                                        "plane_mode": mode,
+                                        "vertices_z_min_old": float(np.min(vertices_z_old)) if len(vertices_z_old) > 0 else None,
+                                        "vertices_z_max_old": float(np.max(vertices_z_old)) if len(vertices_z_old) > 0 else None,
+                                        "vertices_z_min_new": float(np.min(new_z)) if len(new_z) > 0 else None,
+                                        "vertices_z_max_new": float(np.max(new_z)) if len(new_z) > 0 else None
+                                    },
+                                    "timestamp": int(time.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+            except Exception as e:
+                # #region agent log
+                try:
+                    import json
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "FIX",
+                            "location": "Plot3DSPL.py:_combine_group_meshes:vertices_z_update_failed",
+                            "message": "Failed to update vertices Z-coordinates",
+                            "data": {
+                                "surface_id": surface_id,
+                                "error": str(e)
+                            },
+                            "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                pass
+            
+            # #region agent log
+            try:
+                import json
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "N",
+                        "location": "Plot3DSPL.py:_combine_group_meshes:vertices_loaded",
+                        "message": "Triangulated vertices loaded",
+                        "data": {
+                            "surface_id": surface_id,
+                            "is_group_sum": is_group_sum,
+                            "vertices_count": len(vertices) if vertices is not None else 0,
+                            "vertices_z_min": float(np.min(vertices[:, 2])) if vertices is not None and len(vertices) > 0 else None,
+                            "vertices_z_max": float(np.max(vertices[:, 2])) if vertices is not None and len(vertices) > 0 else None,
+                            "vertices_z_mean": float(np.mean(vertices[:, 2])) if vertices is not None and len(vertices) > 0 else None
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             # Hole SPL-Werte
             sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
             
@@ -189,6 +374,33 @@ class SPL3DPlotRenderer:
                 Z_group = np.asarray(result_data.get('group_Z_grid', []))  # 🎯 NEU: Hole Z-Koordinaten
                 group_mask_raw = result_data.get('group_mask', [])
                 group_mask = np.asarray(group_mask_raw)
+                
+                # #region agent log
+                try:
+                    import json
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "N",
+                            "location": "Plot3DSPL.py:_combine_group_meshes:group_grids_loaded",
+                            "message": "Group grids loaded",
+                            "data": {
+                                "surface_id": surface_id,
+                                "X_group_shape": list(X_group.shape) if hasattr(X_group, 'shape') else None,
+                                "Y_group_shape": list(Y_group.shape) if hasattr(Y_group, 'shape') else None,
+                                "Z_group_shape": list(Z_group.shape) if hasattr(Z_group, 'shape') else None,
+                                "Z_group_min": float(np.min(Z_group)) if Z_group.size > 0 else None,
+                                "Z_group_max": float(np.max(Z_group)) if Z_group.size > 0 else None,
+                                "Z_group_mean": float(np.mean(Z_group)) if Z_group.size > 0 else None,
+                                "vertices_z_min": float(np.min(vertices[:, 2])) if vertices is not None and len(vertices) > 0 else None,
+                                "vertices_z_max": float(np.max(vertices[:, 2])) if vertices is not None and len(vertices) > 0 else None
+                            },
+                            "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 if DEBUG_PLOT3D_TIMING:
                     print(f"[PlotSPL3D] _combine_group_meshes: Surface '{surface_id}': group_mask_raw type={type(group_mask_raw)}, len={len(group_mask_raw) if isinstance(group_mask_raw, (list, np.ndarray)) else 'N/A'}, group_mask.shape={group_mask.shape if group_mask.size > 0 else 'empty'}, group_mask.size={group_mask.size}")
@@ -1256,6 +1468,7 @@ class SPL3DPlotRenderer:
         phase_mode: bool = False,
         time_mode: bool = False,
     ) -> None:
+        print(f"[PLOT] _render_surfaces_textured() aufgerufen (surfaces={len(geometry.enabled_surfaces) if hasattr(geometry, 'enabled_surfaces') else 'N/A'})")
         """
         Renderpfad für horizontale Surfaces als 2D-Texturen.
 
@@ -1274,8 +1487,60 @@ class SPL3DPlotRenderer:
         # Optionales Feintiming für diesen Pfad
         t_textures_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
 
-        # 🎯 Nur mit per-Surface-Overrides arbeiten (keine globalen Positionen mehr)
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "J",
+                    "location": "Plot3DSPL.py:_render_surfaces_textured:entry",
+                    "message": "_render_surfaces_textured called",
+                    "data": {
+                        "surface_overrides_count": len(surface_overrides) if isinstance(surface_overrides, dict) else 0,
+                        "surface_overrides_is_empty": not surface_overrides
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        # 🎯 WICHTIG: Auch wenn keine surface_overrides vorhanden sind, sollten wir prüfen,
+        # ob es enabled Surfaces gibt, die geplottet werden sollten.
+        # Wenn keine surface_overrides vorhanden sind, aber enabled Surfaces existieren,
+        # sollten wir trotzdem fortfahren, um zu sehen, ob wir sie plotten können.
         if not surface_overrides:
+            # #region agent log
+            try:
+                surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
+                enabled_count = 0
+                if isinstance(surface_definitions, dict):
+                    for sid, surface_def in surface_definitions.items():
+                        try:
+                            enabled = bool(getattr(surface_def, "enabled", False)) if hasattr(surface_def, "enabled") else bool(surface_def.get("enabled", False))
+                            hidden = bool(getattr(surface_def, "hidden", False)) if hasattr(surface_def, "hidden") else bool(surface_def.get("hidden", False))
+                            if enabled and not hidden:
+                                enabled_count += 1
+                        except Exception:
+                            pass
+                
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "J",
+                        "location": "Plot3DSPL.py:_render_surfaces_textured:early_return",
+                        "message": "EARLY RETURN - no surface_overrides",
+                        "data": {
+                            "enabled_surfaces_count": enabled_count,
+                            "surface_definitions_count": len(surface_definitions) if isinstance(surface_definitions, dict) else 0
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             return
 
         # Bestimme ob Step-Modus aktiv ist (vor der Verwendung definieren)
@@ -1350,6 +1615,23 @@ class SPL3DPlotRenderer:
 
         # Aktive Surfaces ermitteln
         surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
+        
+        # 🎯 NEU: Erstelle Mapping von group_id zu Gruppen-Status für schnellen Zugriff
+        surface_groups = getattr(self.settings, 'surface_groups', {})
+        group_status: dict[str, dict[str, bool]] = {}  # group_id -> {'enabled': bool, 'hidden': bool}
+        if isinstance(surface_groups, dict):
+            for group_id, group_data in surface_groups.items():
+                if hasattr(group_data, 'enabled'):
+                    group_status[group_id] = {
+                        'enabled': bool(group_data.enabled),
+                        'hidden': bool(getattr(group_data, 'hidden', False))
+                    }
+                elif isinstance(group_data, dict):
+                    group_status[group_id] = {
+                        'enabled': bool(group_data.get('enabled', True)),
+                        'hidden': bool(group_data.get('hidden', False))
+                    }
+        
         enabled_surfaces: list[tuple[str, list[dict[str, float]], Any]] = []
         if isinstance(surface_definitions, dict):
             for surface_id, surface_def in surface_definitions.items():
@@ -1358,13 +1640,52 @@ class SPL3DPlotRenderer:
                     hidden = bool(getattr(surface_def, "hidden", False))
                     points = getattr(surface_def, "points", []) or []
                     surface_obj = surface_def
+                    group_id = getattr(surface_def, 'group_id', None)
                 else:
                     enabled = bool(surface_def.get("enabled", False))
                     hidden = bool(surface_def.get("hidden", False))
                     points = surface_def.get("points", []) or []
                     surface_obj = surface_def
+                    group_id = surface_def.get('group_id') or surface_def.get('group_name')
+                
+                # 🎯 NEU: Berücksichtige Gruppen-Status (wie in draw_surfaces)
+                if group_id and group_id in group_status:
+                    group_enabled = group_status[group_id]['enabled']
+                    group_hidden = group_status[group_id]['hidden']
+                    
+                    # Wenn Gruppe hidden ist → Surface komplett überspringen
+                    if group_hidden:
+                        hidden = True
+                    # Wenn Gruppe disabled ist → Surface als disabled behandeln
+                    elif not group_enabled:
+                        enabled = False
+                
                 if enabled and not hidden and len(points) >= 3:
                     enabled_surfaces.append((str(surface_id), points, surface_obj))
+                    
+                    # #region agent log - VALIDIERUNG: Punkte nach Plot (beim Rendering)
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "VALIDATION",
+                                "location": "Plot3DSPL.py:_render_surfaces_textured:points_after_plot",
+                                "message": "VALIDATION: Points used for plot rendering",
+                                "data": {
+                                    "surface_id": str(surface_id),
+                                    "enabled": enabled,
+                                    "hidden": hidden,
+                                    "points_count": len(points),
+                                    "points": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points]
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
         
 
         # Nicht mehr benötigte Textur-Actors entfernen
@@ -1396,7 +1717,7 @@ class SPL3DPlotRenderer:
                         pass
                     self._surface_actors.pop(sid, None)
         
-        # 🎯 NEU: Entferne Gruppen-Actors für inaktive Gruppen
+        # 🎯 NEU: Entferne Gruppen-Actors für inaktive, disabled oder hidden Gruppen
         if hasattr(self, "_group_actors") and isinstance(self._group_actors, dict):
             # Prüfe welche Gruppen noch aktiv sind (basierend auf surface_results_data)
             calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
@@ -1408,10 +1729,43 @@ class SPL3DPlotRenderer:
                     if isinstance(result_data, dict) and result_data.get('is_group_sum', False):
                         group_id = result_data.get('group_id')
                         if group_id:
-                            active_group_ids.add(group_id)
+                            # Prüfe zusätzlich, ob die Gruppe enabled und nicht hidden ist
+                            group_enabled = True
+                            group_hidden = False
+                            surface_groups = getattr(self.settings, 'surface_groups', {}) if hasattr(self, 'settings') else {}
+                            if isinstance(surface_groups, dict) and group_id in surface_groups:
+                                group_data = surface_groups[group_id]
+                                if hasattr(group_data, 'enabled'):
+                                    group_enabled = bool(group_data.enabled)
+                                    group_hidden = bool(getattr(group_data, 'hidden', False))
+                                elif isinstance(group_data, dict):
+                                    group_enabled = bool(group_data.get('enabled', True))
+                                    group_hidden = bool(group_data.get('hidden', False))
+                            
+                            # Nur als aktiv markieren, wenn enabled und nicht hidden
+                            if group_enabled and not group_hidden:
+                                active_group_ids.add(group_id)
             
             for group_id, actor in list(self._group_actors.items()):
-                if group_id not in active_group_ids:
+                # Entferne Actor wenn Gruppe nicht mehr aktiv ist oder disabled/hidden
+                should_remove = group_id not in active_group_ids
+                
+                # Zusätzliche Prüfung: Entferne auch wenn Gruppe disabled oder hidden ist
+                if not should_remove:
+                    group_enabled = True
+                    group_hidden = False
+                    surface_groups = getattr(self.settings, 'surface_groups', {}) if hasattr(self, 'settings') else {}
+                    if isinstance(surface_groups, dict) and group_id in surface_groups:
+                        group_data = surface_groups[group_id]
+                        if hasattr(group_data, 'enabled'):
+                            group_enabled = bool(group_data.enabled)
+                            group_hidden = bool(getattr(group_data, 'hidden', False))
+                        elif isinstance(group_data, dict):
+                            group_enabled = bool(group_data.get('enabled', True))
+                            group_hidden = bool(group_data.get('hidden', False))
+                    should_remove = not group_enabled or group_hidden
+                
+                if should_remove:
                     # #region agent log
                     try:
                         import json
@@ -1658,6 +2012,37 @@ class SPL3DPlotRenderer:
                 print(f"[PlotSPL3D]   Gruppe '{gid}': {len(sids)} Surfaces")
         
         for group_id, group_surface_ids in candidate_groups_for_plot.items():
+            # 🎯 NEU: Prüfe ob Gruppe disabled oder hidden ist
+            group_enabled = True
+            group_hidden = False
+            surface_groups = getattr(self.settings, 'surface_groups', {}) if hasattr(self, 'settings') else {}
+            if isinstance(surface_groups, dict) and group_id in surface_groups:
+                group_data = surface_groups[group_id]
+                if hasattr(group_data, 'enabled'):
+                    group_enabled = bool(group_data.enabled)
+                    group_hidden = bool(getattr(group_data, 'hidden', False))
+                elif isinstance(group_data, dict):
+                    group_enabled = bool(group_data.get('enabled', True))
+                    group_hidden = bool(group_data.get('hidden', False))
+            
+            if not group_enabled or group_hidden:
+                # Gruppe ist disabled oder hidden → entferne vorhandenen Actor und überspringe Plotting
+                if hasattr(self, '_group_actors') and isinstance(self._group_actors, dict):
+                    old_group_actor = self._group_actors.get(group_id)
+                    if old_group_actor is not None:
+                        try:
+                            actor_name = f"{self.SURFACE_NAME}_group_{group_id}"
+                            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                                if actor_name in self.plotter.renderer.actors:
+                                    self.plotter.remove_actor(actor_name)
+                            else:
+                                self.plotter.remove_actor(old_group_actor)
+                        except Exception:
+                            pass
+                        self._group_actors.pop(group_id, None)
+                
+                continue
+            
             # Prüfe ob alle Surfaces der Gruppe verfügbar sind
             available_surface_ids = [
                 sid for sid in group_surface_ids
@@ -1790,6 +2175,27 @@ class SPL3DPlotRenderer:
             print(f"[PlotSPL3D] Surfaces in Gruppen verarbeitet: {len(surfaces_processed_in_groups)}")
             print(f"[PlotSPL3D] Surfaces zu verarbeiten (einzeln): {len(surfaces_to_process)}")
         
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "L",
+                    "location": "Plot3DSPL.py:_render_surfaces_textured:processing_surfaces",
+                    "message": "Processing surfaces",
+                    "data": {
+                        "surfaces_to_process_count": len(surfaces_to_process),
+                        "surfaces_processed_in_groups_count": len(surfaces_processed_in_groups),
+                        "surface_overrides_count": len(surface_overrides) if isinstance(surface_overrides, dict) else 0,
+                        "surfaces_to_process_ids": [sid for sid, _, _ in surfaces_to_process][:10]
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for surface_id, points, surface_obj in surfaces_to_process:
             # Überspringe Surfaces, die bereits in Gruppen verarbeitet wurden
             if surface_id in surfaces_processed_in_groups:
@@ -1801,6 +2207,27 @@ class SPL3DPlotRenderer:
                 # Verarbeite Surface – nur mit Override (keine globalen Fallbacks)
                 override = surface_overrides.get(surface_id)
                 if not override:
+                    # #region agent log
+                    try:
+                        grid_data = surface_grids_data.get(surface_id) if isinstance(surface_grids_data, dict) else None
+                        orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "L",
+                                "location": "Plot3DSPL.py:_render_surfaces_textured:no_override",
+                                "message": "Surface skipped - no override",
+                                "data": {
+                                    "surface_id": surface_id,
+                                    "orientation": orientation,
+                                    "has_grid_data": grid_data is not None
+                                },
+                                "timestamp": int(time.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     continue
                 sx = override.get("source_x", np.array([]))
                 sy = override.get("source_y", np.array([]))
@@ -2238,6 +2665,7 @@ class SPL3DPlotRenderer:
         sound_field_pressure: Iterable[float],
         colorization_mode: str = "Gradient",
     ):
+        print(f"[PLOT] update_spl_plot() aufgerufen (colorization_mode={colorization_mode})")
         """Aktualisiert die SPL-Fläche."""
         t_start_total = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
 
@@ -2317,30 +2745,191 @@ class SPL3DPlotRenderer:
             surface_grids_data = calc_spl.get("surface_grids", {}) or {}
             surface_results_data = calc_spl.get("surface_results", {}) or {}
         
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "K",
+                    "location": "Plot3DSPL.py:update_spl_plot:surface_overrides_creation",
+                    "message": "Creating surface_overrides",
+                    "data": {
+                        "surface_grids_data_count": len(surface_grids_data) if isinstance(surface_grids_data, dict) else 0,
+                        "surface_results_data_count": len(surface_results_data) if isinstance(surface_results_data, dict) else 0,
+                        "surface_grids_keys": list(surface_grids_data.keys())[:10] if isinstance(surface_grids_data, dict) else []
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         if isinstance(surface_grids_data, dict) and surface_grids_data and isinstance(surface_results_data, dict) and surface_results_data:
+            orientations_found = {}
             for sid, grid_data in surface_grids_data.items():
                 orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
+                if orientation not in orientations_found:
+                    orientations_found[orientation] = []
+                orientations_found[orientation].append(sid)
+                
                 if sid not in surface_results_data:
                     continue
                 try:
                     Xg = np.asarray(grid_data.get("X_grid", []))
                     Yg = np.asarray(grid_data.get("Y_grid", []))
+                    
+                    # #region agent log
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "M",
+                                "location": "Plot3DSPL.py:update_spl_plot:processing_surface",
+                                "message": "Processing surface for override",
+                                "data": {
+                                    "surface_id": sid,
+                                    "orientation": orientation,
+                                    "Xg_size": Xg.size if hasattr(Xg, 'size') else 0,
+                                    "Yg_size": Yg.size if hasattr(Yg, 'size') else 0,
+                                    "Xg_ndim": Xg.ndim if hasattr(Xg, 'ndim') else None,
+                                    "Yg_ndim": Yg.ndim if hasattr(Yg, 'ndim') else None,
+                                    "Xg_shape": list(Xg.shape) if hasattr(Xg, 'shape') else None,
+                                    "Yg_shape": list(Yg.shape) if hasattr(Yg, 'shape') else None
+                                },
+                                "timestamp": int(time.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
                     if Xg.size == 0 or Yg.size == 0:
+                        # #region agent log
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "M",
+                                    "location": "Plot3DSPL.py:update_spl_plot:skip_empty",
+                                    "message": "Skipping surface - empty grid",
+                                    "data": {"surface_id": sid, "orientation": orientation},
+                                    "timestamp": int(time.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         continue
                     if Xg.ndim == 2 and Yg.ndim == 2:
                         # Achsen aus dem strukturierten Grid ableiten
                         gx = Xg[0, :] if Xg.shape[1] > 0 else Xg.ravel()
                         gy = Yg[:, 0] if Yg.shape[0] > 0 else Yg.ravel()
                     else:
+                        # #region agent log
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "M",
+                                    "location": "Plot3DSPL.py:update_spl_plot:skip_wrong_dim",
+                                    "message": "Skipping surface - wrong dimensions",
+                                    "data": {
+                                        "surface_id": sid,
+                                        "orientation": orientation,
+                                        "Xg_ndim": Xg.ndim if hasattr(Xg, 'ndim') else None,
+                                        "Yg_ndim": Yg.ndim if hasattr(Yg, 'ndim') else None
+                                    },
+                                    "timestamp": int(time.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         continue
                     
                     # 🎯 NEU: Verwende direkt die berechneten SPL-Werte aus surface_results
-                    #         Keine Interpolation mehr!
+                    #         Wenn Shapes nicht übereinstimmen, interpolieren wir die Daten auf das Surface-Grid
                     result_data = surface_results_data[sid]
                     sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
                     
-                    if sound_field_p_complex.size == 0 or sound_field_p_complex.shape != Xg.shape:
+                    # #region agent log
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "M",
+                                "location": "Plot3DSPL.py:update_spl_plot:check_pressure",
+                                "message": "Checking pressure data",
+                                "data": {
+                                    "surface_id": sid,
+                                    "orientation": orientation,
+                                    "sound_field_p_size": sound_field_p_complex.size if hasattr(sound_field_p_complex, 'size') else 0,
+                                    "sound_field_p_shape": list(sound_field_p_complex.shape) if hasattr(sound_field_p_complex, 'shape') else None,
+                                    "Xg_shape": list(Xg.shape) if hasattr(Xg, 'shape') else None,
+                                    "shapes_match": sound_field_p_complex.shape == Xg.shape if hasattr(sound_field_p_complex, 'shape') and hasattr(Xg, 'shape') else False
+                                },
+                                "timestamp": int(time.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    if sound_field_p_complex.size == 0:
                         continue
+                    
+                    # 🎯 WICHTIG: Wenn Shapes nicht übereinstimmen, prüfe ob es Gruppen-Grid-Daten gibt
+                    # oder interpolieren wir die Daten auf das Surface-Grid
+                    if sound_field_p_complex.shape != Xg.shape:
+                        # Prüfe ob es Gruppen-Grid-Daten gibt (für Gruppen-Surfaces)
+                        group_X_grid = result_data.get('group_X_grid')
+                        group_Y_grid = result_data.get('group_Y_grid')
+                        group_mask = result_data.get('group_mask')
+                        
+                        if group_X_grid is not None and group_Y_grid is not None:
+                            # Verwende Gruppen-Grid-Daten
+                            group_X = np.asarray(group_X_grid, dtype=float)
+                            group_Y = np.asarray(group_Y_grid, dtype=float)
+                            if group_X.shape == sound_field_p_complex.shape and group_Y.shape == sound_field_p_complex.shape:
+                                # Interpoliere von Gruppen-Grid auf Surface-Grid
+                                from scipy.interpolate import griddata
+                                group_mask_array = np.asarray(group_mask, dtype=bool) if group_mask is not None else np.ones_like(sound_field_p_complex, dtype=bool)
+                                
+                                # Erstelle Interpolations-Punkte (nur gültige Punkte)
+                                valid_mask = group_mask_array & np.isfinite(sound_field_p_complex)
+                                if np.any(valid_mask):
+                                    points_source = np.column_stack([group_X[valid_mask].ravel(), group_Y[valid_mask].ravel()])
+                                    values_source = sound_field_p_complex[valid_mask].ravel()
+                                    
+                                    # Ziel-Punkte auf Surface-Grid
+                                    points_target = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                    
+                                    # Interpoliere
+                                    sound_field_p_interp = griddata(
+                                        points_source, values_source, points_target,
+                                        method='linear', fill_value=0.0
+                                    )
+                                    sound_field_p_complex = sound_field_p_interp.reshape(Xg.shape)
+                                else:
+                                    continue
+                            else:
+                                continue
+                        else:
+                            # Für einzelne Surfaces: Versuche direkte Reshape oder Interpolation
+                            # Wenn die Gesamtgröße übereinstimmt, versuche Reshape
+                            if sound_field_p_complex.size == Xg.size:
+                                try:
+                                    sound_field_p_complex = sound_field_p_complex.reshape(Xg.shape)
+                                except Exception:
+                                    # Reshape fehlgeschlagen, versuche Interpolation
+                                    from scipy.interpolate import griddata
+                                    # Erstelle Quell-Grid (muss aus surface_grids_data kommen)
+                                    # Für jetzt: Skip, da wir keine Quell-Koordinaten haben
+                                    continue
+                            else:
+                                # Größe stimmt nicht überein, kann nicht interpoliert werden ohne Quell-Koordinaten
+                                continue
                     
                     # Konvertiere komplexe Werte zu dB (wie im neuen Modul)
                     pressure_magnitude = np.abs(sound_field_p_complex)
@@ -2356,14 +2945,74 @@ class SPL3DPlotRenderer:
                 except Exception as e:
                     # Wenn etwas schiefgeht, einfach ohne Override weiterarbeiten
                     continue
+            
+            # #region agent log
+            try:
+                orientations_summary = {k: len(v) for k, v in orientations_found.items()}
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "K",
+                        "location": "Plot3DSPL.py:update_spl_plot:surface_overrides_created",
+                        "message": "surface_overrides created",
+                        "data": {
+                            "surface_overrides_count": len(surface_overrides),
+                            "orientations_found": orientations_summary,
+                            "surface_overrides_keys": list(surface_overrides.keys())[:10]
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
         
         # Wenn keine gültigen SPL-Daten vorliegen, belassen wir die bestehende Szene
         # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
         # ABER: Wenn surface_overrides vorhanden sind, müssen wir trotzdem plotten!
         has_surface_overrides = bool(surface_overrides)
         is_valid_global_data = self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure)
+        
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "D",
+                    "location": "Plot3DSPL.py:update_spl_plot:validation_check",
+                    "message": "Data validation in update_spl_plot",
+                    "data": {
+                        "has_surface_overrides": has_surface_overrides,
+                        "is_valid_global_data": is_valid_global_data,
+                        "surface_overrides_count": len(surface_overrides) if isinstance(surface_overrides, dict) else 0
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         if not is_valid_global_data:
             if not has_surface_overrides:
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "D",
+                            "location": "Plot3DSPL.py:update_spl_plot:early_return_no_data",
+                            "message": "EARLY RETURN - invalid global data and no surface overrides",
+                            "data": {
+                                "is_valid_global_data": is_valid_global_data,
+                                "has_surface_overrides": has_surface_overrides
+                            },
+                            "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 return
             # Wenn nur surface_overrides vorhanden sind, verwende Dummy-Daten für globale Plot-Geometrie
             # Erstelle minimale Dummy-Daten für die globale Plot-Geometrie
@@ -2376,7 +3025,45 @@ class SPL3DPlotRenderer:
 
         try:
             pressure = np.asarray(sound_field_pressure, dtype=float)
-        except Exception:  # noqa: BLE001
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "E",
+                        "location": "Plot3DSPL.py:update_spl_plot:pressure_conversion",
+                        "message": "Pressure array conversion successful",
+                        "data": {
+                            "pressure_shape": pressure.shape if hasattr(pressure, 'shape') else None,
+                            "pressure_dtype": str(pressure.dtype) if hasattr(pressure, 'dtype') else None,
+                            "x_len": len(x),
+                            "y_len": len(y)
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+        except Exception as e:  # noqa: BLE001
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "E",
+                        "location": "Plot3DSPL.py:update_spl_plot:pressure_conversion_failed",
+                        "message": "EARLY RETURN - pressure conversion failed",
+                        "data": {
+                            "error": str(e),
+                            "error_type": str(type(e).__name__)
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # Ungültige SPL-Daten → Szene nicht leeren, nur SPL-Update abbrechen
             return
 
@@ -2399,7 +3086,44 @@ class SPL3DPlotRenderer:
                     return
 
         if pressure.shape != (len(y), len(x)):
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "F",
+                        "location": "Plot3DSPL.py:update_spl_plot:shape_mismatch",
+                        "message": "Shape mismatch check",
+                        "data": {
+                            "pressure_shape": pressure.shape if hasattr(pressure, 'shape') else None,
+                            "expected_shape": (len(y), len(x)),
+                            "has_surface_overrides": has_surface_overrides
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             if not has_surface_overrides:
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "F",
+                            "location": "Plot3DSPL.py:update_spl_plot:early_return_shape",
+                            "message": "EARLY RETURN - shape mismatch and no surface overrides",
+                            "data": {
+                                "pressure_shape": pressure.shape if hasattr(pressure, 'shape') else None,
+                                "expected_shape": (len(y), len(x))
+                            },
+                            "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 return
 
         # Aktualisiere ColorbarManager Modes
@@ -2616,6 +3340,25 @@ class SPL3DPlotRenderer:
             source_scalars=None,
         )
         
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "G",
+                    "location": "Plot3DSPL.py:update_spl_plot:mesh_created",
+                    "message": "Mesh creation result",
+                    "data": {
+                        "mesh_is_none": mesh is None,
+                        "mesh_n_points": mesh.n_points if mesh is not None and hasattr(mesh, 'n_points') else 0,
+                        "mesh_n_cells": mesh.n_cells if mesh is not None and hasattr(mesh, 'n_cells') else 0
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
         if time_mode:
             cmap_object = 'RdBu_r'
@@ -2656,6 +3399,26 @@ class SPL3DPlotRenderer:
             except Exception:  # noqa: BLE001
                 pass
 
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H",
+                    "location": "Plot3DSPL.py:update_spl_plot:before_render",
+                    "message": "About to render surfaces",
+                    "data": {
+                        "surface_overrides_count": len(surface_overrides) if isinstance(surface_overrides, dict) else 0,
+                        "phase_mode": phase_mode,
+                        "time_mode": time_mode
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # Zeichne alle aktiven Surfaces als Texturflächen
         self._render_surfaces_textured(
             geometry,
@@ -2670,6 +3433,27 @@ class SPL3DPlotRenderer:
             time_mode=time_mode,
         )
         
+        # #region agent log
+        try:
+            actors_count = len(self.plotter.renderer.actors) if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors') else 0
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H",
+                    "location": "Plot3DSPL.py:update_spl_plot:after_render",
+                    "message": "After render_surfaces_textured",
+                    "data": {
+                        "actors_count": actors_count,
+                        "has_spl_surface": 'spl_surface' in (self.plotter.renderer.actors.keys() if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors') else []),
+                        "has_spl_floor": 'spl_floor' in (self.plotter.renderer.actors.keys() if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors') else [])
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         if DEBUG_PLOT3D_TIMING:
             t_after_textures = time.perf_counter()
         
@@ -2681,6 +3465,8 @@ class SPL3DPlotRenderer:
 
         # ------------------------------------------------------------
         # 🎯 SPL-Teppich (Floor) nur anzeigen, wenn KEINE Surfaces aktiv sind
+        # ODER wenn Surfaces enabled sind, aber keine Surface-Actors erstellt wurden
+        # (z.B. weil keine surface_overrides vorhanden sind)
         # ------------------------------------------------------------
         surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
         has_enabled_surfaces = False
@@ -2704,7 +3490,56 @@ class SPL3DPlotRenderer:
                     # Bei inkonsistenten Oberflächen-Konfigurationen Floor lieber anzeigen
                     continue
 
-        if not has_enabled_surfaces:
+        # 🎯 WICHTIG: Prüfe ob tatsächlich Surface-Actors erstellt wurden
+        # Wenn keine surface_overrides vorhanden sind, wurden keine Surface-Actors erstellt,
+        # auch wenn Surfaces enabled sind. In diesem Fall sollte der Floor erstellt werden.
+        has_surface_actors = False
+        if hasattr(self, '_surface_actors') and isinstance(self._surface_actors, dict) and len(self._surface_actors) > 0:
+            has_surface_actors = True
+        if hasattr(self, '_group_actors') and isinstance(self._group_actors, dict) and len(self._group_actors) > 0:
+            has_surface_actors = True
+        if hasattr(self, '_surface_texture_actors') and isinstance(self._surface_texture_actors, dict) and len(self._surface_texture_actors) > 0:
+            has_surface_actors = True
+        
+        # Prüfe auch direkt im Plotter nach Surface-Actors
+        if not has_surface_actors and hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+            actor_names = list(self.plotter.renderer.actors.keys())
+            for name in actor_names:
+                if name.startswith('spl_surface_') or name.startswith('spl_surface_group_'):
+                    has_surface_actors = True
+                    break
+        
+        # Floor nur erstellen, wenn keine Surface-Actors vorhanden sind
+        # (auch wenn Surfaces enabled sind, aber keine surface_overrides vorhanden sind)
+        should_create_floor = not has_surface_actors
+
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "I",
+                    "location": "Plot3DSPL.py:update_spl_plot:floor_check",
+                    "message": "Floor creation check",
+                    "data": {
+                        "has_enabled_surfaces": has_enabled_surfaces,
+                        "has_surface_actors": has_surface_actors,
+                        "should_create_floor": should_create_floor,
+                        "surface_definitions_count": len(surface_definitions) if isinstance(surface_definitions, dict) else 0,
+                        "surface_actors_count": len(self._surface_actors) if hasattr(self, '_surface_actors') and isinstance(self._surface_actors, dict) else 0,
+                        "group_actors_count": len(self._group_actors) if hasattr(self, '_group_actors') and isinstance(self._group_actors, dict) else 0,
+                        "texture_actors_count": len(self._surface_texture_actors) if hasattr(self, '_surface_texture_actors') and isinstance(self._surface_texture_actors, dict) else 0,
+                        "mesh_is_none": mesh is None,
+                        "mesh_n_points": mesh.n_points if mesh is not None and hasattr(mesh, 'n_points') else 0
+                    },
+                    "timestamp": int(time.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
+        if should_create_floor:
             # Erstelle vollständigen Floor-Mesh (ohne Surface-Maskierung oder Clipping)
             floor_mesh = build_full_floor_mesh(
                 plot_x,
@@ -2713,10 +3548,46 @@ class SPL3DPlotRenderer:
                 z_coords=z_coords,
                 pv_module=pv,
             )
+            
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "I",
+                        "location": "Plot3DSPL.py:update_spl_plot:floor_mesh_created",
+                        "message": "Floor mesh created",
+                        "data": {
+                            "floor_mesh_is_none": floor_mesh is None,
+                            "floor_mesh_n_points": floor_mesh.n_points if floor_mesh is not None and hasattr(floor_mesh, 'n_points') else 0
+                        },
+                        "timestamp": int(time.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
             # Plotte (oder update) den Floor nur, wenn keine Surfaces aktiv sind
             floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
             if floor_actor is None:
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "I",
+                            "location": "Plot3DSPL.py:update_spl_plot:adding_floor",
+                            "message": "Adding floor actor",
+                            "data": {
+                                "FLOOR_NAME": self.FLOOR_NAME
+                            },
+                            "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 self.plotter.add_mesh(
                     floor_mesh,
                     name=self.FLOOR_NAME,
@@ -2729,6 +3600,25 @@ class SPL3DPlotRenderer:
                     reset_camera=False,
                     interpolate_before_map=not is_step_mode,
                 )
+                # #region agent log
+                try:
+                    floor_actor_after = self.plotter.renderer.actors.get(self.FLOOR_NAME)
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "I",
+                            "location": "Plot3DSPL.py:update_spl_plot:floor_added",
+                            "message": "Floor actor added",
+                            "data": {
+                                "floor_actor_is_none": floor_actor_after is None,
+                                "FLOOR_NAME": self.FLOOR_NAME
+                            },
+                            "timestamp": int(time.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
             else:
                 if not hasattr(self, "floor_mesh"):
                     self.floor_mesh = floor_mesh.copy(deep=True)
@@ -2742,7 +3632,7 @@ class SPL3DPlotRenderer:
                     # 🎯 Gradient: smooth rendering, Color step: harte Stufen
                     mapper.interpolate_before_map = not is_step_mode
         else:
-            # Wenn Surfaces aktiv sind, Floor ausblenden (falls vorher gezeichnet)
+            # Wenn Surface-Actors vorhanden sind, Floor ausblenden (falls vorher gezeichnet)
             floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
             if floor_actor is not None:
                 try:
