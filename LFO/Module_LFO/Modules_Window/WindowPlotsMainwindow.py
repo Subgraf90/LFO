@@ -542,7 +542,6 @@ class DrawPlotsMainwindow(ModuleBase):
         - Empty Plot wenn keine enabled Surfaces vorhanden
         - Overlay-Update für visuelle Darstellung
         """
-        print(f"[PLOT] update_plots_for_surface_state() aufgerufen")
         # ============================================================
         # SCHRITT 1: Analysiere Surface-Status
         # ============================================================
@@ -692,12 +691,9 @@ class DrawPlotsMainwindow(ModuleBase):
         has_empty_plot_surface = len(empty_plot_surfaces) > 0
         has_any_visible_surface = has_enabled_surface or has_empty_plot_surface
         
-        print(f"[PLOT] Surface-Status: enabled={len(enabled_surfaces)}, empty_plot={len(empty_plot_surfaces)}, hidden={len(hidden_surfaces)}")
-        
         if not has_any_visible_surface:
             # Alle Surfaces sind versteckt → SPL Plot komplett entfernen
             # (keine Surfaces zum Zeichnen, auch keine Empty Plot Surfaces)
-            print(f"[PLOT] Alle Surfaces versteckt → initialize_empty_scene()")
             plotter = self._get_current_spl_plotter()
             if plotter is not None:
                 plotter.initialize_empty_scene(preserve_camera=True)
@@ -710,7 +706,6 @@ class DrawPlotsMainwindow(ModuleBase):
         if not has_enabled_surface:
             # Keine enabled Surfaces, aber es gibt disabled Surfaces → Empty Plot
             # show_empty_plots() ruft bereits update_overlays() und draw_surfaces() mit create_empty_plot_surfaces=True auf
-            print(f"[PLOT] Keine enabled Surfaces → show_empty_plots()")
             self.show_empty_plots()
             return
         
@@ -750,7 +745,6 @@ class DrawPlotsMainwindow(ModuleBase):
                     has_result_data = isinstance(surface_results_data, dict) and surface_id in surface_results_data
                     if not has_grid_data and not has_result_data:
                         needs_recalculation = True
-                        print(f"[PLOT] Surface {surface_id} enabled, aber keine SPL-Daten vorhanden → Neuberechnung nötig")
                         break
         
         # Trigger Berechnung oder Plot-Update
@@ -765,20 +759,17 @@ class DrawPlotsMainwindow(ModuleBase):
             # soll dieses Surface berechnet werden
             # update_speaker_array_calculations() ruft intern plot_spl() auf (über calculate_spl()),
             # was wiederum update_overlays() aufruft, daher ist der Aufruf am Ende redundant
-            print(f"[PLOT] Aktiver Speaker vorhanden → update_speaker_array_calculations() (Neuberechnung)")
             self.main_window.update_speaker_array_calculations()
             plot_spl_called = True  # plot_spl() wird intern aufgerufen
         elif needs_recalculation and hasattr(self.main_window, 'update_speaker_array_calculations'):
             # 🎯 NEU: Auch wenn kein aktiver Speaker, aber enabled Surfaces ohne SPL-Daten → Neuberechnung
             # (kann vorkommen wenn Speaker später aktiviert wird)
-            print(f"[PLOT] Enabled Surfaces ohne SPL-Daten → update_speaker_array_calculations() (Neuberechnung)")
             self.main_window.update_speaker_array_calculations()
             plot_spl_called = True
         elif hasattr(self.main_window, 'plot_spl'):
             # Nur Plot-Update (wenn bereits Daten vorhanden, aber kein aktiver Speaker)
             # plot_spl() ruft bereits update_overlays() intern auf,
             # daher müssen wir es am Ende NICHT erneut aufrufen
-            print(f"[PLOT] Kein aktiver Speaker → plot_spl() (Plot-Update)")
             self.main_window.plot_spl(update_axes=False)
             plot_spl_called = True
         else:
@@ -813,7 +804,6 @@ class DrawPlotsMainwindow(ModuleBase):
             update_axes: Wenn True, werden auch X/Y-Achsen und Polar aktualisiert
                         (False beim Init, da bereits durch __init__ initialisiert)
         """
-        print(f"[PLOT] plot_spl() aufgerufen (speaker_array_id={speaker_array_id}, update_axes={update_axes})")
         plot_mode = getattr(settings, 'spl_plot_mode', self.PLOT_MODE_OPTIONS[0])
         self.settings = settings
         self._update_plot_mode_availability()

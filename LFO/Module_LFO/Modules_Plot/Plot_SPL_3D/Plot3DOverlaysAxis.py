@@ -86,15 +86,7 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
 
         # 🐞 DEBUG: Protokolliere, wann und mit welchen Parametern die Achsen gezeichnet werden
         try:
-            print(
-                "[SPL3DOverlayAxis] draw_axis_lines call – "
-                f"pos_x={state[0]}, pos_y={state[1]}, "
-                f"len={state[2]}, width={state[3]}, "
-                f"axis_3d_transparency={state[4]}, "
-                f"max_surface_dim={state[5]}, "
-                f"selected_axis={selected_axis}, "
-                f"num_active_surfaces={len(active_surfaces)}"
-            )
+            pass  # Debug-Ausgabe entfernt
         except Exception:
             pass
         existing_names = self._category_actors.get('axis', [])

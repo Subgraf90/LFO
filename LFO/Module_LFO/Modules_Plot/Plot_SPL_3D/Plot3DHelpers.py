@@ -20,94 +20,15 @@ except Exception:
 
 def has_valid_data(x, y, pressure) -> bool:
     """Prüft, ob die Daten gültig sind (nicht None und nicht leer)."""
-    # #region agent log
-    import json
-    import time as time_module
-    try:
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "C",
-                "location": "Plot3DHelpers.py:has_valid_data:entry",
-                "message": "has_valid_data called",
-                "data": {
-                    "x_is_none": x is None,
-                    "y_is_none": y is None,
-                    "pressure_is_none": pressure is None,
-                    "x_type": str(type(x)),
-                    "y_type": str(type(y)),
-                    "pressure_type": str(type(pressure))
-                },
-                "timestamp": int(time_module.time() * 1000)
-            }) + "\n")
-    except Exception:
-        pass
-    # #endregion
-    
     if x is None or y is None or pressure is None:
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "Plot3DHelpers.py:has_valid_data:return_false_none",
-                    "message": "has_valid_data returning False - None values",
-                    "data": {
-                        "x_is_none": x is None,
-                        "y_is_none": y is None,
-                        "pressure_is_none": pressure is None
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         return False
     try:
         x_len = len(x) if hasattr(x, '__len__') else 0
         y_len = len(y) if hasattr(y, '__len__') else 0
         pressure_len = len(pressure) if hasattr(pressure, '__len__') else 0
         result = x_len > 0 and y_len > 0 and pressure_len > 0
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "Plot3DHelpers.py:has_valid_data:return",
-                    "message": "has_valid_data result",
-                    "data": {
-                        "x_len": x_len,
-                        "y_len": y_len,
-                        "pressure_len": pressure_len,
-                        "result": result
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         return result
     except TypeError:
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "Plot3DHelpers.py:has_valid_data:return_false_typeerror",
-                    "message": "has_valid_data returning False - TypeError",
-                    "data": {},
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         return False
 
 
@@ -288,27 +209,6 @@ class SPL3DHelpers:
         speakers_signature: List[tuple] = []
 
         if isinstance(speaker_arrays, dict):
-            # #region agent log
-            try:
-                import json
-                import time as time_module
-                array_ids_in_dict = [str(k) for k in sorted(speaker_arrays.keys())]
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "pre-fix-1",
-                        "hypothesisId": "S3-DETAIL",
-                        "location": "Plot3DHelpers.py:_compute_overlay_signatures:loop_start",
-                        "message": "Processing speaker_arrays dict",
-                        "data": {
-                            "num_arrays": len(speaker_arrays),
-                            "array_keys": array_ids_in_dict,
-                        },
-                        "timestamp": int(time_module.time() * 1000),
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             for name in sorted(speaker_arrays.keys()):
                 array = speaker_arrays[name]
                 # 🎯 FIX: Verwende array.id (die "alte" Erkennung) statt name (Dictionary-Key)
@@ -320,28 +220,6 @@ class SPL3DHelpers:
                 
                 configuration = str(getattr(array, 'configuration', '') or '').lower()
                 hide = bool(getattr(array, 'hide', False))
-                # #region agent log
-                try:
-                    import json
-                    import time as time_module
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H2",
-                            "location": "Plot3DHelpers.py:_compute_overlay_signatures:processing_array",
-                            "message": "Processing array for signature",
-                            "data": {
-                                "array_id": array_id_str,
-                                "configuration": configuration,
-                                "hide": hide,
-                                "array_name": str(name)
-                            },
-                            "timestamp": int(time_module.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 # Hole Array-Positionen
                 array_pos_x = getattr(array, 'array_position_x', 0.0)
@@ -353,31 +231,7 @@ class SPL3DHelpers:
                 # Flown: Absolute Positionen (bereits in source_position_x/y/z_flown enthalten)
                 if configuration == 'flown':
                     # Für Flown: Array-Positionen sind bereits in source_position_x/y/z_flown enthalten
-                    xs_raw_for_log = getattr(array, 'source_position_x', None)
-                    xs = _to_tuple(xs_raw_for_log)
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        xs_preview = list(xs)[:3] if xs else []
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "pre-fix-1",
-                                "hypothesisId": "S3-DETAIL",
-                                "location": "Plot3DHelpers.py:_compute_overlay_signatures:flown_xs",
-                                "message": "Flown array X positions",
-                                "data": {
-                                    "array_id": array_id_str,
-                                    "array_name_old": str(name),  # Nur für Debug-Logs
-                                    "xs_first_3": xs_preview,
-                                    "xs_length": len(xs) if xs else 0,
-                                },
-                                "timestamp": int(time_module.time() * 1000),
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
+                    xs = _to_tuple(getattr(array, 'source_position_x', None))
                     ys = _to_tuple(
                         getattr(
                             array,
@@ -392,31 +246,6 @@ class SPL3DHelpers:
                     xs_raw = _to_tuple(getattr(array, 'source_position_x', None))
                     ys_raw = _to_tuple(getattr(array, 'source_position_y', None))
                     zs_raw = _to_tuple(getattr(array, 'source_position_z_stack', None))
-                    
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        xs_preview = list(xs_raw)[:3] if xs_raw else []
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "pre-fix-1",
-                                "hypothesisId": "S3-DETAIL",
-                                "location": "Plot3DHelpers.py:_compute_overlay_signatures:stack_xs_raw",
-                                "message": "Stack array X positions (raw, before adding array_pos)",
-                                "data": {
-                                    "array_id": array_id_str,
-                                    "array_name_old": str(name),  # Nur für Debug-Logs
-                                    "xs_raw_first_3": xs_preview,
-                                    "xs_raw_length": len(xs_raw) if xs_raw else 0,
-                                    "array_pos_x": array_pos_x,
-                                },
-                                "timestamp": int(time_module.time() * 1000),
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     # Addiere Array-Positionen zu den Speaker-Positionen
                     if xs_raw and array_pos_x != 0.0:
@@ -451,31 +280,6 @@ class SPL3DHelpers:
                     tuple(site) if site is not None else tuple(),  # 🎯 FIX: source_site zur Signatur hinzufügen
                     (round(float(array_pos_x), 4), round(float(array_pos_y), 4), round(float(array_pos_z), 4)),
                 )
-                # #region agent log - Debug Azimuth in signature
-                try:
-                    import json
-                    import time as time_module
-                    azimuth_preview = list(azimuth)[:5] if azimuth and len(azimuth) > 0 else []
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "AZIMUTH_SIG",
-                            "location": "Plot3DHelpers.py:_compute_overlay_signatures:azimuth_in_signature",
-                            "message": "Azimuth included in signature",
-                            "data": {
-                                "array_id": array_id_str,
-                                "configuration": configuration,
-                                "azimuth_preview": azimuth_preview,
-                                "azimuth_length": len(azimuth) if azimuth else 0,
-                                "sources_length": len(sources),
-                                "sources_structure": "xs, ys, zs_stack, zs_flown, azimuth[4], angles, site, array_pos"
-                            },
-                            "timestamp": int(time_module.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 speakers_signature.append(
                     (
                         array_id_str,  # 🎯 FIX: Verwende array.id (die "alte" Erkennung) statt name
@@ -484,30 +288,9 @@ class SPL3DHelpers:
                         sources,
                         polar_pattern,
                         source_types,
-                    )
                 )
+            )
         speakers_signature_tuple = tuple(speakers_signature)
-
-        # #region agent log
-        try:
-            import json
-            import time as time_module
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "pre-fix-1",
-                    "hypothesisId": "S3",
-                    "location": "Plot3DHelpers.py:_compute_overlay_signatures",
-                    "message": "Computed speakers_signature",
-                    "data": {
-                        "num_arrays": len(speakers_signature_tuple),
-                        "preview_first_entry": str(speakers_signature_tuple[0])[:200] if speakers_signature_tuple else None,
-                    },
-                    "timestamp": int(time_module.time() * 1000),
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         # 🚀 OPTIMIERUNG: Highlight-IDs NICHT zur Signatur hinzufügen
         # Wenn sich nur Highlights ändern, sollen nicht alle Speaker neu gezeichnet werden

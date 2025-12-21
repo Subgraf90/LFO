@@ -301,6 +301,83 @@ class SnapshotWidget:
             
             if spl_data:
                 capture_data['spl_field_data'] = spl_data
+            
+            # 🎯 NEU: Speichere Surface-Geometrie (points) für alle Surfaces mit SPL-Daten
+            # Dies ermöglicht später die Validierung beim Laden des Snapshots
+            if 'surface_grids' in self.container.calculation_spl or 'surface_results' in self.container.calculation_spl:
+                surface_geometries = {}
+                surface_definitions = getattr(self.settings, 'surface_definitions', {})
+                if isinstance(surface_definitions, dict):
+                    # Sammle alle Surface-IDs, die SPL-Daten haben
+                    surface_ids_with_spl = set()
+                    if 'surface_grids' in self.container.calculation_spl:
+                        surface_ids_with_spl.update(self.container.calculation_spl['surface_grids'].keys())
+                    if 'surface_results' in self.container.calculation_spl:
+                        surface_ids_with_spl.update(self.container.calculation_spl['surface_results'].keys())
+                    
+                    # Speichere Geometrie für jede Surface mit SPL-Daten
+                    for surface_id in surface_ids_with_spl:
+                        surface = surface_definitions.get(surface_id)
+                        if surface:
+                            if isinstance(surface, dict):
+                                points = surface.get('points', [])
+                            else:
+                                points = getattr(surface, 'points', [])
+                            
+                            # Speichere normalisierte Punkte (für Vergleich)
+                            if points:
+                                # Konvertiere zu Liste von Dictionaries mit gerundeten Werten für Vergleich
+                                normalized_points = []
+                                for p in points:
+                                    if isinstance(p, dict):
+                                        normalized_points.append({
+                                            'x': round(float(p.get('x', 0.0)), 6),
+                                            'y': round(float(p.get('y', 0.0)), 6),
+                                            'z': round(float(p.get('z', 0.0)), 6)
+                                        })
+                                    else:
+                                        normalized_points.append({
+                                            'x': round(float(getattr(p, 'x', 0.0)), 6),
+                                            'y': round(float(getattr(p, 'y', 0.0)), 6),
+                                            'z': round(float(getattr(p, 'z', 0.0)), 6)
+                                        })
+                                surface_geometries[surface_id] = normalized_points
+                
+                if surface_geometries:
+                    capture_data['surface_geometries'] = surface_geometries
+                    # Speichere auch surface_grids und surface_results für kompatible Surfaces
+                    if 'surface_grids' in self.container.calculation_spl:
+                        snapshot_surface_grids = {}
+                        for sid in surface_ids_with_spl:
+                            if sid in self.container.calculation_spl['surface_grids']:
+                                # Deep copy der Grid-Daten
+                                grid_data = copy.deepcopy(self.container.calculation_spl['surface_grids'][sid])
+                                # Konvertiere NumPy-Arrays zu Listen
+                                import numpy as np
+                                for key in ['X_grid', 'Y_grid', 'Z_grid', 'sound_field_x', 'sound_field_y']:
+                                    if key in grid_data and isinstance(grid_data[key], np.ndarray):
+                                        grid_data[key] = grid_data[key].tolist()
+                                if 'surface_mask' in grid_data and isinstance(grid_data['surface_mask'], np.ndarray):
+                                    grid_data['surface_mask'] = grid_data['surface_mask'].tolist()
+                                snapshot_surface_grids[sid] = grid_data
+                        if snapshot_surface_grids:
+                            capture_data['surface_grids'] = snapshot_surface_grids
+                    
+                    if 'surface_results' in self.container.calculation_spl:
+                        snapshot_surface_results = {}
+                        for sid in surface_ids_with_spl:
+                            if sid in self.container.calculation_spl['surface_results']:
+                                # Deep copy der Result-Daten
+                                result_data = copy.deepcopy(self.container.calculation_spl['surface_results'][sid])
+                                # Konvertiere NumPy-Arrays zu Listen
+                                import numpy as np
+                                if isinstance(result_data, dict):
+                                    for key, value in result_data.items():
+                                        if isinstance(value, np.ndarray):
+                                            result_data[key] = value.tolist()
+                                snapshot_surface_results[sid] = result_data
+                        if snapshot_surface_results:
+                            capture_data['surface_results'] = snapshot_surface_results
         
         # ========================================
         # 4. FDTD-Simulationsdaten speichern (für "SPL over time" Modus)
@@ -343,9 +420,6 @@ class SnapshotWidget:
                 if hasattr(draw_plots, '_time_frames_per_period'):
                     capture_data['fdtd_time_frames_per_period'] = draw_plots._time_frames_per_period
         
-        # Ausgabe zur Kontrolle der gespeicherten Daten
-        print(f"Snapshot Capture Daten ({new_key}): {list(capture_data.keys())}")
-
         # Speichere den Snapshot
         self.container.calculation_axes[new_key] = capture_data
         
@@ -524,8 +598,93 @@ class SnapshotWidget:
         # 1. Aktualisiere SPL 2D-Schallfeld-Daten (immer laden wenn Snapshot ausgewählt)
         # ========================================
         has_spl_data = False
+        import numpy as np
+        
+        # 🎯 NEU: Prüfe Surface-Kompatibilität und lade nur kompatible Surface-SPL-Daten
+        compatible_surface_ids = set()
+        incompatible_surface_ids = []
+        if 'surface_geometries' in snapshot_data:
+            # Prüfe welche Surfaces noch vorhanden sind und die gleiche Geometrie haben
+            snapshot_geometries = snapshot_data['surface_geometries']
+            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+            
+            if isinstance(surface_definitions, dict) and isinstance(snapshot_geometries, dict):
+                for surface_id, snapshot_points in snapshot_geometries.items():
+                    # Prüfe ob Surface noch vorhanden ist
+                    surface = surface_definitions.get(surface_id)
+                    if not surface:
+                        incompatible_surface_ids.append((surface_id, "nicht mehr vorhanden"))
+                        continue  # Surface nicht mehr vorhanden
+                    
+                    # 🎯 NEU: Prüfe ob Surface enabled und nicht hidden ist
+                    is_enabled = True
+                    is_hidden = False
+                    if isinstance(surface, dict):
+                        is_enabled = bool(surface.get('enabled', True))
+                        is_hidden = bool(surface.get('hidden', False))
+                    else:
+                        is_enabled = bool(getattr(surface, 'enabled', True))
+                        is_hidden = bool(getattr(surface, 'hidden', False))
+                    
+                    if not is_enabled:
+                        incompatible_surface_ids.append((surface_id, "disabled"))
+                        continue  # Surface ist disabled → nicht plotten
+                    
+                    if is_hidden:
+                        incompatible_surface_ids.append((surface_id, "hidden"))
+                        continue  # Surface ist hidden → nicht plotten
+                    
+                    # Hole aktuelle Surface-Punkte
+                    if isinstance(surface, dict):
+                        current_points = surface.get('points', [])
+                    else:
+                        current_points = getattr(surface, 'points', [])
+                    
+                    if not current_points:
+                        incompatible_surface_ids.append((surface_id, "keine Punkte vorhanden"))
+                        continue  # Keine Punkte vorhanden
+                    
+                    # Normalisiere aktuelle Punkte für Vergleich
+                    normalized_current = []
+                    for p in current_points:
+                        if isinstance(p, dict):
+                            normalized_current.append({
+                                'x': round(float(p.get('x', 0.0)), 6),
+                                'y': round(float(p.get('y', 0.0)), 6),
+                                'z': round(float(p.get('z', 0.0)), 6)
+                            })
+                        else:
+                            normalized_current.append({
+                                'x': round(float(getattr(p, 'x', 0.0)), 6),
+                                'y': round(float(getattr(p, 'y', 0.0)), 6),
+                                'z': round(float(getattr(p, 'z', 0.0)), 6)
+                            })
+                    
+                    # Vergleiche Geometrien
+                    if len(normalized_current) != len(snapshot_points):
+                        incompatible_surface_ids.append((surface_id, f"Anzahl Punkte geändert: {len(normalized_current)} != {len(snapshot_points)}"))
+                        continue
+                    
+                    geometries_match = True
+                    for cp, sp in zip(normalized_current, snapshot_points):
+                        if (abs(cp['x'] - sp['x']) > 1e-5 or
+                            abs(cp['y'] - sp['y']) > 1e-5 or
+                            abs(cp['z'] - sp['z']) > 1e-5):
+                            geometries_match = False
+                            break
+                    
+                    if geometries_match:
+                        compatible_surface_ids.add(surface_id)
+                    else:
+                        incompatible_surface_ids.append((surface_id, "Geometrie geändert"))
+                
+                if incompatible_surface_ids:
+                    pass  # Debug-Ausgabe entfernt
+                    if len(incompatible_surface_ids) > 5:
+                        print(f"  ... und {len(incompatible_surface_ids) - 5} weitere")
+        
+        # Lade globale SPL-Daten (falls vorhanden)
         if 'spl_field_data' in snapshot_data and snapshot_data['spl_field_data']:
-            import numpy as np
             spl_data = snapshot_data['spl_field_data']
             
             # Konvertiere Listen zurück zu NumPy-Arrays
@@ -546,9 +705,73 @@ class SnapshotWidget:
                     np.array(spl_data['sound_field_y']) if isinstance(spl_data['sound_field_y'], list)
                     else spl_data['sound_field_y']
                 )
+            has_spl_data = True
+        
+        # 🎯 NEU: Lade nur Surface-SPL-Daten für kompatible Surfaces
+        # WICHTIG: Entferne zuerst alle vorhandenen Surface-Daten, damit keine alten Daten übrig bleiben
+        if 'surface_grids' in self.container.calculation_spl:
+            self.container.calculation_spl['surface_grids'].clear()
+        else:
+            self.container.calculation_spl['surface_grids'] = {}
+        
+        if 'surface_results' in self.container.calculation_spl:
+            self.container.calculation_spl['surface_results'].clear()
+        else:
+            self.container.calculation_spl['surface_results'] = {}
+        
+        # 🎯 WICHTIG: Lade Surface-Daten NUR wenn surface_geometries vorhanden ist
+        # (bei alten Snapshots ohne Geometrie-Validierung werden keine Surface-Daten geladen)
+        if 'surface_geometries' in snapshot_data:
+            # Lade nur kompatible Surface-Grids aus dem Snapshot
+            if 'surface_grids' in snapshot_data:
+                snapshot_surface_grids = snapshot_data['surface_grids']
+                if isinstance(snapshot_surface_grids, dict):
+                    for surface_id, grid_data in snapshot_surface_grids.items():
+                        if surface_id in compatible_surface_ids:
+                            # Konvertiere Listen zurück zu NumPy-Arrays
+                            restored_grid = copy.deepcopy(grid_data)
+                            for key in ['X_grid', 'Y_grid', 'Z_grid', 'sound_field_x', 'sound_field_y']:
+                                if key in restored_grid and isinstance(restored_grid[key], list):
+                                    restored_grid[key] = np.array(restored_grid[key], dtype=float)
+                            if 'surface_mask' in restored_grid and isinstance(restored_grid['surface_mask'], list):
+                                restored_grid['surface_mask'] = np.array(restored_grid['surface_mask'], dtype=bool)
+                            self.container.calculation_spl['surface_grids'][surface_id] = restored_grid
+                        # Surface nicht kompatibel → nicht laden (wird nicht geplottet)
+            
+            # Lade nur kompatible Surface-Results aus dem Snapshot
+            if 'surface_results' in snapshot_data:
+                snapshot_surface_results = snapshot_data['surface_results']
+                if isinstance(snapshot_surface_results, dict):
+                    for surface_id, result_data in snapshot_surface_results.items():
+                        if surface_id in compatible_surface_ids:
+                            # Konvertiere Listen zurück zu NumPy-Arrays
+                            restored_result = copy.deepcopy(result_data)
+                            if isinstance(restored_result, dict):
+                                for key, value in restored_result.items():
+                                    if isinstance(value, list):
+                                        # Prüfe ob es ein NumPy-Array sein sollte (versuche Konvertierung)
+                                        try:
+                                            restored_result[key] = np.array(value, dtype=float)
+                                        except (ValueError, TypeError):
+                                            # Bleibt als Liste wenn Konvertierung fehlschlägt
+                                            pass
+                            self.container.calculation_spl['surface_results'][surface_id] = restored_result
+                        # Surface nicht kompatibel → nicht laden (wird nicht geplottet)
+            
+            if compatible_surface_ids:
+                has_spl_data = True  # Mindestens eine kompatible Surface vorhanden
+            elif 'surface_grids' in snapshot_data or 'surface_results' in snapshot_data:
+                # Snapshot hatte Surface-Daten, aber keine sind kompatibel
+                print(f"[Snapshot] Keine kompatiblen Surfaces gefunden (Geometrie geändert oder entfernt)")
+        else:
+            # Keine surface_geometries im Snapshot → alte Snapshot-Version ohne Validierung
+            # Lade KEINE Surface-Daten, um Fehl-Plots zu vermeiden
+            if 'surface_grids' in snapshot_data or 'surface_results' in snapshot_data:
+                print(f"[Snapshot] Warnung: Snapshot enthält Surface-Daten, aber keine Geometrie-Validierung. Surface-Daten werden nicht geladen.")
+        
+        if has_spl_data:
             if hasattr(self.container, "calculation_spl"):
                 self.container.calculation_spl["show_in_plot"] = True
-            has_spl_data = True
         else:
             if hasattr(self.container, "calculation_spl"):
                 try:

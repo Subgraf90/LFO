@@ -81,14 +81,11 @@ class ImpulseManager:
     def update_plot_impulse(self):
         """Aktualisiert die Plots nur wenn das Widget aktiv ist"""
         if not self.impulse_input_dock_widget:
-            print("[ImpulseManager] update_plot_impulse() – kein Dock-Widget vorhanden.")
             return
 
         if not self.impulse_input_dock_widget.isVisible():
-            print("[ImpulseManager] update_plot_impulse() – Dock-Widget derzeit nicht sichtbar, Plot wird übersprungen.")
             return
 
-        print("[ImpulseManager] update_plot_impulse() – Plot wird aktualisiert.")
         self.impulse_input_dock_widget.plot_widget.update_plot_impulse()
 
     def show_empty_plot(self):

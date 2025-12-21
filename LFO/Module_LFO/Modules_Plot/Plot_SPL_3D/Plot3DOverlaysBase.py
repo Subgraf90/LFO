@@ -109,26 +109,6 @@ class SPL3DOverlayBase:
                 try:
                     existing_actor = self.plotter.renderer.actors.get(name)
                     if existing_actor is not None:
-                        # #region agent log - ACTOR_REMOVAL_DEBUG
-                        try:
-                            import json
-                            import time as time_module
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "ACTOR_REMOVAL_DEBUG",
-                                    "location": "Plot3DOverlaysBase.py:_add_overlay_mesh:remove_existing",
-                                    "message": "Removing existing actor before adding new one",
-                                    "data": {
-                                        "actor_name": str(name),
-                                        "category": str(category)
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         # Entferne den existierenden Actor, damit er nicht überschrieben wird
                         self.plotter.remove_actor(name)
                         # Entferne auch aus der Liste der Actor-Namen
@@ -493,7 +473,6 @@ class SPL3DOverlayBase:
             
             # Setze Referenz-Zoom beim ersten Aufruf (oder wenn noch nicht gesetzt)
             if reference_zoom is None or reference_zoom <= 0:
-                print(f"[DEBUG ZOOM] Setting initial reference_zoom_level={current_zoom:.3f} (shared in plotter)")
                 self.plotter._overlay_reference_zoom_level = current_zoom
                 return 1.0
             
@@ -504,8 +483,6 @@ class SPL3DOverlayBase:
             zoom_ratio = current_zoom / reference_zoom if reference_zoom > 0 else 1.0
             if zoom_ratio > 2.0 or zoom_ratio < 0.5:
                 # Zoom-Level hat sich deutlich geändert - aktualisiere Referenz
-                print(f"[DEBUG ZOOM] Updating reference_zoom_level: {reference_zoom:.3f} -> {current_zoom:.3f} "
-                      f"(ratio={zoom_ratio:.3f}, shared in plotter)")
                 self.plotter._overlay_reference_zoom_level = current_zoom
                 return 1.0
             

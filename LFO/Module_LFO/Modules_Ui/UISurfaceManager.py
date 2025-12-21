@@ -2129,7 +2129,6 @@ class UISurfaceManager(ModuleBase):
                     if isinstance(surface_id_data, str) and surface_id_data in surface_store:
                         highlight_ids = [surface_id_data]
                         setattr(self.settings, "active_surface_id", surface_id_data)
-                        print(f"[DEBUG SURFACE CLICK] Surface item clicked: {surface_id_data}")
                 elif item_type == "group":
                     group_id_data = item.data(0, Qt.UserRole)
                     if isinstance(group_id_data, dict):
@@ -2138,11 +2137,9 @@ class UISurfaceManager(ModuleBase):
                         group_id = group_id_data
                     if group_id:
                         highlight_ids = self._collect_all_surfaces_from_group(group_id, surface_store)
-                        print(f"[DEBUG SURFACE CLICK] Group item clicked: {group_id}, surfaces: {highlight_ids}")
                     setattr(self.settings, "active_surface_id", None)
                 
                 setattr(self.settings, "active_surface_highlight_ids", highlight_ids)
-                print(f"[DEBUG SURFACE CLICK] Set active_surface_highlight_ids = {highlight_ids}")
                 
                 # Overlays im 3D-Plot aktualisieren (nur visuell, keine Neuberechnung)
                 # für rote Umrandung der ausgewählten Fläche (nur wenn nicht übersprungen)
@@ -2156,18 +2153,11 @@ class UISurfaceManager(ModuleBase):
                         draw_spl = main_window.draw_plots.draw_spl_plotter
                         if hasattr(draw_spl, "update_overlays"):
                             try:
-                                print(f"[DEBUG SURFACE CLICK] Calling update_overlays...")
                                 draw_spl.update_overlays(self.settings, self.container)
-                                print(f"[DEBUG SURFACE CLICK] update_overlays returned")
                             except Exception as e:
                                 # Fehler hier sollen die restliche UI nicht blockieren
-                                print(f"[DEBUG SURFACE CLICK] ERROR in update_overlays: {e}")
                                 import traceback
                                 traceback.print_exc()
-                        else:
-                            print(f"[DEBUG SURFACE CLICK] draw_spl has no update_overlays method")
-                    else:
-                        print(f"[DEBUG SURFACE CLICK] Cannot access draw_spl (main_window={main_window is not None})")
             except Exception:
                 # Fehler hier sollen die Auswahl nicht blockieren
                 pass
@@ -3073,7 +3063,6 @@ class UISurfaceManager(ModuleBase):
             # 🎯 NEU: Bei Hide → Axis Plot aktualisieren (ohne versteckte Surfaces)
             # Dies stellt sicher, dass Axis Plot ohne die Daten der versteckten Surfaces aktualisiert wird
             if hasattr(self.main_window, 'calculate_axes'):
-                print(f"[PLOT] Gruppe hide → calculate_axes() (Axis Plot ohne versteckte Surfaces)")
                 self.main_window.calculate_axes(update_plot=True)
         else:
             # 🎯 NEU: Bei Unhide → Axis Lines neu plotten (auch wenn xy checkbox aktiviert wird)
@@ -3124,7 +3113,6 @@ class UISurfaceManager(ModuleBase):
                 if has_xy_enabled_surface:
                     # Axis Calc und Plot aktualisieren, wenn xy_enabled Surfaces vorhanden
                     if hasattr(self.main_window, 'calculate_axes'):
-                        print(f"[PLOT] Gruppe unhide + xy_enabled → calculate_axes() (Axis-Berechnung)")
                         self.main_window.calculate_axes(update_plot=True)
         
         # 🎯 WICHTIG: Aktualisiere Plots und Overlays erst NACH allen Zustandsänderungen
@@ -3144,7 +3132,6 @@ class UISurfaceManager(ModuleBase):
             checked = True
         else:
             checked = (state == Qt.Checked)
-        print(f"[DEBUG on_group_xy_changed] Gruppe '{group_id}': checked={checked}, childCount={group_item.childCount()}")
         
         # Setze Gruppen-Checkbox explizit auf den neuen Zustand
         group_checkbox = self.surface_tree_widget.itemWidget(group_item, 3)

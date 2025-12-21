@@ -376,11 +376,6 @@ class SoundFieldCalculator(ModuleBase):
 
         # 🔧 PERFORMANCE: Arbeite im kombinierten Grid nur innerhalb der Bounding-Box jeder Surface,
         # statt für JEDE Surface ALLE Punkte des globalen Grids zu interpolieren.
-        print(f"[DEBUG Interpolate] Starte Interpolation für {len(surface_grids_grouped)} Surfaces")
-        print(
-            f"[DEBUG Interpolate] Globales Grid: X_grid.shape={X_grid.shape}, "
-            f"Y_grid.shape={Y_grid.shape}, total_points={X_grid.size}"
-        )
 
         # Vorab: flache Views des kombinierten Grids, damit wir Teilbereiche effizient adressieren können
         X_flat = X_grid.ravel()
@@ -406,14 +401,6 @@ class SoundFieldCalculator(ModuleBase):
                 surface_id, grid, surface_idx = args
                 t_surface_start = time.perf_counter()
 
-                # Fortschrittsanzeige (nur zur Orientierung)
-                if surface_idx % 10 == 0 or surface_idx <= 5:
-                    elapsed = time.perf_counter() - t_start_total
-                    print(
-                        f"[DEBUG Interpolate] Surface {surface_idx}/{total_surfaces}: "
-                        f"'{surface_id}' (elapsed: {elapsed:.1f}s)"
-                    )
-
                 orientation = getattr(grid.geometry, "orientation", None)
 
                 idx_bbox = None
@@ -433,11 +420,7 @@ class SoundFieldCalculator(ModuleBase):
 
                     if Xg.size == 0 or Yg.size == 0 or Zg.size == 0 or not np.any(mask_orig):
                         # Nichts zu tun für diese Surface
-                        if surface_idx <= 5:
-                            print(
-                                f"[DEBUG Interpolate] Surface '{surface_id}': "
-                                f"übersprungen (leeres Grid oder Maske leer)"
-                            )
+                        pass
                     else:
                         # Ursprungs-Punkte (lokales Surface-Grid)
                         points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
@@ -460,13 +443,6 @@ class SoundFieldCalculator(ModuleBase):
                         n_bbox = int(idx_bbox.size)
                         t_prep_duration = (time.perf_counter() - t_prep) * 1000
 
-                        if surface_idx <= 5:
-                            print(
-                                f"[DEBUG Interpolate] Surface '{surface_id}': Vorbereitung {t_prep_duration:.1f}ms, "
-                                f"points_orig.shape={points_orig.shape}, mask_orig.sum()={int(mask_orig.sum())}, "
-                                f"bbox_points={n_bbox}"
-                            )
-
                         if n_bbox == 0:
                             # Diese Surface schneidet das globale Grid nicht
                             idx_bbox = None
@@ -485,11 +461,6 @@ class SoundFieldCalculator(ModuleBase):
                                 fill_value=0.0,
                             )
                             t_z_duration = (time.perf_counter() - t_z_start) * 1000
-                            if surface_idx <= 5 or t_z_duration > 100:
-                                print(
-                                    f"[DEBUG Interpolate] Surface '{surface_id}': "
-                                    f"Z-griddata (BBox) {t_z_duration:.1f}ms für {n_bbox} Punkte"
-                                )
 
                             # Kombiniere Masken (auf gesamter Surface, aber ebenfalls nur in der BBox)
                             t_mask_start = time.perf_counter()
@@ -501,11 +472,6 @@ class SoundFieldCalculator(ModuleBase):
                                 fill_value=0.0,
                             )
                             t_mask_duration = (time.perf_counter() - t_mask_start) * 1000
-                            if surface_idx <= 5 or t_mask_duration > 100:
-                                print(
-                                    f"[DEBUG Interpolate] Surface '{surface_id}': "
-                                    f"Mask-griddata (BBox) {t_mask_duration:.1f}ms für {n_bbox} Punkte"
-                                )
 
                 # 🎯 ERSTELLE SURFACE_GRIDS_DATA für Plot-Modul (für ALLE Flächen, auch vertikale)
                 # 🎯 NEU: Füge triangulierte Daten hinzu
@@ -522,11 +488,6 @@ class SoundFieldCalculator(ModuleBase):
                     'dominant_axis': getattr(grid.geometry, 'dominant_axis', None),
                 }
                 t_dict_duration = (time.perf_counter() - t_dict_start) * 1000
-                if surface_idx <= 5 or t_dict_duration > 100:
-                    print(
-                        f"[DEBUG Interpolate] Surface '{surface_id}': "
-                        f"Dict-Erstellung {t_dict_duration:.1f}ms"
-                    )
 
                 # 🎯 TRIANGULATION: Füge triangulierte Vertices und Faces hinzu
                 t_tri_start = time.perf_counter()
@@ -537,18 +498,8 @@ class SoundFieldCalculator(ModuleBase):
                 if hasattr(grid, 'triangulated_success'):
                     grid_data['triangulated_success'] = grid.triangulated_success
                 t_tri_duration = (time.perf_counter() - t_tri_start) * 1000
-                if surface_idx <= 5 or t_tri_duration > 50:
-                    print(
-                        f"[DEBUG Interpolate] Surface '{surface_id}': "
-                        f"Triangulation-Konvertierung {t_tri_duration:.1f}ms"
-                    )
 
                 t_surface_duration = (time.perf_counter() - t_surface_start) * 1000
-                if surface_idx <= 5 or t_surface_duration > 500:
-                    print(
-                        f"[DEBUG Interpolate] Surface '{surface_id}': "
-                        f"GESAMT {t_surface_duration:.1f}ms"
-                    )
 
                 # Rückgabe zur Weiterverarbeitung im Haupt-Thread
                 return surface_id, idx_bbox, z_interp_sub, mask_interp_sub, grid_data
@@ -586,13 +537,10 @@ class SoundFieldCalculator(ModuleBase):
 
                     surface_grids_data[surface_id] = grid_data
         
-        print(f"[DEBUG Interpolate] Alle {len(surface_grids_grouped)} Surfaces interpoliert und verarbeitet")
-        
         # Nach der Bearbeitung über flache Views wieder in die ursprüngliche Grid-Form bringen
         Z_grid = Z_combined_flat.reshape(X_grid.shape)
         surface_mask = mask_combined_flat.reshape(X_grid.shape)
         surface_mask_strict = surface_mask_combined.copy()
-        print(f"[DEBUG Interpolate] Z_grid/surface_mask gesetzt, berechne Statistiken...")
         
         # 🎯 DEBUG: Immer Resolution und Datenpunkte ausgeben
         total_points = int(X_grid.size)
@@ -601,12 +549,8 @@ class SoundFieldCalculator(ModuleBase):
         nx_points = len(sound_field_x)
         ny_points = len(sound_field_y)
         
-        print(f"[DEBUG Interpolate] Statistiken: total_points={total_points}, active_points={active_points}, nx={nx_points}, ny={ny_points}")
-        
         # 🐛 DEBUG: Prüfe Z-Koordinaten für schräge Flächen
-        print(f"[DEBUG Interpolate] Prüfe DEBUG_SOUNDFIELD Block (DEBUG_SOUNDFIELD={DEBUG_SOUNDFIELD}, enabled_surfaces={len(enabled_surfaces) if enabled_surfaces else 0})...")
         if DEBUG_SOUNDFIELD and enabled_surfaces:
-            print(f"[DEBUG Interpolate] Starte DEBUG_SOUNDFIELD Block mit {len(enabled_surfaces)} Surfaces...")
             # Importiere Funktionen außerhalb der Schleife
             from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
                 derive_surface_plane,
@@ -672,7 +616,6 @@ class SoundFieldCalculator(ModuleBase):
             except Exception as e:
                 print(f"[SoundFieldCalculator] Symmetrie-Check konnte nicht ausgeführt werden: {e}")
 
-        print(f"[DEBUG Interpolate] Nach DEBUG_SOUNDFIELD Block: Erstelle surface_field_buffers...")
         surface_field_buffers: Dict[str, np.ndarray] = {}
         surface_point_buffers: Dict[str, np.ndarray] = {}
         # 🎯 NEU: Pufferspeicher für direkt berechnete Surface-Grids (ohne Interpolation)
@@ -716,8 +659,6 @@ class SoundFieldCalculator(ModuleBase):
                     # Wenn etwas schiefgeht, einfach keinen Buffer anlegen
                     continue
 
-        print(f"[DEBUG Interpolate] surface_results_buffers erstellt für {len(surface_results_buffers)} Surfaces")
-        
         # 🎯 NEU: Erstelle Gruppen-Grids für Kandidaten-Gruppen
         group_grids: Dict[str, Dict[str, Any]] = {}
         group_surfaces_map: Dict[str, List[Tuple[str, Dict]]] = {}
@@ -827,8 +768,6 @@ class SoundFieldCalculator(ModuleBase):
                 continue
             
             group_results_buffers[group_id] = np.zeros_like(Z_group, dtype=complex)
-        
-        print(f"[DEBUG Groups] {len(group_grids)} Gruppen-Grids erstellt für {sum(len(sids) for sids in candidate_groups.values())} Surfaces")
         
         # Wenn keine aktiven Quellen, gib leere Arrays zurück
         if not has_active_sources:
@@ -2427,13 +2366,9 @@ class SoundFieldCalculator(ModuleBase):
             if max_pairwise_distance <= distance_threshold:
                 # Alle Surfaces liegen nahe beieinander -> Kandidaten-Gruppe
                 candidate_groups[group_id] = surface_ids_in_group
-                if DEBUG_SOUNDFIELD:
-                    print(f"[SoundFieldCalculator] Gruppe '{group_id}': {len(surface_ids_in_group)} Surfaces als Gruppe behandelt (max_dist={max_pairwise_distance:.3f} <= {distance_threshold:.3f})")
             else:
                 # 🎯 AUFTEILUNG: Surfaces sind zu weit voneinander entfernt
                 # Verwende Clustering, um zusammenhängende Gruppen zu finden
-                if DEBUG_SOUNDFIELD:
-                    print(f"[SoundFieldCalculator] Gruppe '{group_id}': {len(surface_ids_in_group)} Surfaces zu weit voneinander entfernt (max_dist={max_pairwise_distance:.3f} > {distance_threshold:.3f}), teile auf...")
                 # Erstelle Distanz-Matrix (verwende gleiche Logik wie oben)
                 distance_matrix = np.zeros((n_surfaces, n_surfaces))
                 for i in range(n_surfaces):
@@ -2474,13 +2409,10 @@ class SoundFieldCalculator(ModuleBase):
                     # Verwende eindeutige Gruppen-ID für Sub-Cluster
                     sub_group_id = f"{group_id}_cluster_{cluster_idx}"
                     candidate_groups[sub_group_id] = cluster_surface_ids
-                    if DEBUG_SOUNDFIELD:
-                        print(f"[SoundFieldCalculator]   └─ Sub-Cluster '{sub_group_id}': {len(cluster_surface_ids)} Surfaces")
                 
                 # Wenn keine Cluster gefunden wurden (alle Surfaces zu weit voneinander entfernt)
                 if not clusters:
-                    if DEBUG_SOUNDFIELD:
-                        print(f"[SoundFieldCalculator]   └─ Keine Cluster gefunden, alle Surfaces werden einzeln behandelt")
+                    pass
         
         return candidate_groups
     

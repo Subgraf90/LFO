@@ -578,39 +578,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
 
     def update_overlays(self, settings, container):
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
-        print(f"[DEBUG disabled_polygons] update_overlays aufgerufen")
-        # #region agent log
-        try:
-            import json
-            import time as time_module
-            import traceback
-            stack_trace = ''.join(traceback.format_stack()[-5:-1])  # Letzte 4 Stack-Frames
-            current_time = int(time_module.time() * 1000)
-            if not hasattr(self, '_last_update_overlays_time'):
-                self._last_update_overlays_time = {}
-            last_time = self._last_update_overlays_time.get('time', 0)
-            time_diff = current_time - last_time
-            self._last_update_overlays_time['time'] = current_time
-            self._last_update_overlays_time['count'] = self._last_update_overlays_time.get('count', 0) + 1
-            
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "MULTIPLE_UPDATE",
-                    "location": "Plot3D.py:update_overlays:entry",
-                    "message": "update_overlays called - tracking call source and timing",
-                    "data": {
-                        "stack_trace": stack_trace,
-                        "time_since_last_call_ms": time_diff,
-                        "call_count": self._last_update_overlays_time.get('count', 0),
-                        "is_rapid_call": time_diff < 100
-                    },
-                    "timestamp": current_time
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         t_start = time.perf_counter()
         
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
@@ -627,55 +594,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         with perf_section("PlotSPL3D.update_overlays.compute_signatures"):
             signatures = self._compute_overlay_signatures(settings, container)
             previous = self._last_overlay_signatures or {}
-            # #region agent log
-            import json
-            import time as time_module
-            try:
-                speakers_sig = signatures.get('speakers')
-                prev_speakers_sig = previous.get('speakers')
-                speakers_changed = speakers_sig != prev_speakers_sig if prev_speakers_sig else True
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H2",
-                        "location": "Plot3D.py:update_overlays:588",
-                        "message": "Speaker signature comparison",
-                        "data": {
-                            "speakers_signature_changed": speakers_changed,
-                            "has_previous_signature": prev_speakers_sig is not None,
-                            "signature_length": len(speakers_sig) if speakers_sig else 0,
-                            "prev_signature_length": len(prev_speakers_sig) if prev_speakers_sig else 0
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            # #region agent log
-            try:
-                speakers_sig = signatures.get('speakers')
-                prev_speakers_sig = previous.get('speakers')
-                log_entry = {
-                    "location": "Plot3D.update_overlays:586",
-                    "message": "Signature comparison",
-                    "data": {
-                        "speakers_signature_changed": speakers_sig != prev_speakers_sig if prev_speakers_sig else True,
-                        "speakers_in_signature": len(speakers_sig) if speakers_sig else 0,
-                        "prev_speakers_in_signature": len(prev_speakers_sig) if prev_speakers_sig else 0,
-                        "speakers_signature_preview": str(speakers_sig)[:200] if speakers_sig else None,
-                        "prev_speakers_signature_preview": str(prev_speakers_sig)[:200] if prev_speakers_sig else None,
-                    },
-                    "timestamp": __import__('time').time() * 1000,
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "HIDE2"
-                }
-                with open("/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log", 'a') as f:
-                    f.write(json.dumps(log_entry) + '\n')
-            except Exception:
-                pass
-            # #endregion
             
             # 🎯 FIX: Prüfe IMMER, ob sich der hide-Status eines Arrays geändert hat
             # (auch wenn die Gesamtsignatur gleich ist, müssen Speakers neu gezeichnet werden)
@@ -683,52 +601,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             # damit wir die betroffenen Array-IDs tracken können
             affected_array_ids_for_speakers = set()
             hide_status_changed = False
-            # #region agent log
-            try:
-                import json
-                import time as time_module
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "FIX-DEBUG",
-                        "location": "Plot3D.py:update_overlays:before_hide_check",
-                        "message": "About to check hide status changes",
-                        "data": {
-                            "has_previous": previous is not None,
-                            "has_prev_speakers_sig": previous.get('speakers') is not None if previous else False,
-                            "has_curr_speakers_sig": signatures.get('speakers') is not None
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             if previous:
                 prev_speakers_sig = previous.get('speakers')
                 curr_speakers_sig = signatures.get('speakers')
-                # #region agent log
-                try:
-                    import json
-                    import time as time_module
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "FIX-DEBUG",
-                            "location": "Plot3D.py:update_overlays:hide_check_start",
-                            "message": "Starting hide status comparison",
-                            "data": {
-                                "prev_speakers_sig_type": type(prev_speakers_sig).__name__ if prev_speakers_sig else None,
-                                "prev_speakers_sig_length": len(prev_speakers_sig) if isinstance(prev_speakers_sig, (list, tuple)) else None,
-                                "curr_speakers_sig_type": type(curr_speakers_sig).__name__ if curr_speakers_sig else None,
-                                "curr_speakers_sig_length": len(curr_speakers_sig) if isinstance(curr_speakers_sig, (list, tuple)) else None
-                            },
-                            "timestamp": int(time_module.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 if prev_speakers_sig and curr_speakers_sig:
                     # 🎯 FIX: Vergleiche die gesamte Signatur für jedes Array, nicht nur hide-Status
                     # So erkennen wir auch Parameter-Änderungen (z.B. Position)
@@ -750,28 +625,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     # Prüfe, ob sich die Signatur für jedes Array geändert hat
                     # 🎯 FIX: Tracke welche Arrays betroffen sind (hide-Status oder Parameter-Änderung)
                     all_array_names = set(prev_sig_dict.keys()) | set(curr_sig_dict.keys())
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H2",
-                                "location": "Plot3D.py:update_overlays:before_array_comparison",
-                                "message": "Before comparing array signatures",
-                                "data": {
-                                    "all_array_names": list(all_array_names),
-                                    "prev_sig_dict_keys": list(prev_sig_dict.keys()),
-                                    "curr_sig_dict_keys": list(curr_sig_dict.keys()),
-                                    "num_arrays": len(all_array_names)
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     for array_name in all_array_names:
                         prev_sig = prev_sig_dict.get(array_name)
                         curr_sig = curr_sig_dict.get(array_name)
@@ -784,97 +637,18 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         # Vergleiche vollständige Signatur
                         if prev_sig != curr_sig:
                             affected_array_ids_for_speakers.add(array_name)
-                            # #region agent log
-                            try:
-                                import json
-                                import time as time_module
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "H2",
-                                        "location": "Plot3D.py:update_overlays:signature_diff",
-                                        "message": "Signature changed for array - adding to affected_array_ids",
-                                        "data": {
-                                            "array_name": str(array_name),
-                                            "prev_sig_preview": str(prev_sig)[:200] if prev_sig else None,
-                                            "curr_sig_preview": str(curr_sig)[:200] if curr_sig else None,
-                                            "prev_sig_length": len(prev_sig) if isinstance(prev_sig, (list, tuple)) else None,
-                                            "curr_sig_length": len(curr_sig) if isinstance(curr_sig, (list, tuple)) else None
-                                        },
-                                        "timestamp": int(time_module.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                             # Prüfe speziell hide-Status-Änderung
                             if len(prev_sig) >= 3 and len(curr_sig) >= 3:
                                 prev_hide = bool(prev_sig[2])
                                 curr_hide = bool(curr_sig[2])
                                 if prev_hide != curr_hide:
                                     hide_status_changed = True
-                            
-                            # #region agent log - Debug Azimuth-Änderungen
-                            try:
-                                import json
-                                import time as time_module
-                                # Extrahiere Azimuth-Werte aus den Signaturen für Vergleich
-                                prev_azimuth = None
-                                curr_azimuth = None
-                                if len(prev_sig) >= 4 and isinstance(prev_sig[3], (list, tuple)) and len(prev_sig[3]) >= 5:
-                                    prev_azimuth = prev_sig[3][4]  # sources[4] = azimuth tuple
-                                if len(curr_sig) >= 4 and isinstance(curr_sig[3], (list, tuple)) and len(curr_sig[3]) >= 5:
-                                    curr_azimuth = curr_sig[3][4]  # sources[4] = azimuth tuple
-                                
-                                if prev_azimuth != curr_azimuth:
-                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                        f.write(json.dumps({
-                                            "sessionId": "debug-session",
-                                            "runId": "run1",
-                                            "hypothesisId": "AZIMUTH_DEBUG",
-                                            "location": "Plot3D.py:update_overlays:azimuth_comparison",
-                                            "message": "Azimuth changed detected in signature comparison",
-                                            "data": {
-                                                "array_name": str(array_name),
-                                                "prev_azimuth": list(prev_azimuth)[:5] if isinstance(prev_azimuth, (list, tuple)) else None,
-                                                "curr_azimuth": list(curr_azimuth)[:5] if isinstance(curr_azimuth, (list, tuple)) else None,
-                                                "prev_azimuth_length": len(prev_azimuth) if isinstance(prev_azimuth, (list, tuple)) else None,
-                                                "curr_azimuth_length": len(curr_azimuth) if isinstance(curr_azimuth, (list, tuple)) else None,
-                                                "azimuth_changed": True
-                                            },
-                                            "timestamp": int(time_module.time() * 1000)
-                                        }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                     if hide_status_changed:
                         # 🎯 FIX: Speichere betroffene Array-IDs in overlay_speakers, damit draw_speakers() darauf zugreifen kann
                         if hasattr(self, 'overlay_speakers'):
                             # Konvertiere alle Array-IDs zu Strings, um Konsistenz zu gewährleisten
                             affected_array_ids_str = {str(aid) for aid in affected_array_ids_for_speakers}
                             self.overlay_speakers._affected_array_ids_for_speakers = affected_array_ids_str
-                        # #region agent log
-                        try:
-                            import json
-                            import time as time_module
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "HIDE2-FIX",
-                                    "location": "Plot3D.py:update_overlays:hide_status_check",
-                                    "message": "Hide status changed - setting affected_array_ids_for_speakers",
-                                    "data": {
-                                        "prev_hide_dict": prev_hide_dict,
-                                        "curr_hide_dict": curr_hide_dict,
-                                        "affected_array_ids_for_speakers": list(affected_array_ids_for_speakers),
-                                        "has_overlay_speakers": hasattr(self, 'overlay_speakers')
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
             
             if not previous:
                 categories_to_refresh = set(signatures.keys())
@@ -883,33 +657,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     key for key, value in signatures.items() 
                     if key != 'speakers_highlights' and value != previous.get(key)
                 }
-            
-            # #region agent log - Prüfe ob axis-Signatur geändert wurde
-            try:
-                import json
-                import time as time_module
-                axis_sig = signatures.get('axis')
-                prev_axis_sig = previous.get('axis')
-                axis_changed = axis_sig != prev_axis_sig if prev_axis_sig else True
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H2",
-                        "location": "Plot3D.py:update_overlays:axis_signature_check",
-                        "message": "Axis signature comparison",
-                        "data": {
-                            "axis_signature_changed": axis_changed,
-                            "has_previous_axis_signature": prev_axis_sig is not None,
-                            "axis_in_categories_to_refresh": 'axis' in categories_to_refresh,
-                            "axis_signature_preview": str(axis_sig)[:200] if axis_sig else None,
-                            "prev_axis_signature_preview": str(prev_axis_sig)[:200] if prev_axis_sig else None
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             # 🎯 FIX: Wenn sich Parameter oder hide-Status geändert haben, füge 'speakers' zu categories_to_refresh hinzu
             # UND setze die betroffenen Array-IDs, auch wenn die Signatur bereits als geändert markiert wurde
@@ -920,48 +667,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     # Konvertiere alle Array-IDs zu Strings, um Konsistenz zu gewährleisten
                     affected_array_ids_str = {str(aid) for aid in affected_array_ids_for_speakers}
                     self.overlay_speakers._affected_array_ids_for_speakers = affected_array_ids_str
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "PARAM-FIX",
-                                "location": "Plot3D.py:update_overlays:set_affected_arrays",
-                                "message": "Setting affected_array_ids_for_speakers for parameter/hide changes",
-                                "data": {
-                                    "affected_array_ids_for_speakers": list(affected_array_ids_for_speakers),
-                                    "affected_array_ids_str": list(affected_array_ids_str),
-                                    "hide_status_changed": hide_status_changed,
-                                    "has_overlay_speakers": hasattr(self, 'overlay_speakers')
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
             
-            # #region agent log
-            try:
-                log_entry = {
-                    "location": "Plot3D.update_overlays:593",
-                    "message": "Categories to refresh",
-                    "data": {
-                        "categories_to_refresh": list(categories_to_refresh),
-                        "speakers_in_refresh": 'speakers' in categories_to_refresh,
-                    },
-                    "timestamp": __import__('time').time() * 1000,
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "HIDE2"
-                }
-                with open("/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log", 'a') as f:
-                    f.write(json.dumps(log_entry) + '\n')
-            except Exception:
-                pass
-            # #endregion
         # 🚀 OPTIMIERUNG: Prüfe ob sich nur Highlights geändert haben
         highlight_changed = False
         if previous:
@@ -1012,7 +718,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 self.overlay_axis.draw_axis_lines(settings, selected_axis=self._axis_selected)
         
         if 'surfaces' in categories_to_refresh:
-            print(f"[DEBUG disabled_polygons] update_overlays: 'surfaces' in categories_to_refresh, rufe draw_surfaces auf")
             with perf_section("PlotSPL3D.update_overlays.draw_surfaces"):
                 # Prüfe ob SPL-Daten vorhanden sind, um zu entscheiden ob enabled Surfaces gezeichnet werden sollen
                 create_empty_plot_surfaces = False
@@ -1052,40 +757,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         
         if 'speakers' in categories_to_refresh:
             with perf_section("PlotSPL3D.update_overlays.draw_speakers"):
-                # #region agent log
-                try:
-                    import json
-                    import time as time_module
-                    affected_array_ids = getattr(self.overlay_speakers, '_affected_array_ids_for_speakers', None)
-                    # Prüfe, ob dies ein wiederholter Aufruf ist (innerhalb kurzer Zeit)
-                    current_time = int(time_module.time() * 1000)
-                    if not hasattr(self, '_last_draw_speakers_time'):
-                        self._last_draw_speakers_time = {}
-                    last_time = self._last_draw_speakers_time.get('time', 0)
-                    time_diff = current_time - last_time
-                    self._last_draw_speakers_time['time'] = current_time
-                    self._last_draw_speakers_time['count'] = self._last_draw_speakers_time.get('count', 0) + 1
-                    
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "MULTIPLE_PLOT",
-                            "location": "Plot3D.py:update_overlays:draw_speakers",
-                            "message": "About to draw_speakers - checking for multiple plot calls",
-                            "data": {
-                                "affected_array_ids": list(affected_array_ids) if affected_array_ids else None,
-                                "categories_to_refresh": list(categories_to_refresh),
-                                "speakers_in_refresh": 'speakers' in categories_to_refresh,
-                                "time_since_last_call_ms": time_diff,
-                                "call_count": self._last_draw_speakers_time.get('count', 0),
-                                "is_rapid_call": time_diff < 100  # Weniger als 100ms seit letztem Aufruf
-                            },
-                            "timestamp": current_time
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 with perf_section("PlotSPL3D.update_overlays.build_cabinet_lookup"):
                     cabinet_lookup = self.overlay_speakers.build_cabinet_lookup(container)
                 self.overlay_speakers.draw_speakers(settings, container, cabinet_lookup)
@@ -1490,8 +1161,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                                         wall_axis = "x"
                                         wall_value = float(np.mean(poly_x))
                 except Exception as e:
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Plot] Fehler beim Laden Orientierung aus grid_data für {surface_id}: {e}")
+                    pass
             
             # Berechne Planmodell für geneigte Flächen (wenn nicht bereits vertikal erkannt)
             if not is_vertical:
@@ -1652,11 +1322,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                                 if X_grid_direct.ndim == 2 and Y_grid_direct.ndim == 2 and Z_grid_direct.ndim == 2:
                                     if X_grid_direct.shape == Y_grid_direct.shape == Z_grid_direct.shape:
                                         use_direct_grids = True
-                                        if DEBUG_PLOT3D_TIMING:
-                                            print(f"[DEBUG Vertical Grid Direct] {surface_id}: Verwende Grids direkt aus surface_grids_data, shape={X_grid_direct.shape}")
                 except Exception as e:
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Vertical Grid Direct] {surface_id}: Fehler beim Laden direkter Grids: {e}")
                     use_direct_grids = False
             
             if not use_direct_grids:
@@ -1723,9 +1389,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             
             # 🎯 NEU: Wenn direkte Grids verfügbar sind, verwende diese (wie Plot3DSPL_new.py)
             if use_direct_grids:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Vertical Grid Direct] {surface_id}: Verwende direkte Grids für vertikale Surface")
-                
                 # Lade SPL-Werte aus surface_results_data
                 try:
                     calc_spl = getattr(self.container, "calculation_spl", None)
@@ -1748,12 +1411,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                             # 🎯 Vertikale Surfaces mit direkten Grids werden jetzt in _update_vertical_spl_surfaces_from_grids()
                             # in Plot3DSPL.py verarbeitet. Diese Funktion wird am Ende von update_spl_plot() aufgerufen.
                             # Return None, damit die Surface hier übersprungen wird und separat behandelt wird.
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[DEBUG Vertical Grid Direct] {surface_id}: Direkte Grids gefunden, wird in _update_vertical_spl_surfaces_from_grids() verarbeitet. Überspringe hier.")
                             return None
                 except Exception as e:
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Vertical Grid Direct] {surface_id}: Fehler beim Laden SPL-Werten: {e}")
                     use_direct_grids = False
             
             # Fallback: Alte Logik mit prepare_vertical_plot_geometry
@@ -1867,27 +1526,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
                     v_coords = 1.0 - v_coords_raw
                     
-                    # 🐛 DEBUG: Textur-Koordinaten vor Transformation (vertikal)
-                    if DEBUG_PLOT3D_TIMING:
-                        ny_uv, nx_uv = img_rgba_uv.shape[:2]
-                        print(f"[DEBUG Texture] {surface_id} (vertical, {orientation}):")
-                        print(f"  img_rgba_uv.shape = {img_rgba_uv.shape} (H={ny_uv}, W={nx_uv})")
-                        print(f"  orientation={orientation}, wall_axis={wall_axis}, wall_value={wall_value:.2f}")
-                        print(f"  u range: [{u_min:.2f}, {u_max:.2f}], v range: [{v_min:.2f}, {v_max:.2f}]")
-                        print(f"  u_coords range: [{u_coords.min():.3f}, {u_coords.max():.3f}]")
-                        print(f"  v_coords_raw range: [{v_coords_raw.min():.3f}, {v_coords_raw.max():.3f}]")
-                        print(f"  v_coords range (after 1.0-v): [{v_coords.min():.3f}, {v_coords.max():.3f}]")
-                        if orientation == "xz":
-                            print(f"  Corner [0,0]: u={u_coords[0,0]:.3f}, v={v_coords[0,0]:.3f}, world=({X_3d[0,0]:.2f}, {Y_3d[0,0]:.2f}, {Z_3d[0,0]:.2f}), SPL={spl_img_uv[0,0]:.1f}->{spl_clipped_uv[0,0]:.1f} dB")
-                            print(f"  Corner [0,nx-1]: u={u_coords[0,nx_uv-1]:.3f}, v={v_coords[0,nx_uv-1]:.3f}, world=({X_3d[0,nx_uv-1]:.2f}, {Y_3d[0,nx_uv-1]:.2f}, {Z_3d[0,nx_uv-1]:.2f}), SPL={spl_img_uv[0,nx_uv-1]:.1f}->{spl_clipped_uv[0,nx_uv-1]:.1f} dB")
-                            print(f"  Corner [ny-1,0]: u={u_coords[ny_uv-1,0]:.3f}, v={v_coords[ny_uv-1,0]:.3f}, world=({X_3d[ny_uv-1,0]:.2f}, {Y_3d[ny_uv-1,0]:.2f}, {Z_3d[ny_uv-1,0]:.2f}), SPL={spl_img_uv[ny_uv-1,0]:.1f}->{spl_clipped_uv[ny_uv-1,0]:.1f} dB")
-                            print(f"  Corner [ny-1,nx-1]: u={u_coords[ny_uv-1,nx_uv-1]:.3f}, v={v_coords[ny_uv-1,nx_uv-1]:.3f}, world=({X_3d[ny_uv-1,nx_uv-1]:.2f}, {Y_3d[ny_uv-1,nx_uv-1]:.2f}, {Z_3d[ny_uv-1,nx_uv-1]:.2f}), SPL={spl_img_uv[ny_uv-1,nx_uv-1]:.1f}->{spl_clipped_uv[ny_uv-1,nx_uv-1]:.1f} dB")
-                        else:  # yz
-                            print(f"  Corner [0,0]: u={u_coords[0,0]:.3f}, v={v_coords[0,0]:.3f}, world=({X_3d[0,0]:.2f}, {Y_3d[0,0]:.2f}, {Z_3d[0,0]:.2f}), SPL={spl_img_uv[0,0]:.1f}->{spl_clipped_uv[0,0]:.1f} dB")
-                            print(f"  Corner [0,nx-1]: u={u_coords[0,nx_uv-1]:.3f}, v={v_coords[0,nx_uv-1]:.3f}, world=({X_3d[0,nx_uv-1]:.2f}, {Y_3d[0,nx_uv-1]:.2f}, {Z_3d[0,nx_uv-1]:.2f}), SPL={spl_img_uv[0,nx_uv-1]:.1f}->{spl_clipped_uv[0,nx_uv-1]:.1f} dB")
-                            print(f"  Corner [ny-1,0]: u={u_coords[ny_uv-1,0]:.3f}, v={v_coords[ny_uv-1,0]:.3f}, world=({X_3d[ny_uv-1,0]:.2f}, {Y_3d[ny_uv-1,0]:.2f}, {Z_3d[ny_uv-1,0]:.2f}), SPL={spl_img_uv[ny_uv-1,0]:.1f}->{spl_clipped_uv[ny_uv-1,0]:.1f} dB")
-                            print(f"  Corner [ny-1,nx-1]: u={u_coords[ny_uv-1,nx_uv-1]:.3f}, v={v_coords[ny_uv-1,nx_uv-1]:.3f}, world=({X_3d[ny_uv-1,nx_uv-1]:.2f}, {Y_3d[ny_uv-1,nx_uv-1]:.2f}, {Z_3d[ny_uv-1,nx_uv-1]:.2f}), SPL={spl_img_uv[ny_uv-1,nx_uv-1]:.1f}->{spl_clipped_uv[ny_uv-1,nx_uv-1]:.1f} dB")
-                    
                     # Achsen-Invertierung
                     invert_x = False
                     invert_y = True
@@ -1908,37 +1546,16 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         if "swap_texture_axes" in surface_obj:
                             swap_axes = bool(surface_obj["swap_texture_axes"])
                     
-                    # 🐛 DEBUG: Transformations-Einstellungen (vertikal)
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  Transform settings: invert_x={invert_x}, invert_y={invert_y}, swap_axes={swap_axes}")
-                    
                     img_rgba_final = img_rgba_uv.copy()
                     if invert_x:
                         img_rgba_final = np.fliplr(img_rgba_final)
                         u_coords = 1.0 - u_coords
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  Applied: fliplr (horizontal)")
                     if invert_y:
                         img_rgba_final = np.flipud(img_rgba_final)
                         v_coords = 1.0 - v_coords
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  Applied: flipud (vertical)")
                     if swap_axes:
                         img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
                         u_coords, v_coords = v_coords.copy(), u_coords.copy()
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  Applied: transpose (swap axes)")
-                    
-                    # 🐛 DEBUG: Textur-Koordinaten nach Transformation (vertikal)
-                    if DEBUG_PLOT3D_TIMING:
-                        ny_final, nx_final = img_rgba_final.shape[:2]
-                        print(f"  After transform: img_rgba_final.shape = {img_rgba_final.shape}")
-                        print(f"  Final u_coords range: [{u_coords.min():.3f}, {u_coords.max():.3f}]")
-                        print(f"  Final v_coords range: [{v_coords.min():.3f}, {v_coords.max():.3f}]")
-                        print(f"  Final Corner [0,0]: u={u_coords[0,0]:.3f}, v={v_coords[0,0]:.3f}")
-                        print(f"  Final Corner [0,nx-1]: u={u_coords[0,nx_final-1]:.3f}, v={v_coords[0,nx_final-1]:.3f}")
-                        print(f"  Final Corner [ny-1,0]: u={u_coords[ny_final-1,0]:.3f}, v={v_coords[ny_final-1,0]:.3f}")
-                        print(f"  Final Corner [ny-1,nx-1]: u={u_coords[ny_final-1,nx_final-1]:.3f}, v={v_coords[ny_final-1,nx_final-1]:.3f}")
                     
                     # 🎯 WICHTIG: PyVista StructuredGrid verwendet column-major (Fortran-style) Indizierung!
                     # Die Arrays müssen in column-major Reihenfolge flach gemacht werden
@@ -2070,11 +1687,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                                 if X_grid_direct.ndim == 2 and Y_grid_direct.ndim == 2 and Z_grid_direct.ndim == 2:
                                     if X_grid_direct.shape == Y_grid_direct.shape == Z_grid_direct.shape:
                                         use_direct_grids = True
-                                        if DEBUG_PLOT3D_TIMING:
-                                            print(f"[DEBUG Grid Direct] {surface_id}: Verwende Grids direkt aus surface_grids_data, shape={X_grid_direct.shape}")
                 except Exception as e:
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Grid Direct] {surface_id}: Fehler beim Laden direkter Grids: {e}")
                     use_direct_grids = False
             
             if use_direct_grids:
@@ -2088,13 +1701,8 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 xs = X[0, :] if X.shape[1] > 0 else X.ravel()
                 ys = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
                 
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Grid Direct] {surface_id}: Direkte Grids verwendet, shape={X.shape}, active={np.sum(inside)}/{inside.size}")
-                
                 # Prüfe ob Surface-Maske vorhanden ist
                 if not np.any(inside):
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[DEBUG Grid Direct] {surface_id}: Keine aktiven Punkte in surface_mask")
                     return None
                 
                 # Berechne Signatur für direkte Grids
@@ -2205,15 +1813,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 if xs.size < 2 or ys.size < 2:
                     return None
                 
-                # 🐛 DEBUG: Grid-Erstellung
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[DEBUG Grid Creation] {surface_id}:")
-                    print(f"  Bounding box: x=[{xmin:.2f}, {xmax:.2f}], y=[{ymin:.2f}, {ymax:.2f}]")
-                    print(f"  Margin: {margin:.4f} m")
-                    print(f"  Grid range: x=[{x_start:.2f}, {x_end:.2f}], y=[{y_start:.2f}, {y_end:.2f}]")
-                    print(f"  Grid resolution: {tex_res_surface:.4f} m")
-                    print(f"  Grid size: num_x={num_x}, num_y={num_y}")
-                
                 X, Y = np.meshgrid(xs, ys, indexing="xy")
                 
                 points_2d = np.column_stack((X.ravel(), Y.ravel()))
@@ -2278,21 +1877,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 else:
                     Z_surface = None
             
-            # 🐛 DEBUG: Plane model für schräge Flächen (reduziert)
-            if DEBUG_PLOT3D_TIMING:
-                if is_slanted:
-                    if mode == "xy":
-                        slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
-                        slope_y = float(plane_model.get("slope_y", 0.0))
-                        intercept = float(plane_model.get("intercept", 0.0))
-                        print(f"[DEBUG Grid] {surface_id}: plane_model mode={mode}, Z = {slope_x:.4f} * X + {slope_y:.4f} * Y + {intercept:.4f}, shape={X.shape}")
-                    else:
-                        slope = float(plane_model.get("slope", 0.0))
-                        intercept = float(plane_model.get("intercept", 0.0))
-                        print(f"[DEBUG Grid] {surface_id}: plane_model mode={mode}, Z = {slope:.4f} * {'X' if mode == 'x' else 'Y'} + {intercept:.4f}, shape={X.shape}")
-                else:
-                    print(f"[DEBUG Grid] {surface_id}: plane_model mode={mode}, shape={X.shape}")
-                print(f"  Source grid: X={len(source_x)} points, Y={len(source_y)} points, values shape={values.shape}")
             
             # 🎯 NEU: Verwende direkt die Werte aus surface_overrides (keine Interpolation mehr!)
             # Die Werte sind bereits ein 2D-Array passend zu source_x und source_y
@@ -2381,9 +1965,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     )
                 spl_img = spl_flat.reshape(X.shape)
             
-            # 🐛 DEBUG: SPL-Mapping-Prüfung (reduziert)
-            if DEBUG_PLOT3D_TIMING:
-                print(f"  [DEBUG SPL Mapping] {surface_id}: spl_img.shape={spl_img.shape}, range=[{spl_img.min():.1f}, {spl_img.max():.1f}] dB")
             
             # Werte clippen
             spl_clipped = np.clip(spl_img, cbar_min, cbar_max)
@@ -2464,7 +2045,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             Y_ij = Y  # Shape (ny, nx)
             Z_ij = Z  # Shape (ny, nx)
             
-            # 🐛 DEBUG: Prüfe Surface-Punkte vs. gerenderte Mesh-Positionen (nur Warnungen)
             if DEBUG_PLOT3D_TIMING:
                 poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
                 poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
@@ -2477,15 +2057,7 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 y_diff_min = abs(mesh_y_min - poly_y_min)
                 y_diff_max = abs(mesh_y_max - poly_y_max)
                 if x_diff_min > 0.1 or x_diff_max > 0.1 or y_diff_min > 0.1 or y_diff_max > 0.1:
-                    print(f"  [DEBUG Surface Points vs Mesh] {surface_id}: ⚠️  WARNING: Mesh-Positionen weichen deutlich von Surface-Polygon ab!")
-                    print(f"    Mesh: X=[{mesh_x_min:.2f}, {mesh_x_max:.2f}], Y=[{mesh_y_min:.2f}, {mesh_y_max:.2f}]")
-                    print(f"    Polygon: X=[{poly_x_min:.2f}, {poly_x_max:.2f}], Y=[{poly_y_min:.2f}, {poly_y_max:.2f}]")
-                    print(f"    Differences: X=[{x_diff_min:.3f}, {x_diff_max:.3f}] m, Y=[{y_diff_min:.3f}, {y_diff_max:.3f}] m")
-            
-            # 🐛 DEBUG: Mesh-Geometrie-Prüfung (reduziert)
-            if DEBUG_PLOT3D_TIMING:
-                ny_mesh, nx_mesh = X_ij.shape  # X_ij hat Shape (ny, nx) mit indexing='xy'
-                print(f"  [DEBUG Mesh Geometry] {surface_id}: Grid shape={X_ij.shape}, points={grid.n_points}, bounds={grid.bounds}")
+                    pass  # Warnung entfernt
             
             # Textur-Koordinaten
             try:
@@ -2513,10 +2085,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     
                     v_coords = 1.0 - v_coords_raw
                     
-                    # 🐛 DEBUG: Textur-Koordinaten (reduziert)
-                    if DEBUG_PLOT3D_TIMING:
-                        nx_img_ij, ny_img_ij = img_rgba_ij.shape[:2]
-                        print(f"[DEBUG Texture] {surface_id}: img_rgba_ij.shape={img_rgba_ij.shape}, u_coords=[{u_coords.min():.3f}, {u_coords.max():.3f}], v_coords=[{v_coords.min():.3f}, {v_coords.max():.3f}]")
                     
                     # Achsen-Invertierung
                     invert_x = False
@@ -2538,31 +2106,17 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         if "swap_texture_axes" in surface_obj:
                             swap_axes = bool(surface_obj["swap_texture_axes"])
                     
-                    # 🐛 DEBUG: Transformations-Einstellungen
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  Transform settings: invert_x={invert_x}, invert_y={invert_y}, swap_axes={swap_axes}")
-                    
                     # 🎯 KORREKTUR: Verwende img_rgba_ij statt img_rgba (bereits transponiert)
                     img_rgba_final = img_rgba_ij.copy()
                     if invert_x:
                         img_rgba_final = np.fliplr(img_rgba_final)
                         u_coords = 1.0 - u_coords
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  Applied: fliplr (horizontal)")
                     if invert_y:
                         img_rgba_final = np.flipud(img_rgba_final)
                         v_coords = 1.0 - v_coords
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  Applied: flipud (vertical)")
                     if swap_axes:
                         img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
                         u_coords, v_coords = v_coords.copy(), u_coords.copy()
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  Applied: transpose (swap axes)")
-                    
-                    # 🐛 DEBUG: Textur-Koordinaten nach Transformation (reduziert)
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  After transform: img_rgba_final.shape={img_rgba_final.shape}, u_coords=[{u_coords.min():.3f}, {u_coords.max():.3f}], v_coords=[{v_coords.min():.3f}, {v_coords.max():.3f}]")
                     
                     # 🎯 WICHTIG: build_surface_mesh kann Punkte entfernen (z.B. durch extract_cells)
                     # Daher müssen wir Textur-Koordinaten basierend auf den tatsächlichen Mesh-Punkten berechnen
@@ -2574,9 +2128,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                     # 🎯 KORREKTUR: Wenn das Mesh weniger Punkte hat als erwartet, müssen wir die Textur-Koordinaten
                     # basierend auf den tatsächlichen Punkt-Positionen im Mesh berechnen
                     if grid.n_points != len(t_coords_full):
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"  [DEBUG Texture Mapping] {surface_id}: Mesh hat {grid.n_points} Punkte, erwartet {len(t_coords_full)}. Berechne TCoords basierend auf Punkt-Positionen.")
-                        
                         # Berechne Textur-Koordinaten für jeden Punkt im Mesh basierend auf seiner Position
                         mesh_points = grid.points
                         t_coords = np.zeros((grid.n_points, 2), dtype=float)
@@ -2593,19 +2144,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         # Alle Punkte sind vorhanden, verwende die vollständigen Textur-Koordinaten
                         t_coords = t_coords_full
                     
-                    # 🐛 DEBUG: Textur-Mapping-Prüfung (nur Warnungen)
-                    if DEBUG_PLOT3D_TIMING:
-                        ny_tex, nx_tex = img_rgba_final.shape[:2]
-                        ny_mesh, nx_mesh = X.shape  # Originale Grid-Shape (ny, nx)
-                        # Prüfe, ob die Dimensionen übereinstimmen
-                        if ny_tex != ny_mesh or nx_tex != nx_mesh:
-                            print(f"  [DEBUG Texture Mapping] {surface_id}: ⚠️  WARNING: Dimension mismatch! Texture: ({ny_tex}, {nx_tex}), Mesh arrays: ({ny_mesh}, {nx_mesh})")
-                        # Prüfe Textur-Koordinaten-Bereich
-                        if len(t_coords) > 0:
-                            u_vals = t_coords[:, 0]
-                            v_vals = t_coords[:, 1]
-                            if (u_vals.min() < 0 or u_vals.max() > 1 or v_vals.min() < 0 or v_vals.max() > 1):
-                                print(f"  [DEBUG Texture Mapping] {surface_id}: ⚠️  WARNING: Texture coordinates out of range! u=[{u_vals.min():.3f}, {u_vals.max():.3f}], v=[{v_vals.min():.3f}, {v_vals.max():.3f}]")
                     
                     grid.point_data["TCoords"] = t_coords
                     img_rgba = img_rgba_final

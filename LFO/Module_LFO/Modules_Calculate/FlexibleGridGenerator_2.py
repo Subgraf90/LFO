@@ -722,26 +722,6 @@ class SurfaceAnalyzer(ModuleBase):
                             else:
                                 dominant_axis = "xz"
                 
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Ultra-Robust] ⚠️ PCA lieferte keine dominante Achse, verwende verbesserte Analyse: {dominant_axis}")
-                    print(f"  └─ x_span={x_span:.3f}, y_span={y_span:.3f}, x_var_rel={x_var_rel:.6f}, y_var_rel={y_var_rel:.6f}")
-        
-        if DEBUG_FLEXIBLE_GRID:
-            print(f"[DEBUG Ultra-Robust] Score-Analyse:")
-            # svd_error kann None sein → getrennt formatieren
-            if svd_error is not None:
-                error_str = f"{svd_error:.6f}"
-            else:
-                error_str = "N/A"
-            print(f"  └─ SVD: {svd_score:.3f} (weight: {weights['svd']:.3f}, error: {error_str})")
-            print(f"  └─ Normal: {normal_score:.3f} (weight: {weights['normal']:.3f})")
-            print(f"  └─ PCA: {pca_vertical_score:.3f} (weight: {weights['pca']:.3f})")
-            print(f"  └─ Plane: {plane_score:.3f} (weight: {weights['plane']:.3f})")
-            print(f"  └─ Span: {span_score:.3f} (weight: {weights['span']:.3f})")
-            print(f"  └─ Combined: {combined_score:.3f} → {orientation}")
-            if dominant_axis:
-                print(f"  └─ Dominant axis: {dominant_axis}")
-        
         return orientation, dominant_axis
     
     def _determine_orientation_improved(
@@ -1105,20 +1085,10 @@ class GridBuilder(ModuleBase):
 
             new_faces = np.array(new_faces_list, dtype=np.int64)
 
-            if DEBUG_FLEXIBLE_GRID:
-                print(
-                    f"[DEBUG DeDupe] Surface '{surface_id}': "
-                    f"{len(verts)} → {len(new_vertices)} Vertices, "
-                    f"{n_faces} → {len(new_faces)//4} Dreiecke "
-                    f"(entfernte degenerierte Dreiecke: {removed_degenerate})"
-                )
-
             return new_vertices, new_faces
 
         except Exception as e:
             # Sicherheit: bei Fehlern niemals das Mesh zerstören
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG DeDupe] Surface '{surface_id}': Fehler bei Deduplikation: {e}")
             return vertices, faces_flat
     
     @measure_time("GridBuilder.build_base_grid")
@@ -2014,8 +1984,6 @@ class GridBuilder(ModuleBase):
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}' (VERTIKAL): {points_in_surface}/{total_grid_points} Punkte in Surface")
         else:
             # PLANARE/SCHRÄGE SURFACES: Normale Maske und Z-Interpolation
             surface_mask_strict = self._create_surface_mask(X_grid, Y_grid, geometry)  # Ursprüngliche Maske
@@ -2033,8 +2001,6 @@ class GridBuilder(ModuleBase):
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG Grid-Erweiterung] Surface '{geometry.surface_id}': {points_in_surface}/{total_grid_points} Punkte in Surface")
             
             # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
             # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
@@ -2903,8 +2869,6 @@ class FlexibleGridGenerator(ModuleBase):
                                     is_xz_wall = False
                                     # Prüfe ob schräg: X variiert (gleiche Logik wie Grid-Erstellung)
                                     is_slanted_wall = (x_span > eps_line and z_span > 1e-3)
-                                    if DEBUG_FLEXIBLE_GRID:
-                                        print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': Y-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                 elif geom.dominant_axis == "xz":
                                     # X-Z-Wand: u = x, v = z
                                     polygon_u = xs
@@ -2912,8 +2876,6 @@ class FlexibleGridGenerator(ModuleBase):
                                     is_xz_wall = True
                                     # Prüfe ob schräg: Y variiert (gleiche Logik wie Grid-Erstellung)
                                     is_slanted_wall = (y_span > eps_line and z_span > 1e-3)
-                                    if DEBUG_FLEXIBLE_GRID:
-                                        print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': X-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                 else:
                                     raise ValueError(f"Surface '{geom.surface_id}': Unbekannter dominant_axis '{geom.dominant_axis}'")
                             
@@ -2957,8 +2919,6 @@ class FlexibleGridGenerator(ModuleBase):
                                                 np.array([[corner_u, corner_v]]),
                                                 method='linear', fill_value=y_mean
                                             )[0]
-                                            if DEBUG_FLEXIBLE_GRID and len(additional_vertices) == 0:
-                                                print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': Y interpoliert für Ecke (u={corner_u:.3f}, v={corner_v:.3f}) → Y={corner_y:.3f} (linear)")
                                         else:
                                             # Konstante Wand: Y = konstant
                                             corner_y = y_mean
@@ -2974,8 +2934,6 @@ class FlexibleGridGenerator(ModuleBase):
                                                 np.array([[corner_u, corner_v]]),
                                                 method='linear', fill_value=x_mean
                                             )[0]
-                                            if DEBUG_FLEXIBLE_GRID and len(additional_vertices) == 0:
-                                                print(f"[DEBUG Vertical Triangulation] Surface '{geom.surface_id}': X interpoliert für Ecke (u={corner_u:.3f}, v={corner_v:.3f}) → X={corner_x:.3f} (linear)")
                                         else:
                                             # Konstante Wand: X = konstant
                                             corner_x = x_mean
@@ -3062,8 +3020,6 @@ class FlexibleGridGenerator(ModuleBase):
                                         is_xz_wall = False
                                         # Prüfe ob schräg: X variiert (gleiche Logik wie Grid-Erstellung)
                                         is_slanted_wall = (x_span > eps_line and z_span > 1e-3)
-                                        if DEBUG_FLEXIBLE_GRID:
-                                            print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': Y-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                     elif geom.dominant_axis == "xz":
                                         # X-Z-Wand: u = x, v = z
                                         polygon_u = xs
@@ -3071,8 +3027,6 @@ class FlexibleGridGenerator(ModuleBase):
                                         is_xz_wall = True
                                         # Prüfe ob schräg: Y variiert (gleiche Logik wie Grid-Erstellung)
                                         is_slanted_wall = (y_span > eps_line and z_span > 1e-3)
-                                        if DEBUG_FLEXIBLE_GRID:
-                                            print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': X-Z-Wand, x_span={x_span:.3f}, y_span={y_span:.3f}, z_span={z_span:.3f}, is_slanted_wall={is_slanted_wall}")
                                     else:
                                         raise ValueError(f"Surface '{geom.surface_id}': Unbekannter dominant_axis '{geom.dominant_axis}'")
                                 
@@ -3158,8 +3112,6 @@ class FlexibleGridGenerator(ModuleBase):
                                                 np.array([[closest_u, closest_v]]),
                                                 method='linear', fill_value=y_mean
                                             )[0]
-                                            if DEBUG_FLEXIBLE_GRID and len(boundary_indices) > 0 and idx == boundary_indices[0]:
-                                                print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': Y interpoliert für Rand-Vertex (u={closest_u:.3f}, v={closest_v:.3f}) → Y={all_vertices[idx, 1]:.3f} (linear, vorher: {old_y:.3f})")
                                         else:
                                             # Konstante Wand: Y = konstant
                                             all_vertices[idx, 1] = y_mean
@@ -3175,8 +3127,6 @@ class FlexibleGridGenerator(ModuleBase):
                                                 np.array([[closest_u, closest_v]]),
                                                 method='linear', fill_value=x_mean
                                             )[0]
-                                            if DEBUG_FLEXIBLE_GRID and len(boundary_indices) > 0 and idx == boundary_indices[0]:
-                                                print(f"[DEBUG Vertical Boundary] Surface '{geom.surface_id}': X interpoliert für Rand-Vertex (u={closest_u:.3f}, v={closest_v:.3f}) → X={all_vertices[idx, 0]:.3f} (linear, vorher: {old_x:.3f})")
                                         else:
                                             # Konstante Wand: X = konstant
                                             all_vertices[idx, 0] = x_mean
@@ -3487,8 +3437,6 @@ class FlexibleGridGenerator(ModuleBase):
                                 geom.surface_id
                             )
                         except Exception as dedupe_error:
-                            if DEBUG_FLEXIBLE_GRID:
-                                print(f"[DEBUG DeDupe] Surface '{geom.surface_id}': Fehler bei Deduplikation: {dedupe_error}")
                             # Bei Fehler: Original-Vertices/Faces behalten
                             pass
                         
@@ -3612,15 +3560,7 @@ class FlexibleGridGenerator(ModuleBase):
                         # - Mindestens 1 aktiver Punkt vorhanden (also nicht komplett leer)
                         # - Aber deutlich weniger als ~50 % der "erwarteten" Belegung
                         if points_in_surface > 0 and coverage_ratio < 0.5:
-                            print(
-                                "⚠️  [FlexibleGridGenerator] Surface "
-                                f"'{geom.surface_id}' ({geom.orientation}): "
-                                f"nur {points_in_surface} aktive Grid-Punkte, "
-                                f"erwartet wären grob ≈ {approx_expected_points:.0f} "
-                                f"({coverage_ratio*100:.1f} % Abdeckung der Bounding-Box). "
-                                "Teile des Polygons könnten im Plot fehlen "
-                                "(z.B. sehr schmale Spitzen oder Teilflächen)."
-                            )
+                            pass  # Debug-Warnung entfernt
             except Exception:
                 # Qualitäts-Check ist rein diagnostisch – Fehler hier dürfen niemals die Berechnung stoppen
                 pass
@@ -3634,11 +3574,8 @@ class FlexibleGridGenerator(ModuleBase):
                 x_span = float(np.ptp(xs))
                 y_span = float(np.ptp(ys))
                 z_span = float(np.ptp(zs))
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Grid pro Surface] '{geom.surface_id}' (VERTIKAL): {points_in_surface}/{total_points} Punkte, Spannen: X={x_span:.3f}, Y={y_span:.3f}, Z={z_span:.3f}")
             else:
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Grid pro Surface] '{geom.surface_id}': {points_in_surface}/{total_points} Punkte, Resolution: {actual_resolution:.3f} m")
+                pass
         
         return surface_grids
     
@@ -3856,10 +3793,7 @@ class FlexibleGridGenerator(ModuleBase):
         group_surfaces: List[Tuple[str, Dict]],
         resolution: Optional[float] = None,
         min_points_per_dimension: int = 6,
-<<<<<<< HEAD
         individual_grid_bboxes: Optional[List[Tuple[float, float, float, float, float, float]]] = None,
-=======
->>>>>>> c10141c8797abc50b0919d94b66f0b1f4daecd30
     ) -> Dict[str, Any]:
         """
         Erstellt ein gemeinsames Summen-Grid für eine Gruppe von Surfaces.
@@ -3902,7 +3836,6 @@ class FlexibleGridGenerator(ModuleBase):
                     all_vertical_same_orientation = True
                     group_dominant_axis = dominant_axes[0]
         
-<<<<<<< HEAD
         # 🎯 OPTIMIERUNG: Verwende Bounding-Boxen der triangulierten Vertices wenn verfügbar
         # Diese enthalten bereits Edge-Refinement und sind die tatsächlichen Vertex-Koordinaten
         if individual_grid_bboxes and len(individual_grid_bboxes) > 0:
@@ -3917,32 +3850,6 @@ class FlexibleGridGenerator(ModuleBase):
             min_x, max_x = min(all_x_min), max(all_x_max)
             min_y, max_y = min(all_y_min), max(all_y_max)
             min_z, max_z = min(all_z_min), max(all_z_max)
-            
-            # #region agent log
-            import json
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "test-group-surfaces",
-                        "hypothesisId": "I",
-                        "location": "FlexibleGridGenerator.py:3913",
-                        "message": "Gruppen-Grid BBox aus individuellen Vertex-BBoxen",
-                        "data": {
-                            "n_individual_bboxes": len(individual_grid_bboxes),
-                            "combined_bbox": {
-                                "x_range": [float(min_x), float(max_x)],
-                                "y_range": [float(min_y), float(max_y)],
-                                "z_range": [float(min_z), float(max_z)]
-                            },
-                            "resolution": float(resolution),
-                            "padding_factor": 2.0
-                        },
-                        "timestamp": int(__import__('time').time() * 1000)
-                    }) + '\n')
-            except Exception:
-                pass
-            # #endregion
             
             # Zusätzliches Padding für Sicherheit (3x Resolution)
             # Erhöht auf 3x, um auch Vertices am Rand abzudecken (Edge-Refinement kann bis zu 2x Resolution außerhalb gehen)
@@ -3969,32 +3876,11 @@ class FlexibleGridGenerator(ModuleBase):
             
             # Größeres Padding wenn keine individuellen Grid-BBoxen verfügbar
             padding_factor = 5.0  # 5x Resolution als Padding (sichert auch Edge-Refinement-Vertices ab)
-=======
-        # Bounding-Box über alle Points der Gruppe bilden
-        all_x = []
-        all_y = []
-        all_z = []
-        for geom in geometries:
-            pts = geom.points
-            if not pts:
-                continue
-            all_x.extend([float(p.get("x", 0.0)) for p in pts])
-            all_y.extend([float(p.get("y", 0.0)) for p in pts])
-            all_z.extend([float(p.get("z", 0.0)) for p in pts])
-        
-        if not all_x or not all_y:
-            return {}
-        
-        min_x, max_x = min(all_x), max(all_x)
-        min_y, max_y = min(all_y), max(all_y)
-        min_z, max_z = min(all_z), max(all_z)
->>>>>>> c10141c8797abc50b0919d94b66f0b1f4daecd30
         
         # Stelle sicher, dass wir mindestens min_points_per_dimension abdecken
         if resolution <= 0:
             resolution = self.settings.resolution or 1.0
         
-<<<<<<< HEAD
         # Erweitere Grid-Bereich um Padding
         padding_x = resolution * padding_factor
         padding_y = resolution * padding_factor
@@ -4007,8 +3893,6 @@ class FlexibleGridGenerator(ModuleBase):
         min_z -= padding_z
         max_z += padding_z
         
-=======
->>>>>>> c10141c8797abc50b0919d94b66f0b1f4daecd30
         # 🎯 FÜR VERTIKALE SURFACES: Erstelle Grid in der richtigen Ebene
         if all_vertical_same_orientation and group_dominant_axis == "xz":
             # X-Z-Wand: Grid in X-Z-Ebene (Y ist konstant)

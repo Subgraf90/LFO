@@ -42,7 +42,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             container: Container-Objekt (optional)
             create_empty_plot_surfaces: Wenn True, werden graue Flächen für enabled Surfaces erstellt (nur für leeren Plot)
         """
-        print(f"[PLOT] draw_surfaces() aufgerufen (create_empty_plot_surfaces={create_empty_plot_surfaces})")
         t_start = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
         # Erstelle Signatur für Änderungsdetektion
@@ -160,9 +159,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 highlights_changed = (last_ids_set != active_ids_set)
                 active_id_changed = (last_active_id != active_surface_id)
                 spl_data_changed = (last_has_spl != has_spl_data_for_signature)
-                # DEBUG: Ausgabe wenn Highlights sich geändert haben
-                if highlights_changed:
-                    print(f"[DEBUG SURFACE] Highlights changed: last={last_ids_set}, current={active_ids_set}")
+                # Highlights haben sich geändert
                 if not surfaces_changed and not highlights_changed and not active_id_changed and not spl_data_changed:
                     signature_changed = False
             elif len(self._last_surfaces_state) == 2:
@@ -222,30 +219,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         group_status: dict[str, dict[str, bool]] = {}  # group_id -> {'enabled': bool, 'hidden': bool}
         if isinstance(surface_groups, dict):
             for group_id, group_data in surface_groups.items():
-                # #region agent log
-                try:
-                    import json
-                    group_data_type = type(group_data).__name__
-                    group_data_enabled_raw = getattr(group_data, 'enabled', None) if hasattr(group_data, 'enabled') else (group_data.get('enabled') if isinstance(group_data, dict) else None)
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H",
-                            "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:group_status_extraction",
-                            "message": "Extracting group status",
-                            "data": {
-                                "group_id": str(group_id),
-                                "group_data_type": group_data_type,
-                                "hasattr_enabled": hasattr(group_data, 'enabled'),
-                                "isinstance_dict": isinstance(group_data, dict),
-                                "group_data_enabled_raw": bool(group_data_enabled_raw) if group_data_enabled_raw is not None else None
-                            },
-                            "timestamp": int(__import__('time').time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
+                
                 if hasattr(group_data, 'enabled'):
                     group_status[group_id] = {
                         'enabled': bool(group_data.enabled),
@@ -256,27 +230,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         'enabled': bool(group_data.get('enabled', True)),
                         'hidden': bool(group_data.get('hidden', False))
                     }
-        # #region agent log
-        try:
-            import json
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                group_status_summary = {gid: {'enabled': status['enabled'], 'hidden': status['hidden']} for gid, status in group_status.items()}
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:group_status_loaded",
-                    "message": "Group status loaded in draw_surfaces",
-                    "data": {
-                        "group_status": group_status_summary,
-                        "surface_groups_type": type(surface_groups).__name__,
-                        "surface_groups_keys": list(surface_groups.keys()) if isinstance(surface_groups, dict) else None
-                    },
-                    "timestamp": int(__import__('time').time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        
         
         for surface_id, surface_def in surface_definitions.items():
             if isinstance(surface_def, SurfaceDefinition):
@@ -298,55 +252,11 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             
             # 🎯 NEU: Berücksichtige Gruppen-Status
             # Wenn Surface zu einer Gruppe gehört, verwende Gruppen-Status
-            # #region agent log
-            try:
-                import json
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "F",
-                        "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:group_check",
-                        "message": "Checking group status for surface",
-                        "data": {
-                            "surface_id": str(surface_id),
-                            "group_id": str(group_id) if group_id else None,
-                            "group_id_in_group_status": group_id in group_status if group_id else False,
-                            "group_status_keys": list(group_status.keys()),
-                            "enabled_before_override": enabled,
-                            "hidden_before_override": hidden
-                        },
-                        "timestamp": int(__import__('time').time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
+            
             if group_id and group_id in group_status:
                 group_enabled = group_status[group_id]['enabled']
                 group_hidden = group_status[group_id]['hidden']
-                # #region agent log
-                try:
-                    import json
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H",
-                            "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:group_override_applied",
-                            "message": "Group override applied",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "group_id": str(group_id),
-                                "group_enabled": bool(group_enabled),
-                                "group_hidden": bool(group_hidden),
-                                "enabled_before": enabled,
-                                "enabled_after": enabled if group_hidden else (False if not group_enabled else enabled)
-                            },
-                            "timestamp": int(__import__('time').time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
+                
                 
                 # Wenn Gruppe hidden ist → Surface komplett überspringen (nichts zeichnen)
                 if group_hidden:
@@ -355,26 +265,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 # Wenn Gruppe disabled ist → Surface als disabled behandeln (gestrichelt zeichnen)
                 if not group_enabled:
                     enabled = False
-                    # #region agent log
-                    try:
-                        import json
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H",
-                                "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:enabled_set_to_false",
-                                "message": "enabled set to False due to disabled group",
-                                "data": {
-                                    "surface_id": str(surface_id),
-                                    "group_id": str(group_id),
-                                    "enabled": False
-                                },
-                                "timestamp": int(__import__('time').time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
+                    
                     # hidden bleibt wie vom Surface selbst gesetzt (für zusätzliche Filterung)
             
             # Surface ist selbst hidden → überspringen
@@ -427,30 +318,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     z = z_original + z_offset
                     point_coords.append([x, y, z])
                     
-                    # #region agent log
-                    try:
-                        import json
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "G",
-                                "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:point_z_offset_applied",
-                                "message": "Z-offset applied to point",
-                                "data": {
-                                    "surface_id": surface_id,
-                                    "x": x,
-                                    "y": y,
-                                    "z_original": z_original,
-                                    "z_offset": z_offset,
-                                    "z_final": z,
-                                    "point_index": len(point_coords) - 1
-                                },
-                                "timestamp": int(__import__('time').time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
+                    
                 
                 if len(point_coords) < 3:
                     continue
@@ -472,28 +340,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 closed_coords_array = np.array(closed_coords, dtype=float)
                 
                 if not enabled:
-                    # #region agent log
-                    try:
-                        import json
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "F",
-                                "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:adding_disabled_surface",
-                                "message": "Adding surface to disabled_surface_ids",
-                                "data": {
-                                    "surface_id": str(surface_id),
-                                    "group_id": str(group_id) if group_id else None,
-                                    "enabled": enabled,
-                                    "hidden": hidden,
-                                    "disabled_surface_ids_count_before": len(disabled_surface_ids)
-                                },
-                                "timestamp": int(__import__('time').time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
+                    
                     disabled_surface_ids.append(str(surface_id))
                     # 🎯 ENTFERNT: Zusätzlicher Z-Offset für disabled Polygone nicht mehr nötig
                     # Verwende den normalen z_offset (0.005m) wie bei enabled Surfaces
@@ -509,29 +356,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         inactive_surface_enabled.append(False)
                 else:
                     # 🎯 Enabled Surface: Prüfe ob gültig für SPL
-                    # #region agent log
-                    try:
-                        import json
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "G",
-                                "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:enabled_surface_branch",
-                                "message": "Processing enabled surface branch",
-                                "data": {
-                                    "surface_id": str(surface_id),
-                                    "group_id": str(group_id) if group_id else None,
-                                    "enabled": enabled,
-                                    "hidden": hidden,
-                                    "is_valid_for_spl": is_valid_for_spl,
-                                    "will_use_invalid_enabled_list": not is_valid_for_spl
-                                },
-                                "timestamp": int(__import__('time').time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
+                    
                     if not is_valid_for_spl:
                         # Ungültige enabled Surface: grau hinterlegen, aber Rahmen trotzdem zeichnen
                         invalid_enabled_points_list.append(closed_coords_array)
@@ -736,26 +561,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 pass
         
         # 🎯 NEU: Zeichne ungültige enabled Surfaces grau hinterlegt (immer, auch wenn SPL-Daten vorhanden)
-        # #region agent log
-        try:
-            import json
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "G",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:before_invalid_enabled_rendering",
-                    "message": "Before rendering invalid enabled surfaces",
-                    "data": {
-                        "invalid_enabled_points_list_count": len(invalid_enabled_points_list),
-                        "disabled_surface_ids_count": len(disabled_surface_ids),
-                        "has_spl_data": has_spl_data
-                    },
-                    "timestamp": int(__import__('time').time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        
         if invalid_enabled_points_list:
             try:
                 all_invalid_points = []
@@ -809,37 +615,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                                         found = True
                                         break
                                     
-                                    # #region agent log
-                                    try:
-                                        import json
-                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "run1",
-                                                "hypothesisId": "G",
-                                                "location": "Plot3DOverlaysSurfaces.py:triangulation_point_match",
-                                                "message": "Triangulation point matching",
-                                                "data": {
-                                                    "surface_id": surface_id,
-                                                    "pt_x": float(pt[0]),
-                                                    "pt_y": float(pt[1]),
-                                                    "pt_z": float(pt[2]),
-                                                    "tri_pt_x": float(tri_pt['x']),
-                                                    "tri_pt_y": float(tri_pt['y']),
-                                                    "tri_pt_z": float(tri_pt['z']),
-                                                    "z_offset": z_offset,
-                                                    "pt_z_with_offset": float(pt_z_with_offset),
-                                                    "tri_pt_z_with_offset": float(tri_pt_z_with_offset),
-                                                    "x_diff": abs(pt[0] - tri_pt['x']),
-                                                    "y_diff": abs(pt[1] - tri_pt['y']),
-                                                    "z_diff": abs(pt_z_with_offset - tri_pt_z_with_offset),
-                                                    "found": found
-                                                },
-                                                "timestamp": int(__import__('time').time() * 1000)
-                                            }) + "\n")
-                                    except Exception:
-                                        pass
-                                    # #endregion
+                                    
                                 
                                 if not found:
                                     # Punkt nicht gefunden - verwende Polygon statt Triangulation
@@ -891,68 +667,19 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 import traceback
                 traceback.print_exc()
         
-        # #region agent log
-        import json
-        import time as time_module
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:before_clear_old_actors",
-                    "message": "Before clearing old disabled actors",
-                    "data": {
-                        "overlay_actor_names": self.overlay_actor_names[:10] if isinstance(self.overlay_actor_names, list) else [],
-                        "category_actors_surfaces": list(self._category_actors.get('surfaces', []))[:10] if isinstance(self._category_actors, dict) else []
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        
         
         old_inactive_actors = [
             name for name in self.overlay_actor_names
             if name in ("surface_disabled_polygons_batch", "surface_disabled_edges_batch")
         ]
         
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "C",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:old_inactive_actors",
-                    "message": "Old inactive actors to remove",
-                    "data": {
-                        "old_inactive_actors": old_inactive_actors
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        
         
         for name in old_inactive_actors:
             try:
                 self.plotter.remove_actor(name)
-                # #region agent log
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "C",
-                            "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:removed_actor",
-                            "message": "Removed old disabled actor",
-                            "data": {"actor_name": name},
-                            "timestamp": int(time_module.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
+                
             except Exception:
                 pass
             if name in self.overlay_actor_names:
@@ -963,27 +690,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         # 🎯 WICHTIG: Die graue Fläche für disabled Surfaces wird immer erstellt (auch wenn SPL-Daten vorhanden sind)
         # Die alte Fläche wurde bereits oben entfernt (Zeile 703-715), daher ist hier keine weitere Aktion nötig
         
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "B",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:disabled_surfaces_collected",
-                    "message": "Disabled surfaces collected",
-                    "data": {
-                        "disabled_surface_count": len(disabled_surface_ids),
-                        "disabled_surface_ids": disabled_surface_ids[:10],  # First 10 for brevity
-                        "has_spl_data": has_spl_data
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        print(f"[DEBUG disabled_polygons] disabled_surface_ids: {len(disabled_surface_ids)} Surfaces")
-        print(f"[DEBUG disabled_polygons] disabled_surface_points: {len(disabled_surface_points)} Punkt-Listen")
+        
         
         valid_disabled_polygons = []
         
@@ -1028,31 +735,12 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     continue
         
         if valid_disabled_polygons:
-            print(f"[PLOT] draw_surfaces: {len(valid_disabled_polygons)} disabled Surfaces validiert")
+            pass  # Debug-Ausgabe entfernt
         
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "B",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:before_create_disabled_polygons",
-                    "message": "Before creating disabled polygons",
-                    "data": {
-                        "valid_disabled_polygons_count": len(valid_disabled_polygons),
-                        "has_spl_data": has_spl_data,
-                        "create_empty_plot_surfaces": create_empty_plot_surfaces
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        
         
         if valid_disabled_polygons:
             try:
-                print(f"[DEBUG disabled_polygons] Erstelle graue Fläche für {len(valid_disabled_polygons)} disabled Surfaces")
                 all_polygon_points = []
                 all_polygon_faces = []
                 point_offset = 0
@@ -1066,27 +754,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 
                 if all_polygon_points:
                     all_points = np.vstack(all_polygon_points)
-                    # #region agent log
-                    try:
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "F",
-                                "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:disabled_polygons_z_offset",
-                                "message": "Disabled polygons Z-offset check",
-                                "data": {
-                                    "all_points_shape": all_points.shape,
-                                    "z_min": float(np.min(all_points[:, 2])) if all_points.shape[1] >= 3 else None,
-                                    "z_max": float(np.max(all_points[:, 2])) if all_points.shape[1] >= 3 else None,
-                                    "z_mean": float(np.mean(all_points[:, 2])) if all_points.shape[1] >= 3 else None,
-                                    "expected_z_offset": 0.015  # 0.005 (base) + 0.01 (additional)
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
+                    
                     polygon_mesh = self.pv.PolyData(all_points)
                     polygon_mesh.faces = all_polygon_faces
                     
@@ -1113,7 +781,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                                 actor_in_renderer = self.plotter.renderer.actors.get(actor_name)
                         except Exception:
                             pass
-                        print(f"[PLOT] draw_surfaces: Actor '{actor_name}' erstellt ({len(all_polygon_points)} Polygone, {len(all_points)} Punkte)")
                     except Exception as e:
                         pass
                     
@@ -1190,31 +857,7 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             except Exception:
                 pass
         
-        # #region agent log
-        try:
-            actor_final_check = None
-            try:
-                if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
-                    actor_final_check = self.plotter.renderer.actors.get('surface_disabled_polygons_batch')
-            except Exception:
-                pass
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "E",
-                    "location": "Plot3DOverlaysSurfaces.py:draw_surfaces:end",
-                    "message": "draw_surfaces completed",
-                    "data": {
-                        "surface_disabled_polygons_batch_in_renderer": actor_final_check is not None,
-                        "overlay_actor_names_count": len(self.overlay_actor_names) if isinstance(self.overlay_actor_names, list) else 0,
-                        "category_actors_surfaces_count": len(self._category_actors.get('surfaces', [])) if isinstance(self._category_actors, dict) else 0
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        
         t_draw_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
         if DEBUG_OVERLAY_PERF and t_start is not None:
