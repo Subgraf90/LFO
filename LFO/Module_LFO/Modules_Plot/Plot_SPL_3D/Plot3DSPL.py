@@ -1931,42 +1931,146 @@ class SPL3DPlotRenderer:
                                     print(f"  └─ StructuredGrid-Plot fehlgeschlagen, fahre mit Triangulation fort: {e}")
                             
                             # 🚀 OPTIMIERUNG: Vertices ↔ Grid-Punkte
-                            # Im Color-Step-Modus wollen wir IMMER den schnellsten Pfad nutzen:
-                            # - wenn Vertices exakt dem Rechen-Grid entsprechen → direkte Zuordnung
-                            # - KEIN cKDTree / griddata im Color-Step-Fall
+                            # - Color step: immer schnellster Nearest-Neighbour-Pfad (stufiges Bild gewollt)
+                            # - Gradient: bilineare Interpolation auf die Vertex-Koordinaten
                             surface_mask = np.asarray(grid_data.get("surface_mask", []))
                             n_vertices = len(triangulated_vertices)
                             n_grid_points = Xg.size
 
-                            if n_vertices == n_grid_points:
-                                # 🎯 Direkte Zuordnung: Vertices = Grid-Punkte in derselben Reihenfolge
-                                spl_at_verts = spl_values_2d.ravel().copy()
-                                if surface_mask.size == n_grid_points and surface_mask.shape == Xg.shape:
-                                    mask_flat = surface_mask.ravel().astype(bool)
-                                    spl_at_verts[~mask_flat] = np.nan
-                            else:
-                                # 🎯 VARIANTE B: Für zusätzliche Vertices immer Nearest-Neighbour auf Gridpunkte.
-                                # Damit bekommen auch Polygon-Ecken im Color-Step-Modus sinnvolle Werte,
-                                # ohne bilineare Glättung (nur diskrete Zuordnung).
-                                try:
-                                    from scipy.spatial import cKDTree
-                                    # Erstelle Grid-Punkte für Nearest-Map (2D reicht hier)
-                                    grid_pts = np.column_stack([Xg.ravel(), Yg.ravel()])
-                                    grid_vals = spl_values_2d.ravel()
-                                    
-                                    if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                            if is_step_mode:
+                                # ===========================
+                                # COLOR-STEP → NEAREST NEIGHBOUR
+                                # ===========================
+                                if n_vertices == n_grid_points:
+                                    # 🎯 Direkte Zuordnung: Vertices = Grid-Punkte in derselben Reihenfolge
+                                    spl_at_verts = spl_values_2d.ravel().copy()
+                                    if surface_mask.size == n_grid_points and surface_mask.shape == Xg.shape:
                                         mask_flat = surface_mask.ravel().astype(bool)
-                                        grid_pts = grid_pts[mask_flat]
-                                        grid_vals = grid_vals[mask_flat]
-                                    
-                                    tree = cKDTree(grid_pts)
-                                    _, nn_idx = tree.query(triangulated_vertices[:, :2], k=1)
-                                    spl_at_verts = grid_vals[nn_idx]
-                                    
+                                        spl_at_verts[~mask_flat] = np.nan
+                                else:
+                                    # 🎯 Zusätzliche Vertices: Nearest-Neighbour auf Gridpunkte (diskrete Stufen)
+                                    try:
+                                        from scipy.spatial import cKDTree
+                                        # Erstelle Grid-Punkte für Nearest-Map (2D reicht hier)
+                                        grid_pts = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                        grid_vals = spl_values_2d.ravel()
+                                        
+                                        if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                            mask_flat = surface_mask.ravel().astype(bool)
+                                            grid_pts = grid_pts[mask_flat]
+                                            grid_vals = grid_vals[mask_flat]
+                                        
+                                        tree = cKDTree(grid_pts)
+                                        _, nn_idx = tree.query(triangulated_vertices[:, :2], k=1)
+                                        spl_at_verts = grid_vals[nn_idx]
+                                        
+                                        valid_mask = np.isfinite(spl_at_verts)
+                                        if not np.any(valid_mask):
+                                            raise ValueError(f"Surface '{surface_id}': Nearest-Map liefert keine gültigen Werte")
+                                    except Exception:
+                                        from scipy.interpolate import griddata
+                                        points_new = triangulated_vertices[:, :2]
+                                        points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                        values_orig = spl_values_2d.ravel()
+                                        if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                            mask_flat = surface_mask.ravel().astype(bool)
+                                            if np.any(mask_flat):
+                                                points_orig = points_orig[mask_flat]
+                                                values_orig = values_orig[mask_flat]
+                                        spl_at_verts = griddata(
+                                            points_orig,
+                                            values_orig,
+                                            points_new,
+                                            method='nearest',
+                                            fill_value=np.nan,
+                                        )
+                                        valid_mask = np.isfinite(spl_at_verts)
+                                        if not np.any(valid_mask):
+                                            raise ValueError(f"Surface '{surface_id}': Griddata(nearest) liefert keine gültigen Werte")
+                            else:
+                                # ===========================
+                                # GRADIENT → BILINEARE INTERPOLATION
+                                # ===========================
+                                try:
+                                    # Stelle sicher, dass Xg/Yg als reguläres Grid interpretiert werden können
+                                    Xg_arr = np.asarray(Xg)
+                                    Yg_arr = np.asarray(Yg)
+                                    if Xg_arr.ndim != 2 or Yg_arr.ndim != 2:
+                                        raise ValueError("X_grid/Y_grid sind nicht 2D - bilineare Interpolation nicht möglich")
+
+                                    # Extrahiere eindeutige sortierte Achsen
+                                    x_axis = np.unique(Xg_arr[0, :])
+                                    y_axis = np.unique(Yg_arr[:, 0])
+                                    if x_axis.size < 2 or y_axis.size < 2:
+                                        raise ValueError("Zu wenige Grid-Punkte für bilineare Interpolation")
+
+                                    # Gitterabstände (angenommen äquidistant)
+                                    dx = np.diff(x_axis).mean()
+                                    dy = np.diff(y_axis).mean()
+                                    if dx == 0.0 or dy == 0.0:
+                                        raise ValueError("dx/dy = 0 in Grid - bilineare Interpolation nicht möglich")
+
+                                    # Vertex-Koordinaten (x_v, y_v)
+                                    vx = triangulated_vertices[:, 0]
+                                    vy = triangulated_vertices[:, 1]
+
+                                    # Indizes im Gridraum (Gleitkomma)
+                                    ix_float = (vx - x_axis[0]) / dx
+                                    iy_float = (vy - y_axis[0]) / dy
+
+                                    # Unteres Gitterfeld (i0,j0) und Abstand (tx, ty) im Feld
+                                    nx = x_axis.size
+                                    ny = y_axis.size
+
+                                    i0 = np.floor(ix_float).astype(int)
+                                    j0 = np.floor(iy_float).astype(int)
+
+                                    # Clipping auf gültigen Bereich [0, nx-2] / [0, ny-2]
+                                    i0 = np.clip(i0, 0, nx - 2)
+                                    j0 = np.clip(j0, 0, ny - 2)
+
+                                    tx = ix_float - i0
+                                    ty = iy_float - j0
+                                    tx = np.clip(tx, 0.0, 1.0)
+                                    ty = np.clip(ty, 0.0, 1.0)
+
+                                    # Vier Nachbarn pro Vertex
+                                    i1 = i0 + 1
+                                    j1 = j0 + 1
+
+                                    # Indizes in 2D-Arrays
+                                    v00 = spl_values_2d[j0, i0]
+                                    v10 = spl_values_2d[j0, i1]
+                                    v01 = spl_values_2d[j1, i0]
+                                    v11 = spl_values_2d[j1, i1]
+
+                                    # Bilineare Interpolation
+                                    spl_at_verts = (
+                                        (1 - tx) * (1 - ty) * v00
+                                        + tx * (1 - ty) * v10
+                                        + (1 - tx) * ty * v01
+                                        + tx * ty * v11
+                                    )
+
+                                    # Maske anwenden (Punkte außerhalb der Surface -> NaN)
+                                    if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
+                                        mask_flat = surface_mask.ravel().astype(bool)
+                                        # Erzeuge Zellmaske im gleichen Verfahren wie oben: nur Zellen mit allen 4 Punkten
+                                        cell_mask = (
+                                            mask_flat.reshape(Yg_arr.shape)[j0, i0]
+                                            & mask_flat.reshape(Yg_arr.shape)[j0, i1]
+                                            & mask_flat.reshape(Yg_arr.shape)[j1, i0]
+                                            & mask_flat.reshape(Yg_arr.shape)[j1, i1]
+                                        )
+                                        spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
+
                                     valid_mask = np.isfinite(spl_at_verts)
                                     if not np.any(valid_mask):
-                                        raise ValueError(f"Surface '{surface_id}': Nearest-Map liefert keine gültigen Werte")
+                                        raise ValueError(
+                                            f"Surface '{surface_id}': Bilineare Interpolation liefert keine gültigen Werte"
+                                        )
                                 except Exception:
+                                    # Fallback: Wenn bilinear scheitert, nutze Nearest-Neighbour (wie im Step-Modus)
                                     from scipy.interpolate import griddata
                                     points_new = triangulated_vertices[:, :2]
                                     points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
@@ -1985,7 +2089,9 @@ class SPL3DPlotRenderer:
                                     )
                                     valid_mask = np.isfinite(spl_at_verts)
                                     if not np.any(valid_mask):
-                                        raise ValueError(f"Surface '{surface_id}': Griddata(nearest) liefert keine gültigen Werte")
+                                        raise ValueError(
+                                            f"Surface '{surface_id}': Fallback-Nearest liefert keine gültigen Werte"
+                                        )
                             
                             # Bestimme Colorbar-Bereich für Visualisierung
                             cbar_min_local = cbar_min

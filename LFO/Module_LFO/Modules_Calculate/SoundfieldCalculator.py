@@ -1503,6 +1503,17 @@ class SoundFieldCalculator(ModuleBase):
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 import json
                 group_field_magnitude = np.abs(group_field_p)
+                # Schutz: Wenn das Gruppenfeld leer ist, verwende neutrale Defaults
+                if group_field_magnitude.size > 0:
+                    g_min_all = float(np.min(group_field_magnitude))
+                    g_max_all = float(np.max(group_field_magnitude))
+                    g_mean_all = float(np.mean(group_field_magnitude))
+                    nonzero_count = int(np.count_nonzero(group_field_p))
+                else:
+                    g_min_all = 0.0
+                    g_max_all = 0.0
+                    g_mean_all = 0.0
+                    nonzero_count = 0
                 f.write(json.dumps({
                     "sessionId": "debug-session",
                     "runId": "run1",
@@ -1511,10 +1522,10 @@ class SoundFieldCalculator(ModuleBase):
                     "message": "Group surface calculation - final group field before extraction",
                     "data": {
                         "group_id": str(group_id),
-                        "group_field_magnitude_min": float(np.min(group_field_magnitude)),
-                        "group_field_magnitude_max": float(np.max(group_field_magnitude)),
-                        "group_field_magnitude_mean": float(np.mean(group_field_magnitude)),
-                        "group_field_nonzero_count": int(np.count_nonzero(group_field_p)),
+                        "group_field_magnitude_min": g_min_all,
+                        "group_field_magnitude_max": g_max_all,
+                        "group_field_magnitude_mean": g_mean_all,
+                        "group_field_nonzero_count": nonzero_count,
                         "n_surfaces_in_group": len(group_surfaces)
                     },
                     "timestamp": int(__import__('time').time() * 1000)
@@ -1559,6 +1570,22 @@ class SoundFieldCalculator(ModuleBase):
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     import json
                     group_field_magnitude = np.abs(group_field_p)
+                    # Sicherstellen, dass wir nicht auf einem leeren Mask-Array reduzieren
+                    masked_vals = group_field_magnitude[mask] if mask is not None else np.array([])
+                    if masked_vals.size > 0:
+                        g_min = float(np.min(masked_vals))
+                        g_max = float(np.max(masked_vals))
+                        g_mean = float(np.mean(masked_vals))
+                    else:
+                        # Fallback: nutze globale Werte oder neutrale Defaults, um Crash zu vermeiden
+                        if group_field_magnitude.size > 0:
+                            g_min = float(np.min(group_field_magnitude))
+                            g_max = float(np.max(group_field_magnitude))
+                            g_mean = float(np.mean(group_field_magnitude))
+                        else:
+                            g_min = 0.0
+                            g_max = 0.0
+                            g_mean = 0.0
                     f.write(json.dumps({
                         "sessionId": "debug-session",
                         "runId": "run1",
@@ -1568,11 +1595,11 @@ class SoundFieldCalculator(ModuleBase):
                         "data": {
                             "surface_id": str(surface_id),
                             "group_id": str(group_id),
-                            "group_field_magnitude_min": float(np.min(group_field_magnitude[mask])),
-                            "group_field_magnitude_max": float(np.max(group_field_magnitude[mask])),
-                            "group_field_magnitude_mean": float(np.mean(group_field_magnitude[mask])),
-                            "mask_points": int(np.sum(mask)),
-                            "mask_shape": list(mask.shape),
+                            "group_field_magnitude_min": g_min,
+                            "group_field_magnitude_max": g_max,
+                            "group_field_magnitude_mean": g_mean,
+                            "mask_points": int(np.sum(mask)) if mask is not None else 0,
+                            "mask_shape": list(mask.shape) if mask is not None else [],
                             "group_field_shape": list(group_field_p.shape)
                         },
                         "timestamp": int(time.time() * 1000)
@@ -1661,6 +1688,16 @@ class SoundFieldCalculator(ModuleBase):
                     mask_mean_magnitude = float(np.mean(surface_field_magnitude[mask])) if np.sum(mask) > 0 else 0.0
                     spl_db_mean = self.functions.mag2db(mask_mean_magnitude) if mask_mean_magnitude > 0 else -np.inf
                     
+                    # Sichere Reduktion: Maske kann leer sein (z.B. wenn Surface in Gruppe keinen Überlapp hat)
+                    masked_surface_vals = surface_field_magnitude[mask] if mask is not None else np.array([])
+                    if masked_surface_vals.size > 0:
+                        s_min = float(np.min(masked_surface_vals))
+                        s_max = float(np.max(masked_surface_vals))
+                        s_mean = float(np.mean(masked_surface_vals))
+                    else:
+                        s_min = 0.0
+                        s_max = 0.0
+                        s_mean = 0.0
                     f.write(json.dumps({
                         "sessionId": "debug-session",
                         "runId": "run1",
@@ -1674,9 +1711,9 @@ class SoundFieldCalculator(ModuleBase):
                             "active_array_keys": [str(k) for k, arr in self.settings.speaker_arrays.items() if not (arr.mute or arr.hide)],
                             "muted_array_keys": [str(k) for k, arr in self.settings.speaker_arrays.items() if arr.mute],
                             "hidden_array_keys": [str(k) for k, arr in self.settings.speaker_arrays.items() if arr.hide],
-                            "surface_field_magnitude_min": float(np.min(surface_field_magnitude[mask])),
-                            "surface_field_magnitude_max": float(np.max(surface_field_magnitude[mask])),
-                            "surface_field_magnitude_mean": float(np.mean(surface_field_magnitude[mask])),
+                            "surface_field_magnitude_min": s_min,
+                            "surface_field_magnitude_max": s_max,
+                            "surface_field_magnitude_mean": s_mean,
                             "mask_mean_magnitude": mask_mean_magnitude,
                             "spl_db_mean": float(spl_db_mean) if np.isfinite(spl_db_mean) else None,
                             "surface_field_shape": list(surface_field_p.shape),

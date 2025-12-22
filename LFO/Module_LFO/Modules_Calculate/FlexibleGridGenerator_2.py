@@ -4029,6 +4029,53 @@ class FlexibleGridGenerator(ModuleBase):
             except Exception as e:
                 mask = np.zeros_like(X_grid, dtype=bool)
             
+            # 🎯 SICHERSTELLEN: Jede Surface hat mindestens einige Grid-Punkte in der Maske
+            # Ziel: auch sehr kleine Flächen (kleiner als globale resolution) sollen im Gruppen-Grid
+            #       nicht vollständig verschwinden.
+            if not np.any(mask):
+                try:
+                    # Verwende die Bounding-Box der Surface in XY (bzw. in der projizierten Ebene)
+                    x_min_local = float(np.min(poly_x))
+                    x_max_local = float(np.max(poly_x))
+                    y_min_local = float(np.min(poly_y))
+                    y_max_local = float(np.max(poly_y))
+                    
+                    # Berechne den Mittelpunkt der Surface
+                    cx = 0.5 * (x_min_local + x_max_local)
+                    cy = 0.5 * (y_min_local + y_max_local)
+                    
+                    # Finde den nächstgelegenen Grid-Punkt zum Mittelpunkt
+                    # (X_grid, Y_grid sind reguläre Meshgrids)
+                    dx = X_grid[0, 1] - X_grid[0, 0] if X_grid.shape[1] > 1 else resolution
+                    dy = Y_grid[1, 0] - Y_grid[0, 0] if Y_grid.shape[0] > 1 else resolution
+                    
+                    # Indizes im Grid (gerundet)
+                    ix = int(round((cx - sound_field_x[0]) / dx)) if dx != 0 else 0
+                    iy = int(round((cy - sound_field_y[0]) / dy)) if dy != 0 else 0
+                    
+                    # Clipping auf gültigen Bereich
+                    ix = int(np.clip(ix, 0, X_grid.shape[1] - 1))
+                    iy = int(np.clip(iy, 0, X_grid.shape[0] - 1))
+                    
+                    # Setze mindestens einen Punkt in der Maske
+                    mask_fallback = np.zeros_like(X_grid, dtype=bool)
+                    mask_fallback[iy, ix] = True
+                    
+                    # Optional: Mini-3x3-Nachbarschaft aktivieren, wenn Fläche etwas größer ist
+                    # (nur wenn das Grid fein genug ist)
+                    if X_grid.shape[0] > 2 and X_grid.shape[1] > 2:
+                        for dy_idx in (-1, 0, 1):
+                            for dx_idx in (-1, 0, 1):
+                                jy = iy + dy_idx
+                                jx = ix + dx_idx
+                                if 0 <= jy < X_grid.shape[0] and 0 <= jx < X_grid.shape[1]:
+                                    mask_fallback[jy, jx] = True
+                    
+                    mask = mask_fallback
+                except Exception:
+                    # Im Fehlerfall bleibt die Maske leer, aber Berechnung crasht nicht
+                    pass
+            
             surface_masks[surface_id] = mask
             
             # Berechne Z-Werte für diese Surface (nur innerhalb der Maske)

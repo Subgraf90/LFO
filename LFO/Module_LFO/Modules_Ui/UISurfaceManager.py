@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QSizePolicy, QGridLayout, QLabel, QLineEdit, 
     QMenu, QAbstractItemView, QGroupBox, QScrollArea, QColorDialog
 )
-from PyQt5.QtCore import Qt, QPoint, QObject, QEvent
+from PyQt5.QtCore import Qt, QPoint, QObject, QEvent, QTimer
 from PyQt5.QtGui import QDoubleValidator, QColor
 from PyQt5 import QtWidgets, QtGui
 
@@ -398,6 +398,13 @@ class UISurfaceManager(ModuleBase):
             # TreeWidget für Surfaces und Gruppen
             self.surface_tree_widget = QTreeWidget()
             self.surface_tree_widget.setHeaderLabels(["Surface Name", "E", "H", "XY"])
+            # 💡 Performance-Optimierung für viele Einträge / Drag & Drop
+            self.surface_tree_widget.setUniformRowHeights(True)
+            self.surface_tree_widget.setAnimated(False)
+            self.surface_tree_widget.setExpandsOnDoubleClick(False)
+            self.surface_tree_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+            self.surface_tree_widget.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+            self.surface_tree_widget.viewport().setAttribute(Qt.WA_StaticContents, True)
             
             # Drag & Drop Funktionalität (identisch zu SourceManagement)
             original_dropEvent = self.surface_tree_widget.dropEvent
@@ -414,6 +421,38 @@ class UISurfaceManager(ModuleBase):
                 """Behandelt Drop-Events für Drag & Drop mit Gruppen und Surfaces"""
                 drop_item = self.surface_tree_widget.itemAt(event.pos())
                 indicator_pos = self.surface_tree_widget.dropIndicatorPosition()
+                
+                # #region agent log – Surface Drag & Drop
+                try:
+                    import json, time as time_module
+                    from PyQt5.QtWidgets import QAbstractItemView as _QAbstractItemViewAlias
+                    dragged_types = [
+                        str(item.data(0, Qt.UserRole + 1))
+                        for item in _pending_drag_items
+                    ]
+                    drop_type = str(drop_item.data(0, Qt.UserRole + 1)) if drop_item else None
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SURFACE_DND",
+                            "location": "UISurfaceManager.py:custom_dropEvent:start",
+                            "message": "Surface Tree dropEvent",
+                            "data": {
+                                "dragged_count": len(_pending_drag_items),
+                                "dragged_types": dragged_types,
+                                "indicator_pos": int(indicator_pos),
+                                "indicator_is_on_item": bool(indicator_pos == _QAbstractItemViewAlias.OnItem),
+                                "indicator_above": bool(indicator_pos == _QAbstractItemViewAlias.AboveItem),
+                                "indicator_below": bool(indicator_pos == _QAbstractItemViewAlias.BelowItem),
+                                "drop_has_item": bool(drop_item is not None),
+                                "drop_type": drop_type,
+                            },
+                            "timestamp": int(time_module.time() * 1000),
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 if not _pending_drag_items:
                     event.ignore()
@@ -490,8 +529,8 @@ class UISurfaceManager(ModuleBase):
                             _pending_drag_items.clear()
                             return
                     
-                    # Prüfe, ob auf eine Gruppe gedroppt wird
-                    if drop_item and drop_item.data(0, Qt.UserRole + 1) == "group":
+                    # Prüfe, ob direkt AUF eine Gruppe gedroppt wird (nicht darüber/darunter)
+                    if drop_item and indicator_pos == QAbstractItemView.OnItem and drop_item.data(0, Qt.UserRole + 1) == "group":
                         # Droppe auf Gruppe - füge Surfaces als Childs hinzu
                         target_group_id = drop_item.data(0, Qt.UserRole)
                         # Hole tatsächlichen Checkbox-Zustand der Gruppe (inkl. Tristate)
@@ -512,22 +551,22 @@ class UISurfaceManager(ModuleBase):
                         if group_state_xy == Qt.PartiallyChecked:
                             group_state_xy = self._get_group_majority_state(drop_item, 3)
                         
-                        # Speichere verschobene Flächen für visuelle Aktualisierung nach load_surfaces()
+                        # Wende Gruppen-Checkbox-Zustände direkt auf die Surfaces an
                         for item in dragged_surfaces:
                             surface_id = item.data(0, Qt.UserRole)
                             if isinstance(surface_id, dict):
                                 surface_id = surface_id.get('id')
-                            
+
                             # Verschiebe Surface zur Gruppe
                             self._group_controller.assign_surface_to_group(surface_id, target_group_id, create_missing=False)
                             
-                            # Übernehme Checkbox-Zustand der Gruppe auf die Fläche
-                            self.on_surface_enable_changed(surface_id, group_state_enabled, skip_calculations=True)
-                            self.on_surface_hide_changed(surface_id, group_state_hidden, skip_calculations=True)
-                            self.on_surface_xy_changed(surface_id, group_state_xy, skip_calculations=True)
-                            
-                            # Speichere für visuelle Aktualisierung
-                            moved_surfaces.append((surface_id, group_state_enabled, group_state_hidden, group_state_xy))
+                            # Übernehme Gruppen-Zustand inkl. Berechnungslogik:
+                            # - enable: ruft je nach Zustand Berechnung / Cleanup auf
+                            # - hide: aktualisiert Plot/Actors entsprechend
+                            self.on_surface_enable_changed(surface_id, group_state_enabled, skip_calculations=False)
+                            self.on_surface_hide_changed(surface_id, group_state_hidden, skip_calculations=False)
+                            # XY beeinflusst Achsen-Logik separat
+                            self.on_surface_xy_changed(surface_id, group_state_xy, skip_calculations=False)
                             
                             handled = True
                     elif indicator_pos == QAbstractItemView.OnItem and drop_item:
@@ -554,24 +593,22 @@ class UISurfaceManager(ModuleBase):
                             if group_state_xy == Qt.PartiallyChecked:
                                 group_state_xy = self._get_group_majority_state(parent, 3)
                             
-                            # Speichere verschobene Flächen für visuelle Aktualisierung nach load_surfaces()
+                            # Wende Gruppen-Checkbox-Zustände direkt auf die Surfaces an
                             for item in dragged_surfaces:
                                 surface_id = item.data(0, Qt.UserRole)
                                 if isinstance(surface_id, dict):
                                     surface_id = surface_id.get('id')
+
                                 self._group_controller.assign_surface_to_group(surface_id, target_group_id, create_missing=False)
                                 
-                                # Übernehme Checkbox-Zustand der Gruppe auf die Fläche
-                                self.on_surface_enable_changed(surface_id, group_state_enabled, skip_calculations=True)
-                                self.on_surface_hide_changed(surface_id, group_state_hidden, skip_calculations=True)
-                                self.on_surface_xy_changed(surface_id, group_state_xy, skip_calculations=True)
-                                
-                                # Speichere für visuelle Aktualisierung
-                                moved_surfaces.append((surface_id, group_state_enabled, group_state_hidden, group_state_xy))
+                                # Übernehme Gruppen-Zustand inkl. Berechnungslogik:
+                                self.on_surface_enable_changed(surface_id, group_state_enabled, skip_calculations=False)
+                                self.on_surface_hide_changed(surface_id, group_state_hidden, skip_calculations=False)
+                                self.on_surface_xy_changed(surface_id, group_state_xy, skip_calculations=False)
                                 
                                 handled = True
-                    elif indicator_pos in (QAbstractItemView.AboveItem, QAbstractItemView.BelowItem):
-                        # Droppe oberhalb/unterhalb - entferne aus Gruppe (als Top-Level-Item)
+                    elif indicator_pos in (QAbstractItemView.AboveItem, QAbstractItemView.BelowItem) or drop_item is None:
+                        # Droppe oberhalb/unterhalb ODER in leeren Bereich → aus Gruppe entfernen (Top-Level-Surface)
                         for item in dragged_surfaces:
                             surface_id = item.data(0, Qt.UserRole)
                             if isinstance(surface_id, dict):
@@ -581,33 +618,21 @@ class UISurfaceManager(ModuleBase):
                             handled = True
                 
                 if handled:
-                    # Stelle sicher, dass Gruppen-Struktur aktuell ist
-                    self._group_controller.ensure_structure()
-                    # Lade TreeWidget neu
-                    self.load_surfaces()
-                    
-                    # 🎯 WICHTIG: Trigger Plot-Update nach Gruppierungsänderung
-                    # Wenn Surfaces aus Gruppen entfernt/hinzugefügt werden, müssen Gruppen-Actors neu aufgebaut werden
-                    if hasattr(self.main_window, "draw_plots"):
-                        if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
-                            self.main_window.draw_plots.update_plots_for_surface_state()
-                    
-                    # Führe visuelle Aktualisierung für verschobene Flächen durch
-                    # (wichtig für Hide- und Enable-Zustand, die mit skip_calculations=True gesetzt wurden)
-                    if moved_surfaces:
-                        for surface_id, state_enabled, state_hidden, state_xy in moved_surfaces:
-                            # Hide-Zustand immer visuell aktualisieren (verstecken/zeigen)
-                            self.on_surface_hide_changed(surface_id, state_hidden, skip_calculations=False)
-                            
-                            # Enable-Zustand immer visuell aktualisieren (entfernt/zeigt SPL Plot)
-                            # Wichtig: Auch wenn Hide aktiv ist, muss Enable aktualisiert werden,
-                            # um den SPL Plot zu entfernen/anzeigen
-                            self.on_surface_enable_changed(surface_id, state_enabled, skip_calculations=False)
-                    
+                    # Lass Qt das eigentliche Verschieben/Einfügen der Items übernehmen,
+                    # damit die visuelle Position exakt der Drop-Position entspricht.
+                    original_dropEvent(event)
+
+                    # Schwere Plot-/SPL-Updates leicht verzögert ausführen,
+                    # damit der Drop selbst sofort reagiert.
+                    QTimer.singleShot(
+                        0,
+                        lambda: self._post_surface_drop_updates([]),
+                    )
+
                     event.accept()
                     event.setDropAction(Qt.MoveAction)
                 else:
-                    # Standard Drag & Drop Verhalten
+                    # Standard Drag & Drop Verhalten (Qt kümmert sich komplett darum)
                     original_dropEvent(event)
                 
                 # Validiere alle Checkboxen nach Drag & Drop
@@ -666,10 +691,6 @@ class UISurfaceManager(ModuleBase):
             # Verbinde Signale mit Slots
             # Eigener Handler, der sowohl die UI-Tabs als auch die 3D-Overlays aktualisiert
             self.surface_tree_widget.itemSelectionChanged.connect(self._handle_surface_tree_selection_changed)
-            # Zusätzlich auch auf Änderungen des aktuellen Items reagieren (falls Selektion unverändert bleibt)
-            self.surface_tree_widget.currentItemChanged.connect(
-                lambda _current, _previous: self._handle_surface_tree_selection_changed()
-            )
             self.surface_tree_widget.itemChanged.connect(self.on_surface_item_text_changed)
             
             # Füge das TreeWidget zum Layout hinzu
@@ -760,6 +781,20 @@ class UISurfaceManager(ModuleBase):
                 self.main_window.removeDockWidget(self.surface_dockWidget)
             self.surface_dockWidget.deleteLater()
             self.surface_dockWidget = None
+    
+    def _post_surface_drop_updates(self, moved_surfaces):
+        """
+        Führt nach einem Drag & Drop-Vorgang die teureren Updates aus,
+        getrennt vom eigentlichen Drop-Event für flüssigere UI.
+        """
+        # Aktualisiere 3D-Plots / Surface-Actors nach Strukturänderungen
+        if hasattr(self.main_window, "draw_plots"):
+            if hasattr(self.main_window.draw_plots, "update_plots_for_surface_state"):
+                try:
+                    self.main_window.draw_plots.update_plots_for_surface_state()
+                except Exception:
+                    # Plot-Updates dürfen UI nicht blockieren
+                    pass
     
     def bind_to_sources_widget(self, sources_widget):
         """
