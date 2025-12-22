@@ -1137,9 +1137,58 @@ class GridBuilder(ModuleBase):
         
         bbox = (min_x, max_x, min_y, max_y)
         
-        # Erstelle 1D-Koordinaten-Arrays
-        sound_field_x = np.arange(min_x, max_x + resolution, resolution)
-        sound_field_y = np.arange(min_y, max_y + resolution, resolution)
+        # ------------------------------------------------------------
+        # 🎯 ANISOTROPE VERFEINERUNG FÜR STARKE ASPEKTE (lange, schmale Surfaces)
+        # ------------------------------------------------------------
+        # Basis: globale resolution bleibt maßgeblich.
+        # Für stark lang/ schmale Bounding-Boxen erhöhen wir jedoch die Anzahl der
+        # Stützstellen entlang der langen Achse, um mehr Gridpunkte im Polygon zu erhalten.
+        range_x = max_x - min_x
+        range_y = max_y - min_y
+        eps = max(resolution * 0.1, 1e-6)
+        aspect_xy = range_x / max(range_y, eps) if range_x > 0 and range_y > 0 else 1.0
+        aspect_yx = range_y / max(range_x, eps) if range_x > 0 and range_y > 0 else 1.0
+        
+        aspect_threshold = 5.0   # "sehr lang und schmal"
+        long_factor = 3.0        # Faktor für zusätzliche Punkte entlang der langen Achse
+        base_min_pts = 3
+        long_axis = None
+        long_min_pts = base_min_pts
+        
+        if aspect_xy >= aspect_threshold:
+            long_axis = "x"
+            long_min_pts = int(max(base_min_pts * long_factor, 9))
+        elif aspect_yx >= aspect_threshold:
+            long_axis = "y"
+            long_min_pts = int(max(base_min_pts * long_factor, 9))
+        
+        # Erstelle 1D-Koordinaten-Arrays mit optional verfeinerter Punktanzahl
+        if long_axis == "x":
+            nx_target = max(
+                long_min_pts,
+                int(np.ceil(range_x / resolution)) + 1 if range_x > 0 else base_min_pts,
+            )
+            ny_target = max(
+                base_min_pts,
+                int(np.ceil(range_y / resolution)) + 1 if range_y > 0 else base_min_pts,
+            )
+            sound_field_x = np.linspace(min_x, max_x, nx_target)
+            sound_field_y = np.linspace(min_y, max_y, ny_target)
+        elif long_axis == "y":
+            nx_target = max(
+                base_min_pts,
+                int(np.ceil(range_x / resolution)) + 1 if range_x > 0 else base_min_pts,
+            )
+            ny_target = max(
+                long_min_pts,
+                int(np.ceil(range_y / resolution)) + 1 if range_y > 0 else base_min_pts,
+            )
+            sound_field_x = np.linspace(min_x, max_x, nx_target)
+            sound_field_y = np.linspace(min_y, max_y, ny_target)
+        else:
+            # Standard: gleichmäßige Abtastung mit Schrittweite ~ resolution
+            sound_field_x = np.arange(min_x, max_x + resolution, resolution)
+            sound_field_y = np.arange(min_y, max_y + resolution, resolution)
         
         # Erstelle 2D-Meshgrid
         X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
@@ -3893,6 +3942,37 @@ class FlexibleGridGenerator(ModuleBase):
         min_z -= padding_z
         max_z += padding_z
         
+        # ------------------------------------------------------------
+        # 🎯 ANISOTROPE VERFEINERUNG FÜR STARKE ASPEKTE (lange, schmale Gruppen)
+        # ------------------------------------------------------------
+        # Idee:
+        # - Globale resolution bleibt die Basis.
+        # - Für Gruppen mit starkem Aspektverhältnis (z.B. sehr lang in X, sehr schmal in Y)
+        #   erhöhen wir die Mindestanzahl an Stützstellen entlang der langen Achse.
+        # - So erhalten lange, schmale Flächen mehr Sample-Punkte entlang der Länge,
+        #   ohne die kurze Richtung unnötig zu verfeinern.
+        base_min_pts = max(int(min_points_per_dimension), 3)
+        long_axis = None
+        long_min_pts = base_min_pts
+        
+        range_x = max_x - min_x
+        range_y = max_y - min_y
+        eps = max(resolution * 0.1, 1e-6)
+        
+        if range_x > 0 and range_y > 0:
+            aspect_xy = range_x / max(range_y, eps)
+            aspect_yx = range_y / max(range_x, eps)
+            
+            aspect_threshold = 5.0  # "sehr lang und schmal"
+            long_factor = 3.0       # Faktor für zusätzliche Punkte entlang der langen Achse
+            
+            if aspect_xy >= aspect_threshold:
+                long_axis = "x"
+                long_min_pts = int(max(base_min_pts * long_factor, 9))
+            elif aspect_yx >= aspect_threshold:
+                long_axis = "y"
+                long_min_pts = int(max(base_min_pts * long_factor, 9))
+        
         # 🎯 FÜR VERTIKALE SURFACES: Erstelle Grid in der richtigen Ebene
         if all_vertical_same_orientation and group_dominant_axis == "xz":
             # X-Z-Wand: Grid in X-Z-Ebene (Y ist konstant)
@@ -3921,8 +4001,16 @@ class FlexibleGridGenerator(ModuleBase):
             sound_field_y = sound_field_z.copy()
         else:
             # Planare oder gemischte Surfaces: Grid in X-Y-Ebene (wie bisher)
-            nx_target = max(min_points_per_dimension, int(np.ceil((max_x - min_x) / resolution)) + 1)
-            ny_target = max(min_points_per_dimension, int(np.ceil((max_y - min_y) / resolution)) + 1)
+            if long_axis == "x":
+                # Mehr Punkte entlang X, Y bleibt bei Basis-Minimum
+                nx_target = max(long_min_pts, int(np.ceil((max_x - min_x) / resolution)) + 1)
+                ny_target = max(base_min_pts, int(np.ceil((max_y - min_y) / resolution)) + 1)
+            elif long_axis == "y":
+                nx_target = max(base_min_pts, int(np.ceil((max_x - min_x) / resolution)) + 1)
+                ny_target = max(long_min_pts, int(np.ceil((max_y - min_y) / resolution)) + 1)
+            else:
+                nx_target = max(base_min_pts, int(np.ceil((max_x - min_x) / resolution)) + 1)
+                ny_target = max(base_min_pts, int(np.ceil((max_y - min_y) / resolution)) + 1)
             sound_field_x = np.linspace(min_x, max_x, nx_target)
             sound_field_y = np.linspace(min_y, max_y, ny_target)
             X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing="xy")
@@ -4077,6 +4165,21 @@ class FlexibleGridGenerator(ModuleBase):
                     pass
             
             surface_masks[surface_id] = mask
+
+            # --------------------------------------------------------
+            # DEBUG: Anzahl Gridpunkte pro Surface im Gruppen-Grid
+            # --------------------------------------------------------
+            try:
+                n_points_in_mask = int(np.sum(mask))
+                total_points = int(mask.size)
+                # Konsolen-Debug (nur wenn viele Surfaces, daher kompakt halten)
+                print(
+                    f"[GroupGrid DEBUG] group-id={getattr(self, 'current_group_id', '?')} "
+                    f"surface-id={surface_id} points_in_mask={n_points_in_mask} "
+                    f"total_grid_points={total_points}"
+                )
+            except Exception:
+                pass
             
             # Berechne Z-Werte für diese Surface (nur innerhalb der Maske)
             if np.any(mask):

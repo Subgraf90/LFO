@@ -324,8 +324,16 @@ class Sources(ModuleBase, QObject):
                     _pending_drag_items.clear()
                     return
                 
-                # Prüfe, ob auf eine Gruppe gedroppt wird
-                if drop_item and drop_item.data(0, Qt.UserRole + 1) == "group":
+                handled = False
+                
+                # Prüfe, ob direkt AUF eine Gruppe gedroppt wird (nicht darüber/darunter)
+                if drop_item and indicator_pos == QAbstractItemView.OnItem and drop_item.data(0, Qt.UserRole + 1) == "group":
+                    # Hole Gruppen-Checkbox-Zustände
+                    mute_checkbox = self.sources_tree_widget.itemWidget(drop_item, 1)
+                    hide_checkbox = self.sources_tree_widget.itemWidget(drop_item, 2)
+                    group_mute_state = mute_checkbox.checkState() if mute_checkbox else Qt.Unchecked
+                    group_hide_state = hide_checkbox.checkState() if hide_checkbox else Qt.Unchecked
+                    
                     # Droppe auf Gruppe - füge Items als Childs hinzu
                     for item in dragged_items:
                         # Entferne Item von altem Parent
@@ -344,33 +352,31 @@ class Sources(ModuleBase, QObject):
                         # Stelle sicher, dass Checkboxen für das Item existieren
                         self.ensure_source_checkboxes(item)
                         
+                        # Wende Gruppen-Mute/Hide-Status auf das Array an
+                        array_id = item.data(0, Qt.UserRole)
+                        # Mute
+                        from PyQt5.QtCore import Qt as _QtAlias
+                        self.update_mute_state(array_id, group_mute_state)
+                        # Hide
+                        self.update_hide_state(array_id, group_hide_state)
+                        
                         # Speichere ursprüngliche Positionen für die Gruppe
                         self.save_original_positions_for_group(drop_item)
                     
-                    # Verbinde Checkboxen der Gruppe neu
-                    mute_checkbox = self.sources_tree_widget.itemWidget(drop_item, 1)
-                    hide_checkbox = self.sources_tree_widget.itemWidget(drop_item, 2)
-                    if mute_checkbox:
-                        try:
-                            mute_checkbox.stateChanged.disconnect()
-                        except:
-                            pass
-                        mute_checkbox.stateChanged.connect(lambda state, g_item=drop_item: self.on_group_mute_changed(g_item, state))
-                    if hide_checkbox:
-                        try:
-                            hide_checkbox.stateChanged.disconnect()
-                        except:
-                            pass
-                        hide_checkbox.stateChanged.connect(lambda state, g_item=drop_item: self.on_group_hide_changed(g_item, state))
-                    
-                    event.accept()
-                    event.setDropAction(Qt.MoveAction)
+                    handled = True
+                
                 elif indicator_pos == QAbstractItemView.OnItem and drop_item:
                     # Droppe auf ein Source Item
                     # Prüfe, ob das Ziel-Item in einer Gruppe ist
                     parent = drop_item.parent()
                     if parent and parent.data(0, Qt.UserRole + 1) == "group":
                         # Ziel-Item ist bereits in einer Gruppe - füge zur bestehenden Gruppe hinzu
+                        # Hole Gruppen-Checkbox-Zustände
+                        mute_checkbox = self.sources_tree_widget.itemWidget(parent, 1)
+                        hide_checkbox = self.sources_tree_widget.itemWidget(parent, 2)
+                        group_mute_state = mute_checkbox.checkState() if mute_checkbox else Qt.Unchecked
+                        group_hide_state = hide_checkbox.checkState() if hide_checkbox else Qt.Unchecked
+                        
                         for item in dragged_items:
                             old_parent = item.parent()
                             if old_parent:
@@ -383,16 +389,29 @@ class Sources(ModuleBase, QObject):
                             # Stelle sicher, dass Checkboxen für das Item existieren
                             self.ensure_source_checkboxes(item)
                             
+                            # Wende Gruppen-Mute/Hide-Status auf das Array an
+                            array_id = item.data(0, Qt.UserRole)
+                            self.update_mute_state(array_id, group_mute_state)
+                            self.update_hide_state(array_id, group_hide_state)
+                            
                             # Speichere ursprüngliche Positionen für die Gruppe
                             self.save_original_positions_for_group(parent)
-                        event.accept()
-                        event.setDropAction(Qt.MoveAction)
+                        handled = True
                     else:
                         # Droppe auf ein Source Item, das nicht in einer Gruppe ist
                         # Source Items dürfen nicht auf andere Source Items gezogen werden
-                        event.ignore()
+                        handled = False
                 else:
                     # Standard Drag & Drop Verhalten (zwischen Items)
+                    handled = False
+                
+                # Lass Qt die eigentliche Verschiebung durchführen, wenn wir etwas behandelt haben,
+                # damit die visuelle Position genau der Drop-Position entspricht.
+                if handled:
+                    original_dropEvent(event)
+                    event.accept()
+                    event.setDropAction(Qt.MoveAction)
+                else:
                     original_dropEvent(event)
                 
                 # Validiere alle Checkboxen nach Drag & Drop

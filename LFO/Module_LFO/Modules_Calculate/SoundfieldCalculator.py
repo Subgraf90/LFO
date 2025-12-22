@@ -1723,11 +1723,6 @@ class SoundFieldCalculator(ModuleBase):
                     }) + "\n")
                 # #endregion
                 
-                # Debug: Prüfe Maske
-                mask_sum = np.sum(mask)
-                if mask_sum == 0:
-                    print(f"[SoundFieldCalculator] ⚠️ WARNUNG: Surface '{surface_id}' hat leere Maske in Gruppe '{group_id}'!")
-                
                 surface_results_data[surface_id] = {
                     "sound_field_p": surface_field_p.tolist(),
                     "is_group_sum": True,
