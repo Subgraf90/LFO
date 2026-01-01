@@ -1214,6 +1214,60 @@ class GridBuilder(ModuleBase):
                 small_surfaces.append((geom, points_in_surface, mask))
                 print(f"[DEBUG Kleine Flächen] ⚠️  Surface '{geom.surface_id}' ({geom.name}): Nur {points_in_surface} Grid-Punkt(e) bei Resolution {resolution:.3f} m")
             
+            # 🎯 Qualitäts-Check: Reichen die Gridpunkte für eine vollflächige Darstellung?
+            try:
+                if geom.bbox:
+                    min_x, max_x, min_y, max_y = geom.bbox
+                    # Grobe Polygonfläche (XY) per Bounding-Box (konservativ)
+                    bbox_area = max((max_x - min_x), 0.0) * max((max_y - min_y), 0.0)
+                    if bbox_area > 0.0:
+                        # Zellfläche im Grid
+                        if X_grid.shape[1] > 1:
+                            dx = float(X_grid[0, 1] - X_grid[0, 0])
+                        else:
+                            dx = float(resolution)
+                        if Y_grid.shape[0] > 1:
+                            dy = float(Y_grid[1, 0] - Y_grid[0, 0])
+                        else:
+                            dy = float(resolution)
+                        cell_area = max(abs(dx * dy), 1e-8)
+                        expected_cells = max(int(bbox_area / cell_area), 1)
+                        coverage_ratio = points_in_surface / max(expected_cells, 1)
+                        if coverage_ratio < 0.3:
+                            # Unterabtastete Surface – Hinweis für zukünftige Optimierung
+                            print(
+                                f"[DEBUG Grid Coverage] Surface '{geom.surface_id}' ({geom.name}): "
+                                f"{points_in_surface} Gridpunkte, erwartet ~{expected_cells}, "
+                                f"Coverage={coverage_ratio:.2f}"
+                            )
+                            
+                            # #region agent log
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "lp08-analysis",
+                                        "hypothesisId": "H1_GRID_COVERAGE_SINGLE",
+                                        "location": "FlexibleGridGenerator_2.py:base_grid",
+                                        "message": "Unterabtastete Single-Surface im Base-Grid",
+                                        "data": {
+                                            "surface_id": str(geom.surface_id),
+                                            "surface_name": str(getattr(geom, 'name', '')),
+                                            "points_in_surface": int(points_in_surface),
+                                            "expected_cells_bbox": int(expected_cells),
+                                            "coverage_ratio": float(coverage_ratio),
+                                            "bbox": [float(min_x), float(max_x), float(min_y), float(max_y)],
+                                            "resolution": float(resolution)
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+            except Exception:
+                pass
+            
             surface_masks[geom.surface_id] = mask.flatten()  # Flach für BaseGrid
         
         # 🎯 Adaptive Resolution für kleine Flächen
@@ -4167,17 +4221,65 @@ class FlexibleGridGenerator(ModuleBase):
             surface_masks[surface_id] = mask
 
             # --------------------------------------------------------
-            # DEBUG: Anzahl Gridpunkte pro Surface im Gruppen-Grid
+            # DEBUG: Anzahl Gridpunkte pro Surface im Gruppen-Grid + Coverage
             # --------------------------------------------------------
             try:
                 n_points_in_mask = int(np.sum(mask))
                 total_points = int(mask.size)
-                # Konsolen-Debug (nur wenn viele Surfaces, daher kompakt halten)
+                
+                # Grobe Polygonfläche (XY) per Bounding-Box
+                if geom.bbox:
+                    g_min_x, g_max_x, g_min_y, g_max_y = geom.bbox
+                    bbox_area = max((g_max_x - g_min_x), 0.0) * max((g_max_y - g_min_y), 0.0)
+                else:
+                    bbox_area = 0.0
+                
+                # Zellfläche im Gruppen-Grid
+                if X_grid.shape[1] > 1:
+                    dx = float(X_grid[0, 1] - X_grid[0, 0])
+                else:
+                    dx = float(resolution)
+                if Y_grid.shape[0] > 1:
+                    dy = float(Y_grid[1, 0] - Y_grid[0, 0])
+                else:
+                    dy = float(resolution)
+                cell_area = max(abs(dx * dy), 1e-8)
+                expected_cells = int(bbox_area / cell_area) if bbox_area > 0.0 else 0
+                coverage_ratio = (n_points_in_mask / max(expected_cells, 1)) if expected_cells > 0 else 0.0
+                
+                # Konsolen-Debug (kompakt, aber mit Coverage-Info)
                 print(
                     f"[GroupGrid DEBUG] group-id={getattr(self, 'current_group_id', '?')} "
                     f"surface-id={surface_id} points_in_mask={n_points_in_mask} "
+                    f"expected~{expected_cells} coverage={coverage_ratio:.2f} "
                     f"total_grid_points={total_points}"
                 )
+                
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "lp08-analysis",
+                            "hypothesisId": "H2_GRID_COVERAGE_GROUP",
+                            "location": "FlexibleGridGenerator_2.py:group_grid",
+                            "message": "Grid-Coverage im Gruppen-Grid",
+                            "data": {
+                                "group_id": str(getattr(self, 'current_group_id', '?')),
+                                "surface_id": str(surface_id),
+                                "points_in_mask": int(n_points_in_mask),
+                                "expected_cells_bbox": int(expected_cells),
+                                "coverage_ratio": float(coverage_ratio),
+                                "total_grid_points": int(total_points),
+                                "cell_area": float(cell_area),
+                                "bbox_area": float(bbox_area)
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
             except Exception:
                 pass
             

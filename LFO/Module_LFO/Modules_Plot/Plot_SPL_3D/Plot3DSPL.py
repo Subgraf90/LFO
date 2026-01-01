@@ -2093,6 +2093,72 @@ class SPL3DPlotRenderer:
                                             f"Surface '{surface_id}': Fallback-Nearest liefert keine gültigen Werte"
                                         )
                             
+                            # 🎯 DEBUG: Prüfe, wie viele Vertices gültige Daten haben
+                            try:
+                                spl_arr = np.asarray(spl_at_verts, dtype=float)
+                                total_vertices = spl_arr.size
+                                finite_mask_vertices = np.isfinite(spl_arr)
+                                n_valid_vertices = int(np.count_nonzero(finite_mask_vertices))
+                                if total_vertices > 0:
+                                    coverage_vertices = n_valid_vertices / float(total_vertices)
+                                else:
+                                    coverage_vertices = 0.0
+                                
+                                if n_valid_vertices == 0:
+                                    print(
+                                        f"[PlotSPL3D DEBUG] Surface '{surface_id}': "
+                                        f"KEINE gültigen SPL-Werte auf Vertices – weiße Fläche im Plot wahrscheinlich."
+                                    )
+                                    # #region agent log
+                                    try:
+                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                            import json, time as _t
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "lp08-analysis",
+                                                "hypothesisId": "H3_NO_VALID_VERTICES",
+                                                "location": "Plot3DSPL.py:vertex_sampling",
+                                                "message": "Keine gültigen SPL-Werte auf Vertices",
+                                                "data": {
+                                                    "surface_id": str(surface_id),
+                                                    "n_valid_vertices": int(n_valid_vertices),
+                                                    "total_vertices": int(total_vertices)
+                                                },
+                                                "timestamp": int(_t.time() * 1000)
+                                            }) + "\n")
+                                    except Exception:
+                                        pass
+                                    # #endregion
+                                elif coverage_vertices < 0.3:
+                                    print(
+                                        f"[PlotSPL3D DEBUG] Surface '{surface_id}': "
+                                        f"nur {n_valid_vertices}/{total_vertices} gültige Vertices "
+                                        f"(Coverage={coverage_vertices:.2f}) – mögliche weiße Bereiche."
+                                    )
+                                    # #region agent log
+                                    try:
+                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                            import json, time as _t
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "lp08-analysis",
+                                                "hypothesisId": "H4_LOW_VERTEX_COVERAGE",
+                                                "location": "Plot3DSPL.py:vertex_sampling",
+                                                "message": "Zu wenige gültige SPL-Werte auf Vertices",
+                                                "data": {
+                                                    "surface_id": str(surface_id),
+                                                    "n_valid_vertices": int(n_valid_vertices),
+                                                    "total_vertices": int(total_vertices),
+                                                    "coverage_vertices": float(coverage_vertices)
+                                                },
+                                                "timestamp": int(_t.time() * 1000)
+                                            }) + "\n")
+                                    except Exception:
+                                        pass
+                                    # #endregion
+                            except Exception:
+                                pass
+                            
                             # Bestimme Colorbar-Bereich für Visualisierung
                             cbar_min_local = cbar_min
                             cbar_max_local = cbar_max

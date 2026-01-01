@@ -1025,8 +1025,10 @@ class UISurfaceManager(ModuleBase):
             for surface_id, surface in surface_store_after.items():
                 if isinstance(surface, SurfaceDefinition):
                     points = getattr(surface, 'points', [])
+                    surf_name = getattr(surface, 'name', '')
                 else:
                     points = surface.get('points', [])
+                    surf_name = surface.get('name', '')
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     f.write(json.dumps({
                         "sessionId": "debug-session",
@@ -1036,6 +1038,7 @@ class UISurfaceManager(ModuleBase):
                         "message": "VALIDATION: Points after load_surfaces",
                         "data": {
                             "surface_id": str(surface_id),
+                            "surface_name": str(surf_name),
                             "points_count": len(points) if points else 0,
                             "points_sample": [{"x": float(p.get('x', 0.0)), "y": float(p.get('y', 0.0)), "z": float(p.get('z', 0.0))} for p in points[:3]] if points and len(points) > 0 else []
                         },
