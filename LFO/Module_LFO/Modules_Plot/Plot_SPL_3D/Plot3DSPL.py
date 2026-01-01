@@ -71,520 +71,7 @@ class SPL3DPlotRenderer:
     - `FLOOR_NAME` (str)
     """
     
-    def _combine_group_meshes(
-        self,
-        group_id: str,
-        surface_ids: list[str],
-        surface_grids_data: dict[str, Any],
-        surface_results_data: dict[str, Any],
-        time_mode: bool = False,
-        phase_mode: bool = False,
-        ) -> Optional[tuple[Any, np.ndarray, np.ndarray]]:
-        """
-        Kombiniert triangulierte Meshes mehrerer Surfaces zu einem gemeinsamen Gruppen-Mesh.
-        
-        Args:
-            group_id: ID der Gruppe
-            surface_ids: Liste von Surface-IDs in der Gruppe
-            surface_grids_data: Dict mit Grid-Daten pro Surface
-            surface_results_data: Dict mit Ergebnis-Daten pro Surface
-            time_mode: Ob Zeit-Modus aktiv ist
-            phase_mode: Ob Phase-Modus aktiv ist
-        
-        Returns:
-            Tuple von (combined_mesh, plot_scalars, surface_id_scalars) oder None bei Fehler
-            - combined_mesh: PyVista Mesh mit kombinierten Vertices/Faces
-            - plot_scalars: Array mit SPL-Werten pro Vertex
-            - surface_id_scalars: Array mit surface_id-Indizes pro Vertex (für Zuordnung)
-        """
-        if pv is None:
-            return None
-        
-        # 🎯 OPTIMIERUNG: Prüfe ob alle Surfaces in der Gruppe vertikal sind und die gleiche Orientierung haben
-        all_vertical_same_orientation = False
-        group_dominant_axis = None
-        if len(surface_ids) > 0:
-            orientations = []
-            dominant_axes = []
-            for sid in surface_ids:
-                grid_data = surface_grids_data.get(sid, {})
-                if grid_data:
-                    orientation = grid_data.get("orientation", "")
-                    dominant_axis = grid_data.get("dominant_axis", "")
-                    orientations.append(orientation)
-                    dominant_axes.append(dominant_axis)
-            
-            # Prüfe ob alle vertikal sind und die gleiche Orientierung haben
-            if len(orientations) == len(surface_ids) and all(o == "vertical" for o in orientations):
-                if len(set(dominant_axes)) == 1 and dominant_axes[0]:
-                    all_vertical_same_orientation = True
-                    group_dominant_axis = dominant_axes[0]
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[PlotSPL3D] _combine_group_meshes: Gruppe '{group_id}': Alle {len(surface_ids)} Surfaces sind vertikal mit Orientierung '{group_dominant_axis}'")
-        
-        all_vertices = []
-        all_faces = []
-        all_scalars = []
-        all_surface_ids = []
-        vertex_offset = 0
-        
-        for surface_id in surface_ids:
-            grid_data = surface_grids_data.get(surface_id)
-            result_data = surface_results_data.get(surface_id)
-            
-            if not grid_data or not result_data:
-                continue
-            
-            # Hole triangulierte Daten
-            triangulated_success = grid_data.get('triangulated_success', False)
-            if not triangulated_success:
-                continue
-            
-            triangulated_vertices_list = grid_data.get('triangulated_vertices')
-            triangulated_faces_list = grid_data.get('triangulated_faces')
-            
-            if not triangulated_vertices_list or not triangulated_faces_list:
-                continue
-            
-            vertices = np.array(triangulated_vertices_list, dtype=float)
-            faces = np.array(triangulated_faces_list, dtype=np.int64)
-            
-            # 🎯 FIX: Aktualisiere Vertices-Z-Koordinaten basierend auf aktuellen Surface-Punkten
-            # Wenn eine Gruppe verschoben wird, müssen die Vertices-Z-Koordinaten aktualisiert werden
-            # WICHTIG: Verwende settings.surface_definitions direkt, da dort die aktualisierten Punkte und plane_model gespeichert sind
-            try:
-                # Verwende self.settings.surface_definitions direkt (nicht getattr, da es immer vorhanden sein sollte)
-                if not hasattr(self.settings, 'surface_definitions'):
-                    surface_definitions = {}
-                else:
-                    surface_definitions = self.settings.surface_definitions or {}
-                
-                if isinstance(surface_definitions, dict) and surface_id in surface_definitions:
-                    surface_def = surface_definitions[surface_id]
-                    if isinstance(surface_def, SurfaceDefinition):
-                        points = getattr(surface_def, 'points', [])
-                        plane_model = getattr(surface_def, 'plane_model', None)
-                    else:
-                        points = surface_def.get('points', [])
-                        plane_model = surface_def.get('plane_model', None)
-                    
-                    if points and len(points) >= 3 and plane_model:
-                        # Berechne neue Z-Koordinaten basierend auf plane_model
-                        # Verwende X- und Y-Koordinaten der Vertices
-                        vertices_x = vertices[:, 0]
-                        vertices_y = vertices[:, 1]
-                        vertices_z_old = vertices[:, 2].copy()  # Speichere alte Z-Koordinaten für Vergleich
-                        
-                        # Erstelle temporäre Grids für vektorisierte Auswertung
-                        # Da _evaluate_plane_on_grid 2D-Arrays erwartet, müssen wir die Vertices als 2D-Arrays behandeln
-                        # Für einzelne Vertices können wir evaluate_surface_plane verwenden, aber das ist langsamer
-                        # Stattdessen verwenden wir eine vektorisierte Version direkt
-                        mode = plane_model.get("mode", "constant")
-                        if mode == "constant":
-                            new_z = np.full_like(vertices_x, float(plane_model.get("base", 0.0)))
-                        elif mode == "x":
-                            slope = float(plane_model.get("slope", 0.0))
-                            intercept = float(plane_model.get("intercept", 0.0))
-                            new_z = slope * vertices_x + intercept
-                        elif mode == "y":
-                            slope = float(plane_model.get("slope", 0.0))
-                            intercept = float(plane_model.get("intercept", 0.0))
-                            new_z = slope * vertices_y + intercept
-                        elif mode == "xy":
-                            slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
-                            slope_y = float(plane_model.get("slope_y", 0.0))
-                            intercept = float(plane_model.get("intercept", 0.0))
-                            new_z = slope_x * vertices_x + slope_y * vertices_y + intercept
-                        else:
-                            new_z = np.full_like(vertices_x, float(plane_model.get("base", 0.0)))
-                        
-                        # Aktualisiere Z-Koordinaten der Vertices
-                        vertices = np.column_stack([vertices_x, vertices_y, new_z])
-                        
-                        
-                        
-                        
-            except Exception as e:
-                
-                pass
-            
-            
-            
-            # Hole SPL-Werte
-            sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
-            
-            if sound_field_p_complex.size == 0:
-                continue
-            
-            # Prüfe ob dies eine Gruppen-Surface ist
-            is_group_sum = result_data.get('is_group_sum', False)
-            
-            # Konvertiere zu SPL in dB
-            if time_mode:
-                spl_values_2d = np.real(sound_field_p_complex)
-                spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
-            elif phase_mode:
-                spl_values_2d = np.angle(sound_field_p_complex)
-                spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
-            else:
-                pressure_magnitude = np.abs(sound_field_p_complex)
-                pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
-                spl_values_2d = self.functions.mag2db(pressure_magnitude)
-                spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            # Hole Grid-Daten
-            Xg = np.asarray(grid_data.get("X_grid", []))
-            Yg = np.asarray(grid_data.get("Y_grid", []))
-            surface_mask = np.asarray(grid_data.get("surface_mask", []))
-            
-            # Initialisiere Z_group für alle Fälle
-            Z_group = np.array([])
-            
-            if Xg.size == 0 or Yg.size == 0:
-                continue
-            
-            # Für Gruppen-Surfaces: Verwende Gruppen-Grid-Koordinaten
-            if is_group_sum:
-                # Hole Gruppen-Grid-Koordinaten aus surface_results_data
-                X_group = np.asarray(result_data.get('group_X_grid', []))
-                Y_group = np.asarray(result_data.get('group_Y_grid', []))
-                Z_group = np.asarray(result_data.get('group_Z_grid', []))  # 🎯 NEU: Hole Z-Koordinaten
-                group_mask_raw = result_data.get('group_mask', [])
-                group_mask = np.asarray(group_mask_raw)
-                
-                
-                
-                
-                if X_group.size == 0 or Y_group.size == 0:
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[PlotSPL3D] _combine_group_meshes: Gruppen-Grid-Koordinaten fehlen für Surface '{surface_id}'")
-                    continue
-                
-                # 🎯 PRÜFE SHAPE-KONSISTENZ: X_group, Y_group und Z_group sollten die gleiche Shape haben
-                if Z_group.size > 0:
-                    if X_group.shape != Z_group.shape or Y_group.shape != Z_group.shape:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[PlotSPL3D] _combine_group_meshes: ⚠️ Shape-Mismatch für Surface '{surface_id}': X_group.shape={X_group.shape}, Y_group.shape={Y_group.shape}, Z_group.shape={Z_group.shape}")
-                        # Versuche zu reshapen, wenn die Größe passt
-                        if X_group.size == Z_group.size and Y_group.size == Z_group.size:
-                            X_group = X_group.reshape(Z_group.shape)
-                            Y_group = Y_group.reshape(Z_group.shape)
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: Reshaped X_group und Y_group zu {Z_group.shape}")
-                        else:
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: ⚠️ Kann nicht reshapen: X_group.size={X_group.size}, Y_group.size={Y_group.size}, Z_group.size={Z_group.size}")
-                
-                # Stelle sicher, dass spl_values_2d die richtige Shape hat
-                if spl_values_2d.ndim == 1:
-                    # Wenn 1D, versuche zu 2D zu reshapen basierend auf Gruppen-Grid
-                    if X_group.ndim == 2 and spl_values_2d.size == X_group.size:
-                        spl_values_2d = spl_values_2d.reshape(X_group.shape)
-                    else:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[PlotSPL3D] _combine_group_meshes: Kann spl_values_2d nicht reshapen für Gruppen-Surface '{surface_id}': spl_values_2d.size={spl_values_2d.size}, X_group.size={X_group.size}")
-                        continue
-                elif spl_values_2d.ndim == 2:
-                    # Wenn 2D, prüfe ob Shape übereinstimmt
-                    if spl_values_2d.shape != X_group.shape:
-                        if spl_values_2d.size == X_group.size:
-                            spl_values_2d = spl_values_2d.reshape(X_group.shape)
-                        else:
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: Shape-Mismatch für Gruppen-Surface '{surface_id}': spl_values_2d.shape={spl_values_2d.shape}, X_group.shape={X_group.shape}")
-                            continue
-                
-                # Verwende Gruppen-Grid-Koordinaten für Interpolation
-                Xg_interp = X_group
-                Yg_interp = Y_group
-                
-                # Stelle sicher, dass group_mask die richtige Shape hat
-                if group_mask.size > 0:
-                    if group_mask.ndim == 1:
-                        if group_mask.size == X_group.size:
-                            group_mask = group_mask.reshape(X_group.shape)
-                        else:
-                            group_mask = np.array([])
-                    elif group_mask.ndim == 2:
-                        if group_mask.shape != X_group.shape:
-                            group_mask = np.array([])
-                else:
-                    group_mask = np.array([])
-            else:
-                # Für normale Surfaces: Stelle sicher, dass spl_values_2d die gleiche Shape wie Xg/Yg hat
-                if spl_values_2d.ndim == 2 and Xg.ndim == 2:
-                    if spl_values_2d.shape != Xg.shape:
-                        # Nur reshapen wenn die Größe passt
-                        if spl_values_2d.size == Xg.size:
-                            spl_values_2d = spl_values_2d.reshape(Xg.shape)
-                        else:
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: Shape-Mismatch für Surface '{surface_id}': spl_values_2d.shape={spl_values_2d.shape}, Xg.shape={Xg.shape}")
-                            continue
-                elif spl_values_2d.ndim == 1:
-                    # Wenn 1D, versuche zu 2D zu reshapen
-                    if Xg.ndim == 2 and spl_values_2d.size == Xg.size:
-                        spl_values_2d = spl_values_2d.reshape(Xg.shape)
-                    else:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[PlotSPL3D] _combine_group_meshes: Kann spl_values_2d nicht reshapen für Surface '{surface_id}': spl_values_2d.size={spl_values_2d.size}, Xg.size={Xg.size}")
-                        continue
-                
-                # Verwende normale Grid-Koordinaten für Interpolation
-                Xg_interp = Xg
-                Yg_interp = Yg
-            
-            # Interpoliere SPL-Werte auf Vertices
-            try:
-                from scipy.interpolate import griddata
-                
-                # 🎯 FÜR VERTIKALE SURFACES: Verwende X-Z-Koordinaten statt X-Y
-                # Prüfe ob Surface vertikal ist (X-Z-Wand oder Y-Z-Wand)
-                # Verwende Gruppen-Orientierung wenn verfügbar, sonst individuelle Orientierung
-                is_vertical_surface = False
-                dominant_axis = None
-                grid_data = surface_grids_data.get(surface_id, {})
-                if is_group_sum:
-                    if all_vertical_same_orientation and group_dominant_axis:
-                        # Alle Surfaces in der Gruppe sind vertikal mit gleicher Orientierung
-                        is_vertical_surface = True
-                        dominant_axis = group_dominant_axis
-                    else:
-                        # Prüfe individuelle Orientierung
-                        if grid_data:
-                            orientation = grid_data.get("orientation", "")
-                            dominant_axis = grid_data.get("dominant_axis", "")
-                            is_vertical_surface = orientation == "vertical"
-                else:
-                    # Für einzelne Surfaces: Prüfe individuelle Orientierung
-                    if grid_data:
-                        orientation = grid_data.get("orientation", "")
-                        dominant_axis = grid_data.get("dominant_axis", "")
-                        is_vertical_surface = orientation == "vertical"
-                
-                if is_vertical_surface and dominant_axis == "xz":
-                    # X-Z-Wand: Verwende X-Z-Koordinaten für Interpolation
-                    points_new = vertices[:, [0, 2]]  # X und Z statt X und Y
-                    # Für X-Z-Wände verwenden wir Z-Koordinaten aus dem Gruppen-Grid
-                    if is_group_sum and Z_group.size > 0 and Z_group.shape == Xg_interp.shape:
-                        points_orig = np.column_stack([Xg_interp.ravel(), Z_group.ravel()])
-                    else:
-                        # Fallback: Versuche Z aus grid_data zu holen
-                        Zg = np.asarray(grid_data.get("Z_grid", [])) if grid_data else np.array([])
-                        if Zg.size > 0 and Zg.shape == Xg_interp.shape:
-                            points_orig = np.column_stack([Xg_interp.ravel(), Zg.ravel()])
-                        else:
-                            # Letzter Fallback: Verwende X-Y (könnte falsch sein, aber besser als Fehler)
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: ⚠️ X-Z-Wand '{surface_id}': Keine Z-Koordinaten gefunden, verwende X-Y-Fallback")
-                            points_new = vertices[:, :2]
-                            points_orig = np.column_stack([Xg_interp.ravel(), Yg_interp.ravel()])
-                elif is_vertical_surface and dominant_axis == "yz":
-                    # Y-Z-Wand: Verwende Y-Z-Koordinaten für Interpolation
-                    points_new = vertices[:, [1, 2]]  # Y und Z statt X und Y
-                    # Für Y-Z-Wände verwenden wir Z-Koordinaten aus dem Gruppen-Grid
-                    if is_group_sum and Z_group.size > 0 and Z_group.shape == Yg_interp.shape:
-                        points_orig = np.column_stack([Yg_interp.ravel(), Z_group.ravel()])
-                    else:
-                        # Fallback: Versuche Z aus grid_data zu holen
-                        Zg = np.asarray(grid_data.get("Z_grid", [])) if grid_data else np.array([])
-                        if Zg.size > 0 and Zg.shape == Yg_interp.shape:
-                            points_orig = np.column_stack([Yg_interp.ravel(), Zg.ravel()])
-                        else:
-                            # Letzter Fallback: Verwende X-Y
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: ⚠️ Y-Z-Wand '{surface_id}': Keine Z-Koordinaten gefunden, verwende X-Y-Fallback")
-                            points_new = vertices[:, :2]
-                            points_orig = np.column_stack([Xg_interp.ravel(), Yg_interp.ravel()])
-                else:
-                    # Normale Surfaces: Verwende X-Y-Koordinaten
-                    points_new = vertices[:, :2]
-                    points_orig = np.column_stack([Xg_interp.ravel(), Yg_interp.ravel()])
-                
-                if spl_values_2d.ndim == 2:
-                    values_orig = spl_values_2d.ravel()
-                else:
-                    values_orig = spl_values_2d.ravel()
-                
-                if len(values_orig) != len(points_orig):
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[PlotSPL3D] _combine_group_meshes: Längen-Mismatch für Surface '{surface_id}': values_orig={len(values_orig)}, points_orig={len(points_orig)}")
-                    continue
-                
-                # Wende Maske an: Für Gruppen-Surfaces verwende group_mask, für normale Surfaces verwende surface_mask
-                if is_group_sum:
-                    # Für Gruppen-Surfaces: Verwende Gruppen-Grid-Maske
-                    if group_mask.size > 0 and group_mask.shape == Xg_interp.shape:
-                        mask_flat = group_mask.ravel().astype(bool)
-                        
-                        if np.any(mask_flat):
-                            # Nur Werte innerhalb der Maske verwenden (vermeidet Interpolation mit Nullen)
-                            points_orig = points_orig[mask_flat]
-                            values_orig = values_orig[mask_flat]
-                            
-                            # Filtere auch NaN/Inf Werte
-                            valid_mask = np.isfinite(values_orig)
-                            if np.any(valid_mask):
-                                points_orig = points_orig[valid_mask]
-                                values_orig = values_orig[valid_mask]
-                            else:
-                                if DEBUG_PLOT3D_TIMING:
-                                    print(f"[PlotSPL3D] _combine_group_meshes: Keine gültigen Werte in Maske für Gruppen-Surface '{surface_id}'")
-                                continue
-                        else:
-                            if DEBUG_PLOT3D_TIMING:
-                                print(f"[PlotSPL3D] _combine_group_meshes: Gruppen-Maske ist leer für Surface '{surface_id}'")
-                            continue
-                    else:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[PlotSPL3D] _combine_group_meshes: Gruppen-Maske fehlt oder hat falsche Shape für Surface '{surface_id}'")
-                        continue
-                    
-                    # 🎯 INTERPOLATION FÜR GRUPPEN-SURFACES
-                    # Prüfe ob Vertices außerhalb des Grid-Bereichs liegen
-                    if len(points_orig) > 0 and len(points_new) > 0:
-                        points_orig_min = np.min(points_orig, axis=0)
-                        points_orig_max = np.max(points_orig, axis=0)
-                        points_new_min = np.min(points_new, axis=0)
-                        points_new_max = np.max(points_new, axis=0)
-                        
-                        # Prüfe ob Vertices außerhalb liegen
-                        outside_mask = np.any(
-                            (points_new < points_orig_min) | (points_new > points_orig_max),
-                            axis=1
-                        )
-                        n_outside = np.sum(outside_mask)
-                        
-                        if n_outside > 0:
-                            pass  # Vertices außerhalb Grid-Bereich - Debug-Ausgabe entfernt
-                    
-                    spl_at_verts = griddata(
-                        points_orig,
-                        values_orig,
-                        points_new,
-                        method='nearest',
-                        fill_value=np.nan,
-                    )
-                    
-                    # Prüfe ob Interpolation NaN-Werte lieferte (außerhalb Grid)
-                    n_nan = np.sum(np.isnan(spl_at_verts))
-                    if n_nan > 0:
-                        if DEBUG_PLOT3D_TIMING:
-                            print(f"[PlotSPL3D] _combine_group_meshes: ⚠️ Surface '{surface_id}': {n_nan}/{len(spl_at_verts)} NaN-Werte nach Interpolation")
-                else:
-                    # Für normale Surfaces: Verwende normale Surface-Maske
-                    if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
-                        mask_flat = surface_mask.ravel().astype(bool)
-                        if np.any(mask_flat):
-                            points_orig = points_orig[mask_flat]
-                            values_orig = values_orig[mask_flat]
-                    
-                    if len(points_orig) == 0 or len(values_orig) == 0:
-                        continue
-                    
-                    spl_at_verts = griddata(
-                        points_orig,
-                        values_orig,
-                        points_new,
-                        method='nearest',
-                        fill_value=np.nan,
-                    )
-                    
-                    
-                
-                # Prüfe ob Interpolation erfolgreich war
-                if np.all(np.isnan(spl_at_verts)):
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"[PlotSPL3D] _combine_group_meshes: Interpolation lieferte nur NaN für Surface '{surface_id}'")
-                    continue
-            except Exception as e:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[PlotSPL3D] _combine_group_meshes: Fehler bei Interpolation für Surface '{surface_id}': {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-            
-            # Füge Vertices hinzu
-            all_vertices.append(vertices)
-            
-            # Passe Face-Indizes an (offset um bisherige Vertex-Anzahl)
-            # PyVista Faces-Format: [n_points, i1, i2, i3, ...]
-            faces_adjusted = faces.copy()
-            if faces.ndim == 1:
-                # Flaches Array: [n1, i1, i2, i3, n2, i4, i5, i6, ...]
-                n_faces = len(faces) // 4
-                for i in range(n_faces):
-                    idx = i * 4
-                    if idx + 3 < len(faces):
-                        faces_adjusted[idx + 1] += vertex_offset
-                        faces_adjusted[idx + 2] += vertex_offset
-                        faces_adjusted[idx + 3] += vertex_offset
-            else:
-                # 2D Array: [[n, i1, i2, i3], ...]
-                faces_adjusted[:, 1:] += vertex_offset
-            
-            all_faces.append(faces_adjusted)
-            all_scalars.append(spl_at_verts)
-            
-            # Erstelle surface_id-Scalar (Index für Zuordnung)
-            surface_id_idx = len(all_vertices) - 1  # Index dieser Surface in der Gruppe
-            all_surface_ids.append(np.full(len(vertices), surface_id_idx, dtype=int))
-            
-            vertex_offset += len(vertices)
-        
-        if not all_vertices:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[PlotSPL3D] _combine_group_meshes: Gruppe '{group_id}': Keine Vertices gefunden")
-            return None
-        
-        # Kombiniere alle Arrays
-        try:
-            combined_vertices = np.vstack(all_vertices)
-            combined_faces = np.concatenate(all_faces) if all_faces else np.array([], dtype=np.int64)
-            combined_scalars = np.concatenate(all_scalars)
-            combined_surface_ids = np.concatenate(all_surface_ids)
-            
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "grid-analysis",
-                        "hypothesisId": "H2",
-                        "location": "Plot3DSPL._combine_group_meshes",
-                        "message": "Gruppen-Mesh kombiniert",
-                        "data": {
-                            "group_id": str(group_id),
-                            "n_surfaces": int(len(surface_ids)),
-                            "surface_ids": list(surface_ids),
-                            "combined_n_vertices": int(len(combined_vertices)),
-                            "combined_n_faces": int(len(combined_faces) // 4) if combined_faces.ndim == 1 else int(len(combined_faces)),
-                            "combined_n_scalars": int(len(combined_scalars))
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            
-        except Exception as e:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[PlotSPL3D] _combine_group_meshes: Gruppe '{group_id}': Fehler beim Kombinieren der Arrays: {e}")
-            return None
-        
-        # Erstelle PyVista Mesh
-        try:
-            mesh = pv.PolyData(combined_vertices, combined_faces)
-            mesh["plot_scalars"] = combined_scalars
-            mesh["surface_id"] = combined_surface_ids
-            return mesh, combined_scalars, combined_surface_ids
-        except Exception as e:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[PlotSPL3D] _combine_group_meshes: Gruppe '{group_id}': Fehler beim Erstellen des PyVista Meshes: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+    # 🗑️ ENTFERNT: _combine_group_meshes - nicht mehr benötigt, da alle Surfaces einzeln geplottet werden
     
     # Statische Hilfsmethoden sind jetzt in Plot3DHelpers.py
     # Verwende Module-Level-Funktionen statt statischer Methoden
@@ -901,10 +388,6 @@ class SPL3DPlotRenderer:
         # Optionales Feintiming für diesen Pfad
         t_render_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
 
-        # 🎯 WICHTIG: Auch wenn keine surface_overrides vorhanden sind, sollten wir prüfen,
-        # ob es enabled Surfaces gibt, die geplottet werden sollten.
-        # Wenn keine surface_overrides vorhanden sind, aber enabled Surfaces existieren,
-        # sollten wir trotzdem fortfahren, um zu sehen, ob wir sie plotten können.
         if not surface_overrides:
             return
 
@@ -1135,40 +618,6 @@ class SPL3DPlotRenderer:
             sy = override.get("source_y", np.array([]))
             vals = override.get("values", np.array([]))
             override_used = True
-
-            # 🎯 AUSKOMMENTIERT: Textur-Cache wird nicht mehr benötigt, da Textur-Pfad auskommentiert ist
-            # # Berechne Signatur mit korrekter tex_res_surface
-            # texture_signature = self._calculate_texture_signature(
-            #     surface_id=surface_id,
-            #     points=points,
-            #     source_x=sx,
-            #     source_y=sy,
-            #     values=vals,
-            #     cbar_min=cbar_min,
-            #     cbar_max=cbar_max,
-            #     cmap_object=cmap_object,
-            #     colorization_mode=colorization_mode,
-            #     cbar_step=cbar_step,
-            #     tex_res_surface=tex_res_surface,
-            #     plane_model=plane_model,
-            # )
-            # 
-            # # Prüfe Cache
-            # cached_texture_data = self._surface_texture_actors.get(surface_id)
-            # cached_signature = self._surface_texture_cache.get(surface_id)
-            # 
-            # if disable_textures:
-            #     cached_texture_data = None
-            #     cached_signature = None
-            # 
-            # if cached_texture_data is not None and cached_signature == texture_signature:
-            #     cached_actor = cached_texture_data.get('actor') if isinstance(cached_texture_data, dict) else None
-            #     if cached_actor is not None:
-            #         # Cache-HIT: Wiederverwenden
-            #         cached_surfaces.append((surface_id, cached_texture_data))
-            #         if DEBUG_PLOT3D_TIMING:
-            #             print(f"[PlotSPL3D] surface {surface_id}: CACHE-HIT - Textur wiederverwendet")
-            #         continue
             
             # Muss verarbeitet werden (Triangulation-Pfad)
             surfaces_to_process.append((surface_id, points, surface_obj))
@@ -1181,53 +630,6 @@ class SPL3DPlotRenderer:
         calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
         surface_grids_data = calc_spl.get("surface_grids", {}) or {} if isinstance(calc_spl, dict) else {}
         surface_results_data = calc_spl.get("surface_results", {}) or {} if isinstance(calc_spl, dict) else {}
-        
-        # 🎯 NEU: Identifiziere Kandidaten-Gruppen für gruppierte Meshes
-        group_sum_enabled = getattr(self.settings, 'spl_group_sum_enabled', True)
-        candidate_groups_for_plot: dict[str, list[str]] = {}
-        
-        
-        if group_sum_enabled and isinstance(surface_results_data, dict):
-            # Finde alle Surfaces mit is_group_sum=True
-            surfaces_in_groups: dict[str, str] = {}  # surface_id -> group_id
-            for surface_id, result_data in surface_results_data.items():
-                if isinstance(result_data, dict) and result_data.get('is_group_sum', False):
-                    group_id = result_data.get('group_id')
-                    if group_id:
-                        if group_id not in candidate_groups_for_plot:
-                            candidate_groups_for_plot[group_id] = []
-                        candidate_groups_for_plot[group_id].append(surface_id)
-                        surfaces_in_groups[surface_id] = group_id
-            
-            
-            # 🎯 ENTFERNE Gruppen-Surfaces aus surfaces_to_process, damit sie nicht einzeln geplottet werden
-            removed_surfaces = [sid for sid, _, _ in surfaces_to_process if sid in surfaces_in_groups]
-            surfaces_to_process = [
-                (sid, pts, obj) for sid, pts, obj in surfaces_to_process
-                if sid not in surfaces_in_groups
-            ]
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "grid-analysis-v2",
-                        "hypothesisId": "H2",
-                        "location": "Plot3DSPL._render_surfaces:remove_group_surfaces",
-                        "message": "Gruppen-Surfaces aus surfaces_to_process entfernt",
-                        "data": {
-                            "n_removed_surfaces": int(len(removed_surfaces)),
-                            "removed_surface_ids": list(removed_surfaces),
-                            "n_surfaces_to_process_after": int(len(surfaces_to_process)),
-                            "surfaces_to_process_ids": [str(sid) for sid, _, _ in surfaces_to_process]
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            
         
         # 🎯 ERWEITERE surfaces_to_process: Füge Surfaces hinzu, die Overrides haben,
         # aber nicht in enabled_surfaces sind – z.B. vertikale Flächen aus calculation_spl.
@@ -1255,9 +657,6 @@ class SPL3DPlotRenderer:
         
         if additional_surface_ids and isinstance(surface_grids_data, dict):
             for sid in additional_surface_ids:
-                # Überspringe Surfaces, die bereits in Gruppen sind
-                if sid in surfaces_in_groups:
-                    continue
                 if sid in surface_grids_data:
                     surface_def = surface_definitions.get(sid)
                     if surface_def:
@@ -1268,255 +667,9 @@ class SPL3DPlotRenderer:
                         if len(points) >= 3:
                             surfaces_to_process.append((sid, points, surface_def))
         
-        # 🎯 NEU: Verarbeite Gruppen-Meshes zuerst
-        group_actors: dict[str, Any] = {}
-        surfaces_processed_in_groups: set[str] = set()
-        
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json, time as _t
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "grid-analysis",
-                    "hypothesisId": "H2",
-                    "location": "Plot3DSPL._render_surfaces",
-                    "message": "Gruppen-Meshes gefunden",
-                    "data": {
-                        "n_groups": int(len(candidate_groups_for_plot)),
-                        "group_ids": list(candidate_groups_for_plot.keys()),
-                        "n_surfaces_to_process": int(len(surfaces_to_process))
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        
-        for group_id, group_surface_ids in candidate_groups_for_plot.items():
-            # 🎯 NEU: Prüfe ob Gruppe disabled oder hidden ist
-            group_enabled = True
-            group_hidden = False
-            surface_groups = getattr(self.settings, 'surface_groups', {}) if hasattr(self, 'settings') else {}
-            if isinstance(surface_groups, dict) and group_id in surface_groups:
-                group_data = surface_groups[group_id]
-                if hasattr(group_data, 'enabled'):
-                    group_enabled = bool(group_data.enabled)
-                    group_hidden = bool(getattr(group_data, 'hidden', False))
-                elif isinstance(group_data, dict):
-                    group_enabled = bool(group_data.get('enabled', True))
-                    group_hidden = bool(group_data.get('hidden', False))
-            
-            if not group_enabled or group_hidden:
-                # Gruppe ist disabled oder hidden → entferne vorhandenen Actor und überspringe Plotting
-                if hasattr(self, '_group_actors') and isinstance(self._group_actors, dict):
-                    old_group_actor = self._group_actors.get(group_id)
-                    if old_group_actor is not None:
-                        try:
-                            actor_name = f"{self.SURFACE_NAME}_group_{group_id}"
-                            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
-                                if actor_name in self.plotter.renderer.actors:
-                                    self.plotter.remove_actor(actor_name)
-                            else:
-                                self.plotter.remove_actor(old_group_actor)
-                        except Exception:
-                            pass
-                        self._group_actors.pop(group_id, None)
-                
-                continue
-            
-            # Prüfe ob alle Surfaces der Gruppe verfügbar sind
-            available_surface_ids = [
-                sid for sid in group_surface_ids
-                if sid in surface_grids_data and sid in surface_results_data
-            ]
-            
-            if len(available_surface_ids) < 2:
-                continue
-            
-            # Kombiniere Meshes der Gruppe
-            try:
-                group_mesh_result = self._combine_group_meshes(
-                    group_id=group_id,
-                    surface_ids=available_surface_ids,
-                    surface_grids_data=surface_grids_data,
-                    surface_results_data=surface_results_data,
-                    time_mode=time_mode,
-                    phase_mode=phase_mode,
-                )
-            except Exception as e:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[PlotSPL3D] Gruppe '{group_id}': Fehler beim Kombinieren der Meshes: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-            
-            if group_mesh_result is None:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[PlotSPL3D] Gruppe '{group_id}': _combine_group_meshes gab None zurück")
-                continue
-            
-            group_mesh, group_scalars, group_surface_ids_scalar = group_mesh_result
-            
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "grid-analysis",
-                        "hypothesisId": "H2",
-                        "location": "Plot3DSPL._render_surfaces",
-                        "message": "Gruppen-Mesh erstellt",
-                        "data": {
-                            "group_id": str(group_id),
-                            "n_surfaces_in_group": int(len(available_surface_ids)),
-                            "surface_ids": list(available_surface_ids),
-                            "mesh_n_points": int(group_mesh.n_points) if hasattr(group_mesh, 'n_points') else None,
-                            "mesh_n_cells": int(group_mesh.n_cells) if hasattr(group_mesh, 'n_cells') else None
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            
-            # 🎯 FIX: Verwende GLOBALE Colorbar-Werte für Gruppen-Surfaces
-            # (nicht lokale Werte basierend auf Min/Max der Gruppe)
-            # Dies stellt sicher, dass Gruppen-Surfaces die gleichen Farbzuordnungen wie einzelne Surfaces verwenden
-            cbar_min_local = cbar_min  # Verwende globale Werte
-            cbar_max_local = cbar_max  # Verwende globale Werte
-            
-            # Clipping für Visualisierung
-            group_scalars_clipped = np.clip(group_scalars, cbar_min_local, cbar_max_local)
-            group_mesh["plot_scalars"] = group_scalars_clipped
-            
-            # Erstelle Gruppen-Actor
-            try:
-                actor_name = f"{self.SURFACE_NAME}_group_{group_id}"
-                
-                # Entferne alte Actors für Surfaces in dieser Gruppe
-                for sid in available_surface_ids:
-                    old_actor = self._surface_actors.get(sid)
-                    if old_actor is not None:
-                        try:
-                            if isinstance(old_actor, dict):
-                                old_actor_obj = old_actor.get('actor')
-                            else:
-                                old_actor_obj = old_actor
-                            if old_actor_obj is not None:
-                                self.plotter.remove_actor(old_actor_obj)
-                        except Exception:
-                            pass
-                        self._surface_actors.pop(sid, None)
-                    self._surface_texture_actors.pop(sid, None)
-                
-                # Entferne alten Gruppen-Actor falls vorhanden
-                # 🎯 WICHTIG: Verwende self._group_actors, nicht die lokale Variable group_actors!
-                # 🎯 WICHTIG: Verwende Actor-Name statt Actor-Objekt, da PyVista's remove_actor() auch mit Namen funktioniert
-                if not hasattr(self, '_group_actors'):
-                    self._group_actors = {}
-                
-                # Versuche zuerst, den Actor per Name zu entfernen (zuverlässiger)
-                try:
-                    # Prüfe ob Actor mit diesem Namen bereits existiert
-                    if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
-                        if actor_name in self.plotter.renderer.actors:
-                            self.plotter.remove_actor(actor_name)
-                except Exception:
-                    pass
-                
-                # Versuche auch, den Actor per Objekt-Referenz zu entfernen (Fallback)
-                old_group_actor = self._group_actors.get(group_id)
-                if old_group_actor is not None:
-                    try:
-                        self.plotter.remove_actor(old_group_actor)
-                    except Exception:
-                        pass
-                
-                # Entferne aus self._group_actors
-                self._group_actors.pop(group_id, None)
-                
-                # Erstelle neuen Gruppen-Actor
-                actor = self.plotter.add_mesh(
-                    group_mesh,
-                    name=actor_name,
-                    scalars="plot_scalars",
-                    cmap=cmap_object,
-                    clim=(cbar_min_local, cbar_max_local),
-                    smooth_shading=False,
-                    show_scalar_bar=False,
-                    reset_camera=False,
-                    interpolate_before_map=False,
-                )
-                
-                if hasattr(actor, 'SetPickable'):
-                    actor.SetPickable(False)
-                
-                group_actors[group_id] = actor
-                surfaces_processed_in_groups.update(available_surface_ids)
-                surfaces_processed += len(available_surface_ids)
-                # #region agent log
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "grid-analysis-v2",
-                            "hypothesisId": "H2",
-                            "location": "Plot3DSPL._render_surfaces:group_actor_created",
-                            "message": "Gruppen-Actor erstellt - Surfaces in surfaces_processed_in_groups",
-                            "data": {
-                                "group_id": str(group_id),
-                                "n_surfaces_in_group": int(len(available_surface_ids)),
-                                "surface_ids_in_group": list(available_surface_ids),
-                                "surfaces_processed_in_groups": list(surfaces_processed_in_groups)
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
-                
-                # Speichere Gruppen-Actor für spätere Verwaltung
-                if not hasattr(self, '_group_actors'):
-                    self._group_actors = {}
-                self._group_actors[group_id] = actor
-            except Exception as e:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[PlotSPL3D] Gruppe '{group_id}': Fehler beim Erstellen des Gruppen-Actors: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # Sequenzielle Verarbeitung (nur für Surfaces, die nicht in Gruppen sind)
-        
-        
+        # Sequenzielle Verarbeitung aller Surfaces (alle werden identisch behandelt)
         
         for surface_id, points, surface_obj in surfaces_to_process:
-            # Überspringe Surfaces, die bereits in Gruppen verarbeitet wurden
-            if surface_id in surfaces_processed_in_groups:
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"[PlotSPL3D] Surface '{surface_id}': Übersprungen (bereits in Gruppe verarbeitet)")
-                # #region agent log
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "grid-analysis",
-                            "hypothesisId": "H2",
-                            "location": "Plot3DSPL._render_surfaces",
-                            "message": "Surface übersprungen (bereits in Gruppe)",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "in_surfaces_processed_in_groups": True
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
-                continue
             
             try:
                 # Verarbeite Surface – nur mit Override (keine globalen Fallbacks)
@@ -2147,7 +1300,6 @@ class SPL3DPlotRenderer:
                                         "message": "Einzelne Surface geplottet",
                                         "data": {
                                             "surface_id": str(surface_id),
-                                            "in_surfaces_processed_in_groups": bool(surface_id in surfaces_processed_in_groups),
                                             "mesh_n_points": int(mesh.n_points) if hasattr(mesh, 'n_points') else None,
                                             "mesh_n_cells": int(mesh.n_cells) if hasattr(mesh, 'n_cells') else None
                                         },
@@ -2186,13 +1338,11 @@ class SPL3DPlotRenderer:
         except Exception:
             current_geom_version = 0
         last_geom_version = getattr(self, "_last_geometry_version", None)
-        
-        
+
         
         if last_geom_version is None or last_geom_version != current_geom_version:
             # Surface-Mesh-Cache leeren, damit bei neuer Geometrie alle Meshes neu aufgebaut werden
-            
-            
+
             if hasattr(self, "_surface_actors") and isinstance(self._surface_actors, dict):
                 try:
                     for sid, entry in list(self._surface_actors.items()):
@@ -2209,8 +1359,6 @@ class SPL3DPlotRenderer:
 
         camera_state = self._camera_state or self._capture_camera()
 
-        # 🎯 WICHTIG: Erstelle surface_overrides VOR den Validierungsprüfungen,
-        # damit vertikale Flächen auch ohne gültige globale SPL-Daten geplottet werden können
         surface_overrides: dict[str, dict[str, np.ndarray]] = {}
         calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
         surface_grids_data = {}
@@ -2218,9 +1366,7 @@ class SPL3DPlotRenderer:
         if isinstance(calc_spl, dict):
             surface_grids_data = calc_spl.get("surface_grids", {}) or {}
             surface_results_data = calc_spl.get("surface_results", {}) or {}
-        
-        
-        
+
         if isinstance(surface_grids_data, dict) and surface_grids_data and isinstance(surface_results_data, dict) and surface_results_data:
             orientations_found = {}
             for sid, grid_data in surface_grids_data.items():
@@ -2235,8 +1381,6 @@ class SPL3DPlotRenderer:
                     Xg = np.asarray(grid_data.get("X_grid", []))
                     Yg = np.asarray(grid_data.get("Y_grid", []))
                     
-                    
-                    
                     if Xg.size == 0 or Yg.size == 0:
                         
                         continue
@@ -2247,19 +1391,13 @@ class SPL3DPlotRenderer:
                     else:
                         
                         continue
-                    
-                    # 🎯 NEU: Verwende direkt die berechneten SPL-Werte aus surface_results
-                    #         Wenn Shapes nicht übereinstimmen, interpolieren wir die Daten auf das Surface-Grid
+
                     result_data = surface_results_data[sid]
                     sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
-                    
-                    
-                    
+
                     if sound_field_p_complex.size == 0:
                         continue
-                    
-                    # 🎯 WICHTIG: Wenn Shapes nicht übereinstimmen, prüfe ob es Gruppen-Grid-Daten gibt
-                    # oder interpolieren wir die Daten auf das Surface-Grid
+
                     if sound_field_p_complex.shape != Xg.shape:
                         # Prüfe ob es Gruppen-Grid-Daten gibt (für Gruppen-Surfaces)
                         group_X_grid = result_data.get('group_X_grid')
@@ -2324,17 +1462,13 @@ class SPL3DPlotRenderer:
                 except Exception as e:
                     # Wenn etwas schiefgeht, einfach ohne Override weiterarbeiten
                     continue
-            
-            
         
         # Wenn keine gültigen SPL-Daten vorliegen, belassen wir die bestehende Szene
         # (inkl. Lautsprechern) unverändert und brechen nur das SPL-Update ab.
         # ABER: Wenn surface_overrides vorhanden sind, müssen wir trotzdem plotten!
         has_surface_overrides = bool(surface_overrides)
         is_valid_global_data = self._has_valid_data(sound_field_x, sound_field_y, sound_field_pressure)
-        
-        
-        
+
         if not is_valid_global_data:
             if not has_surface_overrides:
                 
@@ -2361,7 +1495,6 @@ class SPL3DPlotRenderer:
         time_mode = plot_mode == 'SPL over time'
         self._phase_mode_active = phase_mode
         self._time_mode_active = time_mode
-
 
         if pressure.ndim != 2:
             if pressure.size == (len(y) * len(x)):
@@ -2422,7 +1555,6 @@ class SPL3DPlotRenderer:
                         actual_y = float(y[y_idx])
                 except Exception:
                     pass
-  
             
             finite_mask = np.isfinite(spl_db)
             if not np.any(finite_mask):
@@ -2563,9 +1695,6 @@ class SPL3DPlotRenderer:
         plot_values = geometry.plot_values
         z_coords = geometry.z_coords
         
-        # 🎯 surface_overrides wurden bereits am Anfang der Funktion erstellt
-        # (vor den Validierungsprüfungen, damit vertikale Flächen auch ohne gültige globale Daten geplottet werden können)
-        
         # 🎯 Cache Plot-Geometrie für Click-Handling
         self._plot_geometry_cache = {
             'plot_x': plot_x.copy() if hasattr(plot_x, 'copy') else plot_x,
@@ -2594,8 +1723,6 @@ class SPL3DPlotRenderer:
             source_scalars=None,
         )
         
-        
-
         if time_mode:
             cmap_object = 'RdBu_r'
         elif phase_mode:
@@ -2635,8 +1762,6 @@ class SPL3DPlotRenderer:
             except Exception:  # noqa: BLE001
                 pass
 
-        
-        
         # Zeichne alle aktiven Surfaces mit Triangulation
         self._render_surfaces(
             geometry,
@@ -2650,8 +1775,6 @@ class SPL3DPlotRenderer:
             phase_mode=phase_mode,
             time_mode=time_mode,
         )
-        
-        
         
         if DEBUG_PLOT3D_TIMING:
             t_after_textures = time.perf_counter()
@@ -2712,8 +1835,6 @@ class SPL3DPlotRenderer:
         # (auch wenn Surfaces enabled sind, aber keine surface_overrides vorhanden sind)
         should_create_floor = not has_surface_actors
 
-        
-
         if should_create_floor:
             # Erstelle vollständigen Floor-Mesh (ohne Surface-Maskierung oder Clipping)
             floor_mesh = build_full_floor_mesh(
@@ -2746,8 +1867,6 @@ class SPL3DPlotRenderer:
                 pass
             # #endregion
             
-            
-
             # Plotte (oder update) den Floor nur, wenn keine Surfaces aktiv sind
             floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
             if floor_actor is None:
@@ -2812,7 +1931,6 @@ class SPL3DPlotRenderer:
         # ------------------------------------------------------------
         if DEBUG_PLOT3D_TIMING:
             self._validate_surface_plotting()
-
 
         if DEBUG_PLOT3D_TIMING:
             t_after_vertical = time.perf_counter()
@@ -2929,7 +2047,6 @@ class SPL3DPlotRenderer:
             
             if not isinstance(surface_grids_data, dict) or not isinstance(surface_definitions, dict):
                 return
-            
             
             # Sammle alle erkannten Surfaces
             all_surface_ids = set(surface_grids_data.keys())
