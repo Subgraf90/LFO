@@ -1063,944 +1063,948 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
     # Hinweis: _bilinear_interpolate_grid und _nearest_interpolate_grid sind jetzt in SPL3DPlotRenderer (Mixin)
     # Die Methoden werden durch Vererbung vom Mixin bereitgestellt.
 
-    def _process_single_surface_texture(
-        self,
-        surface_id: str,
-        points: list[dict[str, float]],
-        surface_obj: Any,
-        source_x: np.ndarray,
-        source_y: np.ndarray,
-        values: np.ndarray,
-        cbar_min: float,
-        cbar_max: float,
-        base_cmap: Any,
-        norm: Any,
-        is_step_mode: bool,
-        colorization_mode: str,
-        cbar_step: float,
-        tex_res_global: float,
-        effective_upscale_factor: int,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Verarbeitet eine einzelne Surface und erstellt Textur + Grid.
-        Diese Methode kann parallel aufgerufen werden.
-        
-        Returns:
-            Dict mit 'surface_id', 'grid', 'texture', 'metadata', 'texture_signature', etc.
-            oder None bei Fehler/Skip
-        """
-        try:
-            import pyvista as pv  # type: ignore
-        except Exception:
-            return None
-        
-        try:
-            t_surface_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-            t_geom_done = t_surface_start
-            
-            poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
-            poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
-            poly_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
-            if poly_x.size == 0 or poly_y.size == 0:
-                return None
+    # 🎯 AUSKOMMENTIERT: Textur-Fallback-Pfad wird vorerst nicht benötigt
+    # Alle Surfaces verwenden jetzt den Triangulation-Pfad
+    # def _process_single_surface_texture(
+    #     self,
+    #     surface_id: str,
+    #     points: list[dict[str, float]],
+    #     surface_obj: Any,
+    #     source_x: np.ndarray,
+    #     source_y: np.ndarray,
+    #     values: np.ndarray,
+    #     cbar_min: float,
+    #     cbar_max: float,
+    #     base_cmap: Any,
+    #     norm: Any,
+    #     is_step_mode: bool,
+    #     colorization_mode: str,
+    #     cbar_step: float,
+    #     tex_res_global: float,
+    #     effective_upscale_factor: int,
+    # ) -> Optional[Dict[str, Any]]:
+    #     """
+    #     Verarbeitet eine einzelne Surface und erstellt Textur + Grid.
+    #     Diese Methode kann parallel aufgerufen werden.
+    #     
+    #     Returns:
+    #         Dict mit 'surface_id', 'grid', 'texture', 'metadata', 'texture_signature', etc.
+    #         oder None bei Fehler/Skip
+    #     """
+    #     try:
+    #         import pyvista as pv  # type: ignore
+    #     except Exception:
+    #         return None
+    #     
+    #     try:
+    #         t_surface_start = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+    #         t_geom_done = t_surface_start
+    #         
+    #         poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+    #         poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+    #         poly_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
+    #         if poly_x.size == 0 or poly_y.size == 0:
+    #             return None
+    #
+    #         xmin, xmax = float(poly_x.min()), float(poly_x.max())
+    #         ymin, ymax = float(poly_y.min()), float(poly_y.max())
+    #         
+    #         # 🎯 NEU: Prüfe Orientierung aus grid_data (wenn verfügbar)
+    #         is_vertical = False
+    #         orientation = None
+    #         wall_axis = None
+    #         wall_value = None
+    #         
+    #         if hasattr(self, 'container') and self.container is not None:
+    #             try:
+    #                 calc_spl = getattr(self.container, "calculation_spl", None)
+    #                 if isinstance(calc_spl, dict):
+    #                     surface_grids_data = calc_spl.get("surface_grids", {})
+    #                     if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
+    #                         grid_data = surface_grids_data[surface_id]
+    #                         grid_orientation = grid_data.get('orientation', 'unknown')
+    #                         dominant_axis = grid_data.get('dominant_axis', None)
+    #                         
+    #                         if grid_orientation == 'vertical':
+    #                             is_vertical = True
+    #                             # Bestimme orientation und wall_value aus dominant_axis oder Grid-Daten
+    #                             if dominant_axis == 'xz':
+    #                                 orientation = "xz"
+    #                                 wall_axis = "y"
+    #                                 # Verwende Y-Mittelwert aus Grid
+    #                                 Y_grid = np.array(grid_data.get('Y_grid', []), dtype=float)
+    #                                 if Y_grid.size > 0:
+    #                                     wall_value = float(np.mean(Y_grid))
+    #                                 else:
+    #                                     wall_value = float(np.mean(poly_y))
+    #                             elif dominant_axis == 'yz':
+    #                                 orientation = "yz"
+    #                                 wall_axis = "x"
+    #                                 # Verwende X-Mittelwert aus Grid
+    #                                 X_grid = np.array(grid_data.get('X_grid', []), dtype=float)
+    #                                 if X_grid.size > 0:
+    #                                     wall_value = float(np.mean(X_grid))
+    #                                 else:
+    #                                     wall_value = float(np.mean(poly_x))
+    #                             else:
+    #                                 # Fallback: Bestimme aus Surface-Punkten
+    #                                 x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
+    #                                 y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
+    #                                 z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
+    #                                 eps_line = 1e-6
+    #                                 has_height = z_span > 1e-3
+    #                                 
+    #                                 if y_span < eps_line and x_span >= eps_line and has_height:
+    #                                     orientation = "xz"
+    #                                     wall_axis = "y"
+    #                                     wall_value = float(np.mean(poly_y))
+    #                                 elif x_span < eps_line and y_span >= eps_line and has_height:
+    #                                     orientation = "yz"
+    #                                     wall_axis = "x"
+    #                                     wall_value = float(np.mean(poly_x))
+    #             except Exception as e:
+    #                 pass
+    #         
+    #         # Berechne Planmodell für geneigte Flächen (wenn nicht bereits vertikal erkannt)
+    #         if not is_vertical:
+    #             dict_points = [
+    #                 {"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "z": float(p.get("z", 0.0))}
+    #                 for p in points
+    #             ]
+    #             plane_model, _ = derive_surface_plane(dict_points)
+    #             
+    #             # Plane-Model muss verfügbar sein
+    #             if plane_model is None:
+    #                 raise ValueError(f"Surface '{surface_id}': plane_model konnte nicht abgeleitet werden")
+    #                 x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
+    #                 y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
+    #                 z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
+    #                 eps_line = 1e-6
+    #                 has_height = z_span > 1e-3
+    #                 
+    #                 if y_span < eps_line and x_span >= eps_line and has_height:
+    #                     is_vertical = True
+    #                     orientation = "xz"
+    #                     wall_axis = "y"
+    #                     wall_value = float(np.mean(poly_y))
+    #                 elif x_span < eps_line and y_span >= eps_line and has_height:
+    #                     is_vertical = True
+    #                     orientation = "yz"
+    #                     wall_axis = "x"
+    #                     wall_value = float(np.mean(poly_x))
+    #                 
+    #                 if not is_vertical:
+    #                     plane_model = {
+    #                         "mode": "constant",
+    #                         "base": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
+    #                         "slope": 0.0,
+    #                         "intercept": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
+    #                     }
+    #         else:
+    #             # Wenn vertikal erkannt, plane_model nicht benötigt
+    #             plane_model = None
+    #
+    #         # 🚀 TEXTUR-CACHE: Prüfe ob Textur wiederverwendet werden kann
+    #         # (Cache-Prüfung erfolgt im Hauptthread, hier nur Berechnung)
+    #         
+    #         # Für senkrechte Flächen: spezieller Pfad
+    #         if is_vertical:
+    #             return self._process_vertical_surface_texture(
+    #                 surface_id=surface_id,
+    #                 points=points,
+    #                 surface_obj=surface_obj,
+    #                 poly_x=poly_x,
+    #                 poly_y=poly_y,
+    #                 poly_z=poly_z,
+    #                 xmin=xmin,
+    #                 xmax=xmax,
+    #                 ymin=ymin,
+    #                 ymax=ymax,
+    #                 orientation=orientation,
+    #                 wall_axis=wall_axis,
+    #                 wall_value=wall_value,
+    #                 tex_res_global=tex_res_global,
+    #                 cbar_min=cbar_min,
+    #                 cbar_max=cbar_max,
+    #                 base_cmap=base_cmap,
+    #                 norm=norm,
+    #                 is_step_mode=is_step_mode,
+    #                 cbar_step=cbar_step,
+    #                 t_surface_start=t_surface_start,
+    #             )
+    #         
+    #         # 🎯 NORMALER PFAD FÜR PLANARE FLÄCHEN
+    #         return self._process_planar_surface_texture(
+    #             surface_id=surface_id,
+    #             points=points,
+    #             surface_obj=surface_obj,
+    #             poly_x=poly_x,
+    #             poly_y=poly_y,
+    #             poly_z=poly_z,
+    #             xmin=xmin,
+    #             xmax=xmax,
+    #             ymin=ymin,
+    #             ymax=ymax,
+    #             plane_model=plane_model,
+    #             source_x=source_x,
+    #             source_y=source_y,
+    #             values=values,
+    #             tex_res_global=tex_res_global,
+    #             effective_upscale_factor=effective_upscale_factor,
+    #             cbar_min=cbar_min,
+    #             cbar_max=cbar_max,
+    #             base_cmap=base_cmap,
+    #             norm=norm,
+    #             is_step_mode=is_step_mode,
+    #             cbar_step=cbar_step,
+    #             t_surface_start=t_surface_start,
+    #         )
+    #     except Exception as e:
+    #         if DEBUG_PLOT3D_TIMING:
+    #             pass
+    #         return None
 
-            xmin, xmax = float(poly_x.min()), float(poly_x.max())
-            ymin, ymax = float(poly_y.min()), float(poly_y.max())
-            
-            # 🎯 NEU: Prüfe Orientierung aus grid_data (wenn verfügbar)
-            is_vertical = False
-            orientation = None
-            wall_axis = None
-            wall_value = None
-            
-            if hasattr(self, 'container') and self.container is not None:
-                try:
-                    calc_spl = getattr(self.container, "calculation_spl", None)
-                    if isinstance(calc_spl, dict):
-                        surface_grids_data = calc_spl.get("surface_grids", {})
-                        if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
-                            grid_data = surface_grids_data[surface_id]
-                            grid_orientation = grid_data.get('orientation', 'unknown')
-                            dominant_axis = grid_data.get('dominant_axis', None)
-                            
-                            if grid_orientation == 'vertical':
-                                is_vertical = True
-                                # Bestimme orientation und wall_value aus dominant_axis oder Grid-Daten
-                                if dominant_axis == 'xz':
-                                    orientation = "xz"
-                                    wall_axis = "y"
-                                    # Verwende Y-Mittelwert aus Grid
-                                    Y_grid = np.array(grid_data.get('Y_grid', []), dtype=float)
-                                    if Y_grid.size > 0:
-                                        wall_value = float(np.mean(Y_grid))
-                                    else:
-                                        wall_value = float(np.mean(poly_y))
-                                elif dominant_axis == 'yz':
-                                    orientation = "yz"
-                                    wall_axis = "x"
-                                    # Verwende X-Mittelwert aus Grid
-                                    X_grid = np.array(grid_data.get('X_grid', []), dtype=float)
-                                    if X_grid.size > 0:
-                                        wall_value = float(np.mean(X_grid))
-                                    else:
-                                        wall_value = float(np.mean(poly_x))
-                                else:
-                                    # Fallback: Bestimme aus Surface-Punkten
-                                    x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
-                                    y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
-                                    z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
-                                    eps_line = 1e-6
-                                    has_height = z_span > 1e-3
-                                    
-                                    if y_span < eps_line and x_span >= eps_line and has_height:
-                                        orientation = "xz"
-                                        wall_axis = "y"
-                                        wall_value = float(np.mean(poly_y))
-                                    elif x_span < eps_line and y_span >= eps_line and has_height:
-                                        orientation = "yz"
-                                        wall_axis = "x"
-                                        wall_value = float(np.mean(poly_x))
-                except Exception as e:
-                    pass
-            
-            # Berechne Planmodell für geneigte Flächen (wenn nicht bereits vertikal erkannt)
-            if not is_vertical:
-                dict_points = [
-                    {"x": float(p.get("x", 0.0)), "y": float(p.get("y", 0.0)), "z": float(p.get("z", 0.0))}
-                    for p in points
-                ]
-                plane_model, _ = derive_surface_plane(dict_points)
-                
-                # Plane-Model muss verfügbar sein
-                if plane_model is None:
-                    raise ValueError(f"Surface '{surface_id}': plane_model konnte nicht abgeleitet werden")
-                    x_span = float(np.ptp(poly_x)) if poly_x.size > 0 else 0.0
-                    y_span = float(np.ptp(poly_y)) if poly_y.size > 0 else 0.0
-                    z_span = float(np.ptp(poly_z)) if poly_z.size > 0 else 0.0
-                    eps_line = 1e-6
-                    has_height = z_span > 1e-3
-                    
-                    if y_span < eps_line and x_span >= eps_line and has_height:
-                        is_vertical = True
-                        orientation = "xz"
-                        wall_axis = "y"
-                        wall_value = float(np.mean(poly_y))
-                    elif x_span < eps_line and y_span >= eps_line and has_height:
-                        is_vertical = True
-                        orientation = "yz"
-                        wall_axis = "x"
-                        wall_value = float(np.mean(poly_x))
-                    
-                    if not is_vertical:
-                        plane_model = {
-                            "mode": "constant",
-                            "base": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
-                            "slope": 0.0,
-                            "intercept": float(np.mean(poly_z)) if poly_z.size > 0 else 0.0,
-                        }
-            else:
-                # Wenn vertikal erkannt, plane_model nicht benötigt
-                plane_model = None
-
-            # 🚀 TEXTUR-CACHE: Prüfe ob Textur wiederverwendet werden kann
-            # (Cache-Prüfung erfolgt im Hauptthread, hier nur Berechnung)
-            
-            # Für senkrechte Flächen: spezieller Pfad
-            if is_vertical:
-                return self._process_vertical_surface_texture(
-                    surface_id=surface_id,
-                    points=points,
-                    surface_obj=surface_obj,
-                    poly_x=poly_x,
-                    poly_y=poly_y,
-                    poly_z=poly_z,
-                    xmin=xmin,
-                    xmax=xmax,
-                    ymin=ymin,
-                    ymax=ymax,
-                    orientation=orientation,
-                    wall_axis=wall_axis,
-                    wall_value=wall_value,
-                    tex_res_global=tex_res_global,
-                    cbar_min=cbar_min,
-                    cbar_max=cbar_max,
-                    base_cmap=base_cmap,
-                    norm=norm,
-                    is_step_mode=is_step_mode,
-                    cbar_step=cbar_step,
-                    t_surface_start=t_surface_start,
-                )
-            
-            # 🎯 NORMALER PFAD FÜR PLANARE FLÄCHEN
-            return self._process_planar_surface_texture(
-                surface_id=surface_id,
-                points=points,
-                surface_obj=surface_obj,
-                poly_x=poly_x,
-                poly_y=poly_y,
-                poly_z=poly_z,
-                xmin=xmin,
-                xmax=xmax,
-                ymin=ymin,
-                ymax=ymax,
-                plane_model=plane_model,
-                source_x=source_x,
-                source_y=source_y,
-                values=values,
-                tex_res_global=tex_res_global,
-                effective_upscale_factor=effective_upscale_factor,
-                cbar_min=cbar_min,
-                cbar_max=cbar_max,
-                base_cmap=base_cmap,
-                norm=norm,
-                is_step_mode=is_step_mode,
-                cbar_step=cbar_step,
-                t_surface_start=t_surface_start,
-            )
-        except Exception as e:
-            if DEBUG_PLOT3D_TIMING:
-                pass
-            return None
-
-    def _process_vertical_surface_texture(
-        self,
-        surface_id: str,
-        points: list[dict[str, float]],
-        surface_obj: Any,
-        poly_x: np.ndarray,
-        poly_y: np.ndarray,
-        poly_z: np.ndarray,
-        xmin: float,
-        xmax: float,
-        ymin: float,
-        ymax: float,
-        orientation: str,
-        wall_axis: str,
-        wall_value: float,
-        tex_res_global: float,
-        cbar_min: float,
-        cbar_max: float,
-        base_cmap: Any,
-        norm: Any,
-        is_step_mode: bool,
-        cbar_step: float,
-        t_surface_start: float,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Verarbeitet eine senkrechte Surface und erstellt Textur + Grid.
-        Diese Methode kann parallel aufgerufen werden.
-        """
-        try:
-            import pyvista as pv  # type: ignore
-        except Exception:
-            return None
+    # 🎯 AUSKOMMENTIERT: Textur-Fallback-Pfad wird vorerst nicht benötigt
+    # def _process_vertical_surface_texture(
+    #     self,
+    #     surface_id: str,
+        # points: list[dict[str, float]],
+        # surface_obj: Any,
+        # poly_x: np.ndarray,
+        # poly_y: np.ndarray,
+        # poly_z: np.ndarray,
+        # xmin: float,
+        # xmax: float,
+        # ymin: float,
+        # ymax: float,
+        # orientation: str,
+        # wall_axis: str,
+        # wall_value: float,
+        # tex_res_global: float,
+        # cbar_min: float,
+        # cbar_max: float,
+        # base_cmap: Any,
+        # norm: Any,
+        # is_step_mode: bool,
+        # cbar_step: float,
+        # t_surface_start: float,
+    # ) -> Optional[Dict[str, Any]]:
+        # """
+        # Verarbeitet eine senkrechte Surface und erstellt Textur + Grid.
+        # Diese Methode kann parallel aufgerufen werden.
+        # """
+        # try:
+            # import pyvista as pv  # type: ignore
+        # except Exception:
+            # return None
         
-        try:
+        # try:
             # 🎯 NEU: Verwende Grids direkt aus surface_grids_data (wie Plot3DSPL_new.py)
-            use_direct_grids = False
-            X_grid_direct = None
-            Y_grid_direct = None
-            Z_grid_direct = None
-            surface_mask_direct = None
-            dominant_axis = None
+            # use_direct_grids = False
+            # X_grid_direct = None
+            # Y_grid_direct = None
+            # Z_grid_direct = None
+            # surface_mask_direct = None
+            # dominant_axis = None
             
-            if hasattr(self, 'container') and self.container is not None:
-                try:
-                    calc_spl = getattr(self.container, "calculation_spl", None)
-                    if isinstance(calc_spl, dict):
-                        surface_grids_data = calc_spl.get("surface_grids", {})
-                        surface_results_data = calc_spl.get("surface_results", {})
-                        if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
-                            grid_data = surface_grids_data[surface_id]
-                            if 'X_grid' in grid_data and 'Y_grid' in grid_data and 'Z_grid' in grid_data:
-                                X_grid_direct = np.array(grid_data['X_grid'], dtype=float)
-                                Y_grid_direct = np.array(grid_data['Y_grid'], dtype=float)
-                                Z_grid_direct = np.array(grid_data['Z_grid'], dtype=float)
-                                surface_mask_direct = np.array(grid_data.get('surface_mask', []), dtype=bool)
-                                dominant_axis = grid_data.get('dominant_axis', None)
+            # if hasattr(self, 'container') and self.container is not None:
+                # try:
+                    # calc_spl = getattr(self.container, "calculation_spl", None)
+                    # if isinstance(calc_spl, dict):
+                        # surface_grids_data = calc_spl.get("surface_grids", {})
+                        # surface_results_data = calc_spl.get("surface_results", {})
+                        # if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
+                            # grid_data = surface_grids_data[surface_id]
+                            # if 'X_grid' in grid_data and 'Y_grid' in grid_data and 'Z_grid' in grid_data:
+                                # X_grid_direct = np.array(grid_data['X_grid'], dtype=float)
+                                # Y_grid_direct = np.array(grid_data['Y_grid'], dtype=float)
+                                # Z_grid_direct = np.array(grid_data['Z_grid'], dtype=float)
+                                # surface_mask_direct = np.array(grid_data.get('surface_mask', []), dtype=bool)
+                                # dominant_axis = grid_data.get('dominant_axis', None)
                                 
-                                if X_grid_direct.ndim == 2 and Y_grid_direct.ndim == 2 and Z_grid_direct.ndim == 2:
-                                    if X_grid_direct.shape == Y_grid_direct.shape == Z_grid_direct.shape:
-                                        use_direct_grids = True
-                except Exception as e:
-                    use_direct_grids = False
+                                # if X_grid_direct.ndim == 2 and Y_grid_direct.ndim == 2 and Z_grid_direct.ndim == 2:
+                                    # if X_grid_direct.shape == Y_grid_direct.shape == Z_grid_direct.shape:
+                                        # use_direct_grids = True
+                # except Exception as e:
+                    # use_direct_grids = False
             
-            if not use_direct_grids:
+            # if not use_direct_grids:
                 # Direkte Grids müssen verfügbar sein
-                raise ValueError(f"Surface '{surface_id}': Direkte Grids nicht verfügbar für vertikale Surface")
+                # raise ValueError(f"Surface '{surface_id}': Direkte Grids nicht verfügbar für vertikale Surface")
                 
                 # Senkrechte Flächen verwenden (u,v)-Koordinaten
-                if orientation == "xz":
-                    poly_u = poly_x
-                    poly_v = poly_z
-                    umin, umax = xmin, xmax
-                    vmin, vmax = float(poly_z.min()), float(poly_z.max())
-                else:  # orientation == "yz"
-                    poly_u = poly_y
-                    poly_v = poly_z
-                    umin, umax = ymin, ymax
-                    vmin, vmax = float(poly_z.min()), float(poly_z.max())
+                # if orientation == "xz":
+                    # poly_u = poly_x
+                    # poly_v = poly_z
+                    # umin, umax = xmin, xmax
+                    # vmin, vmax = float(poly_z.min()), float(poly_z.max())
+                # else:  # orientation == "yz"
+                    # poly_u = poly_y
+                    # poly_v = poly_z
+                    # umin, umax = ymin, ymax
+                    # vmin, vmax = float(poly_z.min()), float(poly_z.max())
                 
                 # Erstelle (u,v)-Grid
-                margin = tex_res_global * 0.5
-                u_start = umin - margin
-                u_end = umax + margin
-                v_start = vmin - margin
-                v_end = vmax + margin
+                # margin = tex_res_global * 0.5
+                # u_start = umin - margin
+                # u_end = umax + margin
+                # v_start = vmin - margin
+                # v_end = vmax + margin
                 
-                num_u = int(np.ceil((u_end - u_start) / tex_res_global)) + 1
-                num_v = int(np.ceil((v_end - v_start) / tex_res_global)) + 1
+                # num_u = int(np.ceil((u_end - u_start) / tex_res_global)) + 1
+                # num_v = int(np.ceil((v_end - v_start) / tex_res_global)) + 1
                 
-                us = np.linspace(u_start, u_end, num_u, dtype=float)
-                vs = np.linspace(v_start, v_end, num_v, dtype=float)
-                if us.size < 2 or vs.size < 2:
-                    return None
+                # us = np.linspace(u_start, u_end, num_u, dtype=float)
+                # vs = np.linspace(v_start, v_end, num_v, dtype=float)
+                # if us.size < 2 or vs.size < 2:
+                    # return None
                 
-                U, V = np.meshgrid(us, vs, indexing="xy")
-                points_uv = np.column_stack((U.ravel(), V.ravel()))
+                # U, V = np.meshgrid(us, vs, indexing="xy")
+                # points_uv = np.column_stack((U.ravel(), V.ravel()))
                 
                 # Maske im Polygon
-                poly_path_uv = Path(np.column_stack((poly_u, poly_v)))
-                inside_uv = poly_path_uv.contains_points(points_uv)
-                inside_uv = inside_uv.reshape(U.shape)
+                # poly_path_uv = Path(np.column_stack((poly_u, poly_v)))
+                # inside_uv = poly_path_uv.contains_points(points_uv)
+                # inside_uv = inside_uv.reshape(U.shape)
                 
-                if not np.any(inside_uv):
-                    return None
+                # if not np.any(inside_uv):
+                    # return None
                 
-                t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+                # t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
                 
                 # Hole SPL-Werte aus vertikalen Samples
-                try:
-                    geom_vertical = prepare_vertical_plot_geometry(
-                        surface_id,
-                        self.settings,
-                        self.container,
-                        default_upscale=1,
-                    )
-                except Exception:
-                    return None
+                # try:
+                    # geom_vertical = prepare_vertical_plot_geometry(
+                        # surface_id,
+                        # self.settings,
+                        # self.container,
+                        # default_upscale=1,
+                    # )
+                # except Exception:
+                    # return None
                 
-                if geom_vertical is None:
-                    return None
+                # if geom_vertical is None:
+                    # return None
                 
-                plot_u_geom = np.asarray(geom_vertical.plot_u, dtype=float)
-                plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
-                plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
+                # plot_u_geom = np.asarray(geom_vertical.plot_u, dtype=float)
+                # plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
+                # plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
             
             # 🎯 NEU: Wenn direkte Grids verfügbar sind, verwende diese (wie Plot3DSPL_new.py)
-            if use_direct_grids:
+            # if use_direct_grids:
                 # Lade SPL-Werte aus surface_results_data
-                try:
-                    calc_spl = getattr(self.container, "calculation_spl", None)
-                    if isinstance(calc_spl, dict):
-                        surface_results_data = calc_spl.get("surface_results", {})
-                        if isinstance(surface_results_data, dict) and surface_id in surface_results_data:
-                            result_data = surface_results_data[surface_id]
-                            sound_field_p_complex = np.array(result_data['sound_field_p'], dtype=complex)
+                # try:
+                    # calc_spl = getattr(self.container, "calculation_spl", None)
+                    # if isinstance(calc_spl, dict):
+                        # surface_results_data = calc_spl.get("surface_results", {})
+                        # if isinstance(surface_results_data, dict) and surface_id in surface_results_data:
+                            # result_data = surface_results_data[surface_id]
+                            # sound_field_p_complex = np.array(result_data['sound_field_p'], dtype=complex)
                             
                             # Konvertiere zu SPL in dB (wie in Plot3DSPL_new.py)
-                            pressure_magnitude = np.abs(sound_field_p_complex)
-                            pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
-                            if hasattr(self, 'functions') and hasattr(self.functions, 'mag2db'):
-                                spl_values = self.functions.mag2db(pressure_magnitude)
-                            else:
+                            # pressure_magnitude = np.abs(sound_field_p_complex)
+                            # pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                            # if hasattr(self, 'functions') and hasattr(self.functions, 'mag2db'):
+                                # spl_values = self.functions.mag2db(pressure_magnitude)
+                            # else:
                                 # Fallback: direkte Berechnung
-                                spl_values = 20.0 * np.log10(pressure_magnitude / 2e-5)
-                            spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
+                                # spl_values = 20.0 * np.log10(pressure_magnitude / 2e-5)
+                            # spl_values = np.nan_to_num(spl_values, nan=0.0, posinf=0.0, neginf=0.0)
                             
-                            # 🎯 Vertikale Surfaces mit direkten Grids werden jetzt in _update_vertical_spl_surfaces_from_grids()
+                            # 🎯 Vertikale Surfaces werden jetzt in _render_surfaces() behandelt
                             # in Plot3DSPL.py verarbeitet. Diese Funktion wird am Ende von update_spl_plot() aufgerufen.
                             # Return None, damit die Surface hier übersprungen wird und separat behandelt wird.
-                            return None
-                except Exception as e:
-                    use_direct_grids = False
+                            # return None
+                # except Exception as e:
+                    # use_direct_grids = False
             
             # Fallback: Alte Logik mit prepare_vertical_plot_geometry
-            if not use_direct_grids:
+            # if not use_direct_grids:
                 # Hole SPL-Werte aus vertikalen Samples
-                try:
-                    geom_vertical = prepare_vertical_plot_geometry(
-                        surface_id,
-                        self.settings,
-                        self.container,
-                        default_upscale=1,
-                    )
-                except Exception:
-                    return None
+                # try:
+                    # geom_vertical = prepare_vertical_plot_geometry(
+                        # surface_id,
+                        # self.settings,
+                        # self.container,
+                        # default_upscale=1,
+                    # )
+                # except Exception:
+                    # return None
                 
-                if geom_vertical is None:
-                    return None
+                # if geom_vertical is None:
+                    # return None
                 
-                plot_u_geom = np.asarray(geom_vertical.plot_u, dtype=float)
-                plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
-                plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
+                # plot_u_geom = np.asarray(geom_vertical.plot_u, dtype=float)
+                # plot_v_geom = np.asarray(geom_vertical.plot_v, dtype=float)
+                # plot_values_geom = np.asarray(geom_vertical.plot_values, dtype=float)
                 
                 # Berechne Signatur
-                texture_signature = self._calculate_texture_signature(
-                    surface_id=surface_id,
-                    points=points,
-                    source_x=plot_u_geom,
-                    source_y=plot_v_geom,
-                    values=plot_values_geom,
-                    cbar_min=cbar_min,
-                    cbar_max=cbar_max,
-                    cmap_object=base_cmap,
-                    colorization_mode="Color step" if is_step_mode else "Gradient",
-                    cbar_step=cbar_step,
-                    tex_res_surface=tex_res_global,
-                    plane_model=None,
-                )
+                # texture_signature = self._calculate_texture_signature(
+                    # surface_id=surface_id,
+                    # points=points,
+                    # source_x=plot_u_geom,
+                    # source_y=plot_v_geom,
+                    # values=plot_values_geom,
+                    # cbar_min=cbar_min,
+                    # cbar_max=cbar_max,
+                    # cmap_object=base_cmap,
+                    # colorization_mode="Color step" if is_step_mode else "Gradient",
+                    # cbar_step=cbar_step,
+                    # tex_res_surface=tex_res_global,
+                    # plane_model=None,
+                # )
                 
                 # Interpoliere SPL-Werte
-                if is_step_mode:
-                    spl_flat_uv = self._nearest_interpolate_grid(
-                        plot_u_geom,
-                        plot_v_geom,
-                        plot_values_geom,
-                        U.ravel(),
-                        V.ravel(),
-                    )
-                else:
-                    spl_flat_uv = self._bilinear_interpolate_grid(
-                        plot_u_geom,
-                        plot_v_geom,
-                        plot_values_geom,
-                        U.ravel(),
-                        V.ravel(),
-                    )
-                spl_img_uv = spl_flat_uv.reshape(U.shape)
+                # if is_step_mode:
+                    # spl_flat_uv = self._nearest_interpolate_grid(
+                        # plot_u_geom,
+                        # plot_v_geom,
+                        # plot_values_geom,
+                        # U.ravel(),
+                        # V.ravel(),
+                    # )
+                # else:
+                    # spl_flat_uv = self._bilinear_interpolate_grid(
+                        # plot_u_geom,
+                        # plot_v_geom,
+                        # plot_values_geom,
+                        # U.ravel(),
+                        # V.ravel(),
+                    # )
+                # spl_img_uv = spl_flat_uv.reshape(U.shape)
                 
                 # Werte clippen
-                spl_clipped_uv = np.clip(spl_img_uv, cbar_min, cbar_max)
-                if is_step_mode:
-                    spl_clipped_uv = self._quantize_to_steps(spl_clipped_uv, cbar_step)
+                # spl_clipped_uv = np.clip(spl_img_uv, cbar_min, cbar_max)
+                # if is_step_mode:
+                    # spl_clipped_uv = self._quantize_to_steps(spl_clipped_uv, cbar_step)
                 
                 # In Farbe umsetzen
-                rgba_uv = base_cmap(norm(spl_clipped_uv))
-                alpha_mask_uv = inside_uv & np.isfinite(spl_clipped_uv)
-                rgba_uv[..., 3] = np.where(alpha_mask_uv, 1.0, 0.0)
-                img_rgba_uv = (np.clip(rgba_uv, 0.0, 1.0) * 255).astype(np.uint8)
+                # rgba_uv = base_cmap(norm(spl_clipped_uv))
+                # alpha_mask_uv = inside_uv & np.isfinite(spl_clipped_uv)
+                # rgba_uv[..., 3] = np.where(alpha_mask_uv, 1.0, 0.0)
+                # img_rgba_uv = (np.clip(rgba_uv, 0.0, 1.0) * 255).astype(np.uint8)
                 
-                t_color_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+                # t_color_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
                 
                 # Erstelle 3D-Grid
-                if orientation == "xz":
-                    X_3d = U
-                    Y_3d = np.full_like(U, wall_value)
-                    Z_3d = V
-                else:  # orientation == "yz"
-                    X_3d = np.full_like(U, wall_value)
-                    Y_3d = U
-                    Z_3d = V
+                # if orientation == "xz":
+                    # X_3d = U
+                    # Y_3d = np.full_like(U, wall_value)
+                    # Z_3d = V
+                # else:  # orientation == "yz"
+                    # X_3d = np.full_like(U, wall_value)
+                    # Y_3d = U
+                    # Z_3d = V
                 
-                grid = pv.StructuredGrid(X_3d, Y_3d, Z_3d)
+                # grid = pv.StructuredGrid(X_3d, Y_3d, Z_3d)
             
             # Textur-Koordinaten
-            try:
-                grid.texture_map_to_plane(inplace=True)
-                t_coords = grid.point_data.get("TCoords")
-            except Exception:
-                t_coords = None
+            # try:
+                # grid.texture_map_to_plane(inplace=True)
+                # t_coords = grid.point_data.get("TCoords")
+            # except Exception:
+                # t_coords = None
             
             # Manuelle Textur-Koordinaten-Berechnung
-            bounds = grid.bounds
-            if bounds is not None and len(bounds) >= 6:
-                if orientation == "xz":
-                    u_min, u_max = bounds[0], bounds[1]
-                    v_min, v_max = bounds[4], bounds[5]
-                else:  # yz
-                    u_min, u_max = bounds[2], bounds[3]
-                    v_min, v_max = bounds[4], bounds[5]
+            # bounds = grid.bounds
+            # if bounds is not None and len(bounds) >= 6:
+                # if orientation == "xz":
+                    # u_min, u_max = bounds[0], bounds[1]
+                    # v_min, v_max = bounds[4], bounds[5]
+                # else:  # yz
+                    # u_min, u_max = bounds[2], bounds[3]
+                    # v_min, v_max = bounds[4], bounds[5]
                 
-                u_span = u_max - u_min
-                v_span = v_max - v_min
+                # u_span = u_max - u_min
+                # v_span = v_max - v_min
                 
-                if u_span > 1e-10 and v_span > 1e-10:
-                    if orientation == "xz":
-                        u_coords = (X_3d - u_min) / u_span
-                    else:  # yz
-                        u_coords = (Y_3d - u_min) / u_span
-                    v_coords_raw = (Z_3d - v_min) / v_span
+                # if u_span > 1e-10 and v_span > 1e-10:
+                    # if orientation == "xz":
+                        # u_coords = (X_3d - u_min) / u_span
+                    # else:  # yz
+                        # u_coords = (Y_3d - u_min) / u_span
+                    # v_coords_raw = (Z_3d - v_min) / v_span
                     
-                    u_coords = np.clip(u_coords, 0.0, 1.0)
-                    v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
-                    v_coords = 1.0 - v_coords_raw
+                    # u_coords = np.clip(u_coords, 0.0, 1.0)
+                    # v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
+                    # v_coords = 1.0 - v_coords_raw
                     
                     # Achsen-Invertierung
-                    invert_x = False
-                    invert_y = True
-                    swap_axes = False
+                    # invert_x = False
+                    # invert_y = True
+                    # swap_axes = False
                     
-                    if isinstance(surface_obj, SurfaceDefinition):
-                        if hasattr(surface_obj, "invert_texture_x"):
-                            invert_x = bool(getattr(surface_obj, "invert_texture_x"))
-                        if hasattr(surface_obj, "invert_texture_y"):
-                            invert_y = bool(getattr(surface_obj, "invert_texture_y"))
-                        if hasattr(surface_obj, "swap_texture_axes"):
-                            swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
-                    elif isinstance(surface_obj, dict):
-                        if "invert_texture_x" in surface_obj:
-                            invert_x = bool(surface_obj["invert_texture_x"])
-                        if "invert_texture_y" in surface_obj:
-                            invert_y = bool(surface_obj["invert_texture_y"])
-                        if "swap_texture_axes" in surface_obj:
-                            swap_axes = bool(surface_obj["swap_texture_axes"])
+                    # if isinstance(surface_obj, SurfaceDefinition):
+                        # if hasattr(surface_obj, "invert_texture_x"):
+                            # invert_x = bool(getattr(surface_obj, "invert_texture_x"))
+                        # if hasattr(surface_obj, "invert_texture_y"):
+                            # invert_y = bool(getattr(surface_obj, "invert_texture_y"))
+                        # if hasattr(surface_obj, "swap_texture_axes"):
+                            # swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
+                    # elif isinstance(surface_obj, dict):
+                        # if "invert_texture_x" in surface_obj:
+                            # invert_x = bool(surface_obj["invert_texture_x"])
+                        # if "invert_texture_y" in surface_obj:
+                            # invert_y = bool(surface_obj["invert_texture_y"])
+                        # if "swap_texture_axes" in surface_obj:
+                            # swap_axes = bool(surface_obj["swap_texture_axes"])
                     
-                    img_rgba_final = img_rgba_uv.copy()
-                    if invert_x:
-                        img_rgba_final = np.fliplr(img_rgba_final)
-                        u_coords = 1.0 - u_coords
-                    if invert_y:
-                        img_rgba_final = np.flipud(img_rgba_final)
-                        v_coords = 1.0 - v_coords
-                    if swap_axes:
-                        img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
-                        u_coords, v_coords = v_coords.copy(), u_coords.copy()
+                    # img_rgba_final = img_rgba_uv.copy()
+                    # if invert_x:
+                        # img_rgba_final = np.fliplr(img_rgba_final)
+                        # u_coords = 1.0 - u_coords
+                    # if invert_y:
+                        # img_rgba_final = np.flipud(img_rgba_final)
+                        # v_coords = 1.0 - v_coords
+                    # if swap_axes:
+                        # img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
+                        # u_coords, v_coords = v_coords.copy(), u_coords.copy()
                     
                     # 🎯 WICHTIG: PyVista StructuredGrid verwendet column-major (Fortran-style) Indizierung!
                     # Die Arrays müssen in column-major Reihenfolge flach gemacht werden
                     # row-major: idx = jj * nx + ii
                     # col-major: idx = ii * ny + jj
                     # Verwende order='F' (Fortran-style) für column-major Reihenfolge
-                    t_coords = np.column_stack((
-                        u_coords.ravel(order='F'),
-                        v_coords.ravel(order='F')
-                    ))
-                    grid.point_data["TCoords"] = t_coords
-                    img_rgba_uv = img_rgba_final
-                else:
-                    if t_coords is None:
-                        ny_uv, nx_uv = U.shape
-                        u_coords_fallback = np.linspace(0, 1, nx_uv)
-                        v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
-                        U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
-                        t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
-                    grid.point_data["TCoords"] = t_coords
-            else:
-                if t_coords is None:
-                    ny_uv, nx_uv = U.shape
-                    u_coords_fallback = np.linspace(0, 1, nx_uv)
-                    v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
-                    U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
-                    t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
-                grid.point_data["TCoords"] = t_coords
+                    # t_coords = np.column_stack((
+                        # u_coords.ravel(order='F'),
+                        # v_coords.ravel(order='F')
+                    # ))
+                    # grid.point_data["TCoords"] = t_coords
+                    # img_rgba_uv = img_rgba_final
+                # else:
+                    # if t_coords is None:
+                        # ny_uv, nx_uv = U.shape
+                        # u_coords_fallback = np.linspace(0, 1, nx_uv)
+                        # v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
+                        # U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
+                        # t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
+                    # grid.point_data["TCoords"] = t_coords
+            # else:
+                # if t_coords is None:
+                    # ny_uv, nx_uv = U.shape
+                    # u_coords_fallback = np.linspace(0, 1, nx_uv)
+                    # v_coords_fallback = 1.0 - np.linspace(0, 1, ny_uv)
+                    # U_fallback, V_fallback = np.meshgrid(u_coords_fallback, v_coords_fallback, indexing="xy")
+                    # t_coords = np.column_stack((U_fallback.ravel(), V_fallback.ravel()))
+                # grid.point_data["TCoords"] = t_coords
             
             # Erstelle Textur
-            tex = pv.Texture(img_rgba_uv)
-            tex.interpolate = not is_step_mode
+            # tex = pv.Texture(img_rgba_uv)
+            # tex.interpolate = not is_step_mode
             
             # Metadaten
-            metadata = {
-                'grid': grid,
-                'texture': tex,
-                'grid_bounds': tuple(bounds) if bounds is not None else None,
-                'orientation': orientation,
-                'wall_axis': wall_axis,
-                'wall_value': wall_value,
-                'surface_id': surface_id,
-                'is_vertical': True,
-            }
+            # metadata = {
+                # 'grid': grid,
+                # 'texture': tex,
+                # 'grid_bounds': tuple(bounds) if bounds is not None else None,
+                # 'orientation': orientation,
+                # 'wall_axis': wall_axis,
+                # 'wall_value': wall_value,
+                # 'surface_id': surface_id,
+                # 'is_vertical': True,
+            # }
             
-            if DEBUG_PLOT3D_TIMING:
-                t_surface_end = time.perf_counter()
-                print(
-                    f"[PlotSPL3D] surface {surface_id} (vertical, parallel): "
-                    f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
-                    f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
-                    f"total={(t_surface_end - t_surface_start) * 1000.0:7.2f} ms"
-                )
+            # if DEBUG_PLOT3D_TIMING:
+                # t_surface_end = time.perf_counter()
+                # print(
+                    # f"[PlotSPL3D] surface {surface_id} (vertical, parallel): "
+                    # f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
+                    # f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
+                    # f"total={(t_surface_end - t_surface_start) * 1000.0:7.2f} ms"
+                # )
             
-            return {
-                'surface_id': surface_id,
-                'grid': grid,
-                'texture': tex,
-                'metadata': metadata,
-                'texture_signature': texture_signature,
-            }
-        except Exception as e:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[PlotSPL3D] Error in _process_vertical_surface_texture for {surface_id}: {e}")
-            return None
+            # return {
+                # 'surface_id': surface_id,
+                # 'grid': grid,
+                # 'texture': tex,
+                # 'metadata': metadata,
+                # 'texture_signature': texture_signature,
+            # }
+        # except Exception as e:
+            # if DEBUG_PLOT3D_TIMING:
+                # print(f"[PlotSPL3D] Error in _process_vertical_surface_texture for {surface_id}: {e}")
+            # return None
 
-    def _process_planar_surface_texture(
-        self,
-        surface_id: str,
-        points: list[dict[str, float]],
-        surface_obj: Any,
-        poly_x: np.ndarray,
-        poly_y: np.ndarray,
-        poly_z: np.ndarray,
-        xmin: float,
-        xmax: float,
-        ymin: float,
-        ymax: float,
-        plane_model: dict,
-        source_x: np.ndarray,
-        source_y: np.ndarray,
-        values: np.ndarray,
-        tex_res_global: float,
-        effective_upscale_factor: int,
-        cbar_min: float,
-        cbar_max: float,
-        base_cmap: Any,
-        norm: Any,
-        is_step_mode: bool,
-        cbar_step: float,
-        t_surface_start: float,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Verarbeitet eine planare Surface und erstellt Textur + Grid.
-        Diese Methode kann parallel aufgerufen werden.
+    # 🎯 AUSKOMMENTIERT: Textur-Fallback-Pfad wird vorerst nicht benötigt
+    # def _process_planar_surface_texture(
+        # self,
+        # surface_id: str,
+        # points: list[dict[str, float]],
+        # surface_obj: Any,
+        # poly_x: np.ndarray,
+        # poly_y: np.ndarray,
+        # poly_z: np.ndarray,
+        # xmin: float,
+        # xmax: float,
+        # ymin: float,
+        # ymax: float,
+        # plane_model: dict,
+        # source_x: np.ndarray,
+        # source_y: np.ndarray,
+        # values: np.ndarray,
+        # tex_res_global: float,
+        # effective_upscale_factor: int,
+        # cbar_min: float,
+        # cbar_max: float,
+        # base_cmap: Any,
+        # norm: Any,
+        # is_step_mode: bool,
+        # cbar_step: float,
+        # t_surface_start: float,
+    # ) -> Optional[Dict[str, Any]]:
+        # """
+        # Verarbeitet eine planare Surface und erstellt Textur + Grid.
+        # Diese Methode kann parallel aufgerufen werden.
         
-        🎯 NEU: Verwendet Grids direkt aus surface_grids_data wenn verfügbar.
-        """
-        try:
-            import pyvista as pv  # type: ignore
-        except Exception:
-            return None
+        # 🎯 NEU: Verwendet Grids direkt aus surface_grids_data wenn verfügbar.
+        # """
+        # try:
+            # import pyvista as pv  # type: ignore
+        # except Exception:
+            # return None
         
-        try:
+        # try:
             # 🎯 NEU: Versuche Grids direkt aus surface_grids_data zu verwenden
-            use_direct_grids = False
-            X_grid_direct = None
-            Y_grid_direct = None
-            Z_grid_direct = None
-            surface_mask_direct = None
+            # use_direct_grids = False
+            # X_grid_direct = None
+            # Y_grid_direct = None
+            # Z_grid_direct = None
+            # surface_mask_direct = None
             
-            if hasattr(self, 'container') and self.container is not None:
-                try:
-                    calc_spl = getattr(self.container, "calculation_spl", None)
-                    if isinstance(calc_spl, dict):
-                        surface_grids_data = calc_spl.get("surface_grids", {})
-                        if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
-                            grid_data = surface_grids_data[surface_id]
+            # if hasattr(self, 'container') and self.container is not None:
+                # try:
+                    # calc_spl = getattr(self.container, "calculation_spl", None)
+                    # if isinstance(calc_spl, dict):
+                        # surface_grids_data = calc_spl.get("surface_grids", {})
+                        # if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
+                            # grid_data = surface_grids_data[surface_id]
                             
                             # 🎯 IDENTISCHE BEHANDLUNG: Vertikale Flächen werden jetzt auch hier behandelt
-                            # (werden in _render_surfaces_textured mit Triangulation geplottet)
+                            # (werden in _render_surfaces mit Triangulation geplottet)
                             
-                            if 'X_grid' in grid_data and 'Y_grid' in grid_data and 'Z_grid' in grid_data:
-                                X_grid_direct = np.array(grid_data['X_grid'], dtype=float)
-                                Y_grid_direct = np.array(grid_data['Y_grid'], dtype=float)
-                                Z_grid_direct = np.array(grid_data['Z_grid'], dtype=float)
-                                surface_mask_direct = np.array(grid_data.get('surface_mask', []), dtype=bool)
+                            # if 'X_grid' in grid_data and 'Y_grid' in grid_data and 'Z_grid' in grid_data:
+                                # X_grid_direct = np.array(grid_data['X_grid'], dtype=float)
+                                # Y_grid_direct = np.array(grid_data['Y_grid'], dtype=float)
+                                # Z_grid_direct = np.array(grid_data['Z_grid'], dtype=float)
+                                # surface_mask_direct = np.array(grid_data.get('surface_mask', []), dtype=bool)
                                 
-                                if X_grid_direct.ndim == 2 and Y_grid_direct.ndim == 2 and Z_grid_direct.ndim == 2:
-                                    if X_grid_direct.shape == Y_grid_direct.shape == Z_grid_direct.shape:
-                                        use_direct_grids = True
-                except Exception as e:
-                    use_direct_grids = False
+                                # if X_grid_direct.ndim == 2 and Y_grid_direct.ndim == 2 and Z_grid_direct.ndim == 2:
+                                    # if X_grid_direct.shape == Y_grid_direct.shape == Z_grid_direct.shape:
+                                        # use_direct_grids = True
+                # except Exception as e:
+                    # use_direct_grids = False
             
-            if use_direct_grids:
+            # if use_direct_grids:
                 # 🎯 NEU: Verwende Grids direkt aus FlexibleGridGenerator
-                X = X_grid_direct
-                Y = Y_grid_direct
-                Z_surface = Z_grid_direct
-                inside = surface_mask_direct if surface_mask_direct is not None else np.ones_like(X, dtype=bool)
+                # X = X_grid_direct
+                # Y = Y_grid_direct
+                # Z_surface = Z_grid_direct
+                # inside = surface_mask_direct if surface_mask_direct is not None else np.ones_like(X, dtype=bool)
                 
                 # Extrahiere Achsen aus Grids (für Metadaten)
-                xs = X[0, :] if X.shape[1] > 0 else X.ravel()
-                ys = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
+                # xs = X[0, :] if X.shape[1] > 0 else X.ravel()
+                # ys = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
                 
                 # Prüfe ob Surface-Maske vorhanden ist
-                if not np.any(inside):
-                    return None
+                # if not np.any(inside):
+                    # return None
                 
                 # Berechne Signatur für direkte Grids
                 # Extrahiere Achsen aus Grids
-                sound_field_x_direct = xs.copy()
-                sound_field_y_direct = ys.copy()
+                # sound_field_x_direct = xs.copy()
+                # sound_field_y_direct = ys.copy()
                 
-                texture_signature = self._calculate_texture_signature(
-                    surface_id=surface_id,
-                    points=points,
-                    source_x=sound_field_x_direct,
-                    source_y=sound_field_y_direct,
-                    values=values,
-                    cbar_min=cbar_min,
-                    cbar_max=cbar_max,
-                    cmap_object=base_cmap,
-                    colorization_mode="Color step" if is_step_mode else "Gradient",
-                    cbar_step=cbar_step,
-                    tex_res_surface=tex_res_global,  # Verwende globale Resolution für Signatur
-                    plane_model=plane_model,
-                )
+                # texture_signature = self._calculate_texture_signature(
+                    # surface_id=surface_id,
+                    # points=points,
+                    # source_x=sound_field_x_direct,
+                    # source_y=sound_field_y_direct,
+                    # values=values,
+                    # cbar_min=cbar_min,
+                    # cbar_max=cbar_max,
+                    # cmap_object=base_cmap,
+                    # colorization_mode="Color step" if is_step_mode else "Gradient",
+                    # cbar_step=cbar_step,
+                    # tex_res_surface=tex_res_global,  # Verwende globale Resolution für Signatur
+                    # plane_model=plane_model,
+                # )
                 
-                t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
-                mode = plane_model.get("mode", "constant")
-                is_slanted = mode != "constant"
-                tex_res_surface = tex_res_global  # Für Metadaten
-                is_axis_aligned_rectangle = False  # Bei direkten Grids keine Heuristik nötig
-            else:
+                # t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+                # mode = plane_model.get("mode", "constant")
+                # is_slanted = mode != "constant"
+                # tex_res_surface = tex_res_global  # Für Metadaten
+                # is_axis_aligned_rectangle = False  # Bei direkten Grids keine Heuristik nötig
+            # else:
                 # Direkte Grids müssen verfügbar sein
-                raise ValueError(f"Surface '{surface_id}': Direkte Grids nicht verfügbar - Grid-Erstellung aus Bounding Box nicht mehr unterstützt")
+                # raise ValueError(f"Surface '{surface_id}': Direkte Grids nicht verfügbar - Grid-Erstellung aus Bounding Box nicht mehr unterstützt")
                 
-                tex_res_surface = tex_res_global
+                # tex_res_surface = tex_res_global
                 
                 # Heuristik: Erkenne axis-aligned Rechtecke
-                is_axis_aligned_rectangle = False
-                try:
-                    if poly_x.size >= 4 and poly_y.size >= 4:
-                        px = poly_x
-                        py = poly_y
-                        if (
-                            poly_x.size >= 2
-                            and abs(poly_x[0] - poly_x[-1]) < 1e-6
-                            and abs(poly_y[0] - poly_y[-1]) < 1e-6
-                        ):
-                            px = poly_x[:-1]
-                            py = poly_y[:-1]
-                        if px.size >= 4:
-                            xmin_rect = float(px.min())
-                            xmax_rect = float(px.max())
-                            ymin_rect = float(py.min())
-                            ymax_rect = float(py.max())
-                            span_x = xmax_rect - xmin_rect
-                            span_y = ymax_rect - ymin_rect
-                            tol = 1e-3
+                # is_axis_aligned_rectangle = False
+                # try:
+                    # if poly_x.size >= 4 and poly_y.size >= 4:
+                        # px = poly_x
+                        # py = poly_y
+                        # if (
+                            # poly_x.size >= 2
+                            # and abs(poly_x[0] - poly_x[-1]) < 1e-6
+                            # and abs(poly_y[0] - poly_y[-1]) < 1e-6
+                        # ):
+                            # px = poly_x[:-1]
+                            # py = poly_y[:-1]
+                        # if px.size >= 4:
+                            # xmin_rect = float(px.min())
+                            # xmax_rect = float(px.max())
+                            # ymin_rect = float(py.min())
+                            # ymax_rect = float(py.max())
+                            # span_x = xmax_rect - xmin_rect
+                            # span_y = ymax_rect - ymin_rect
+                            # tol = 1e-3
                             
-                            if span_x > tol and span_y > tol:
-                                on_left = np.isclose(px, xmin_rect, atol=tol)
-                                on_right = np.isclose(px, xmax_rect, atol=tol)
-                                on_bottom = np.isclose(py, ymin_rect, atol=tol)
-                                on_top = np.isclose(py, ymax_rect, atol=tol)
-                                on_edge = on_left | on_right | on_bottom | on_top
-                                if np.all(on_edge):
-                                    has_left = bool(np.any(on_left))
-                                    has_right = bool(np.any(on_right))
-                                    has_bottom = bool(np.any(on_bottom))
-                                    has_top = bool(np.any(on_top))
-                                    has_tl = bool(np.any(on_left & on_top))
-                                    has_tr = bool(np.any(on_right & on_top))
-                                    has_bl = bool(np.any(on_left & on_bottom))
-                                    has_br = bool(np.any(on_right & on_bottom))
+                            # if span_x > tol and span_y > tol:
+                                # on_left = np.isclose(px, xmin_rect, atol=tol)
+                                # on_right = np.isclose(px, xmax_rect, atol=tol)
+                                # on_bottom = np.isclose(py, ymin_rect, atol=tol)
+                                # on_top = np.isclose(py, ymax_rect, atol=tol)
+                                # on_edge = on_left | on_right | on_bottom | on_top
+                                # if np.all(on_edge):
+                                    # has_left = bool(np.any(on_left))
+                                    # has_right = bool(np.any(on_right))
+                                    # has_bottom = bool(np.any(on_bottom))
+                                    # has_top = bool(np.any(on_top))
+                                    # has_tl = bool(np.any(on_left & on_top))
+                                    # has_tr = bool(np.any(on_right & on_top))
+                                    # has_bl = bool(np.any(on_left & on_bottom))
+                                    # has_br = bool(np.any(on_right & on_bottom))
                                     
-                                    if has_left and has_right and has_bottom and has_top and has_tl and has_tr and has_bl and has_br:
-                                        is_axis_aligned_rectangle = True
-                except Exception:
-                    is_axis_aligned_rectangle = False
+                                    # if has_left and has_right and has_bottom and has_top and has_tl and has_tr and has_bl and has_br:
+                                        # is_axis_aligned_rectangle = True
+                # except Exception:
+                    # is_axis_aligned_rectangle = False
                 
-                if is_axis_aligned_rectangle and effective_upscale_factor > 1:
-                    tex_res_surface = tex_res_global * float(effective_upscale_factor)
+                # if is_axis_aligned_rectangle and effective_upscale_factor > 1:
+                    # tex_res_surface = tex_res_global * float(effective_upscale_factor)
                 
                 # Berechne Signatur
-                texture_signature = self._calculate_texture_signature(
-                    surface_id=surface_id,
-                    points=points,
-                    source_x=source_x,
-                    source_y=source_y,
-                    values=values,
-                    cbar_min=cbar_min,
-                    cbar_max=cbar_max,
-                    cmap_object=base_cmap,
-                    colorization_mode="Color step" if is_step_mode else "Gradient",
-                    cbar_step=cbar_step,
-                    tex_res_surface=tex_res_surface,
-                    plane_model=plane_model,
-                )
+                # texture_signature = self._calculate_texture_signature(
+                    # surface_id=surface_id,
+                    # points=points,
+                    # source_x=source_x,
+                    # source_y=source_y,
+                    # values=values,
+                    # cbar_min=cbar_min,
+                    # cbar_max=cbar_max,
+                    # cmap_object=base_cmap,
+                    # colorization_mode="Color step" if is_step_mode else "Gradient",
+                    # cbar_step=cbar_step,
+                    # tex_res_surface=tex_res_surface,
+                    # plane_model=plane_model,
+                # )
                 
                 # Erstelle Grid
-                margin = tex_res_surface * 0.5
-                x_start = xmin - margin
-                x_end = xmax + margin
-                y_start = ymin - margin
-                y_end = ymax + margin
+                # margin = tex_res_surface * 0.5
+                # x_start = xmin - margin
+                # x_end = xmax + margin
+                # y_start = ymin - margin
+                # y_end = ymax + margin
                 
-                num_x = int(np.ceil((x_end - x_start) / tex_res_surface)) + 1
-                num_y = int(np.ceil((y_end - y_start) / tex_res_surface)) + 1
+                # num_x = int(np.ceil((x_end - x_start) / tex_res_surface)) + 1
+                # num_y = int(np.ceil((y_end - y_start) / tex_res_surface)) + 1
                 
-                xs = np.linspace(x_start, x_end, num_x, dtype=float)
-                ys = np.linspace(y_start, y_end, num_y, dtype=float)
-                if xs.size < 2 or ys.size < 2:
-                    return None
+                # xs = np.linspace(x_start, x_end, num_x, dtype=float)
+                # ys = np.linspace(y_start, y_end, num_y, dtype=float)
+                # if xs.size < 2 or ys.size < 2:
+                    # return None
                 
-                X, Y = np.meshgrid(xs, ys, indexing="xy")
+                # X, Y = np.meshgrid(xs, ys, indexing="xy")
                 
-                points_2d = np.column_stack((X.ravel(), Y.ravel()))
+                # points_2d = np.column_stack((X.ravel(), Y.ravel()))
                 
                 # Maske im Polygon
-                poly_path = Path(np.column_stack((poly_x, poly_y)))
-                inside = poly_path.contains_points(points_2d)
-                inside = inside.reshape(X.shape)
+                # poly_path = Path(np.column_stack((poly_x, poly_y)))
+                # inside = poly_path.contains_points(points_2d)
+                # inside = inside.reshape(X.shape)
                 
-                if not np.any(inside):
-                    return None
+                # if not np.any(inside):
+                    # return None
                 
                 # Randoptimierung
-                ny_tex, nx_tex = inside.shape
-                edge_mask = np.zeros_like(inside, dtype=bool)
-                for jj in range(ny_tex):
-                    for ii in range(nx_tex):
-                        if not inside[jj, ii]:
-                            continue
-                        for dj in (-1, 0, 1):
-                            for di in (-1, 0, 1):
-                                if dj == 0 and di == 0:
-                                    continue
-                                nj = jj + dj
-                                ni = ii + di
-                                if nj < 0 or nj >= ny_tex or ni < 0 or ni >= nx_tex or not inside[nj, ni]:
-                                    edge_mask[jj, ii] = True
-                                    break
-                            if edge_mask[jj, ii]:
-                                break
+                # ny_tex, nx_tex = inside.shape
+                # edge_mask = np.zeros_like(inside, dtype=bool)
+                # for jj in range(ny_tex):
+                    # for ii in range(nx_tex):
+                        # if not inside[jj, ii]:
+                            # continue
+                        # for dj in (-1, 0, 1):
+                            # for di in (-1, 0, 1):
+                                # if dj == 0 and di == 0:
+                                    # continue
+                                # nj = jj + dj
+                                # ni = ii + di
+                                # if nj < 0 or nj >= ny_tex or ni < 0 or ni >= nx_tex or not inside[nj, ni]:
+                                    # edge_mask[jj, ii] = True
+                                    # break
+                            # if edge_mask[jj, ii]:
+                                # break
                 
-                if np.any(edge_mask):
-                    edge_indices = np.argwhere(edge_mask)
-                    for (jj, ii) in edge_indices:
-                        x_old = float(X[jj, ii])
-                        y_old = float(Y[jj, ii])
-                        x_new, y_new = self._project_point_to_polyline(x_old, y_old, poly_x, poly_y)
-                        X[jj, ii] = x_new
-                        Y[jj, ii] = y_new
+                # if np.any(edge_mask):
+                    # edge_indices = np.argwhere(edge_mask)
+                    # for (jj, ii) in edge_indices:
+                        # x_old = float(X[jj, ii])
+                        # y_old = float(Y[jj, ii])
+                        # x_new, y_new = self._project_point_to_polyline(x_old, y_old, poly_x, poly_y)
+                        # X[jj, ii] = x_new
+                        # Y[jj, ii] = y_new
                 
-                t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+                # t_geom_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
                 
                 # 🎯 Berechne Z-Koordinaten für schräge Flächen (Fallback)
-                mode = plane_model.get("mode", "constant")
-                is_slanted = mode != "constant"
+                # mode = plane_model.get("mode", "constant")
+                # is_slanted = mode != "constant"
                 
                 # Berechne Z-Koordinaten für schräge Flächen
-                if is_slanted:
-                    if mode == "x":
-                        slope = float(plane_model.get("slope", 0.0))
-                        intercept = float(plane_model.get("intercept", 0.0))
-                        Z_surface = slope * X + intercept
-                    elif mode == "y":
-                        slope = float(plane_model.get("slope", 0.0))
-                        intercept = float(plane_model.get("intercept", 0.0))
-                        Z_surface = slope * Y + intercept
-                    else:  # mode == "xy"
-                        slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
-                        slope_y = float(plane_model.get("slope_y", 0.0))
-                        intercept = float(plane_model.get("intercept", 0.0))
-                        Z_surface = slope_x * X + slope_y * Y + intercept
-                else:
-                    Z_surface = None
+                # if is_slanted:
+                    # if mode == "x":
+                        # slope = float(plane_model.get("slope", 0.0))
+                        # intercept = float(plane_model.get("intercept", 0.0))
+                        # Z_surface = slope * X + intercept
+                    # elif mode == "y":
+                        # slope = float(plane_model.get("slope", 0.0))
+                        # intercept = float(plane_model.get("intercept", 0.0))
+                        # Z_surface = slope * Y + intercept
+                    # else:  # mode == "xy"
+                        # slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
+                        # slope_y = float(plane_model.get("slope_y", 0.0))
+                        # intercept = float(plane_model.get("intercept", 0.0))
+                        # Z_surface = slope_x * X + slope_y * Y + intercept
+                # else:
+                    # Z_surface = None
             
             
             # 🎯 NEU: Verwende direkt die Werte aus surface_overrides (keine Interpolation mehr!)
             # Die Werte sind bereits ein 2D-Array passend zu source_x und source_y
             # Prüfe ob values bereits die richtige Form hat
-            if use_direct_grids:
+            # if use_direct_grids:
                 # Bei direkten Grids: Werte sollten direkt passen
-                if values.ndim == 2 and values.shape == X.shape:
+                # if values.ndim == 2 and values.shape == X.shape:
                     # Werte haben bereits die richtige Form - verwende sie direkt
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  ✅ Using direct values with direct grids (no interpolation needed)")
-                    spl_img = values.copy()
-                else:
+                    # if DEBUG_PLOT3D_TIMING:
+                        # print(f"  ✅ Using direct values with direct grids (no interpolation needed)")
+                    # spl_img = values.copy()
+                # else:
                     # Form stimmt nicht überein - muss interpoliert werden
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  ⚠️  Values shape mismatch with direct grids: expected {X.shape}, got {values.shape}, interpolating...")
+                    # if DEBUG_PLOT3D_TIMING:
+                        # print(f"  ⚠️  Values shape mismatch with direct grids: expected {X.shape}, got {values.shape}, interpolating...")
                     # Extrahiere Achsen aus direkten Grids
-                    sound_field_x_direct = X[0, :] if X.shape[1] > 0 else X.ravel()
-                    sound_field_y_direct = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
-                    if is_step_mode:
-                        spl_flat = self._nearest_interpolate_grid(
-                            sound_field_x_direct,
-                            sound_field_y_direct,
-                            values,
-                            X.ravel(),
-                            Y.ravel(),
-                        )
-                    else:
-                        spl_flat = self._bilinear_interpolate_grid(
-                            sound_field_x_direct,
-                            sound_field_y_direct,
-                            values,
-                            X.ravel(),
-                            Y.ravel(),
-                        )
-                    spl_img = spl_flat.reshape(X.shape)
-            elif values.ndim == 2 and values.shape == (len(source_y), len(source_x)):
+                    # sound_field_x_direct = X[0, :] if X.shape[1] > 0 else X.ravel()
+                    # sound_field_y_direct = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
+                    # if is_step_mode:
+                        # spl_flat = self._nearest_interpolate_grid(
+                            # sound_field_x_direct,
+                            # sound_field_y_direct,
+                            # values,
+                            # X.ravel(),
+                            # Y.ravel(),
+                        # )
+                    # else:
+                        # spl_flat = self._bilinear_interpolate_grid(
+                            # sound_field_x_direct,
+                            # sound_field_y_direct,
+                            # values,
+                            # X.ravel(),
+                            # Y.ravel(),
+                        # )
+                    # spl_img = spl_flat.reshape(X.shape)
+            # elif values.ndim == 2 and values.shape == (len(source_y), len(source_x)):
                 # Werte haben bereits die richtige Form - verwende sie direkt
                 # Aber das Textur-Grid (X, Y) kann eine andere Größe haben
                 # → Interpoliere nur wenn nötig (wenn Grids unterschiedlich sind)
-                if X.shape == values.shape and np.allclose(X[0, :], source_x, rtol=1e-6) and np.allclose(Y[:, 0], source_y, rtol=1e-6):
+                # if X.shape == values.shape and np.allclose(X[0, :], source_x, rtol=1e-6) and np.allclose(Y[:, 0], source_y, rtol=1e-6):
                     # Grids stimmen überein - verwende Werte direkt
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  ✅ Using direct values (no interpolation needed)")
-                    spl_img = values.copy()
-                else:
+                    # if DEBUG_PLOT3D_TIMING:
+                        # print(f"  ✅ Using direct values (no interpolation needed)")
+                    # spl_img = values.copy()
+                # else:
                     # Grids stimmen nicht überein - muss interpoliert werden
-                    if DEBUG_PLOT3D_TIMING:
-                        print(f"  ⚠️  Grid mismatch: texture grid {X.shape} vs source grid {values.shape}, interpolating...")
-                    if is_step_mode:
-                        spl_flat = self._nearest_interpolate_grid(
-                            source_x,
-                            source_y,
-                            values,
-                            X.ravel(),
-                            Y.ravel(),
-                        )
-                    else:
-                        spl_flat = self._bilinear_interpolate_grid(
-                            source_x,
-                            source_y,
-                            values,
-                            X.ravel(),
-                            Y.ravel(),
-                        )
-                    spl_img = spl_flat.reshape(X.shape)
-            else:
+                    # if DEBUG_PLOT3D_TIMING:
+                        # print(f"  ⚠️  Grid mismatch: texture grid {X.shape} vs source grid {values.shape}, interpolating...")
+                    # if is_step_mode:
+                        # spl_flat = self._nearest_interpolate_grid(
+                            # source_x,
+                            # source_y,
+                            # values,
+                            # X.ravel(),
+                            # Y.ravel(),
+                        # )
+                    # else:
+                        # spl_flat = self._bilinear_interpolate_grid(
+                            # source_x,
+                            # source_y,
+                            # values,
+                            # X.ravel(),
+                            # Y.ravel(),
+                        # )
+                    # spl_img = spl_flat.reshape(X.shape)
+            # else:
                 # Fallback: Werte haben nicht die erwartete Form
-                if DEBUG_PLOT3D_TIMING:
-                    print(f"  ⚠️  Values shape mismatch: expected ({len(source_y)}, {len(source_x)}), got {values.shape}")
+                # if DEBUG_PLOT3D_TIMING:
+                    # print(f"  ⚠️  Values shape mismatch: expected ({len(source_y)}, {len(source_x)}), got {values.shape}")
                 # Versuche trotzdem zu interpolieren (Fallback für alte Datenstrukturen)
-                if is_step_mode:
-                    spl_flat = self._nearest_interpolate_grid(
-                        source_x,
-                        source_y,
-                        values,
-                        X.ravel(),
-                        Y.ravel(),
-                    )
-                else:
-                    spl_flat = self._bilinear_interpolate_grid(
-                        source_x,
-                        source_y,
-                        values,
-                        X.ravel(),
-                        Y.ravel(),
-                    )
-                spl_img = spl_flat.reshape(X.shape)
+                # if is_step_mode:
+                    # spl_flat = self._nearest_interpolate_grid(
+                        # source_x,
+                        # source_y,
+                        # values,
+                        # X.ravel(),
+                        # Y.ravel(),
+                    # )
+                # else:
+                    # spl_flat = self._bilinear_interpolate_grid(
+                        # source_x,
+                        # source_y,
+                        # values,
+                        # X.ravel(),
+                        # Y.ravel(),
+                    # )
+                # spl_img = spl_flat.reshape(X.shape)
             
             
             # Werte clippen
-            spl_clipped = np.clip(spl_img, cbar_min, cbar_max)
-            if is_step_mode:
-                spl_clipped = self._quantize_to_steps(spl_clipped, cbar_step)
+            # spl_clipped = np.clip(spl_img, cbar_min, cbar_max)
+            # if is_step_mode:
+                # spl_clipped = self._quantize_to_steps(spl_clipped, cbar_step)
             
             # In Farbe umsetzen
-            rgba = base_cmap(norm(spl_clipped))
-            alpha_mask = inside & np.isfinite(spl_clipped)
-            rgba[..., 3] = np.where(alpha_mask, 1.0, 0.0)
-            img_rgba = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
+            # rgba = base_cmap(norm(spl_clipped))
+            # alpha_mask = inside & np.isfinite(spl_clipped)
+            # rgba[..., 3] = np.where(alpha_mask, 1.0, 0.0)
+            # img_rgba = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
             
-            t_color_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
+            # t_color_done = time.perf_counter() if DEBUG_PLOT3D_TIMING else 0.0
             
             # Berechne Z-Koordinaten
-            if use_direct_grids:
+            # if use_direct_grids:
                 # 🎯 NEU: Verwende Z direkt aus Grid
-                Z = Z_surface.copy()
-            else:
+                # Z = Z_surface.copy()
+            # else:
                 # Fallback: Berechne Z aus Plane-Model
-                mode = plane_model.get("mode", "constant")
-                if mode == "constant":
-                    Z = np.full_like(X, float(plane_model.get("base", 0.0)))
-                elif mode == "x":
-                    slope = float(plane_model.get("slope", 0.0))
-                    intercept = float(plane_model.get("intercept", 0.0))
-                    Z = slope * X + intercept
-                elif mode == "y":
-                    slope = float(plane_model.get("slope", 0.0))
-                    intercept = float(plane_model.get("intercept", 0.0))
-                    Z = slope * Y + intercept
-                else:  # mode == "xy"
-                    slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
-                    slope_y = float(plane_model.get("slope_y", 0.0))
-                    intercept = float(plane_model.get("intercept", 0.0))
-                    Z = slope_x * X + slope_y * Y + intercept
+                # mode = plane_model.get("mode", "constant")
+                # if mode == "constant":
+                    # Z = np.full_like(X, float(plane_model.get("base", 0.0)))
+                # elif mode == "x":
+                    # slope = float(plane_model.get("slope", 0.0))
+                    # intercept = float(plane_model.get("intercept", 0.0))
+                    # Z = slope * X + intercept
+                # elif mode == "y":
+                    # slope = float(plane_model.get("slope", 0.0))
+                    # intercept = float(plane_model.get("intercept", 0.0))
+                    # Z = slope * Y + intercept
+                # else:  # mode == "xy"
+                    # slope_x = float(plane_model.get("slope_x", plane_model.get("slope", 0.0)))
+                    # slope_y = float(plane_model.get("slope_y", 0.0))
+                    # intercept = float(plane_model.get("intercept", 0.0))
+                    # Z = slope_x * X + slope_y * Y + intercept
             
             # 🎯 KORREKTUR: Verwende build_surface_mesh statt pv.StructuredGrid direkt
             # Die Grids wurden mit indexing='xy' erstellt: X.shape = (ny, nx), Y.shape = (ny, nx)
@@ -2009,228 +2013,228 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             #   - scalars: 2D-Array mit Shape (ny, nx)
             #   - z_coords: 2D-Array mit Shape (ny, nx) [optional]
             # Extrahiere 1D-Koordinaten aus den Grids
-            if use_direct_grids:
+            # if use_direct_grids:
                 # Bei direkten Grids: Extrahiere Achsen direkt
-                x_1d = xs.copy()  # X[0, :] = (nx,) - alle x-Werte
-                y_1d = ys.copy()  # Y[:, 0] = (ny,) - alle y-Werte
-            else:
+                # x_1d = xs.copy()  # X[0, :] = (nx,) - alle x-Werte
+                # y_1d = ys.copy()  # Y[:, 0] = (ny,) - alle y-Werte
+            # else:
                 # Fallback: Extrahiere aus X, Y
-                x_1d = X[0, :] if X.shape[1] > 0 else X.ravel()
-                y_1d = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
+                # x_1d = X[0, :] if X.shape[1] > 0 else X.ravel()
+                # y_1d = Y[:, 0] if Y.shape[0] > 0 else Y.ravel()
             
             # Verwende build_surface_mesh wie in Plot3DSPL_new.py
             # scalars müssen Shape (ny, nx) haben (wie spl_clipped)
-            scalars_for_mesh = spl_clipped.copy()  # Shape (ny, nx)
+            # scalars_for_mesh = spl_clipped.copy()  # Shape (ny, nx)
             
             # Erstelle Mesh mit build_surface_mesh (verwendet indexing='xy' intern)
-            grid = build_surface_mesh(
-                x_1d,           # 1D x-Koordinaten (nx,)
-                y_1d,           # 1D y-Koordinaten (ny,)
-                scalars_for_mesh,  # 2D scalars (ny, nx)
-                z_coords=Z,     # 2D Z-Koordinaten (ny, nx)
-                surface_mask=inside,  # 2D Maske (ny, nx)
-                pv_module=pv,
-                settings=self.settings if hasattr(self, 'settings') else None,
-                container=self.container if hasattr(self, 'container') else None,
-            )
+            # grid = build_surface_mesh(
+                # x_1d,           # 1D x-Koordinaten (nx,)
+                # y_1d,           # 1D y-Koordinaten (ny,)
+                # scalars_for_mesh,  # 2D scalars (ny, nx)
+                # z_coords=Z,     # 2D Z-Koordinaten (ny, nx)
+                # surface_mask=inside,  # 2D Maske (ny, nx)
+                # pv_module=pv,
+                # settings=self.settings if hasattr(self, 'settings') else None,
+                # container=self.container if hasattr(self, 'container') else None,
+            # )
             
             # Für Textur-Mapping: Verwende originale Grids (nicht transponiert)
             # img_rgba hat Shape (ny, nx, 4) mit indexing='xy'
-            img_rgba_ij = img_rgba  # Behalte originale Shape (ny, nx, 4)
-            spl_img_ij = spl_img  # Behalte originale Shape (ny, nx)
-            spl_clipped_ij = spl_clipped  # Behalte originale Shape (ny, nx)
+            # img_rgba_ij = img_rgba  # Behalte originale Shape (ny, nx, 4)
+            # spl_img_ij = spl_img  # Behalte originale Shape (ny, nx)
+            # spl_clipped_ij = spl_clipped  # Behalte originale Shape (ny, nx)
             
             # Für Debug-Vergleich: Verwende originale Grids
-            X_ij = X  # Shape (ny, nx)
-            Y_ij = Y  # Shape (ny, nx)
-            Z_ij = Z  # Shape (ny, nx)
+            # X_ij = X  # Shape (ny, nx)
+            # Y_ij = Y  # Shape (ny, nx)
+            # Z_ij = Z  # Shape (ny, nx)
             
-            if DEBUG_PLOT3D_TIMING:
-                poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
-                poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
-                mesh_x_min, mesh_x_max = X_ij.min(), X_ij.max()
-                mesh_y_min, mesh_y_max = Y_ij.min(), Y_ij.max()
-                poly_x_min, poly_x_max = poly_x.min(), poly_x.max()
-                poly_y_min, poly_y_max = poly_y.min(), poly_y.max()
-                x_diff_min = abs(mesh_x_min - poly_x_min)
-                x_diff_max = abs(mesh_x_max - poly_x_max)
-                y_diff_min = abs(mesh_y_min - poly_y_min)
-                y_diff_max = abs(mesh_y_max - poly_y_max)
-                if x_diff_min > 0.1 or x_diff_max > 0.1 or y_diff_min > 0.1 or y_diff_max > 0.1:
-                    pass  # Warnung entfernt
+            # if DEBUG_PLOT3D_TIMING:
+                # poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
+                # poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
+                # mesh_x_min, mesh_x_max = X_ij.min(), X_ij.max()
+                # mesh_y_min, mesh_y_max = Y_ij.min(), Y_ij.max()
+                # poly_x_min, poly_x_max = poly_x.min(), poly_x.max()
+                # poly_y_min, poly_y_max = poly_y.min(), poly_y.max()
+                # x_diff_min = abs(mesh_x_min - poly_x_min)
+                # x_diff_max = abs(mesh_x_max - poly_x_max)
+                # y_diff_min = abs(mesh_y_min - poly_y_min)
+                # y_diff_max = abs(mesh_y_max - poly_y_max)
+                # if x_diff_min > 0.1 or x_diff_max > 0.1 or y_diff_min > 0.1 or y_diff_max > 0.1:
+                    # pass  # Warnung entfernt
             
             # Textur-Koordinaten
-            try:
-                grid.texture_map_to_plane(inplace=True)
-                t_coords = grid.point_data.get("TCoords")
-            except Exception:
-                t_coords = None
+            # try:
+                # grid.texture_map_to_plane(inplace=True)
+                # t_coords = grid.point_data.get("TCoords")
+            # except Exception:
+                # t_coords = None
             
             # Manuelle Textur-Koordinaten-Berechnung
-            bounds = grid.bounds
-            if bounds is not None:
-                xmin_grid, xmax_grid = bounds[0], bounds[1]
-                ymin_grid, ymax_grid = bounds[2], bounds[3]
-                x_span = xmax_grid - xmin_grid
-                y_span = ymax_grid - ymin_grid
+            # bounds = grid.bounds
+            # if bounds is not None:
+                # xmin_grid, xmax_grid = bounds[0], bounds[1]
+                # ymin_grid, ymax_grid = bounds[2], bounds[3]
+                # x_span = xmax_grid - xmin_grid
+                # y_span = ymax_grid - ymin_grid
                 
-                if x_span > 1e-10 and y_span > 1e-10:
+                # if x_span > 1e-10 and y_span > 1e-10:
                     # 🎯 KORREKTUR: Texturkoordinaten berechnen aus originalen Grids
                     # X_ij und Y_ij haben Shape (ny, nx) mit indexing='xy' (wie aus FlexibleGridGenerator)
                     # Verwende X_ij und Y_ij direkt für Texturkoordinaten-Berechnung
-                    u_coords = (X_ij - xmin_grid) / x_span
-                    v_coords_raw = (Y_ij - ymin_grid) / y_span
-                    u_coords = np.clip(u_coords, 0.0, 1.0)
-                    v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
+                    # u_coords = (X_ij - xmin_grid) / x_span
+                    # v_coords_raw = (Y_ij - ymin_grid) / y_span
+                    # u_coords = np.clip(u_coords, 0.0, 1.0)
+                    # v_coords_raw = np.clip(v_coords_raw, 0.0, 1.0)
                     
-                    v_coords = 1.0 - v_coords_raw
+                    # v_coords = 1.0 - v_coords_raw
                     
                     
                     # Achsen-Invertierung
-                    invert_x = False
-                    invert_y = True
-                    swap_axes = False
+                    # invert_x = False
+                    # invert_y = True
+                    # swap_axes = False
                     
-                    if isinstance(surface_obj, SurfaceDefinition):
-                        if hasattr(surface_obj, "invert_texture_x"):
-                            invert_x = bool(getattr(surface_obj, "invert_texture_x"))
-                        if hasattr(surface_obj, "invert_texture_y"):
-                            invert_y = bool(getattr(surface_obj, "invert_texture_y"))
-                        if hasattr(surface_obj, "swap_texture_axes"):
-                            swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
-                    elif isinstance(surface_obj, dict):
-                        if "invert_texture_x" in surface_obj:
-                            invert_x = bool(surface_obj["invert_texture_x"])
-                        if "invert_texture_y" in surface_obj:
-                            invert_y = bool(surface_obj["invert_texture_y"])
-                        if "swap_texture_axes" in surface_obj:
-                            swap_axes = bool(surface_obj["swap_texture_axes"])
+                    # if isinstance(surface_obj, SurfaceDefinition):
+                        # if hasattr(surface_obj, "invert_texture_x"):
+                            # invert_x = bool(getattr(surface_obj, "invert_texture_x"))
+                        # if hasattr(surface_obj, "invert_texture_y"):
+                            # invert_y = bool(getattr(surface_obj, "invert_texture_y"))
+                        # if hasattr(surface_obj, "swap_texture_axes"):
+                            # swap_axes = bool(getattr(surface_obj, "swap_texture_axes"))
+                    # elif isinstance(surface_obj, dict):
+                        # if "invert_texture_x" in surface_obj:
+                            # invert_x = bool(surface_obj["invert_texture_x"])
+                        # if "invert_texture_y" in surface_obj:
+                            # invert_y = bool(surface_obj["invert_texture_y"])
+                        # if "swap_texture_axes" in surface_obj:
+                            # swap_axes = bool(surface_obj["swap_texture_axes"])
                     
                     # 🎯 KORREKTUR: Verwende img_rgba_ij statt img_rgba (bereits transponiert)
-                    img_rgba_final = img_rgba_ij.copy()
-                    if invert_x:
-                        img_rgba_final = np.fliplr(img_rgba_final)
-                        u_coords = 1.0 - u_coords
-                    if invert_y:
-                        img_rgba_final = np.flipud(img_rgba_final)
-                        v_coords = 1.0 - v_coords
-                    if swap_axes:
-                        img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
-                        u_coords, v_coords = v_coords.copy(), u_coords.copy()
+                    # img_rgba_final = img_rgba_ij.copy()
+                    # if invert_x:
+                        # img_rgba_final = np.fliplr(img_rgba_final)
+                        # u_coords = 1.0 - u_coords
+                    # if invert_y:
+                        # img_rgba_final = np.flipud(img_rgba_final)
+                        # v_coords = 1.0 - v_coords
+                    # if swap_axes:
+                        # img_rgba_final = np.transpose(img_rgba_final, (1, 0, 2))
+                        # u_coords, v_coords = v_coords.copy(), u_coords.copy()
                     
                     # 🎯 WICHTIG: build_surface_mesh kann Punkte entfernen (z.B. durch extract_cells)
                     # Daher müssen wir Textur-Koordinaten basierend auf den tatsächlichen Mesh-Punkten berechnen
                     # Erstelle Textur-Koordinaten für alle ursprünglichen Punkte (ny * nx)
-                    u_coords_flat = u_coords.ravel()  # row-major Reihenfolge
-                    v_coords_flat = v_coords.ravel()  # row-major Reihenfolge
-                    t_coords_full = np.column_stack((u_coords_flat, v_coords_flat))
+                    # u_coords_flat = u_coords.ravel()  # row-major Reihenfolge
+                    # v_coords_flat = v_coords.ravel()  # row-major Reihenfolge
+                    # t_coords_full = np.column_stack((u_coords_flat, v_coords_flat))
                     
                     # 🎯 KORREKTUR: Wenn das Mesh weniger Punkte hat als erwartet, müssen wir die Textur-Koordinaten
                     # basierend auf den tatsächlichen Punkt-Positionen im Mesh berechnen
-                    if grid.n_points != len(t_coords_full):
+                    # if grid.n_points != len(t_coords_full):
                         # Berechne Textur-Koordinaten für jeden Punkt im Mesh basierend auf seiner Position
-                        mesh_points = grid.points
-                        t_coords = np.zeros((grid.n_points, 2), dtype=float)
-                        for i in range(grid.n_points):
-                            px, py, pz = mesh_points[i]
+                        # mesh_points = grid.points
+                        # t_coords = np.zeros((grid.n_points, 2), dtype=float)
+                        # for i in range(grid.n_points):
+                            # px, py, pz = mesh_points[i]
                             # Finde entsprechende Textur-Koordinaten basierend auf Position
-                            u_val = (px - xmin_grid) / x_span if x_span > 1e-10 else 0.5
-                            v_val_raw = (py - ymin_grid) / y_span if y_span > 1e-10 else 0.5
-                            u_val = np.clip(u_val, 0.0, 1.0)
-                            v_val_raw = np.clip(v_val_raw, 0.0, 1.0)
-                            v_val = 1.0 - v_val_raw
-                            t_coords[i] = [u_val, v_val]
-                    else:
+                            # u_val = (px - xmin_grid) / x_span if x_span > 1e-10 else 0.5
+                            # v_val_raw = (py - ymin_grid) / y_span if y_span > 1e-10 else 0.5
+                            # u_val = np.clip(u_val, 0.0, 1.0)
+                            # v_val_raw = np.clip(v_val_raw, 0.0, 1.0)
+                            # v_val = 1.0 - v_val_raw
+                            # t_coords[i] = [u_val, v_val]
+                    # else:
                         # Alle Punkte sind vorhanden, verwende die vollständigen Textur-Koordinaten
-                        t_coords = t_coords_full
+                        # t_coords = t_coords_full
                     
                     
-                    grid.point_data["TCoords"] = t_coords
-                    img_rgba = img_rgba_final
-                else:
-                    if t_coords is None:
-                        ny, nx = X.shape
-                        u_coords = np.linspace(0, 1, nx)
-                        v_coords_raw = np.linspace(0, 1, ny)
-                        v_coords = 1.0 - v_coords_raw
-                        U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
-                        t_coords = np.column_stack((U.ravel(), V.ravel()))
-                    grid.point_data["TCoords"] = t_coords
-            else:
-                if t_coords is None:
-                    ny, nx = X.shape
-                    u_coords = np.linspace(0, 1, nx)
-                    v_coords_raw = np.linspace(0, 1, ny)
-                    v_coords = 1.0 - v_coords_raw
-                    U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
-                    t_coords = np.column_stack((U.ravel(), V.ravel()))
-                grid.point_data["TCoords"] = t_coords
+                    # grid.point_data["TCoords"] = t_coords
+                    # img_rgba = img_rgba_final
+                # else:
+                    # if t_coords is None:
+                        # ny, nx = X.shape
+                        # u_coords = np.linspace(0, 1, nx)
+                        # v_coords_raw = np.linspace(0, 1, ny)
+                        # v_coords = 1.0 - v_coords_raw
+                        # U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
+                        # t_coords = np.column_stack((U.ravel(), V.ravel()))
+                    # grid.point_data["TCoords"] = t_coords
+            # else:
+                # if t_coords is None:
+                    # ny, nx = X.shape
+                    # u_coords = np.linspace(0, 1, nx)
+                    # v_coords_raw = np.linspace(0, 1, ny)
+                    # v_coords = 1.0 - v_coords_raw
+                    # U, V = np.meshgrid(u_coords, v_coords, indexing="xy")
+                    # t_coords = np.column_stack((U.ravel(), V.ravel()))
+                # grid.point_data["TCoords"] = t_coords
             
             # Validiere Textur-Koordinaten
-            if "TCoords" not in grid.point_data:
-                return None
-            tcoords_data = grid.point_data["TCoords"]
-            if tcoords_data is None or tcoords_data.shape[0] != grid.n_points:
-                return None
+            # if "TCoords" not in grid.point_data:
+                # return None
+            # tcoords_data = grid.point_data["TCoords"]
+            # if tcoords_data is None or tcoords_data.shape[0] != grid.n_points:
+                # return None
             
             # Erstelle Textur
-            tex = pv.Texture(img_rgba)
-            tex.interpolate = not is_step_mode
+            # tex = pv.Texture(img_rgba)
+            # tex.interpolate = not is_step_mode
             
             # Metadaten
-            metadata = {
-                'grid': grid,
-                'texture': tex,
-                'grid_bounds': tuple(bounds) if bounds is not None else None,
-                'world_coords_x': xs.copy(),
-                'world_coords_y': ys.copy(),
-                'world_coords_grid_x': X.copy(),
-                'world_coords_grid_y': Y.copy(),
-                'texture_resolution': tex_res_surface,
-                'texture_size': (ys.size, xs.size),
-                'image_shape': img_rgba.shape,
-                'polygon_bounds': {
-                    'xmin': xmin,
-                    'xmax': xmax,
-                    'ymin': ymin,
-                    'ymax': ymax,
-                },
-                'polygon_points': points,
-                't_coords': t_coords.copy() if t_coords is not None else None,
-                'surface_id': surface_id,
-                'is_axis_aligned_rectangle': is_axis_aligned_rectangle,
-                'tex_res_surface': tex_res_surface,
-                'effective_upscale_factor': effective_upscale_factor,
-                'is_vertical': False,
-            }
+            # metadata = {
+                # 'grid': grid,
+                # 'texture': tex,
+                # 'grid_bounds': tuple(bounds) if bounds is not None else None,
+                # 'world_coords_x': xs.copy(),
+                # 'world_coords_y': ys.copy(),
+                # 'world_coords_grid_x': X.copy(),
+                # 'world_coords_grid_y': Y.copy(),
+                # 'texture_resolution': tex_res_surface,
+                # 'texture_size': (ys.size, xs.size),
+                # 'image_shape': img_rgba.shape,
+                # 'polygon_bounds': {
+                    # 'xmin': xmin,
+                    # 'xmax': xmax,
+                    # 'ymin': ymin,
+                    # 'ymax': ymax,
+                # },
+                # 'polygon_points': points,
+                # 't_coords': t_coords.copy() if t_coords is not None else None,
+                # 'surface_id': surface_id,
+                # 'is_axis_aligned_rectangle': is_axis_aligned_rectangle,
+                # 'tex_res_surface': tex_res_surface,
+                # 'effective_upscale_factor': effective_upscale_factor,
+                # 'is_vertical': False,
+            # }
             
-            if DEBUG_PLOT3D_TIMING:
-                t_surface_end = time.perf_counter()
-                ny_tex, nx_tex = inside.shape
-                num_inside = int(np.count_nonzero(inside))
-                print(
-                    f"[PlotSPL3D] surface {surface_id} (planar, parallel): "
-                    f"axis_aligned_rect={is_axis_aligned_rectangle}, "
-                    f"tex_res_surface={tex_res_surface:.4f} m, "
-                    f"grid={nx_tex}x{ny_tex}, inside={num_inside} "
-                    f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
-                    f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
-                    f"total={(t_surface_end - t_surface_start) * 1000.0:7.2f} ms"
-                )
+            # if DEBUG_PLOT3D_TIMING:
+                # t_surface_end = time.perf_counter()
+                # ny_tex, nx_tex = inside.shape
+                # num_inside = int(np.count_nonzero(inside))
+                # print(
+                    # f"[PlotSPL3D] surface {surface_id} (planar, parallel): "
+                    # f"axis_aligned_rect={is_axis_aligned_rectangle}, "
+                    # f"tex_res_surface={tex_res_surface:.4f} m, "
+                    # f"grid={nx_tex}x{ny_tex}, inside={num_inside} "
+                    # f"geom={(t_geom_done - t_surface_start) * 1000.0:7.2f} ms, "
+                    # f"color/tex={(t_color_done - t_geom_done) * 1000.0:7.2f} ms, "
+                    # f"total={(t_surface_end - t_surface_start) * 1000.0:7.2f} ms"
+                # )
             
-            return {
-                'surface_id': surface_id,
-                'grid': grid,
-                'texture': tex,
-                'metadata': metadata,
-                'texture_signature': texture_signature,
-            }
-        except Exception as e:
-            if DEBUG_PLOT3D_TIMING:
-                print(f"[PlotSPL3D] Error in _process_planar_surface_texture for {surface_id}: {e}")
-            return None
+            # return {
+                # 'surface_id': surface_id,
+                # 'grid': grid,
+                # 'texture': tex,
+                # 'metadata': metadata,
+                # 'texture_signature': texture_signature,
+            # }
+        # except Exception as e:
+            # if DEBUG_PLOT3D_TIMING:
+                # print(f"[PlotSPL3D] Error in _process_planar_surface_texture for {surface_id}: {e}")
+            # return None
 
-    # _render_surfaces_textured ist jetzt in SPL3DPlotRenderer (Mixin)
+    # _render_surfaces ist jetzt in SPL3DPlotRenderer (Mixin)
 
     # _remove_actor ist jetzt in SPL3DHelpers (Mixin)
 
@@ -2253,9 +2257,9 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
 
 # 🎯 Setze DrawSPLPlot3D auf None, wenn PyVista nicht verfügbar ist
 # Damit kann WindowPlotsMainwindow.py prüfen: if DrawSPLPlot3D is None
-if not _PYVISTA_AVAILABLE:
-    DrawSPLPlot3D = None  # type: ignore[assignment, misc]
+# if not _PYVISTA_AVAILABLE:
+    # DrawSPLPlot3D = None  # type: ignore[assignment, misc]
 
-__all__ = ['DrawSPLPlot3D']
+# __all__ = ['DrawSPLPlot3D']
 
 
