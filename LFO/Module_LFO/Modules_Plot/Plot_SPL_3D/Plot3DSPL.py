@@ -544,6 +544,30 @@ class SPL3DPlotRenderer:
             combined_scalars = np.concatenate(all_scalars)
             combined_surface_ids = np.concatenate(all_surface_ids)
             
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "grid-analysis",
+                        "hypothesisId": "H2",
+                        "location": "Plot3DSPL._combine_group_meshes",
+                        "message": "Gruppen-Mesh kombiniert",
+                        "data": {
+                            "group_id": str(group_id),
+                            "n_surfaces": int(len(surface_ids)),
+                            "surface_ids": list(surface_ids),
+                            "combined_n_vertices": int(len(combined_vertices)),
+                            "combined_n_faces": int(len(combined_faces) // 4) if combined_faces.ndim == 1 else int(len(combined_faces)),
+                            "combined_n_scalars": int(len(combined_scalars))
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
         except Exception as e:
             if DEBUG_PLOT3D_TIMING:
                 print(f"[PlotSPL3D] _combine_group_meshes: Gruppe '{group_id}': Fehler beim Kombinieren der Arrays: {e}")
@@ -796,166 +820,6 @@ class SPL3DPlotRenderer:
         
         return new_vertices_array, new_faces_array, new_scalars_array
     
-    # @staticmethod
-    # def _interpolate_grid_3d(
-        # source_x: np.ndarray,
-        # source_y: np.ndarray,
-        # source_z: np.ndarray,
-        # values: np.ndarray,
-        # xq: np.ndarray,
-        # yq: np.ndarray,
-        # zq: np.ndarray,
-        # method: str = "linear",
-        # ) -> np.ndarray:
-        # """
-        # 3D-Interpolation auf einem regulären Grid unter Verwendung von scipy.interpolate.griddata.
-        
-        # Args:
-        #     source_x: 1D-Array der X-Koordinaten des Source-Grids
-        #     source_y: 1D-Array der Y-Koordinaten des Source-Grids
-        #     source_z: 2D-Array der Z-Koordinaten des Source-Grids (Shape: len(source_y) x len(source_x))
-        #     values: 2D-Array der SPL-Werte (Shape: len(source_y) x len(source_x))
-        #     xq: 1D-Array der X-Abfragepunkte
-        #     yq: 1D-Array der Y-Abfragepunkte
-        #     zq: 1D-Array der Z-Abfragepunkte
-        #     method: Interpolationsmethode ('linear' oder 'nearest')
-            
-        # Returns:
-        #     1D-Array der interpolierten Werte
-        # """
-        # try:
-        #     from scipy.interpolate import griddata
-        # except ImportError:
-        #     # Fallback: 2D-Interpolation wenn scipy nicht verfügbar
-        #     if method == "nearest":
-        #         return SPL3DPlotRenderer._nearest_interpolate_grid(source_x, source_y, values, xq, yq)
-        #     else:
-        #         return SPL3DPlotRenderer._bilinear_interpolate_grid(source_x, source_y, values, xq, yq)
-        
-        # source_x = np.asarray(source_x, dtype=float).reshape(-1)
-        # source_y = np.asarray(source_y, dtype=float).reshape(-1)
-        # source_z = np.asarray(source_z, dtype=float)
-        # vals = np.asarray(values, dtype=float)
-        # xq = np.asarray(xq, dtype=float).reshape(-1)
-        # yq = np.asarray(yq, dtype=float).reshape(-1)
-        # zq = np.asarray(zq, dtype=float).reshape(-1)
-        
-        # ny, nx = vals.shape
-        # if ny != len(source_y) or nx != len(source_x):
-        #     raise ValueError(
-        #         f"_interpolate_grid_3d: Shape mismatch values={vals.shape}, "
-        #         f"expected=({len(source_y)}, {len(source_x)})"
-        #     )
-        # if source_z.shape != (ny, nx):
-        #     raise ValueError(
-        #         f"_interpolate_grid_3d: Shape mismatch source_z={source_z.shape}, "
-        #         f"expected=({ny}, {nx})"
-        #     )
-        
-        # # Erstelle 3D-Punkte für Source-Grid
-        # X_source, Y_source = np.meshgrid(source_x, source_y, indexing="xy")
-        # points_3d = np.column_stack((
-        #     X_source.ravel(),
-        #     Y_source.ravel(),
-        #     source_z.ravel()
-        # ))
-        # values_flat = vals.ravel()
-        
-        # # Entferne NaN-Werte
-        # valid_mask = np.isfinite(values_flat) & np.isfinite(points_3d).all(axis=1)
-        # if not np.any(valid_mask):
-        #     raise ValueError("Keine gültigen Werte für 3D-Interpolation verfügbar")
-        
-        # points_3d_clean = points_3d[valid_mask]
-        # values_clean = values_flat[valid_mask]
-        
-        # # Erstelle Abfragepunkte
-        # query_points = np.column_stack((xq, yq, zq))
-        
-        # # 3D-Interpolation
-        # result = griddata(
-        #     points_3d_clean,
-        #     values_clean,
-        #     query_points,
-        #     method=method,
-        #     fill_value=np.nan
-        # )
-        
-        # # Prüfe auf NaN-Werte
-        # nan_mask = np.isnan(result)
-        # if np.any(nan_mask):
-        #     raise ValueError(f"3D-Interpolation liefert {np.sum(nan_mask)} NaN-Werte")
-        
-        # return result
-
-    # 🎯 AUSKOMMENTIERT: Textur-Signatur wird nicht mehr benötigt, da Textur-Pfad auskommentiert ist
-    # def _calculate_texture_signature(
-    #     self,
-    #     surface_id: str,
-    #     points: list[dict[str, float]],
-    #     source_x: np.ndarray,
-    #     source_y: np.ndarray,
-    #     values: np.ndarray,
-    #     cbar_min: float,
-    #     cbar_max: float,
-    #     cmap_object: str | Any,
-    #     colorization_mode: str,
-    #     cbar_step: float,
-    #     tex_res_surface: float,
-    #     plane_model: dict | None,
-    #     ) -> bytes:
-    #     """
-    #     Berechnet eine Hash-Signatur für eine Textur, die sich ändert, wenn sich
-    #     Surface-Geometrie, SPL-Werte oder Colormap-Parameter ändern.
-    #     
-    #     Returns:
-    #         str: Hex-String der Hash-Signatur
-    #     """
-    #     # Erstelle Hash-Objekt
-    #     h = hashlib.sha256()
-    #     
-    #     # 1. Surface-Geometrie (Punkte)
-    #     points_tuple = tuple(
-    #         (float(p.get("x", 0.0)), float(p.get("y", 0.0)), float(p.get("z", 0.0)))
-    #         for p in points
-    #     )
-    #     h.update(str(points_tuple).encode('utf-8'))
-    #     
-    #     # 2. Source-Grid (für Interpolation)
-    #     h.update(source_x.tobytes())
-    #     h.update(source_y.tobytes())
-    #     
-    #     # 3. SPL-Werte (Hash des Arrays - nur wenn sich Werte ändern)
-    #     # Verwende einen repräsentativen Hash: Min, Max, Mean, Std
-    #     if values.size > 0:
-    #         val_min = float(np.nanmin(values))
-    #         val_max = float(np.nanmax(values))
-    #         val_mean = float(np.nanmean(values))
-    #         val_std = float(np.nanstd(values))
-    #         # Zusätzlich: Hash eines Sample-Grids (jeder 10. Wert) für bessere Erkennung
-    #         sample_indices = np.unravel_index(
-    #             np.arange(0, values.size, max(1, values.size // 100)),
-    #             values.shape
-    #         )
-    #         sample_values = values[sample_indices]
-    #         h.update(f"{val_min:.6f}_{val_max:.6f}_{val_mean:.6f}_{val_std:.6f}".encode('utf-8'))
-    #         h.update(sample_values.tobytes())
-    #     
-    #     # 4. Colormap-Parameter
-    #     cmap_name = cmap_object if isinstance(cmap_object, str) else str(type(cmap_object))
-    #     h.update(f"{cmap_name}_{cbar_min:.6f}_{cbar_max:.6f}_{colorization_mode}_{cbar_step:.6f}".encode('utf-8'))
-    #     
-    #     # 5. Textur-Auflösung
-    #     h.update(f"{tex_res_surface:.8f}".encode('utf-8'))
-    #     
-    #     # 6. Planmodell (für geneigte Flächen)
-    #     if plane_model:
-    #         plane_str = str(sorted(plane_model.items()))
-    #         h.update(plane_str.encode('utf-8'))
-    #     
-    #     return h.hexdigest()
-
-
     @staticmethod
     def _project_point_to_polyline(x: float, y: float, poly_x: np.ndarray, poly_y: np.ndarray) -> tuple[float, float]:
         """
@@ -1004,7 +868,6 @@ class SPL3DPlotRenderer:
         
         return (best_x, best_y)
 
-
     @measure_time("PlotSPL3D._render_surfaces")
     def _render_surfaces(
         self,
@@ -1018,7 +881,7 @@ class SPL3DPlotRenderer:
         surface_overrides: Optional[dict[str, dict[str, np.ndarray]]] = None,
         phase_mode: bool = False,
         time_mode: bool = False,
-    ) -> None:
+        ) -> None:
         """
         Renderpfad für Surfaces mit Triangulation.
 
@@ -1228,6 +1091,28 @@ class SPL3DPlotRenderer:
         surfaces_to_process = []
         
         # SCHRITT 1: Sammle Surfaces für Verarbeitung
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                import json, time as _t
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "grid-analysis",
+                    "hypothesisId": "H2",
+                    "location": "Plot3DSPL._render_surfaces",
+                    "message": "Surfaces für Verarbeitung gesammelt",
+                    "data": {
+                        "n_enabled_surfaces": int(len(enabled_surfaces)),
+                        "surface_ids": [str(sid) for sid, _, _ in enabled_surfaces],
+                        "has_surface_overrides": bool(surface_overrides),
+                        "n_surface_overrides": int(len(surface_overrides)) if surface_overrides else 0
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for surface_id, points, surface_obj in enabled_surfaces:
             # Berechne Signatur für Cache-Prüfung (schnell, kann im Hauptthread bleiben)
             poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
@@ -1321,6 +1206,27 @@ class SPL3DPlotRenderer:
                 (sid, pts, obj) for sid, pts, obj in surfaces_to_process
                 if sid not in surfaces_in_groups
             ]
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "grid-analysis-v2",
+                        "hypothesisId": "H2",
+                        "location": "Plot3DSPL._render_surfaces:remove_group_surfaces",
+                        "message": "Gruppen-Surfaces aus surfaces_to_process entfernt",
+                        "data": {
+                            "n_removed_surfaces": int(len(removed_surfaces)),
+                            "removed_surface_ids": list(removed_surfaces),
+                            "n_surfaces_to_process_after": int(len(surfaces_to_process)),
+                            "surfaces_to_process_ids": [str(sid) for sid, _, _ in surfaces_to_process]
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
         
         # 🎯 ERWEITERE surfaces_to_process: Füge Surfaces hinzu, die Overrides haben,
@@ -1366,6 +1272,26 @@ class SPL3DPlotRenderer:
         group_actors: dict[str, Any] = {}
         surfaces_processed_in_groups: set[str] = set()
         
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                import json, time as _t
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "grid-analysis",
+                    "hypothesisId": "H2",
+                    "location": "Plot3DSPL._render_surfaces",
+                    "message": "Gruppen-Meshes gefunden",
+                    "data": {
+                        "n_groups": int(len(candidate_groups_for_plot)),
+                        "group_ids": list(candidate_groups_for_plot.keys()),
+                        "n_surfaces_to_process": int(len(surfaces_to_process))
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         for group_id, group_surface_ids in candidate_groups_for_plot.items():
             # 🎯 NEU: Prüfe ob Gruppe disabled oder hidden ist
@@ -1431,6 +1357,29 @@ class SPL3DPlotRenderer:
                 continue
             
             group_mesh, group_scalars, group_surface_ids_scalar = group_mesh_result
+            
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "grid-analysis",
+                        "hypothesisId": "H2",
+                        "location": "Plot3DSPL._render_surfaces",
+                        "message": "Gruppen-Mesh erstellt",
+                        "data": {
+                            "group_id": str(group_id),
+                            "n_surfaces_in_group": int(len(available_surface_ids)),
+                            "surface_ids": list(available_surface_ids),
+                            "mesh_n_points": int(group_mesh.n_points) if hasattr(group_mesh, 'n_points') else None,
+                            "mesh_n_cells": int(group_mesh.n_cells) if hasattr(group_mesh, 'n_cells') else None
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             # 🎯 FIX: Verwende GLOBALE Colorbar-Werte für Gruppen-Surfaces
             # (nicht lokale Werte basierend auf Min/Max der Gruppe)
@@ -1507,6 +1456,27 @@ class SPL3DPlotRenderer:
                 group_actors[group_id] = actor
                 surfaces_processed_in_groups.update(available_surface_ids)
                 surfaces_processed += len(available_surface_ids)
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "grid-analysis-v2",
+                            "hypothesisId": "H2",
+                            "location": "Plot3DSPL._render_surfaces:group_actor_created",
+                            "message": "Gruppen-Actor erstellt - Surfaces in surfaces_processed_in_groups",
+                            "data": {
+                                "group_id": str(group_id),
+                                "n_surfaces_in_group": int(len(available_surface_ids)),
+                                "surface_ids_in_group": list(available_surface_ids),
+                                "surfaces_processed_in_groups": list(surfaces_processed_in_groups)
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 # Speichere Gruppen-Actor für spätere Verwaltung
                 if not hasattr(self, '_group_actors'):
@@ -1527,6 +1497,25 @@ class SPL3DPlotRenderer:
             if surface_id in surfaces_processed_in_groups:
                 if DEBUG_PLOT3D_TIMING:
                     print(f"[PlotSPL3D] Surface '{surface_id}': Übersprungen (bereits in Gruppe verarbeitet)")
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "grid-analysis",
+                            "hypothesisId": "H2",
+                            "location": "Plot3DSPL._render_surfaces",
+                            "message": "Surface übersprungen (bereits in Gruppe)",
+                            "data": {
+                                "surface_id": str(surface_id),
+                                "in_surfaces_processed_in_groups": True
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 continue
             
             try:
@@ -1955,6 +1944,30 @@ class SPL3DPlotRenderer:
                             # plot_scalars aktualisieren. Das reduziert die Kosten von add_mesh/remove_actor.
                             if not hasattr(self, "_surface_actors") or not isinstance(self._surface_actors, dict):
                                 self._surface_actors = {}
+                            
+                            # #region agent log
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "grid-analysis",
+                                        "hypothesisId": "H3",
+                                        "location": "Plot3DSPL._render_surfaces",
+                                        "message": "Surface-Mesh erstellt (Triangulation)",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "n_triangulated_vertices": int(len(triangulated_vertices)) if triangulated_vertices is not None else None,
+                                            "n_triangulated_faces": int(len(triangulated_faces)) if triangulated_faces is not None else None,
+                                            "n_grid_points": int(n_grid_points),
+                                            "n_vertices": int(n_vertices),
+                                            "n_valid_vertices": int(np.count_nonzero(np.isfinite(spl_at_verts))) if 'spl_at_verts' in locals() else None
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
 
                             cached_entry = self._surface_actors.get(surface_id)
                             cached_mesh = None
@@ -2122,6 +2135,28 @@ class SPL3DPlotRenderer:
                             # Entferne aus texture_actors falls vorhanden
                             self._surface_texture_actors.pop(surface_id, None)
                             
+                            # #region agent log
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "grid-analysis-v2",
+                                        "hypothesisId": "H2",
+                                        "location": "Plot3DSPL._render_surfaces:individual_surface_plotted",
+                                        "message": "Einzelne Surface geplottet",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "in_surfaces_processed_in_groups": bool(surface_id in surfaces_processed_in_groups),
+                                            "mesh_n_points": int(mesh.n_points) if hasattr(mesh, 'n_points') else None,
+                                            "mesh_n_cells": int(mesh.n_cells) if hasattr(mesh, 'n_cells') else None
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            
                             surfaces_processed += 1
                             continue  # Überspringe Texture-Pfad
                             
@@ -2133,7 +2168,6 @@ class SPL3DPlotRenderer:
                     raise ValueError(f"Surface '{surface_id}': Triangulation fehlgeschlagen – kein Plot möglich")
             except Exception as e:
                 pass
-        
 
     @measure_time("PlotSPL3D.update_spl_plot")
     def update_spl_plot(
@@ -2689,6 +2723,28 @@ class SPL3DPlotRenderer:
                 z_coords=z_coords,
                 pv_module=pv,
             )
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "grid-analysis",
+                        "hypothesisId": "H4",
+                        "location": "Plot3DSPL.update_spl_plot",
+                        "message": "Floor-Mesh erstellt",
+                        "data": {
+                            "floor_n_points": int(floor_mesh.n_points) if hasattr(floor_mesh, 'n_points') else None,
+                            "floor_n_cells": int(floor_mesh.n_cells) if hasattr(floor_mesh, 'n_cells') else None,
+                            "plot_x_size": int(len(plot_x)),
+                            "plot_y_size": int(len(plot_y)),
+                            "has_surface_actors": bool(has_surface_actors)
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             
 
@@ -2849,174 +2905,6 @@ class SPL3DPlotRenderer:
             except Exception:
                 pass
         self._vertical_surface_meshes.clear()
-
-    # def _update_vertical_spl_surfaces(self) -> None:
-    #     """
-    #     🎯 DEPRECATED: Vertikale Surfaces werden jetzt identisch wie planare Surfaces behandelt.
-        
-    #     Diese Funktion ist nicht mehr nötig, da vertikale Flächen jetzt in _render_surfaces()
-    #     mit der gleichen Triangulation-Logik wie planare Flächen geplottet werden.
-    #     """
-    #     """
-    #     Zeichnet / aktualisiert SPL-Flächen für senkrechte Surfaces auf Basis von
-    #     calculation_spl['surface_samples'] und calculation_spl['surface_fields'].
-        
-    #     Hinweis:
-    #     - Für horizontale Flächen verwenden wir ausschließlich den Texture-Pfad.
-    #     - Für senkrechte / stark geneigte Flächen rendern wir hier explizite Meshes
-    #       (vertical_spl_<surface_id>), damit sie im 3D-Plot separat anwählbar sind.
-    #     """
-    #     container = getattr(self, "container", None)
-    #     if container is None or not hasattr(container, "calculation_spl"):
-    #         self._clear_vertical_spl_surfaces()
-    #         return
-
-    #     calc_spl = getattr(container, "calculation_spl", {}) or {}
-    #     sample_payloads = calc_spl.get("surface_samples")
-    #     if not isinstance(sample_payloads, list):
-    #         self._clear_vertical_spl_surfaces()
-    #         return
-
-    #     # Aktueller Surface-Status (enabled/hidden) aus den Settings
-    #     surface_definitions = getattr(self.settings, "surface_definitions", {})
-    #     if not isinstance(surface_definitions, dict):
-    #         surface_definitions = {}
-
-    #     # Vertikale Surfaces analog zu prepare_plot_geometry behandeln:
-    #     # lokales (u,v)-Raster + strukturiertes Mesh über build_vertical_surface_mesh.
-    #     new_vertical_meshes: dict[str, Any] = {}
-
-    #     # Aktuellen Colorization-Mode verwenden (wie für die Hauptfläche).
-    #     colorization_mode = getattr(self, "_last_colorization_mode", None)
-    #     if colorization_mode not in {"Color step", "Gradient"}:
-    #         colorization_mode = getattr(self.settings, "colorization_mode", "Gradient")
-    #     try:
-    #         cbar_range = getattr(self.settings, "colorbar_range", {})
-    #         cbar_step = float(cbar_range.get("step", 0.0))
-    #     except Exception:
-    #         cbar_step = 0.0
-    #     is_step_mode = colorization_mode == "Color step" and cbar_step > 0
-    #     # 🐛 DEBUG: Prüfe alle Payloads
-    #     if DEBUG_PLOT3D_TIMING:
-    #         print(f"[DEBUG Vertical] Found {len(sample_payloads)} surface sample payloads")
-    #         for i, payload in enumerate(sample_payloads):
-    #             kind = payload.get("kind", "planar")
-    #             surface_id = payload.get("surface_id", "unknown")
-    #             print(f"  Payload {i}: surface_id={surface_id}, kind={kind}")
-        
-    #     for payload in sample_payloads:
-    #         # Nur Payloads verarbeiten, die explizit als "vertical" markiert sind.
-    #         kind = payload.get("kind", "planar")
-    #         if kind != "vertical":
-    #             if DEBUG_PLOT3D_TIMING:
-    #                 surface_id_debug = payload.get("surface_id", "unknown")
-    #                 print(f"[DEBUG Vertical] Skipping {surface_id_debug}: kind={kind} (not 'vertical')")
-    #             continue
-
-    #         surface_id = payload.get("surface_id")
-    #         if surface_id is None:
-    #             continue
-            
-    #         if DEBUG_PLOT3D_TIMING:
-    #             print(f"[DEBUG Vertical] Processing vertical surface: {surface_id}")
-
-    #         # Nur Surfaces zeichnen, die aktuell enabled und nicht hidden sind
-    #         surf_def = surface_definitions.get(surface_id)
-    #         if surf_def is None:
-    #             continue
-    #         if hasattr(surf_def, "to_dict"):
-    #             surf_data = surf_def.to_dict()
-    #         elif isinstance(surf_def, dict):
-    #             surf_data = surf_def
-    #         else:
-    #             surf_data = {
-    #                 "enabled": getattr(surf_def, "enabled", False),
-    #                 "hidden": getattr(surf_def, "hidden", False),
-    #                 "points": getattr(surf_def, "points", []),
-    #             }
-    #         if not surf_data.get("enabled", False) or surf_data.get("hidden", False):
-    #             continue
-
-    #         # Lokale vertikale Plot-Geometrie aufbauen (u,v-Grid, SPL-Werte, Maske)
-    #         try:
-    #             geom: VerticalPlotGeometry | None = prepare_vertical_plot_geometry(
-    #                 surface_id,
-    #                 self.settings,
-    #                 container,
-    #                 default_upscale=getattr(self, "UPSCALE_FACTOR", 1),
-    #             )
-    #         except Exception:
-    #             geom = None
-
-    #         if geom is None:
-    #             continue
-
-    #         # Strukturiertes Mesh in Weltkoordinaten erstellen
-    #         try:
-    #             grid = build_vertical_surface_mesh(geom, pv_module=pv)
-    #         except Exception:
-    #             continue
-
-    #         # Color step: Werte in diskrete Stufen quantisieren, analog zur Hauptfläche.
-    #         if is_step_mode and "plot_scalars" in grid.array_names:
-    #             try:
-    #                 vals = np.asarray(grid["plot_scalars"], dtype=float)
-    #                 grid["plot_scalars"] = self._quantize_to_steps(vals, cbar_step)
-    #             except Exception:
-    #                 pass
-
-    #         actor_name = f"vertical_spl_{surface_id}"
-    #         # Entferne ggf. alten Actor
-    #         try:
-    #             if actor_name in self.plotter.renderer.actors:
-    #                 self.plotter.remove_actor(actor_name)
-    #         except Exception:
-    #             pass
-
-    #         # Farbschema und CLim an das Haupt-SPL anlehnen
-    #         cbar_min, cbar_max = self._get_vertical_color_limits()
-    #         try:
-    #             actor = self.plotter.add_mesh(
-    #                 grid,
-    #                 name=actor_name,
-    #                 scalars="plot_scalars",
-    #                 cmap="jet",
-    #                 clim=(cbar_min, cbar_max),
-    #                 # Gradient: weiche Darstellung, Color step: harte Stufen.
-    #                 smooth_shading=not is_step_mode,
-    #                 show_scalar_bar=False,
-    #                 reset_camera=False,
-    #                 interpolate_before_map=not is_step_mode,
-    #             )
-    #             # Stelle sicher, dass senkrechte Flächen pickable sind
-    #             if actor and hasattr(actor, 'SetPickable'):
-    #                 actor.SetPickable(True)
-    #             # Im Color-Step-Modus explizit flache Interpolation erzwingen,
-    #             # damit die Stufen wie bei der horizontalen Fläche erscheinen.
-    #             if is_step_mode and hasattr(actor, "prop") and actor.prop is not None:
-    #                 try:
-    #                     actor.prop.interpolation = "flat"
-    #                 except Exception:  # noqa: BLE001
-    #                     pass
-    #             new_vertical_meshes[actor_name] = actor
-    #         except Exception:
-    #             continue
-
-    #     # Alte Actors entfernen, die nicht mehr gebraucht werden
-    #     if hasattr(self, "_vertical_surface_meshes"):
-    #         for old_name in list(self._vertical_surface_meshes.keys()):
-    #             if old_name not in new_vertical_meshes:
-    #                 try:
-    #                     if old_name in self.plotter.renderer.actors:
-    #                         self.plotter.remove_actor(old_name)
-    #                 except Exception:
-    #                     pass
-
-    #     self._vertical_surface_meshes = new_vertical_meshes
-
-    # 🎯 ENTFERNT: _update_vertical_spl_surfaces_from_grids()
-    # Diese Methode war DEPRECATED und wurde nicht mehr verwendet.
-    # Vertikale Surfaces werden jetzt in _render_surfaces() behandelt.
 
     def _validate_surface_plotting(self) -> None:
         """

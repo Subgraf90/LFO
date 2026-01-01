@@ -608,6 +608,26 @@ def triangulate_points(points: List[Dict[str, float]]) -> List[List[Dict[str, fl
         model.get("max_error", -1.0),
         expected_tris,
     )
+    # #region agent log
+    try:
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            import json, time as _t
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "grid-analysis",
+                "hypothesisId": "H3",
+                "location": "SurfaceValidator.triangulate_points",
+                "message": "Triangulation gestartet",
+                "data": {
+                    "n_points": int(len(points)),
+                    "model_type": str(model.get("type", "unknown")),
+                    "expected_tris": int(expected_tris)
+                },
+                "timestamp": int(_t.time() * 1000)
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
 
     # Methode 1: scipy.spatial.Delaunay (robust, bewährt)
     if HAS_SCIPY:
@@ -643,6 +663,26 @@ def triangulate_points(points: List[Dict[str, float]]) -> List[List[Dict[str, fl
                     len(valid_triangles),
                     expected_tris,
                 )
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "grid-analysis",
+                            "hypothesisId": "H3",
+                            "location": "SurfaceValidator.triangulate_points",
+                            "message": "Triangulation erfolgreich (Delaunay)",
+                            "data": {
+                                "n_points": int(len(points)),
+                                "n_triangles": int(len(valid_triangles)),
+                                "expected_tris": int(expected_tris)
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 triangles: List[List[Dict[str, float]]] = []
                 for a, b, c in valid_triangles:
                     triangles.append([points[a], points[b], points[c]])

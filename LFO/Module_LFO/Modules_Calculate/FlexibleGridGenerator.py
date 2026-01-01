@@ -106,7 +106,7 @@ class SurfaceAnalyzer(ModuleBase):
     def _compute_robust_plane_normal_svd(
         self,
         points: List[Dict[str, float]]
-    ) -> Tuple[Optional[np.ndarray], Optional[float], Optional[Dict[str, float]]]:
+        ) -> Tuple[Optional[np.ndarray], Optional[float], Optional[Dict[str, float]]]:
         """
         🎯 ROBUSTESTE METHODE: SVD-basiertes Least-Squares Plane Fitting.
         
@@ -209,86 +209,6 @@ class SurfaceAnalyzer(ModuleBase):
             if DEBUG_FLEXIBLE_GRID:
                 print(f"[DEBUG SVD] Fehler bei SVD: {e}")
             return None, None, None
-    
-    def _compute_surface_normal(self, points: List[Dict[str, float]]) -> Optional[np.ndarray]:
-        """
-        Berechnet die Normale einer Fläche aus den Polygon-Punkten.
-        Robuste Methode für kleine und große Polygone, auch bei Kugel-Geometrien.
-        """
-        if len(points) < 3:
-            return None
-        
-        # Konvertiere zu numpy-Array
-        coords = np.array([
-            [float(p.get('x', 0.0)), float(p.get('y', 0.0)), float(p.get('z', 0.0))]
-            for p in points
-        ], dtype=float)
-        
-        if coords.shape[0] < 3:
-            return None
-        
-        # Für sehr kleine Polygone (z.B. Kugel-Faces): Verwende alle Punkte
-        # Für größere Polygone: Verwende repräsentative Stichprobe
-        n_points = len(coords)
-        if n_points <= 4:
-            # Alle Punkte verwenden
-            indices = list(range(n_points))
-        else:
-            # Repräsentative Stichprobe (erste, mittlere, letzte Punkte)
-            step = max(1, n_points // 4)
-            indices = list(range(0, n_points, step))
-            if indices[-1] != n_points - 1:
-                indices.append(n_points - 1)
-        
-        # Berechne Normale über mehrere Dreiecke (robuster)
-        normals = []
-        center = np.mean(coords, axis=0)
-        
-        # Verwende verschiedene Dreiecks-Kombinationen
-        used_indices = set()
-        for i in range(len(indices)):
-            idx0 = indices[i]
-            idx1 = indices[(i + 1) % len(indices)]
-            idx2 = indices[(i + 2) % len(indices)]
-            
-            # Vermeide doppelte Berechnungen
-            triangle_key = tuple(sorted([idx0, idx1, idx2]))
-            if triangle_key in used_indices:
-                continue
-            used_indices.add(triangle_key)
-            
-            p0 = coords[idx0]
-            p1 = coords[idx1]
-            p2 = coords[idx2]
-            
-            v1 = p1 - p0
-            v2 = p2 - p0
-            
-            # Prüfe auf kollineare Punkte
-            if np.linalg.norm(v1) < 1e-9 or np.linalg.norm(v2) < 1e-9:
-                continue
-            
-            # Kreuzprodukt für Normale
-            n = np.cross(v1, v2)
-            norm = np.linalg.norm(n)
-            
-            if norm > 1e-9:
-                n = n / norm
-                # WICHTIG: Normale NICHT umdrehen - behalte Original-Richtung
-                # (kann nach oben oder unten zeigen, je nach Flächen-Orientierung)
-                normals.append(n)
-        
-        if not normals:
-            return None
-        
-        # Durchschnittliche Normale (gewichtet nach Flächeninhalt der Dreiecke)
-        # Für einfachere Berechnung: Einfacher Durchschnitt
-        avg_normal = np.mean(normals, axis=0)
-        norm = np.linalg.norm(avg_normal)
-        if norm > 1e-9:
-            return avg_normal / norm
-        
-        return None
     
     def _compute_pca_orientation(self, points: List[Dict[str, float]]) -> Dict[str, Any]:
         """
@@ -483,17 +403,17 @@ class SurfaceAnalyzer(ModuleBase):
         self,
         points: List[Dict[str, float]],
         plane_model: Optional[Dict[str, float]],
-        normal: Optional[np.ndarray]
-    ) -> Tuple[str, Optional[str]]:
+        normal: Optional[np.ndarray]  # Wird nicht mehr verwendet (SVD-Normale wird intern berechnet)
+        ) -> Tuple[str, Optional[str]]:
         """
         🎯 ULTRA-ROBUSTE Orientierungserkennung ohne Einschränkungen.
         
         Kombiniert mehrere Methoden:
-        1. SVD-basiertes Plane Fitting (robusteste Methode)
-        2. Normale-Vektor-Analyse
-        3. PCA-Analyse
-        4. Plane-Model-Analyse
-        5. Spannen-Analyse (Fallback)
+        1. SVD-basiertes Plane Fitting (robusteste Methode, 50% Gewicht)
+        2. Normale-Vektor-Analyse (verwendet SVD-Normale, 25% Gewicht)
+        3. PCA-Analyse (15% Gewicht)
+        4. Plane-Model-Analyse (8% Gewicht)
+        5. Spannen-Analyse (Fallback, 2% Gewicht)
         
         Funktioniert für:
         - 3 bis beliebig viele Punkte
@@ -537,11 +457,12 @@ class SurfaceAnalyzer(ModuleBase):
             
             svd_score = np.clip(svd_score, 0.0, 1.0)
         
-        # Methode 2: Normale-Vektor-Analyse (wenn verfügbar)
+        # Methode 2: Normale-Vektor-Analyse (verwendet SVD-Normale wenn verfügbar)
         normal_score = 0.0
-        if normal is not None:
+        # Verwende SVD-Normale statt separater normal-Parameter (redundant)
+        if svd_normal is not None:
             z_axis = np.array([0, 0, 1])
-            cos_angle = np.clip(np.abs(np.dot(normal, z_axis)), 0, 1)
+            cos_angle = np.clip(np.abs(np.dot(svd_normal, z_axis)), 0, 1)
             angle_deg = np.degrees(np.arccos(cos_angle))
             
             if angle_deg < 5:
@@ -607,9 +528,10 @@ class SurfaceAnalyzer(ModuleBase):
                 span_score = 1.0
         
         # 🎯 GEWICHTETE KOMBINATION (SVD hat höchste Priorität)
+        # Normale-Score verwendet jetzt SVD-Normale (redundant zu SVD-Score, aber für Robustheit beibehalten)
         weights = {
             'svd': 0.5 if svd_normal is not None else 0.0,  # Höchste Priorität
-            'normal': 0.25 if normal is not None else 0.0,
+            'normal': 0.25 if svd_normal is not None else 0.0,  # Verwendet SVD-Normale
             'pca': 0.15,
             'plane': 0.08 if plane_model is not None else 0.0,
             'span': 0.02
@@ -724,212 +646,10 @@ class SurfaceAnalyzer(ModuleBase):
                 
         return orientation, dominant_axis
     
-    def _determine_orientation_improved(
-        self,
-        points: List[Dict[str, float]],
-        plane_model: Optional[Dict[str, float]],
-        normal: Optional[np.ndarray]
-    ) -> Tuple[str, Optional[str]]:
-        """
-        Bestimmt die Orientierung einer Fläche mit mehreren Methoden.
-        
-        Returns:
-            (orientation, dominant_axis)
-            - orientation: "planar", "sloped", "vertical"
-            - dominant_axis: "xz", "yz", oder None
-        """
-        # Konvertiere zu numpy-Array
-        xs = np.array([float(p.get('x', 0.0)) for p in points], dtype=float)
-        ys = np.array([float(p.get('y', 0.0)) for p in points], dtype=float)
-        zs = np.array([float(p.get('z', 0.0)) for p in points], dtype=float)
-        
-        x_span = float(np.ptp(xs))
-        y_span = float(np.ptp(ys))
-        z_span = float(np.ptp(zs))
-        
-        # Methode 1: Normale-Vektor-Analyse (wenn verfügbar)
-        normal_score = 0.0
-        if normal is not None:
-            z_axis = np.array([0, 0, 1])
-            # Winkel zwischen Normale und Z-Achse
-            # Normale parallel zu Z (0°) = horizontal/planar
-            # Normale senkrecht zu Z (90°) = vertikal
-            # WICHTIG: Verwende Absolutwert, da Normale nach oben oder unten zeigen kann
-            cos_angle = np.clip(np.abs(np.dot(normal, z_axis)), 0, 1)
-            angle_with_z = np.arccos(cos_angle)
-            angle_deg = np.degrees(angle_with_z)
-            
-            # 🎯 EMPFINDLICHERE SCHWELLENWERTE für geringe Steigungen:
-            # 0-5° = planar (praktisch horizontal)
-            # 5-75° = sloped (auch sehr geringe Steigungen werden erkannt)
-            # 75-90° = vertical
-            if angle_deg < 5:
-                normal_score = 0.0  # planar (praktisch horizontal)
-            elif angle_deg < 75:
-                # Sloped: Linear interpolieren zwischen 0.0 und 1.0
-                # 5° → 0.0, 75° → 1.0
-                normal_score = (angle_deg - 5.0) / 70.0  # 0.0 bis 1.0
-                normal_score = np.clip(normal_score, 0.0, 1.0)
-            else:
-                normal_score = 1.0  # vertical
-        
-        # Methode 2: PCA-Analyse
-        pca_result = self._compute_pca_orientation(points)
-        pca_vertical_score = pca_result.get("vertical_score", 0.0)
-        pca_dominant_axis = pca_result.get("dominant_axis", None)
-        
-        # Methode 3: Plane-Model-Analyse
-        plane_score = 0.0
-        if plane_model is not None:
-            mode = plane_model.get('mode', 'constant')
-            if mode == 'constant':
-                plane_score = 0.0  # planar
-            elif mode in ['x', 'y']:
-                # Prüfe Steigung (absolut, funktioniert auch für negative Steigungen)
-                slope = abs(float(plane_model.get('slope', 0.0)))
-                # 🎯 EMPFINDLICHERE SCHWELLENWERTE:
-                # < 0.01 = praktisch planar
-                # 0.01-0.5 = leicht geneigt (sloped)
-                # 0.5-2.0 = mäßig geneigt (sloped)
-                # > 2.0 = steil/vertikal
-                if slope < 0.01:
-                    plane_score = 0.0  # praktisch planar
-                elif slope < 0.5:
-                    # Leicht geneigt: Linear interpolieren
-                    plane_score = (slope - 0.01) / 0.49 * 0.5  # 0.0 bis 0.5
-                elif slope < 2.0:
-                    # Mäßig geneigt: Linear interpolieren
-                    plane_score = 0.5 + (slope - 0.5) / 1.5 * 0.5  # 0.5 bis 1.0
-                else:
-                    plane_score = 1.0  # steil/vertikal
-            elif mode == 'xy':
-                slope_x = abs(float(plane_model.get('slope_x', 0.0)))
-                slope_y = abs(float(plane_model.get('slope_y', 0.0)))
-                # Kombinierte Steigung (Euklidische Norm)
-                combined_slope = np.sqrt(slope_x**2 + slope_y**2)
-                if combined_slope < 0.01:
-                    plane_score = 0.0
-                elif combined_slope < 0.5:
-                    plane_score = (combined_slope - 0.01) / 0.49 * 0.5
-                elif combined_slope < 2.0:
-                    plane_score = 0.5 + (combined_slope - 0.5) / 1.5 * 0.5
-                else:
-                    plane_score = 1.0
-        
-        # Methode 4: Spannen-Analyse (Fallback, besonders wichtig für kleine Polygone)
-        span_score = 0.0
-        eps_line = 1e-6
-        
-        # Berechne relative Spannen
-        max_horizontal_span = max(x_span, y_span)
-        if max_horizontal_span < 1e-9:
-            max_horizontal_span = 1e-9  # Vermeide Division durch Null
-        
-        # Verhältnis von Z-Spanne zu horizontaler Spanne
-        z_ratio = z_span / max_horizontal_span if max_horizontal_span > 0 else 0.0
-        
-        if (x_span < eps_line or y_span < eps_line) and z_span > 1e-3:
-            span_score = 1.0  # vertikal (eine Dimension degeneriert)
-        elif z_span > 1e-3:
-            # 🎯 EMPFINDLICHERE ERKENNUNG auch für geringe Steigungen:
-            # z_ratio < 0.01 = praktisch planar
-            # 0.01 <= z_ratio < 0.1 = leicht geneigt
-            # 0.1 <= z_ratio < 0.7 = mäßig geneigt
-            # z_ratio >= 0.7 = vertikal
-            if z_ratio < 0.01:
-                span_score = 0.0  # praktisch planar
-            elif z_ratio < 0.1:
-                # Leicht geneigt: Linear interpolieren
-                span_score = (z_ratio - 0.01) / 0.09 * 0.3  # 0.0 bis 0.3
-            elif z_ratio < 0.7:
-                # Mäßig geneigt: Linear interpolieren
-                span_score = 0.3 + (z_ratio - 0.1) / 0.6 * 0.7  # 0.3 bis 1.0
-            else:
-                span_score = 1.0  # vertikal
-        
-        # Kombiniere Scores (gewichteter Durchschnitt)
-        # Normale und PCA sind am zuverlässigsten
-        weights = {
-            'normal': 0.4 if normal is not None else 0.0,
-            'pca': 0.4,
-            'plane': 0.15 if plane_model is not None else 0.0,
-            'span': 0.05
-        }
-        
-        # Normalisiere Gewichte
-        total_weight = sum(weights.values())
-        if total_weight < 1e-6:
-            raise ValueError("Orientierung nicht bestimmbar (improved): keine Gewichtungen verfügbar.")
-        else:
-            for key in weights:
-                weights[key] /= total_weight
-            
-            combined_score = (
-                weights['normal'] * normal_score +
-                weights['pca'] * pca_vertical_score +
-                weights['plane'] * plane_score +
-                weights['span'] * span_score
-            )
-        
-        # Bestimme Orientierung basierend auf Score
-        # 🎯 ANGEPASSTE SCHWELLENWERTE für bessere Erkennung geringer Steigungen:
-        # < 0.15 = planar (sehr empfindlich, erkennt auch fast-horizontale Flächen)
-        # 0.15-0.6 = sloped (breiter Bereich für alle geneigten Flächen)
-        # >= 0.6 = vertical
-        if combined_score < 0.15:
-            orientation = "planar"
-        elif combined_score < 0.6:
-            orientation = "sloped"
-        else:
-            orientation = "vertical"
-        
-        # Bestimme dominante Achse für vertikale Flächen
-        dominant_axis = None
-        if orientation == "vertical":
-            # Verwende PCA-Ergebnis oder Spannen-Analyse
-            if pca_dominant_axis:
-                dominant_axis = pca_dominant_axis
-            else:
-                # Fallback: Bestimme dominante Achse basierend auf Spannen-Analyse
-                # (kein stiller Fallback - wird verwendet wenn PCA keine Achse liefert)
-                eps_line = 1e-6
-                if y_span < eps_line and x_span >= eps_line:
-                    dominant_axis = "xz"  # X-Z-Wand
-                elif x_span < eps_line and y_span >= eps_line:
-                    dominant_axis = "yz"  # Y-Z-Wand
-                elif z_span > max(x_span, y_span) * 0.7:
-                    # Bestimme welche Achse (X oder Y) weniger variiert
-                    if x_span < y_span * 0.5:
-                        dominant_axis = "yz"
-                    elif y_span < x_span * 0.5:
-                        dominant_axis = "xz"
-                
-                if dominant_axis is None:
-                    # Letzter Fallback: Verwende die Achse mit der kleinsten Spanne
-                    if x_span < y_span:
-                        dominant_axis = "yz"
-                    else:
-                        dominant_axis = "xz"
-                
-                if DEBUG_FLEXIBLE_GRID:
-                    print(f"[DEBUG Orientation] ⚠️ PCA lieferte keine dominante Achse, verwende Spannen-Analyse: {dominant_axis}")
-        
-        if DEBUG_FLEXIBLE_GRID:
-            print(f"[DEBUG Orientation] Score-Analyse:")
-            print(f"  └─ Normal: {normal_score:.3f} (weight: {weights['normal']:.3f})")
-            print(f"  └─ PCA: {pca_vertical_score:.3f} (weight: {weights['pca']:.3f})")
-            print(f"  └─ Plane: {plane_score:.3f} (weight: {weights['plane']:.3f})")
-            print(f"  └─ Span: {span_score:.3f} (weight: {weights['span']:.3f})")
-            print(f"  └─ Combined: {combined_score:.3f} → {orientation}")
-            if dominant_axis:
-                print(f"  └─ Dominant axis: {dominant_axis}")
-        
-        return orientation, dominant_axis
-    
     def analyze_surfaces(
         self,
         enabled_surfaces: List[Tuple[str, Dict]]
-    ) -> List[SurfaceGeometry]:
+        ) -> List[SurfaceGeometry]:
         """
         Analysiert alle enabled Surfaces und bestimmt deren Geometrie.
         Verwendet verbesserte Methoden: Normale-Vektor, PCA, Plane-Model.
@@ -968,13 +688,14 @@ class SurfaceAnalyzer(ModuleBase):
             # Versuche Plane-Model zu bestimmen
             plane_model, error = derive_surface_plane(points)
             
-            # Berechne Normale der Fläche (Fallback-Methode)
-            normal = self._compute_surface_normal(points)
-            
             # 🎯 ULTRA-ROBUSTE Orientierungserkennung (ohne Einschränkungen)
+            # Normale wird intern aus SVD berechnet (robuster als Dreiecks-Methode)
             orientation, dominant_axis = self._determine_orientation_ultra_robust(
-                points, plane_model, normal
+                points, plane_model, None  # Normale wird intern berechnet
             )
+            
+            # Berechne Normale aus SVD für SurfaceGeometry (wird intern bereits berechnet)
+            svd_normal, _, _ = self._compute_robust_plane_normal_svd(points)
             
             # Speichere zusätzliche Informationen in geometry
             geometry = SurfaceGeometry(
@@ -983,7 +704,7 @@ class SurfaceAnalyzer(ModuleBase):
                 points=points,
                 plane_model=plane_model,
                 orientation=orientation,
-                normal=normal,
+                normal=svd_normal,  # Verwende SVD-Normale (robuster)
                 bbox=bbox,
                 dominant_axis=dominant_axis  # 🎯 NEU: Speichere dominant_axis für Plot
             )
@@ -1006,7 +727,7 @@ class GridBuilder(ModuleBase):
         faces_flat: np.ndarray,
         resolution: float | None,
         surface_id: str,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Entfernt doppelte Vertices (gleiche 3D-Position) aus einem Mesh und
         passt die Faces entsprechend an.
@@ -1097,7 +818,7 @@ class GridBuilder(ModuleBase):
         geometries: List[SurfaceGeometry],
         resolution: Optional[float] = None,
         padding_factor: float = 0.5
-    ) -> BaseGrid:
+        ) -> BaseGrid:
         """
         Erstellt Basis-Grid aus Surface-Geometrien.
         
@@ -1201,7 +922,7 @@ class GridBuilder(ModuleBase):
         X_grid: np.ndarray,
         Y_grid: np.ndarray,
         geometry: SurfaceGeometry
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """Erstellt Maske für ein Surface (Punkt-im-Polygon-Test)"""
         points = geometry.points
         if len(points) < 3:
@@ -1249,7 +970,7 @@ class GridBuilder(ModuleBase):
         x_coords: np.ndarray,
         y_coords: np.ndarray,
         polygon_points: List[Dict[str, float]]
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """Vektorisierte Punkt-im-Polygon-Prüfung"""
         if len(polygon_points) < 3:
             return np.zeros_like(x_coords, dtype=bool)
@@ -1285,7 +1006,7 @@ class GridBuilder(ModuleBase):
         u_coords: np.ndarray,
         v_coords: np.ndarray,
         polygon_points: List[Dict[str, float]]
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """Vektorisierte Punkt-im-Polygon-Prüfung in (u,v)-Koordinaten"""
         if len(polygon_points) < 3:
             return np.zeros_like(u_coords, dtype=bool)
@@ -1346,7 +1067,7 @@ class GridBuilder(ModuleBase):
         Y_grid: np.ndarray,
         geometry: SurfaceGeometry,
         surface_mask_strict: np.ndarray,
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """
         Erweiterung der strikten Maske:
         Stellt sicher, dass für jede Polygon-Ecke mindestens der nächste Grid-Punkt
@@ -1437,7 +1158,7 @@ class GridBuilder(ModuleBase):
         padding_factor: float = 0.5,
         disable_edge_refinement: bool = False,
         use_group_padding: bool = False
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Erstellt Grid für eine einzelne Surface mit Mindestanzahl von Punkten.
         
@@ -1964,7 +1685,34 @@ class GridBuilder(ModuleBase):
                 # 🎯 KORREKTUR: Verwende _points_in_polygon_batch_uv für (u,v)-Koordinaten
                 surface_mask_strict = self._points_in_polygon_batch_uv(U_grid, V_grid, polygon_uv)
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                # Randpunkte aktiviert (für bessere Triangulation bis zum Rand)
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
+                
+                # #region agent log - Randpunkte bei Einzelsurface (Y-Z-Wand)
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        points_in_strict = int(np.count_nonzero(surface_mask_strict))
+                        points_in_dilated = int(np.count_nonzero(surface_mask))
+                        points_added = points_in_dilated - points_in_strict
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "single-surface-edge-points",
+                            "hypothesisId": "SINGLE_SURFACE_EDGE",
+                            "location": "FlexibleGridGenerator.build_single_surface_grid:vertical_yz",
+                            "message": "Randpunkte bei Einzelsurface (Y-Z-Wand)",
+                            "data": {
+                                "surface_id": str(geometry.surface_id),
+                                "points_in_strict_mask": points_in_strict,
+                                "points_in_dilated_mask": points_in_dilated,
+                                "edge_points_added": points_added,
+                                "has_edge_points": points_added > 0
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
             else:
                 # X-Z-Wand: Maske in (x,z)-Ebene
                 U_grid = X_grid  # u = x
@@ -1976,7 +1724,34 @@ class GridBuilder(ModuleBase):
                 # 🎯 KORREKTUR: Verwende _points_in_polygon_batch_uv für (u,v)-Koordinaten
                 surface_mask_strict = self._points_in_polygon_batch_uv(U_grid, V_grid, polygon_uv)
                 # 🎯 IDENTISCHE DILATATION: Wie bei planaren Flächen
+                # Randpunkte aktiviert (für bessere Triangulation bis zum Rand)
                 surface_mask = self._dilate_mask_minimal(surface_mask_strict)
+                
+                # #region agent log - Randpunkte bei Einzelsurface (X-Z-Wand)
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        points_in_strict = int(np.count_nonzero(surface_mask_strict))
+                        points_in_dilated = int(np.count_nonzero(surface_mask))
+                        points_added = points_in_dilated - points_in_strict
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "single-surface-edge-points",
+                            "hypothesisId": "SINGLE_SURFACE_EDGE",
+                            "location": "FlexibleGridGenerator.build_single_surface_grid:vertical_xz",
+                            "message": "Randpunkte bei Einzelsurface (X-Z-Wand)",
+                            "data": {
+                                "surface_id": str(geometry.surface_id),
+                                "points_in_strict_mask": points_in_strict,
+                                "points_in_dilated_mask": points_in_dilated,
+                                "edge_points_added": points_added,
+                                "has_edge_points": points_added > 0
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
@@ -1997,10 +1772,83 @@ class GridBuilder(ModuleBase):
             # Dies ermöglicht Triangulation bis zum Rand der Surface
             surface_mask = self._dilate_mask_minimal(surface_mask_strict)  # Erweiterte Maske für SPL-Werte
             
+            # #region agent log - Randpunkte bei Einzelsurface (planar/sloped)
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    points_in_strict = int(np.count_nonzero(surface_mask_strict))
+                    points_in_dilated = int(np.count_nonzero(surface_mask))
+                    points_added = points_in_dilated - points_in_strict
+                    # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
+                    edge_points_mask = surface_mask & ~surface_mask_strict
+                    edge_x = X_grid[edge_points_mask]
+                    edge_y = Y_grid[edge_points_mask]
+                    # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
+                    from matplotlib.path import Path
+                    poly_path = Path(np.column_stack((
+                        [float(p.get("x", 0.0)) for p in geometry.points],
+                        [float(p.get("y", 0.0)) for p in geometry.points]
+                    )))
+                    if edge_x.size > 0:
+                        edge_points_2d = np.column_stack((edge_x, edge_y))
+                        edge_inside = poly_path.contains_points(edge_points_2d)
+                        edge_outside_count = int(np.sum(~edge_inside))
+                        edge_on_boundary_count = int(np.sum(edge_inside))
+                    else:
+                        edge_outside_count = 0
+                        edge_on_boundary_count = 0
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "edge-points-analysis",
+                        "hypothesisId": "EDGE_POINTS_POSITION",
+                        "location": "FlexibleGridGenerator.build_single_surface_grid:planar",
+                        "message": "Randpunkte-Analyse Einzelsurface (planar/sloped)",
+                        "data": {
+                            "surface_id": str(geometry.surface_id),
+                            "points_in_strict_mask": points_in_strict,
+                            "points_in_dilated_mask": points_in_dilated,
+                            "edge_points_added": points_added,
+                            "has_edge_points": points_added > 0,
+                            "vertex_coverage_applied": True,
+                            "edge_points_outside_polygon": edge_outside_count,
+                            "edge_points_inside_polygon": edge_on_boundary_count,
+                            "edge_points_total": int(edge_x.size) if edge_x.size > 0 else 0,
+                            "edge_method": "dilate_mask_minimal_3x3"
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             # 🎯 DEBUG: Grid-Erweiterung (vor Z-Interpolation, damit total_grid_points verfügbar ist)
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "grid-analysis",
+                        "hypothesisId": "H1",
+                        "location": "FlexibleGridGenerator.build_single_surface_grid",
+                        "message": "Grid erstellt für Surface",
+                        "data": {
+                            "surface_id": str(geometry.surface_id),
+                            "orientation": str(geometry.orientation),
+                            "total_grid_points": int(total_grid_points),
+                            "points_in_surface": int(points_in_surface),
+                            "points_outside_surface": int(points_outside_surface),
+                            "grid_shape": list(X_grid.shape) if hasattr(X_grid, 'shape') else None,
+                            "resolution": float(resolution) if resolution else None
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
             # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
@@ -2198,7 +2046,7 @@ class CartesianTransformer(GridTransformer):
         self,
         base_grid: BaseGrid,
         geometries: List[SurfaceGeometry]
-    ) -> CartesianGrid:
+        ) -> CartesianGrid:
         """
         Transformiert Basis-Grid zu Cartesian Grid.
         
@@ -2241,49 +2089,14 @@ class CartesianTransformer(GridTransformer):
             surface_mask_strict=surface_mask.copy()  # Identisch mit surface_mask
         )
     
-    # ⚠️ AUSKOMMENTIERT: Dilatations-Funktionen nicht mehr benötigt
-    # Erweiterte Maske wurde entfernt - nur strikte Maske wird verwendet
-    # def _dilate_mask(self, mask: np.ndarray) -> np.ndarray:
-    #     """Erweitert Maske um 1 Pixel (morphologische Dilatation)"""
-    #     try:
-    #         from scipy import ndimage
-    #         structure = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype=bool)
-    #         return ndimage.binary_dilation(mask, structure=structure)
-    #     except ImportError:
-    #         # Fallback: Manuelle Erweiterung
-    #         return self._dilate_mask_manual(mask)
-    #
-    # def _dilate_mask_manual(self, mask: np.ndarray) -> np.ndarray:
-    #     """Manuelle morphologische Dilatation (Fallback)"""
-    #     dilated = mask.copy()
-    #     ny, nx = mask.shape
-    #
-    #     for di in [-1, 0, 1]:
-    #         for dj in [-1, 0, 1]:
-    #             if di == 0 and dj == 0:
-    #                 continue
-    #             shifted = np.zeros_like(mask)
-    #             i_start = max(0, -di)
-    #             i_end = min(nx, nx - di)
-    #             j_start = max(0, -dj)
-    #             j_end = min(ny, ny - dj)
-    #
-    #             if i_start < i_end and j_start < j_end:
-    #                 shifted[j_start:j_end, i_start:i_end] = mask[
-    #                     j_start + dj:j_end + dj,
-    #                     i_start + di:i_end + di
-    #                 ]
-    #             dilated = dilated | shifted
-    #
-    #     return dilated
-    
+
     def _interpolate_z_coordinates(
         self,
         X_grid: np.ndarray,
         Y_grid: np.ndarray,
         geometries: List[SurfaceGeometry],
         surface_mask: np.ndarray
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """
         Interpoliert Z-Koordinaten NUR für Punkte innerhalb der Polygon-Outline.
         
@@ -2464,7 +2277,7 @@ class CartesianTransformer(GridTransformer):
         x_coords: np.ndarray,
         y_coords: np.ndarray,
         polygon_points: List[Dict[str, float]]
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """Vektorisierte Punkt-im-Polygon-Prüfung"""
         if len(polygon_points) < 3:
             return np.zeros_like(x_coords, dtype=bool)
@@ -2495,34 +2308,7 @@ class CartesianTransformer(GridTransformer):
         
         return inside.reshape(x_coords.shape)
     
-    def _evaluate_plane_grid(
-        self,
-        x_coords: np.ndarray,
-        y_coords: np.ndarray,
-        plane_model: Dict[str, float]
-    ) -> np.ndarray:
-        """Bewertet planares Modell auf einem 2D-Grid"""
-        mode = plane_model.get('mode', 'constant')
-        
-        if mode == 'x':
-            slope = float(plane_model.get('slope', 0.0))
-            intercept = float(plane_model.get('intercept', 0.0))
-            return slope * x_coords + intercept
-        elif mode == 'y':
-            slope = float(plane_model.get('slope', 0.0))
-            intercept = float(plane_model.get('intercept', 0.0))
-            return slope * y_coords + intercept
-        elif mode == 'xy':
-            slope_x = float(plane_model.get('slope_x', 0.0))
-            slope_y = float(plane_model.get('slope_y', 0.0))
-            intercept = float(plane_model.get('intercept', 0.0))
-            return slope_x * x_coords + slope_y * y_coords + intercept
-        else:
-            # constant
-            base = float(plane_model.get('base', 0.0))
-            return np.full_like(x_coords, base, dtype=float)
-
-
+    
 class FlexibleGridGenerator(ModuleBase):
     """
     Haupt-API für flexible Grid-Generierung (Hybrid-Ansatz)
@@ -2557,71 +2343,17 @@ class FlexibleGridGenerator(ModuleBase):
         faces_flat: np.ndarray,
         resolution: float | None,
         surface_id: str,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Entfernt doppelte Vertices (gleiche 3D-Position) aus einem Mesh und
         passt die Faces entsprechend an.
         
         Delegiert an GridBuilder._deduplicate_vertices_and_faces.
+        Wird verwendet in generate_per_surface() für Triangulation-Deduplikation.
         """
         return self.builder._deduplicate_vertices_and_faces(
             vertices, faces_flat, resolution, surface_id
         )
-        self._cache_hash: Optional[str] = None
-        # Cache für per-Surface-Grids (inkl. Triangulation), um bei wiederholten
-        # Berechnungen mit unveränderter Geometrie Zeit zu sparen.
-        # Key: (surface_id, orientation, resolution, min_points, points_signature)
-        self._surface_grid_cache: Dict[tuple, SurfaceGrid] = {}
-        self._surface_cache_lock = Lock()
-    
-    @measure_time("FlexibleGridGenerator.generate")
-    def generate(
-        self,
-        enabled_surfaces: List[Tuple[str, Dict]],
-        method: str = 'cartesian',
-        resolution: Optional[float] = None,
-        use_cache: bool = True
-    ) -> Any:
-        """
-        Generiert Grid für spezifische Berechnungsmethode.
-        
-        Args:
-            enabled_surfaces: Liste von (surface_id, surface_definition) Tupeln
-            method: Berechnungsmethode ('cartesian', 'fem', 'fdtd')
-            resolution: Grid-Auflösung in Metern (optional)
-            use_cache: Wenn True, wird gecachtes Basis-Grid verwendet (falls verfügbar)
-            
-        Returns:
-            Abhängig von method:
-            - 'cartesian': CartesianGrid
-            - 'fem': FEMMesh (später)
-            - 'fdtd': FDTDGrid (später)
-        """
-        if method not in self.transformers:
-            raise ValueError(f"Unbekannte Methode: {method}. Verfügbar: {list(self.transformers.keys())}")
-        
-        # Erstelle Cache-Hash
-        cache_hash = self._create_cache_hash(enabled_surfaces, resolution)
-        
-        # Prüfe Cache
-        if use_cache and self._cached_base_grid and self._cache_hash == cache_hash:
-            geometries = self._cached_geometries
-            base_grid = self._cached_base_grid
-        else:
-            # Analysiere Surfaces
-            geometries = self.analyzer.analyze_surfaces(enabled_surfaces)
-            
-            # Erstelle Basis-Grid
-            base_grid = self.builder.build_base_grid(geometries, resolution)
-            
-            # Cache speichern
-            self._cached_base_grid = base_grid
-            self._cached_geometries = geometries
-            self._cache_hash = cache_hash
-        
-        # Transformiere zu spezifischem Format
-        transformer = self.transformers[method]
-        return transformer.transform(base_grid, geometries)
     
     @measure_time("FlexibleGridGenerator.generate_per_surface")
     def generate_per_surface(
@@ -2631,7 +2363,7 @@ class FlexibleGridGenerator(ModuleBase):
         min_points_per_dimension: int = 6,
         disable_edge_refinement: bool = False,
         use_group_padding: bool = False
-    ) -> Dict[str, SurfaceGrid]:
+        ) -> Dict[str, SurfaceGrid]:
         """
         Erstellt für jede enabled Surface ein eigenes Grid mit Mindestanzahl von Punkten.
         
@@ -3423,6 +3155,32 @@ class FlexibleGridGenerator(ModuleBase):
                         triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
                         triangulated_success = True
                         
+                        # #region agent log
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                import json, time as _t
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "grid-analysis-v2",
+                                    "hypothesisId": "H1",
+                                    "location": "FlexibleGridGenerator.generate_per_surface:triangulation",
+                                    "message": "Triangulation erfolgreich - Grid erstellt",
+                                    "data": {
+                                        "surface_id": str(geom.surface_id),
+                                        "orientation": str(geom.orientation),
+                                        "total_grid_points": int(X_grid.size),
+                                        "grid_shape": list(X_grid.shape),
+                                        "n_triangulated_vertices": int(len(triangulated_vertices)),
+                                        "n_triangulated_faces": int(len(triangulated_faces) // 4) if triangulated_faces.ndim == 1 else int(len(triangulated_faces)),
+                                        "points_in_mask": int(np.count_nonzero(mask_flat)),
+                                        "resolution": float(actual_resolution)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        
                         n_faces = len(faces_list_mapped) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
                         n_vertices_used = len(all_vertex_indices)  # Anzahl der tatsächlich verwendeten Vertices
                         expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
@@ -3579,222 +3337,13 @@ class FlexibleGridGenerator(ModuleBase):
         
         return surface_grids
     
-    def generate_single_surface_grid(
-        self,
-        surface_id: str,
-        surface_def: Dict,
-        resolution: Optional[float] = None,
-        min_points_per_dimension: int = 6,
-    ) -> Optional[SurfaceGrid]:
-        """
-        Erstellt ein SurfaceGrid für genau eine Surface.
-        """
-        if resolution is None:
-            resolution = self.settings.resolution
-
-        geometries = self.analyzer.analyze_surfaces([(surface_id, surface_def)])
-        if not geometries:
-            return None
-
-        geom = geometries[0]
-        (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = \
-            self.builder.build_single_surface_grid(
-                geometry=geom,
-                resolution=resolution,
-                min_points_per_dimension=min_points_per_dimension,
-                disable_edge_refinement=False,  # Standard: Edge-Refinement aktiviert
-                use_group_padding=False  # Standard: Normales Padding
-            )
-
-        # 🛠️ KORREKTUR: Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene berechnen
-        if geom.orientation in ("planar", "sloped") and geom.plane_model:
-            try:
-                Z_eval = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
-                if Z_eval is not None and Z_eval.shape == X_grid.shape:
-                    Z_grid = Z_eval
-            except Exception as e:
-                pass
-
-        ny, nx = X_grid.shape
-        if len(sound_field_x) > 1 and len(sound_field_y) > 1:
-            actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
-            actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
-            actual_resolution = (actual_resolution_x + actual_resolution_y) / 2.0
-        else:
-            actual_resolution = resolution
-
-        # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
-        # Pro Grid-Punkt werden Vertices verwendet, pro Grid-Quadrat 2 Dreiecke erstellt
-        triangulated_vertices = None
-        triangulated_faces = None
-        triangulated_success = False
-        
-        try:
-            mask_flat = surface_mask.ravel()
-            
-            if np.any(mask_flat):
-                # Erstelle Vertex-Koordinaten aus allen Grid-Punkten
-                all_vertices = np.column_stack([
-                    X_grid.ravel(),
-                    Y_grid.ravel(),
-                    Z_grid.ravel()
-                ])
-                
-                # Vektorisierte Erstellung der Faces:
-                # Für alle Quadrate im Grid Indizes der vier Ecken berechnen
-                rows = np.arange(ny - 1, dtype=np.int64)
-                cols = np.arange(nx - 1, dtype=np.int64)
-                ii, jj = np.meshgrid(rows, cols, indexing="ij")
-
-                idx_tl = ii * nx + jj
-                idx_tr = idx_tl + 1
-                idx_bl = (ii + 1) * nx + jj
-                idx_br = idx_bl + 1
-
-                # 🎯 SAUBERE RAND-BEHANDLUNG: Vollständige + Rand-Quadrate triangulieren
-                mask_tl = mask_flat[idx_tl]
-                mask_tr = mask_flat[idx_tr]
-                mask_bl = mask_flat[idx_bl]
-                mask_br = mask_flat[idx_br]
-
-                # Vollständige Quadrate: alle vier Ecken in Maske
-                full_mask = mask_tl & mask_tr & mask_bl & mask_br
-                active_quads = int(np.count_nonzero(full_mask))
-                
-                # Rand-Quadrate: 1-3 Ecken in Maske (für saubere Rand-Abschlüsse)
-                partial_mask = (mask_tl | mask_tr | mask_bl | mask_br) & ~full_mask
-                partial_quads = int(np.count_nonzero(partial_mask))
-                
-                faces_list = []
-                all_used_vertex_indices = set()
-
-                # 1. Vollständige Quadrate: 2 Dreiecke pro Quadrat
-                if active_quads > 0:
-                    tl_full = idx_tl[full_mask].ravel()
-                    tr_full = idx_tr[full_mask].ravel()
-                    bl_full = idx_bl[full_mask].ravel()
-                    br_full = idx_br[full_mask].ravel()
-                    
-                    # Erstes Dreieck: (tl, tr, bl)
-                    for i in range(len(tl_full)):
-                        faces_list.extend([3, int(tl_full[i]), int(tr_full[i]), int(bl_full[i])])
-                        all_used_vertex_indices.update([int(tl_full[i]), int(tr_full[i]), int(bl_full[i])])
-                    
-                    # Zweites Dreieck: (tr, br, bl)
-                    for i in range(len(tr_full)):
-                        faces_list.extend([3, int(tr_full[i]), int(br_full[i]), int(bl_full[i])])
-                        all_used_vertex_indices.update([int(tr_full[i]), int(br_full[i]), int(bl_full[i])])
-                
-                # 2. Rand-Quadrate: Erstelle Dreiecke nur mit aktiven Ecken
-                if partial_quads > 0:
-                    for quad_idx in np.where(partial_mask)[0]:
-                        i, j = ii.ravel()[quad_idx], jj.ravel()[quad_idx]
-                        tl_idx = int(idx_tl.ravel()[quad_idx])
-                        tr_idx = int(idx_tr.ravel()[quad_idx])
-                        bl_idx = int(idx_bl.ravel()[quad_idx])
-                        br_idx = int(idx_br.ravel()[quad_idx])
-                        
-                        # Sammle aktive Ecken
-                        active_corners = []
-                        if mask_flat[tl_idx]:
-                            active_corners.append(tl_idx)
-                        if mask_flat[tr_idx]:
-                            active_corners.append(tr_idx)
-                        if mask_flat[bl_idx]:
-                            active_corners.append(bl_idx)
-                        if mask_flat[br_idx]:
-                            active_corners.append(br_idx)
-                        
-                        # Erstelle Dreiecke mit aktiven Ecken (mindestens 3 benötigt)
-                        if len(active_corners) >= 3:
-                            # Erstelle Dreiecke: Verwende erste 3 Ecken
-                            faces_list.extend([3, active_corners[0], active_corners[1], active_corners[2]])
-                            all_used_vertex_indices.update(active_corners[:3])
-                            
-                            # Wenn 4 Ecken aktiv: Zweites Dreieck
-                            if len(active_corners) == 4:
-                                faces_list.extend([3, active_corners[0], active_corners[2], active_corners[3]])
-                                all_used_vertex_indices.update([active_corners[0], active_corners[2], active_corners[3]])
-
-                if len(faces_list) > 0:
-                    # 🎯 OPTIMIERUNG: Nur Vertices innerhalb der Maske verwenden
-                    all_vertex_indices = np.array(sorted(all_used_vertex_indices), dtype=np.int64)
-                    
-                    # Erstelle Mapping: alter Index → neuer Index
-                    old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
-                    
-                    # Erstelle nur die Vertices, die tatsächlich verwendet werden
-                    triangulated_vertices = all_vertices[all_vertex_indices]
-                    
-                    # Mappe Face-Indizes auf neue Vertex-Indizes
-                    faces_arr_mapped = []
-                    for i in range(0, len(faces_list), 4):
-                        if i + 3 < len(faces_list):
-                            n_verts = faces_list[i]
-                            if n_verts == 3:
-                                v1_old = faces_list[i+1]
-                                v2_old = faces_list[i+2]
-                                v3_old = faces_list[i+3]
-                                faces_arr_mapped.extend([
-                                    3,
-                                    old_to_new_index[v1_old],
-                                    old_to_new_index[v2_old],
-                                    old_to_new_index[v3_old]
-                                ])
-                    
-                    triangulated_faces = np.array(faces_arr_mapped, dtype=np.int64)
-                    triangulated_success = True
-
-                    # 🎯 NACHBEARBEITUNG: Doppelte Vertices entfernen
-                    if triangulated_success and triangulated_vertices is not None and triangulated_faces is not None:
-                        triangulated_vertices, triangulated_faces = self.builder._deduplicate_vertices_and_faces(
-                            triangulated_vertices,
-                            triangulated_faces,
-                            actual_resolution,
-                            geom.surface_id,
-                        )
-
-                    if DEBUG_FLEXIBLE_GRID:
-                        n_tris = 0
-                        if triangulated_faces is not None:
-                            n_tris = len(triangulated_faces) // 4
-                        n_verts = 0
-                        if triangulated_vertices is not None:
-                            n_verts = len(triangulated_vertices)
-                        n_all_vertices = len(all_vertices)
-                        print(
-                            f"[DEBUG Triangulation] Surface '{geom.surface_id}': "
-                            f"{n_tris} Dreiecke, {n_verts} Vertices "
-                            f"(vorher: {n_all_vertices} Grid-Punkte), "
-                            f"{active_quads} vollständige Quadrate, {partial_quads} Rand-Quadrate"
-                        )
-        except Exception as e:
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG Triangulation] Surface '{geom.surface_id}': Fehler bei Triangulation: {e}")
-            triangulated_success = False
-
-        return SurfaceGrid(
-            surface_id=geom.surface_id,
-            sound_field_x=sound_field_x,
-            sound_field_y=sound_field_y,
-            X_grid=X_grid,
-            Y_grid=Y_grid,
-            Z_grid=Z_grid,
-            surface_mask=surface_mask,
-            resolution=actual_resolution,
-            geometry=geom,
-            triangulated_vertices=triangulated_vertices,
-            triangulated_faces=triangulated_faces,
-            triangulated_success=triangulated_success,
-        )
-
     def generate_group_sum_grid(
         self,
         group_surfaces: List[Tuple[str, Dict]],
         resolution: Optional[float] = None,
         min_points_per_dimension: int = 6,
         individual_grid_bboxes: Optional[List[Tuple[float, float, float, float, float, float]]] = None,
-    ) -> Dict[str, Any]:
+        ) -> Dict[str, Any]:
         """
         Erstellt ein gemeinsames Summen-Grid für eine Gruppe von Surfaces.
         
@@ -3836,6 +3385,57 @@ class FlexibleGridGenerator(ModuleBase):
                     all_vertical_same_orientation = True
                     group_dominant_axis = dominant_axes[0]
         
+        # 🎯 OPTIMIERUNG: Prüfe welche Surfaces Nachbarn haben
+        # Nur Surfaces ohne Nachbarn (am Rand der Gruppe) benötigen Padding
+        # Surfaces mit Nachbarn haben bereits genügend Auflösung durch benachbarte Surfaces
+        def _has_neighbor_surface(surface_idx: int, all_bboxes: List[Tuple[float, float, float, float, float, float]], neighbor_threshold: float) -> bool:
+            """Prüft ob eine Surface mindestens einen Nachbarn in der Gruppe hat"""
+            if surface_idx >= len(all_bboxes):
+                return False
+            
+            bbox_i = all_bboxes[surface_idx]
+            min_x_i, max_x_i, min_y_i, max_y_i, min_z_i, max_z_i = bbox_i
+            
+            for j, bbox_j in enumerate(all_bboxes):
+                if j == surface_idx:
+                    continue
+                
+                min_x_j, max_x_j, min_y_j, max_y_j, min_z_j, max_z_j = bbox_j
+                
+                # Berechne minimale Distanz zwischen den Bounding Boxen
+                # Distanz in X-Richtung
+                if max_x_i < min_x_j:
+                    dist_x = min_x_j - max_x_i
+                elif max_x_j < min_x_i:
+                    dist_x = min_x_i - max_x_j
+                else:
+                    dist_x = 0.0  # Überlappung
+                
+                # Distanz in Y-Richtung
+                if max_y_i < min_y_j:
+                    dist_y = min_y_j - max_y_i
+                elif max_y_j < min_y_i:
+                    dist_y = min_y_i - max_y_j
+                else:
+                    dist_y = 0.0  # Überlappung
+                
+                # Distanz in Z-Richtung
+                if max_z_i < min_z_j:
+                    dist_z = min_z_j - max_z_i
+                elif max_z_j < min_z_i:
+                    dist_z = min_z_i - max_z_j
+                else:
+                    dist_z = 0.0  # Überlappung
+                
+                # 3D-Distanz
+                distance_3d = np.sqrt(dist_x**2 + dist_y**2 + dist_z**2)
+                
+                # Wenn Distanz < threshold, sind die Surfaces Nachbarn
+                if distance_3d <= neighbor_threshold:
+                    return True
+            
+            return False
+        
         # 🎯 OPTIMIERUNG: Verwende Bounding-Boxen der triangulierten Vertices wenn verfügbar
         # Diese enthalten bereits Edge-Refinement und sind die tatsächlichen Vertex-Koordinaten
         if individual_grid_bboxes and len(individual_grid_bboxes) > 0:
@@ -3851,25 +3451,37 @@ class FlexibleGridGenerator(ModuleBase):
             min_y, max_y = min(all_y_min), max(all_y_max)
             min_z, max_z = min(all_z_min), max(all_z_max)
             
+            # 🎯 NEU: Prüfe welche Surfaces Nachbarn haben
+            # Threshold: 2x Resolution (Surfaces innerhalb dieser Distanz gelten als Nachbarn)
+            neighbor_threshold = 2.0 * resolution
+            surfaces_with_neighbors = []
+            surfaces_without_neighbors = []
+            
+            for i in range(len(individual_grid_bboxes)):
+                has_neighbor = _has_neighbor_surface(i, individual_grid_bboxes, neighbor_threshold)
+                surface_id = group_surfaces[i][0] if i < len(group_surfaces) else f"surface_{i}"
+                if has_neighbor:
+                    surfaces_with_neighbors.append(surface_id)
+                else:
+                    surfaces_without_neighbors.append(surface_id)
+            
             # #region agent log
             import json
             try:
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     f.write(json.dumps({
                         "sessionId": "debug-session",
-                        "runId": "test-group-surfaces",
-                        "hypothesisId": "I",
-                        "location": "FlexibleGridGenerator.py:3913",
-                        "message": "Gruppen-Grid BBox aus individuellen Vertex-BBoxen",
+                        "runId": "group-grid-analysis",
+                        "hypothesisId": "NEIGHBOR_DETECTION",
+                        "location": "FlexibleGridGenerator.generate_group_sum_grid:neighbor_check",
+                        "message": "Nachbarn-Prüfung für Gruppen-Surfaces",
                         "data": {
-                            "n_individual_bboxes": len(individual_grid_bboxes),
-                            "combined_bbox": {
-                                "x_range": [float(min_x), float(max_x)],
-                                "y_range": [float(min_y), float(max_y)],
-                                "z_range": [float(min_z), float(max_z)]
-                            },
-                            "resolution": float(resolution),
-                            "padding_factor": 2.0
+                            "n_surfaces": len(individual_grid_bboxes),
+                            "neighbor_threshold": float(neighbor_threshold),
+                            "surfaces_with_neighbors": surfaces_with_neighbors,
+                            "surfaces_without_neighbors": surfaces_without_neighbors,
+                            "n_with_neighbors": len(surfaces_with_neighbors),
+                            "n_without_neighbors": len(surfaces_without_neighbors)
                         },
                         "timestamp": int(__import__('time').time() * 1000)
                     }) + '\n')
@@ -3877,21 +3489,65 @@ class FlexibleGridGenerator(ModuleBase):
                 pass
             # #endregion
             
-            # Zusätzliches Padding für Sicherheit (3x Resolution)
-            # Erhöht auf 3x, um auch Vertices am Rand abzudecken (Edge-Refinement kann bis zu 2x Resolution außerhalb gehen)
-            padding_factor = 3.0
+            # 🎯 ADAPTIVES PADDING: Basierend auf Nachbarn-Status
+            # Wenn alle Surfaces Nachbarn haben: minimales Padding (0.5x für Edge-Refinement)
+            # Wenn einige Surfaces keine Nachbarn haben: Padding für Rand-Surfaces (3x)
+            # Wenn viele Surfaces keine Nachbarn haben: konservatives Padding (5x)
+            n_total = len(surfaces_without_neighbors) + len(surfaces_with_neighbors)
+            ratio_without_neighbors = len(surfaces_without_neighbors) / n_total if n_total > 0 else 0.0
+            
+            if len(surfaces_without_neighbors) == 0:
+                # Alle Surfaces haben Nachbarn -> minimales Padding (nur für Edge-Refinement)
+                padding_factor = 0.5
+            elif ratio_without_neighbors < 0.3:
+                # Wenige Surfaces ohne Nachbarn (< 30%) -> moderates Padding
+                padding_factor = 2.0
+            else:
+                # Viele Surfaces ohne Nachbarn (>= 30%) -> konservatives Padding
+                padding_factor = 3.0
+            
+            # #region agent log
+            import json
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "group-grid-analysis",
+                        "hypothesisId": "ADAPTIVE_PADDING",
+                        "location": "FlexibleGridGenerator.generate_group_sum_grid:padding_decision",
+                        "message": "Adaptives Padding basierend auf Nachbarn",
+                        "data": {
+                            "n_surfaces": n_total,
+                            "n_without_neighbors": len(surfaces_without_neighbors),
+                            "ratio_without_neighbors": float(ratio_without_neighbors),
+                            "padding_factor": float(padding_factor)
+                        },
+                        "timestamp": int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except Exception:
+                pass
+            # #endregion
         else:
             # Fallback: Bounding-Box über alle Points der Gruppe bilden
             all_x = []
             all_y = []
             all_z = []
+            # 🎯 NEU: Sammle auch Bounding-Boxen pro Surface für Nachbarn-Prüfung
+            fallback_bboxes = []
             for geom in geometries:
                 pts = geom.points
                 if not pts:
                     continue
-                all_x.extend([float(p.get("x", 0.0)) for p in pts])
-                all_y.extend([float(p.get("y", 0.0)) for p in pts])
-                all_z.extend([float(p.get("z", 0.0)) for p in pts])
+                xs = [float(p.get("x", 0.0)) for p in pts]
+                ys = [float(p.get("y", 0.0)) for p in pts]
+                zs = [float(p.get("z", 0.0)) for p in pts]
+                all_x.extend(xs)
+                all_y.extend(ys)
+                all_z.extend(zs)
+                
+                # Erstelle Bounding-Box für diese Surface
+                if xs and ys and zs:
+                    fallback_bboxes.append((min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)))
             
             if not all_x or not all_y:
                 return {}
@@ -3900,8 +3556,52 @@ class FlexibleGridGenerator(ModuleBase):
             min_y, max_y = min(all_y), max(all_y)
             min_z, max_z = min(all_z), max(all_z)
             
-            # Größeres Padding wenn keine individuellen Grid-BBoxen verfügbar
-            padding_factor = 5.0  # 5x Resolution als Padding (sichert auch Edge-Refinement-Vertices ab)
+            # 🎯 NEU: Prüfe Nachbarn auch im Fallback-Fall
+            if len(fallback_bboxes) > 1:
+                neighbor_threshold = 2.0 * resolution
+                surfaces_with_neighbors = []
+                surfaces_without_neighbors = []
+                
+                for i in range(len(fallback_bboxes)):
+                    has_neighbor = _has_neighbor_surface(i, fallback_bboxes, neighbor_threshold)
+                    surface_id = group_surfaces[i][0] if i < len(group_surfaces) else f"surface_{i}"
+                    if has_neighbor:
+                        surfaces_with_neighbors.append(surface_id)
+                    else:
+                        surfaces_without_neighbors.append(surface_id)
+                
+                # #region agent log
+                import json
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "group-grid-analysis",
+                            "hypothesisId": "NEIGHBOR_DETECTION",
+                            "location": "FlexibleGridGenerator.generate_group_sum_grid:neighbor_check_fallback",
+                            "message": "Nachbarn-Prüfung für Gruppen-Surfaces (Fallback)",
+                            "data": {
+                                "n_surfaces": len(fallback_bboxes),
+                                "neighbor_threshold": float(neighbor_threshold),
+                                "surfaces_with_neighbors": surfaces_with_neighbors,
+                                "surfaces_without_neighbors": surfaces_without_neighbors,
+                                "n_with_neighbors": len(surfaces_with_neighbors),
+                                "n_without_neighbors": len(surfaces_without_neighbors)
+                            },
+                            "timestamp": int(__import__('time').time() * 1000)
+                        }) + '\n')
+                except Exception:
+                    pass
+                # #endregion
+                
+                # Adaptives Padding basierend auf Nachbarn
+                if len(surfaces_without_neighbors) == 0:
+                    padding_factor = 0.5  # Alle haben Nachbarn -> minimales Padding
+                else:
+                    padding_factor = 3.0  # Einige haben keine Nachbarn -> Padding für Rand-Surfaces
+            else:
+                # Nur eine Surface oder keine BBoxen -> konservatives Padding
+                padding_factor = 5.0  # 5x Resolution als Padding (sichert auch Edge-Refinement-Vertices ab)
         
         # Stelle sicher, dass wir mindestens min_points_per_dimension abdecken
         if resolution <= 0:
@@ -3959,6 +3659,30 @@ class FlexibleGridGenerator(ModuleBase):
         surface_masks: Dict[str, np.ndarray] = {}
         geometries_dict: Dict[str, SurfaceGeometry] = {}
         
+        # #region agent log - Grid-Größe vor Masken
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                import json, time as _t
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "group-grid-analysis",
+                    "hypothesisId": "GROUP_GRID_POINTS",
+                    "location": "FlexibleGridGenerator.generate_group_sum_grid:before_masks",
+                    "message": "Gruppen-Grid erstellt - vor Masken",
+                    "data": {
+                        "group_id": str(group_surfaces[0][0].split('_')[0] + '_group') if group_surfaces else "unknown",
+                        "total_grid_points": int(X_grid.size),
+                        "grid_shape": [int(X_grid.shape[0]), int(X_grid.shape[1])],
+                        "n_surfaces": len(geometries),
+                        "padding_factor": float(padding_factor),
+                        "resolution": float(resolution)
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         for geom in geometries:
             surface_id = geom.surface_id
             geometries_dict[surface_id] = geom
@@ -3996,7 +3720,108 @@ class FlexibleGridGenerator(ModuleBase):
                             ]
                             mask_strict = self.builder._points_in_polygon_batch_uv(X_grid, Z_grid, polygon_uv)
                             # Erweitere Maske wie bei einzelnen Surfaces
+                            # 🎯 GRUPPENSURFACES: Randpunkte aktiviert (für bessere Interpolation zwischen benachbarten Surfaces)
                             mask = self.builder._dilate_mask_minimal(mask_strict)
+                            
+                            # #region agent log - Randpunkte bei Gruppensurface (Y-Z-Wand)
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    points_in_strict = int(np.count_nonzero(mask_strict))
+                                    points_in_dilated = int(np.count_nonzero(mask))
+                                    points_added = points_in_dilated - points_in_strict
+                                    # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
+                                    edge_points_mask = mask & ~mask_strict
+                                    edge_y = Y_grid[edge_points_mask]
+                                    edge_z = Z_grid[edge_points_mask]
+                                    # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
+                                    from matplotlib.path import Path
+                                    poly_path = Path(np.column_stack((
+                                        [float(p.get("y", 0.0)) for p in pts],
+                                        [float(p.get("z", 0.0)) for p in pts]
+                                    )))
+                                    if edge_y.size > 0:
+                                        edge_points_2d = np.column_stack((edge_y, edge_z))
+                                        edge_inside = poly_path.contains_points(edge_points_2d)
+                                        edge_outside_count = int(np.sum(~edge_inside))
+                                        edge_on_boundary_count = int(np.sum(edge_inside))
+                                    else:
+                                        edge_outside_count = 0
+                                        edge_on_boundary_count = 0
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "edge-points-analysis",
+                                        "hypothesisId": "EDGE_POINTS_POSITION",
+                                        "location": "FlexibleGridGenerator.generate_group_sum_grid:vertical_yz",
+                                        "message": "Randpunkte-Analyse Gruppensurface (Y-Z-Wand)",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "group_id": str(group_surfaces[0][0].split('_')[0] + '_group') if group_surfaces else "unknown",
+                                            "points_in_strict_mask": points_in_strict,
+                                            "points_in_dilated_mask": points_in_dilated,
+                                            "edge_points_added": points_added,
+                                            "has_edge_points": points_added > 0,
+                                            "vertex_coverage_applied": False,
+                                            "edge_points_outside_polygon": edge_outside_count,
+                                            "edge_points_inside_polygon": edge_on_boundary_count,
+                                            "edge_points_total": int(edge_y.size) if edge_y.size > 0 else 0,
+                                            "edge_method": "dilate_mask_minimal_3x3"
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            
+                            # #region agent log - Randpunkte bei Gruppensurface (X-Z-Wand)
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    points_in_strict = int(np.count_nonzero(mask_strict))
+                                    points_in_dilated = int(np.count_nonzero(mask))
+                                    points_added = points_in_dilated - points_in_strict
+                                    # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
+                                    edge_points_mask = mask & ~mask_strict
+                                    edge_x = X_grid[edge_points_mask]
+                                    edge_z = Z_grid[edge_points_mask]
+                                    # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
+                                    from matplotlib.path import Path
+                                    poly_path = Path(np.column_stack((
+                                        [float(p.get("x", 0.0)) for p in pts],
+                                        [float(p.get("z", 0.0)) for p in pts]
+                                    )))
+                                    if edge_x.size > 0:
+                                        edge_points_2d = np.column_stack((edge_x, edge_z))
+                                        edge_inside = poly_path.contains_points(edge_points_2d)
+                                        edge_outside_count = int(np.sum(~edge_inside))
+                                        edge_on_boundary_count = int(np.sum(edge_inside))
+                                    else:
+                                        edge_outside_count = 0
+                                        edge_on_boundary_count = 0
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "edge-points-analysis",
+                                        "hypothesisId": "EDGE_POINTS_POSITION",
+                                        "location": "FlexibleGridGenerator.generate_group_sum_grid:vertical_xz",
+                                        "message": "Randpunkte-Analyse Gruppensurface (X-Z-Wand)",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "group_id": str(group_surfaces[0][0].split('_')[0] + '_group') if group_surfaces else "unknown",
+                                            "points_in_strict_mask": points_in_strict,
+                                            "points_in_dilated_mask": points_in_dilated,
+                                            "edge_points_added": points_added,
+                                            "has_edge_points": points_added > 0,
+                                            "vertex_coverage_applied": False,
+                                            "edge_points_outside_polygon": edge_outside_count,
+                                            "edge_points_inside_polygon": edge_on_boundary_count,
+                                            "edge_points_total": int(edge_x.size) if edge_x.size > 0 else 0,
+                                            "edge_method": "dilate_mask_minimal_3x3"
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
                         else:
                             # Grid ist in X-Y-Ebene: Verwende X-Y-Projektion mit Y-Toleranz (Fallback)
                             y_mean = float(np.mean(poly_y))
@@ -4024,7 +3849,108 @@ class FlexibleGridGenerator(ModuleBase):
                             ]
                             mask_strict = self.builder._points_in_polygon_batch_uv(Y_grid, Z_grid, polygon_uv)
                             # Erweitere Maske wie bei einzelnen Surfaces
+                            # 🎯 GRUPPENSURFACES: Randpunkte aktiviert (für bessere Interpolation zwischen benachbarten Surfaces)
                             mask = self.builder._dilate_mask_minimal(mask_strict)
+                            
+                            # #region agent log - Randpunkte bei Gruppensurface (Y-Z-Wand)
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    points_in_strict = int(np.count_nonzero(mask_strict))
+                                    points_in_dilated = int(np.count_nonzero(mask))
+                                    points_added = points_in_dilated - points_in_strict
+                                    # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
+                                    edge_points_mask = mask & ~mask_strict
+                                    edge_y = Y_grid[edge_points_mask]
+                                    edge_z = Z_grid[edge_points_mask]
+                                    # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
+                                    from matplotlib.path import Path
+                                    poly_path = Path(np.column_stack((
+                                        [float(p.get("y", 0.0)) for p in pts],
+                                        [float(p.get("z", 0.0)) for p in pts]
+                                    )))
+                                    if edge_y.size > 0:
+                                        edge_points_2d = np.column_stack((edge_y, edge_z))
+                                        edge_inside = poly_path.contains_points(edge_points_2d)
+                                        edge_outside_count = int(np.sum(~edge_inside))
+                                        edge_on_boundary_count = int(np.sum(edge_inside))
+                                    else:
+                                        edge_outside_count = 0
+                                        edge_on_boundary_count = 0
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "edge-points-analysis",
+                                        "hypothesisId": "EDGE_POINTS_POSITION",
+                                        "location": "FlexibleGridGenerator.generate_group_sum_grid:vertical_yz",
+                                        "message": "Randpunkte-Analyse Gruppensurface (Y-Z-Wand)",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "group_id": str(group_surfaces[0][0].split('_')[0] + '_group') if group_surfaces else "unknown",
+                                            "points_in_strict_mask": points_in_strict,
+                                            "points_in_dilated_mask": points_in_dilated,
+                                            "edge_points_added": points_added,
+                                            "has_edge_points": points_added > 0,
+                                            "vertex_coverage_applied": False,
+                                            "edge_points_outside_polygon": edge_outside_count,
+                                            "edge_points_inside_polygon": edge_on_boundary_count,
+                                            "edge_points_total": int(edge_y.size) if edge_y.size > 0 else 0,
+                                            "edge_method": "dilate_mask_minimal_3x3"
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            
+                            # #region agent log - Randpunkte bei Gruppensurface (X-Z-Wand)
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    points_in_strict = int(np.count_nonzero(mask_strict))
+                                    points_in_dilated = int(np.count_nonzero(mask))
+                                    points_added = points_in_dilated - points_in_strict
+                                    # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
+                                    edge_points_mask = mask & ~mask_strict
+                                    edge_x = X_grid[edge_points_mask]
+                                    edge_z = Z_grid[edge_points_mask]
+                                    # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
+                                    from matplotlib.path import Path
+                                    poly_path = Path(np.column_stack((
+                                        [float(p.get("x", 0.0)) for p in pts],
+                                        [float(p.get("z", 0.0)) for p in pts]
+                                    )))
+                                    if edge_x.size > 0:
+                                        edge_points_2d = np.column_stack((edge_x, edge_z))
+                                        edge_inside = poly_path.contains_points(edge_points_2d)
+                                        edge_outside_count = int(np.sum(~edge_inside))
+                                        edge_on_boundary_count = int(np.sum(edge_inside))
+                                    else:
+                                        edge_outside_count = 0
+                                        edge_on_boundary_count = 0
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "edge-points-analysis",
+                                        "hypothesisId": "EDGE_POINTS_POSITION",
+                                        "location": "FlexibleGridGenerator.generate_group_sum_grid:vertical_xz",
+                                        "message": "Randpunkte-Analyse Gruppensurface (X-Z-Wand)",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "group_id": str(group_surfaces[0][0].split('_')[0] + '_group') if group_surfaces else "unknown",
+                                            "points_in_strict_mask": points_in_strict,
+                                            "points_in_dilated_mask": points_in_dilated,
+                                            "edge_points_added": points_added,
+                                            "has_edge_points": points_added > 0,
+                                            "vertex_coverage_applied": False,
+                                            "edge_points_outside_polygon": edge_outside_count,
+                                            "edge_points_inside_polygon": edge_on_boundary_count,
+                                            "edge_points_total": int(edge_x.size) if edge_x.size > 0 else 0,
+                                            "edge_method": "dilate_mask_minimal_3x3"
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
                         else:
                             # Grid ist in X-Y-Ebene: Verwende X-Y-Projektion mit X-Toleranz (Fallback)
                             x_mean = float(np.mean(poly_x))
@@ -4051,11 +3977,100 @@ class FlexibleGridGenerator(ModuleBase):
                     # Verwende das bereits vorhandene geom-Objekt direkt (es ist bereits ein SurfaceGeometry)
                     mask_strict = self.builder._create_surface_mask(X_grid, Y_grid, geom)
                     # Erweitere Maske wie bei einzelnen Surfaces
+                    # 🎯 GRUPPENSURFACES: Randpunkte aktiviert (für bessere Interpolation zwischen benachbarten Surfaces)
                     mask = self.builder._dilate_mask_minimal(mask_strict)
+                    
+                    # #region agent log - Randpunkte bei Gruppensurface (planar/sloped)
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            import json, time as _t
+                            points_in_strict = int(np.count_nonzero(mask_strict))
+                            points_in_dilated = int(np.count_nonzero(mask))
+                            points_added = points_in_dilated - points_in_strict
+                            # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
+                            edge_points_mask = mask & ~mask_strict
+                            edge_x = X_grid[edge_points_mask]
+                            edge_y = Y_grid[edge_points_mask]
+                            # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
+                            from matplotlib.path import Path
+                            poly_path = Path(np.column_stack((
+                                [float(p.get("x", 0.0)) for p in pts],
+                                [float(p.get("y", 0.0)) for p in pts]
+                            )))
+                            if edge_x.size > 0:
+                                edge_points_2d = np.column_stack((edge_x, edge_y))
+                                edge_inside = poly_path.contains_points(edge_points_2d)
+                                edge_outside_count = int(np.sum(~edge_inside))
+                                edge_on_boundary_count = int(np.sum(edge_inside))
+                            else:
+                                edge_outside_count = 0
+                                edge_on_boundary_count = 0
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "edge-points-analysis",
+                                "hypothesisId": "EDGE_POINTS_POSITION",
+                                "location": "FlexibleGridGenerator.generate_group_sum_grid:planar",
+                                "message": "Randpunkte-Analyse Gruppensurface (planar/sloped)",
+                                "data": {
+                                    "surface_id": str(surface_id),
+                                    "group_id": str(group_surfaces[0][0].split('_')[0] + '_group') if group_surfaces else "unknown",
+                                    "points_in_strict_mask": points_in_strict,
+                                    "points_in_dilated_mask": points_in_dilated,
+                                    "edge_points_added": points_added,
+                                    "has_edge_points": points_added > 0,
+                                    "vertex_coverage_applied": False,
+                                    "edge_points_outside_polygon": edge_outside_count,
+                                    "edge_points_inside_polygon": edge_on_boundary_count,
+                                    "edge_points_total": int(edge_x.size) if edge_x.size > 0 else 0,
+                                    "edge_method": "dilate_mask_minimal_3x3"
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
             except Exception as e:
                 mask = np.zeros_like(X_grid, dtype=bool)
             
             surface_masks[surface_id] = mask
+            
+            # #region agent log - Masken-Analyse pro Surface
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    import json, time as _t
+                    total_grid_points = int(X_grid.size)
+                    points_in_mask = int(np.count_nonzero(mask))
+                    points_outside_mask = total_grid_points - points_in_mask
+                    mask_coverage = float(points_in_mask / total_grid_points) if total_grid_points > 0 else 0.0
+                    
+                    # Prüfe Überlappung mit anderen Surfaces
+                    overlap_with_others = 0
+                    for other_sid, other_mask in surface_masks.items():
+                        if other_sid != surface_id and np.any(other_mask):
+                            overlap = np.count_nonzero(mask & other_mask)
+                            if overlap > 0:
+                                overlap_with_others += overlap
+                    
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "group-grid-analysis",
+                        "hypothesisId": "GROUP_GRID_POINTS",
+                        "location": "FlexibleGridGenerator.generate_group_sum_grid:mask_created",
+                        "message": "Surface-Maske erstellt im Gruppen-Grid",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "total_grid_points": total_grid_points,
+                            "points_in_mask": points_in_mask,
+                            "points_outside_mask": points_outside_mask,
+                            "mask_coverage": mask_coverage,
+                            "overlap_with_other_surfaces": overlap_with_others,
+                            "mask_shape": list(mask.shape) if mask is not None else None
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             # Berechne Z-Werte für diese Surface (nur innerhalb der Maske)
             if np.any(mask):
@@ -4157,216 +4172,12 @@ class FlexibleGridGenerator(ModuleBase):
             "resolution": resolution,
         }
 
-    def generate_per_group(
-        self,
-        enabled_surfaces: List[Tuple[str, Dict]],
-        resolution: Optional[float] = None,
-        min_points_per_dimension: int = 6,
-    ) -> Dict[str, SurfaceGrid]:
-        """
-        Erzeugt EIN Grid pro aktiver Gruppe (oder ungruppierter Surface).
-        Alle Surfaces der Gruppe werden in einem gemeinsamen Grid zusammengeführt.
-        """
-        if resolution is None:
-            resolution = self.settings.resolution
-
-        if not enabled_surfaces:
-            return {}
-
-        # Gruppiere Surfaces nach group_id (fallback "__ungrouped__")
-        grouped: Dict[str, List[Tuple[str, Dict]]] = {}
-        for sid, sdef in enabled_surfaces:
-            gid = sdef.get("group_id") or sdef.get("group_name") or "__ungrouped__"
-            grouped.setdefault(gid, []).append((sid, sdef))
-
-        result: Dict[str, SurfaceGrid] = {}
-
-        for gid, surfaces in grouped.items():
-            # Analysiere Surfaces der Gruppe
-            geometries = self.analyzer.analyze_surfaces(surfaces)
-            if not geometries:
-                continue
-
-            # Bounding-Box über alle Surfaces
-            all_x = []
-            all_y = []
-            for geom in geometries:
-                pts = geom.points
-                all_x.extend([p.get("x", 0.0) for p in pts])
-                all_y.extend([p.get("y", 0.0) for p in pts])
-            if not all_x or not all_y:
-                continue
-
-            min_x, max_x = min(all_x), max(all_x)
-            min_y, max_y = min(all_y), max(all_y)
-
-            # Stelle sicher, dass wir mindestens min_points_per_dimension abdecken
-            if resolution <= 0:
-                resolution = self.settings.resolution or 1.0
-            nx_target = max(min_points_per_dimension, int(np.ceil((max_x - min_x) / resolution)) + 1)
-            ny_target = max(min_points_per_dimension, int(np.ceil((max_y - min_y) / resolution)) + 1)
-            sound_field_x = np.linspace(min_x, max_x, nx_target)
-            sound_field_y = np.linspace(min_y, max_y, ny_target)
-            X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing="xy")
-
-            # Union-Maske und Z-Akkumulation
-            mask_union = np.zeros_like(X_grid, dtype=bool)
-            Z_accum = np.zeros_like(X_grid, dtype=float)
-            Z_count = np.zeros_like(X_grid, dtype=float)
-
-            for geom in geometries:
-                pts = geom.points
-                if len(pts) < 3:
-                    continue
-                poly_x = np.array([p.get("x", 0.0) for p in pts], dtype=float)
-                poly_y = np.array([p.get("y", 0.0) for p in pts], dtype=float)
-                try:
-                    from matplotlib.path import Path
-                    path = Path(np.column_stack((poly_x, poly_y)))
-                    inside = path.contains_points(np.column_stack((X_grid.ravel(), Y_grid.ravel())))
-                    mask = inside.reshape(X_grid.shape)
-                except Exception:
-                    mask = np.zeros_like(X_grid, dtype=bool)
-                if not np.any(mask):
-                    continue
-
-                # Z-Werte auf Ebene projizieren
-                if geom.plane_model:
-                    Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
-                    Z_accum[mask] += Z_surface[mask]
-                    Z_count[mask] += 1.0
-                else:
-                    # keine Ebene: Z=0
-                    Z_count[mask] += 1.0
-
-                mask_union |= mask
-
-            if not np.any(mask_union):
-                continue
-
-            Z_grid = np.zeros_like(X_grid, dtype=float)
-            valid = Z_count > 0
-            Z_grid[valid] = Z_accum[valid] / Z_count[valid]
-
-            # SurfaceGeometry Platzhalter für Gruppe
-            geom_group = SurfaceGeometry(
-                surface_id=str(gid),
-                name=str(gid),
-                points=[],  # nicht benötigt im Plot
-                plane_model=None,
-                orientation="planar",
-                bbox=(min_x, max_x, min_y, max_y),
-            )
-
-            # Effektive Auflösung
-            if len(sound_field_x) > 1 and len(sound_field_y) > 1:
-                actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
-                actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
-                actual_resolution = (actual_resolution_x + actual_resolution_y) / 2.0
-            else:
-                actual_resolution = resolution
-
-            # 🎯 TRIANGULATION: Für Gruppen kombinieren wir alle Surfaces
-            triangulated_vertices = None
-            triangulated_faces = None
-            triangulated_success = False
-            
-            try:
-                # Kombiniere alle Surface-Punkte für Triangulation
-                all_points = []
-                for geom in geometries:
-                    all_points.extend(geom.points)
-                
-                # 🎯 DEBUG: Zeige Eingabe-Punkte für Gruppe
-                print(f"[DEBUG Triangulation] Gruppe '{gid}': Starte Triangulation")
-                print(f"  └─ Anzahl Surfaces in Gruppe: {len(geometries)}")
-                print(f"  └─ Kombinierte Punkte: {len(all_points)}")
-                for i, geom in enumerate(geometries):
-                    print(f"      └─ Surface {i+1} '{geom.surface_id}': {len(geom.points)} Punkte")
-                
-                if len(all_points) >= 3:
-                    pts_array = np.array([[p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)] for p in all_points])
-                    print(f"  └─ Kombinierte X-Range: [{pts_array[:, 0].min():.3f}, {pts_array[:, 0].max():.3f}]")
-                    print(f"  └─ Kombinierte Y-Range: [{pts_array[:, 1].min():.3f}, {pts_array[:, 1].max():.3f}]")
-                    print(f"  └─ Kombinierte Z-Range: [{pts_array[:, 2].min():.3f}, {pts_array[:, 2].max():.3f}]")
-                    
-                    tris = triangulate_points(all_points)
-                    if tris and len(tris) > 0:
-                        # Konvertiere Triangulation zu Vertices und Faces
-                        verts_list = []
-                        for tri in tris:
-                            for p in tri:
-                                verts_list.append([p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)])
-                        
-                        verts = np.array(verts_list, dtype=float)
-                        faces_list = []
-                        vertex_offset = 0
-                        for _ in tris:
-                            faces_list.extend([3, vertex_offset, vertex_offset + 1, vertex_offset + 2])
-                            vertex_offset += 3
-                        
-                        triangulated_vertices = verts
-                        triangulated_faces = np.array(faces_list, dtype=np.int64)
-                        triangulated_success = True
-
-                        # 🎯 NACHBEARBEITUNG: Doppelte Vertices entfernen (Gruppen-Mesh)
-                        if triangulated_success and triangulated_vertices is not None and triangulated_faces is not None:
-                            triangulated_vertices, triangulated_faces = self.builder._deduplicate_vertices_and_faces(
-                                triangulated_vertices,
-                                triangulated_faces,
-                                actual_resolution,
-                                str(gid),
-                            )
-                        
-                        # 🎯 DEBUG: Detaillierte Ausgabe der Triangulation für Gruppe
-                        print(f"[DEBUG Triangulation] ✅ Gruppe '{gid}': Triangulation erfolgreich")
-                        print(f"  └─ Anzahl Dreiecke (nach Deduplikation): {len(triangulated_faces)//4 if triangulated_faces is not None else 0}")
-                        print(f"  └─ Anzahl Vertices (nach Deduplikation): {len(triangulated_vertices) if triangulated_vertices is not None else 0}")
-                        print(f"  └─ Anzahl Faces (PyVista-Format): {len(triangulated_faces)//4 if triangulated_faces is not None else 0}")
-                        if triangulated_vertices is not None:
-                            print(f"  └─ Vertices Shape: {triangulated_vertices.shape}")
-                            print(f"  └─ Vertices X-Range: [{triangulated_vertices[:, 0].min():.3f}, {triangulated_vertices[:, 0].max():.3f}]")
-                            print(f"  └─ Vertices Y-Range: [{triangulated_vertices[:, 1].min():.3f}, {triangulated_vertices[:, 1].max():.3f}]")
-                            print(f"  └─ Vertices Z-Range: [{triangulated_vertices[:, 2].min():.3f}, {triangulated_vertices[:, 2].max():.3f}]")
-                        
-                        # Prüfe auf NaN oder Inf
-                        if triangulated_vertices is not None and (np.any(np.isnan(triangulated_vertices)) or np.any(np.isinf(triangulated_vertices))):
-                            print(f"  ⚠️  WARNUNG: NaN oder Inf in Vertices gefunden!")
-                        else:
-                            print(f"  └─ ✅ Alle Vertices sind gültig (keine NaN/Inf)")
-                    else:
-                        print(f"[DEBUG Triangulation] ❌ Gruppe '{gid}': Keine Dreiecke erstellt (tris={tris})")
-                else:
-                    print(f"[DEBUG Triangulation] ❌ Gruppe '{gid}': Zu wenige Punkte ({len(all_points)} < 3)")
-            except Exception as e:
-                print(f"[DEBUG Triangulation] ❌ Gruppe '{gid}': Fehler bei Triangulation: {e}")
-                import traceback
-                print(f"  └─ Traceback: {traceback.format_exc()}")
-                triangulated_success = False
-
-            result[gid] = SurfaceGrid(
-                surface_id=str(gid),
-                sound_field_x=sound_field_x,
-                sound_field_y=sound_field_y,
-                X_grid=X_grid,
-                Y_grid=Y_grid,
-                Z_grid=Z_grid,
-                surface_mask=mask_union,
-                resolution=actual_resolution,
-                geometry=geom_group,
-                triangulated_vertices=triangulated_vertices,
-                triangulated_faces=triangulated_faces,
-                triangulated_success=triangulated_success,
-            )
-
-        return result
-    
     def _make_surface_cache_key(
         self,
         geom: SurfaceGeometry,
         resolution: float,
         min_points: int,
-    ) -> tuple:
+        ) -> tuple:
         """
         Erzeugt einen stabilen Cache-Key für eine Surface-Geometrie.
         Berücksichtigt:
@@ -4401,7 +4212,7 @@ class FlexibleGridGenerator(ModuleBase):
         self,
         enabled_surfaces: List[Tuple[str, Dict]],
         resolution: Optional[float]
-    ) -> str:
+        ) -> str:
         """Erstellt Hash für Cache-Vergleich"""
         # Hash: Anzahl Surfaces + Resolution + globale Geometrie-Version
         n_surfaces = len(enabled_surfaces)

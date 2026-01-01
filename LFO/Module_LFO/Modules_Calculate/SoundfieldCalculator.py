@@ -281,23 +281,32 @@ class SoundFieldCalculator(ModuleBase):
         if not enabled_surfaces:
             return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
-        # 🎯 NEU: Identifiziere Gruppen-Kandidaten für gemeinsame Summen-Grids
-        candidate_groups = self._identify_group_candidates(enabled_surfaces)
-        
-        # Trenne Surfaces in Kandidaten-Gruppen und einzelne Surfaces
-        surfaces_in_candidate_groups: set = set()
-        for group_id, surface_ids in candidate_groups.items():
-            surfaces_in_candidate_groups.update(surface_ids)
-        
-        individual_surfaces = [
-            (sid, sdef) for sid, sdef in enabled_surfaces
-            if sid not in surfaces_in_candidate_groups
-        ]
-        
         # Erstelle Mapping: surface_id -> surface_definition für schnellen Zugriff
         surface_def_map = {sid: sdef for sid, sdef in enabled_surfaces}
         
-        # Verwende generate_per_surface() um pro Surface Grids zu bekommen (nicht pro Gruppe)
+        # Verwende generate_per_surface() um pro Surface Grids zu bekommen
+        # #region agent log - Welche Surfaces werden als Einzelsurfaces erstellt?
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                import json, time as _t
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "single-surface-edge-points",
+                    "hypothesisId": "SINGLE_SURFACE_CREATION",
+                    "location": "SoundfieldCalculator._calculate_sound_field_complex:before_generate_per_surface",
+                    "message": "Vor generate_per_surface - alle enabled Surfaces",
+                    "data": {
+                        "total_enabled_surfaces": len(enabled_surfaces),
+                        "enabled_surface_ids": [sid for sid, _ in enabled_surfaces],
+                        "surfaces_in_candidate_groups": list(surfaces_in_candidate_groups),
+                        "surfaces_not_in_groups": [sid for sid, _ in enabled_surfaces if sid not in surfaces_in_candidate_groups]
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         with perf_section(
             "SoundFieldCalculator._calculate_sound_field_complex.generate_per_surface",
             n_surfaces=len(enabled_surfaces),
@@ -307,6 +316,32 @@ class SoundFieldCalculator(ModuleBase):
                 resolution=self.settings.resolution,
                 min_points_per_dimension=3
             )
+        
+        # #region agent log - Welche Surfaces wurden als Einzelsurfaces erstellt?
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                import json, time as _t
+                surfaces_in_groups_also_generated = [sid for sid in surface_grids_grouped.keys() if sid in surfaces_in_candidate_groups]
+                # Prüfe ob diese Surfaces auch in Gruppen-Grids erstellt werden (doppelte Randpunkte)
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "edge-points-analysis",
+                    "hypothesisId": "DUPLICATE_EDGE_POINTS",
+                    "location": "SoundfieldCalculator._calculate_sound_field_complex:after_generate_per_surface",
+                    "message": "Prüfung auf doppelte Randpunkte - Surfaces in Gruppen auch als Einzelsurfaces",
+                    "data": {
+                        "total_generated_surfaces": len(surface_grids_grouped),
+                        "generated_surface_ids": list(surface_grids_grouped.keys()),
+                        "surfaces_in_groups_also_generated": surfaces_in_groups_also_generated,
+                        "surfaces_not_in_groups_generated": [sid for sid in surface_grids_grouped.keys() if sid not in surfaces_in_candidate_groups],
+                        "potential_duplicate_edge_points": len(surfaces_in_groups_also_generated) > 0,
+                        "note": "Surfaces in Gruppen werden sowohl als Einzelsurfaces als auch in Gruppen-Grids erstellt - mögliche doppelte Randpunkte"
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         # Prüfe, welche Surfaces fehlen
         enabled_ids = {sid for sid, _ in enabled_surfaces}
@@ -343,6 +378,35 @@ class SoundFieldCalculator(ModuleBase):
                 X_grid_combined, Y_grid_combined = np.meshgrid(unique_x, unique_y, indexing='xy')
                 Z_grid_combined = np.zeros_like(X_grid_combined, dtype=float)
                 surface_mask_combined = np.zeros_like(X_grid_combined, dtype=bool)
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        # Berechne Gesamtanzahl Gridpunkte aus einzelnen Surfaces
+                        total_individual_grid_points = sum(
+                            int(grid.X_grid.size) if hasattr(grid, 'X_grid') else 0
+                            for grid in surface_grids_grouped.values()
+                        )
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "grid-analysis-v2",
+                            "hypothesisId": "H1",
+                            "location": "SoundfieldCalculator._calculate_sound_field_complex",
+                            "message": "Kombiniertes Grid erstellt",
+                            "data": {
+                                "n_surfaces": len(surface_grids_grouped),
+                                "unique_x_count": int(len(unique_x)),
+                                "unique_y_count": int(len(unique_y)),
+                                "combined_grid_points": int(X_grid_combined.size),
+                                "combined_grid_shape": list(X_grid_combined.shape),
+                                "total_individual_grid_points": int(total_individual_grid_points),
+                                "grid_duplication_factor": float(total_individual_grid_points / X_grid_combined.size) if X_grid_combined.size > 0 else 0.0
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
             else:
                 return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
@@ -1028,6 +1092,48 @@ class SoundFieldCalculator(ModuleBase):
                 # Berechne 3D-Distanz (Pythagoras in 3D)
                 # √(horizontal² + z²) für ALLE Punkte gleichzeitig
                 source_dists = np.sqrt(horizontal_dists**2 + z_distance**2)
+                
+                # #region agent log - Grid-Punkte in SPL calc
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        import json, time as _t
+                        # Prüfe, ob wir in einer Gruppen-Berechnung sind
+                        if 'group_id' in locals() or 'group_grids' in locals():
+                            total_grid_points = int(X_grid.size)
+                            # Berechne, wie viele Punkte innerhalb/außerhalb der Surfaces sind
+                            # (nur wenn group_grids verfügbar ist)
+                            points_in_any_surface = 0
+                            if 'group_grids' in locals() and group_id in group_grids:
+                                group_grid = group_grids[group_id]
+                                surface_masks = group_grid.get("masks", {})
+                                if surface_masks:
+                                    # Union aller Masken
+                                    union_mask = np.zeros_like(X_grid, dtype=bool)
+                                    for mask in surface_masks.values():
+                                        if mask is not None and mask.shape == X_grid.shape:
+                                            union_mask |= mask
+                                    points_in_any_surface = int(np.count_nonzero(union_mask))
+                            
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "group-grid-analysis",
+                                "hypothesisId": "GROUP_GRID_SPL_CALC",
+                                "location": "SoundfieldCalculator._calculate_sound_field_complex:group_wave_computation",
+                                "message": "SPL-Berechnung für Gruppen-Grid - alle Gridpunkte",
+                                "data": {
+                                    "group_id": str(group_id) if 'group_id' in locals() else "unknown",
+                                    "array_key": str(array_key),
+                                    "isrc": int(isrc),
+                                    "total_grid_points": total_grid_points,
+                                    "points_in_any_surface": points_in_any_surface,
+                                    "points_outside_all_surfaces": total_grid_points - points_in_any_surface,
+                                    "grid_shape": list(X_grid.shape) if X_grid is not None else None
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 
                 # --------------------------------------------------------
                 # 4.2: VEKTORISIERTE WINKEL-BERECHNUNG
