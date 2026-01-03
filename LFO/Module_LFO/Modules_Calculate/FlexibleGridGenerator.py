@@ -1355,6 +1355,10 @@ class GridBuilder(ModuleBase):
             # Sammle alle Boundary-Punkte entlang der Kanten
             edge_points = []
             
+            # #region agent log - Edge point generation analysis
+            edge_generation_stats = []
+            # #endregion
+            
             for i in range(n_vertices):
                 x1, y1 = px[i], py[i]
                 x2, y2 = px[(i + 1) % n_vertices], py[(i + 1) % n_vertices]
@@ -1368,25 +1372,74 @@ class GridBuilder(ModuleBase):
                     # Degenerierte Kante überspringen
                     continue
                 
-                # Anzahl der Punkte entlang dieser Kante (inklusive Start, exklusive Ende)
-                n_points = max(1, int(np.ceil(segment_len / point_spacing)))
+                # Anzahl der Punkte entlang dieser Kante basierend auf gewünschtem Abstand
+                # Berechne Anzahl der Segmente: bei n_points=2 gibt es 1 Segment (2 Punkte = Start + Ende)
+                n_segments = max(1, int(np.ceil(segment_len / point_spacing)))
+                n_points = n_segments + 1  # n Segmente benötigen n+1 Punkte (inklusive Ende)
                 
-                # Generiere gleichmäßig verteilte Punkte entlang der Kante
+                # #region agent log - Per-edge point calculation (H1, H2, H3)
+                edge_points_before = len(edge_points)
+                point_positions = []
+                # #endregion
+                
+                # Generiere gleichmäßig verteilte Punkte entlang der Kante (inklusive Ende)
                 for j in range(n_points):
-                    # t von 0.0 bis (n_points-1)/n_points, damit der letzte Punkt nicht genau am Ende liegt
-                    # (der Endpunkt wird von der nächsten Kante abgedeckt)
+                    # t von 0.0 bis 1.0: gleichmäßige Verteilung über das gesamte Segment
                     if n_points == 1:
                         t = 0.0
                     else:
-                        t = j / n_points
+                        t = j / (n_points - 1)  # Für n_points=2: t=0.0 und t=1.0
                     
                     x_edge = x1 + t * dx
                     y_edge = y1 + t * dy
                     edge_points.append((x_edge, y_edge))
+                    
+                    # #region agent log - Point position tracking (H2)
+                    point_positions.append({"t": float(t), "x": float(x_edge), "y": float(y_edge)})
+                    # #endregion
+                
+                # #region agent log - Edge statistics (H1, H2, H3)
+                edge_points_after = len(edge_points)
+                points_generated = edge_points_after - edge_points_before
+                # Berechne tatsächliche Abstände zwischen Punkten
+                actual_distances = []
+                if len(point_positions) > 1:
+                    for k in range(len(point_positions) - 1):
+                        p1 = point_positions[k]
+                        p2 = point_positions[k + 1]
+                        dist = math.hypot(p2["x"] - p1["x"], p2["y"] - p1["y"])
+                        actual_distances.append(dist)
+                elif len(point_positions) == 1:
+                    actual_distances = [segment_len]  # Nur ein Punkt auf der Kante
+                
+                avg_spacing = float(np.mean(actual_distances)) if len(actual_distances) > 0 else segment_len
+                max_spacing = float(np.max(actual_distances)) if len(actual_distances) > 0 else segment_len
+                min_spacing = float(np.min(actual_distances)) if len(actual_distances) > 0 else segment_len
+                
+                edge_generation_stats.append({
+                    "edge_index": i,
+                    "segment_len": float(segment_len),
+                    "point_spacing_target": float(point_spacing),
+                    "n_points_calculated": n_points,
+                    "n_points_generated": points_generated,
+                    "avg_actual_spacing": avg_spacing,
+                    "max_actual_spacing": max_spacing,
+                    "min_actual_spacing": min_spacing,
+                    "spacing_ratio_avg": float(avg_spacing / point_spacing) if point_spacing > 0 else 0.0,
+                    "spacing_ratio_max": float(max_spacing / point_spacing) if point_spacing > 0 else 0.0,
+                    "actual_distances": actual_distances,
+                    "point_positions": point_positions
+                })
+                # #endregion
             
             # Entferne doppelte Punkte (z.B. Eckpunkte die mehrfach auftreten)
             tolerance = resolution * 0.05
             unique_edge_points = []
+            duplicates_removed = 0
+            
+            # #region agent log - Before deduplication (H4)
+            points_before_dedup = len(edge_points)
+            # #endregion
             for x, y in edge_points:
                 is_duplicate = False
                 for ex, ey in unique_edge_points:
@@ -1395,8 +1448,93 @@ class GridBuilder(ModuleBase):
                         break
                 if not is_duplicate:
                     unique_edge_points.append((x, y))
+                else:
+                    duplicates_removed += 1
             
             edge_points = unique_edge_points
+            
+            # #region agent log - After deduplication and final stats (H4)
+            points_after_dedup = len(edge_points)
+            
+            # Berechne Abstände zwischen finalen Punkten (in Reihenfolge entlang Polygon)
+            final_distances = []
+            if len(edge_points) > 1:
+                # Sortiere Punkte nach Polygon-Reihenfolge: für jede Kante, prüfe welche Punkte darauf liegen
+                sorted_edge_points = []
+                remaining_points = list(edge_points)
+                
+                # Für jede Kante: finde Punkte, die darauf liegen
+                for i in range(n_vertices):
+                    x1, y1 = px[i], py[i]
+                    x2, y2 = px[(i + 1) % n_vertices], py[(i + 1) % n_vertices]
+                    dx_edge = x2 - x1
+                    dy_edge = y2 - y1
+                    edge_len = math.hypot(dx_edge, dy_edge)
+                    
+                    if edge_len > 1e-9:
+                        # Sammle Punkte auf dieser Kante
+                        points_on_this_edge = []
+                        for x, y in remaining_points:
+                            # Prüfe ob Punkt auf dieser Kante liegt
+                            to_point = np.array([x - x1, y - y1])
+                            edge_vec = np.array([dx_edge, dy_edge])
+                            t_proj = np.dot(to_point, edge_vec) / (edge_len * edge_len)
+                            proj_point = np.array([x1, y1]) + t_proj * edge_vec
+                            dist_to_edge = math.hypot(x - proj_point[0], y - proj_point[1])
+                            
+                            # Punkt liegt auf Kante wenn Abstand < tolerance und t zwischen 0 und 1
+                            if dist_to_edge < tolerance and 0.0 <= t_proj <= 1.0:
+                                points_on_this_edge.append((x, y, t_proj))
+                        
+                        # Sortiere Punkte auf dieser Kante nach t
+                        points_on_this_edge.sort(key=lambda p: p[2])
+                        sorted_edge_points.extend([(p[0], p[1]) for p in points_on_this_edge])
+                        # Entferne bereits verwendete Punkte
+                        for px_val, py_val, _ in points_on_this_edge:
+                            remaining_points = [(x, y) for x, y in remaining_points if not (abs(x - px_val) < tolerance and abs(y - py_val) < tolerance)]
+                
+                # Berechne Abstände zwischen aufeinanderfolgenden Punkten
+                if len(sorted_edge_points) > 1:
+                    for i in range(len(sorted_edge_points) - 1):
+                        x1, y1 = sorted_edge_points[i]
+                        x2, y2 = sorted_edge_points[i + 1]
+                        dist = math.hypot(x2 - x1, y2 - y1)
+                        final_distances.append(dist)
+            
+            # Logge Zusammenfassung der Edge-Generierung
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "EDGE_POINT_DISTRIBUTION_ANALYSIS",
+                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary:edge_generation",
+                        "message": "Randpunkt-Verteilung Analyse",
+                        "data": {
+                            "surface_id": str(getattr(geometry, "surface_id", "unknown")),
+                            "orientation": str(getattr(geometry, "orientation", "unknown")),
+                            "resolution": float(resolution),
+                            "point_spacing_target": float(point_spacing),
+                            "n_edges": len(edge_generation_stats),
+                            "points_before_dedup": points_before_dedup,
+                            "points_after_dedup": points_after_dedup,
+                            "duplicates_removed": duplicates_removed,
+                            "final_distances_after_dedup": final_distances if final_distances else [],
+                            "final_distances_stats": {
+                                "count": len(final_distances),
+                                "min": float(min(final_distances)) if final_distances else None,
+                                "max": float(max(final_distances)) if final_distances else None,
+                                "avg": float(np.mean(final_distances)) if final_distances else None,
+                                "std": float(np.std(final_distances)) if final_distances else None
+                            } if final_distances else {},
+                            "edge_statistics": edge_generation_stats
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             if not edge_points:
                 return surface_mask_strict
@@ -1481,8 +1619,8 @@ class GridBuilder(ModuleBase):
                 nearest_distance = np.sqrt(d2[nearest_idx])
                 
                 # Aktiviere nur wenn:
-                # 1. Nah genug zum Boundary-Punkt
-                # 2. Innerhalb oder auf dem Polygon-Rand (nicht außerhalb)
+                # 1. Nah genug zum Boundary-Punkt (innerhalb max_distance)
+                # 2. UND Grid-Punkt ist innerhalb oder auf dem Polygon-Rand (NICHT außerhalb)
                 if d2[nearest_idx] <= max_sq_dist and points_inside_or_on_edge[nearest_idx]:
                     mask_flat[nearest_idx] = True
                 else:
@@ -1574,6 +1712,10 @@ class GridBuilder(ModuleBase):
             # Sammle alle Boundary-Punkte entlang der Kanten
             edge_points = []
             
+            # #region agent log - Edge point generation analysis (UV)
+            edge_generation_stats_uv = []
+            # #endregion
+            
             for i in range(n_vertices):
                 u1, v1 = pu[i], pv[i]
                 u2, v2 = pu[(i + 1) % n_vertices], pv[(i + 1) % n_vertices]
@@ -1587,35 +1729,114 @@ class GridBuilder(ModuleBase):
                     # Degenerierte Kante überspringen
                     continue
                 
-                # Anzahl der Punkte entlang dieser Kante (inklusive Start, exklusive Ende)
-                n_points = max(1, int(np.ceil(segment_len / point_spacing)))
+                # Anzahl der Punkte entlang dieser Kante basierend auf gewünschtem Abstand
+                # Berechne Anzahl der Segmente: bei n_points=2 gibt es 1 Segment (2 Punkte = Start + Ende)
+                n_segments = max(1, int(np.ceil(segment_len / point_spacing)))
+                n_points = n_segments + 1  # n Segmente benötigen n+1 Punkte (inklusive Ende)
                 
-                # Generiere gleichmäßig verteilte Punkte entlang der Kante
+                # #region agent log - Per-edge point calculation UV (H1, H2, H3)
+                edge_points_before = len(edge_points)
+                point_positions = []
+                # #endregion
+                
+                # Generiere gleichmäßig verteilte Punkte entlang der Kante (inklusive Ende)
                 for j in range(n_points):
-                    # t von 0.0 bis (n_points-1)/n_points, damit der letzte Punkt nicht genau am Ende liegt
-                    # (der Endpunkt wird von der nächsten Kante abgedeckt)
+                    # t von 0.0 bis 1.0: gleichmäßige Verteilung über das gesamte Segment
                     if n_points == 1:
                         t = 0.0
                     else:
-                        t = j / n_points
+                        t = j / (n_points - 1)  # Für n_points=2: t=0.0 und t=1.0
                     
                     u_edge = u1 + t * du
                     v_edge = v1 + t * dv
                     edge_points.append((u_edge, v_edge))
+                    
+                    # #region agent log - Point position tracking UV (H2)
+                    point_positions.append({"t": float(t), "u": float(u_edge), "v": float(v_edge)})
+                    # #endregion
+                
+                # #region agent log - Edge statistics UV (H1, H2, H3)
+                edge_points_after = len(edge_points)
+                points_generated = edge_points_after - edge_points_before
+                # Berechne tatsächliche Abstände zwischen Punkten
+                actual_distances = []
+                if len(point_positions) > 1:
+                    for k in range(len(point_positions) - 1):
+                        p1 = point_positions[k]
+                        p2 = point_positions[k + 1]
+                        dist = math.hypot(p2["u"] - p1["u"], p2["v"] - p1["v"])
+                        actual_distances.append(dist)
+                elif len(point_positions) == 1:
+                    actual_distances = [segment_len]
+                
+                avg_spacing = float(np.mean(actual_distances)) if len(actual_distances) > 0 else segment_len
+                max_spacing = float(np.max(actual_distances)) if len(actual_distances) > 0 else segment_len
+                min_spacing = float(np.min(actual_distances)) if len(actual_distances) > 0 else segment_len
+                
+                edge_generation_stats_uv.append({
+                    "edge_index": i,
+                    "segment_len": float(segment_len),
+                    "point_spacing_target": float(point_spacing),
+                    "n_points_calculated": n_points,
+                    "n_points_generated": points_generated,
+                    "avg_actual_spacing": avg_spacing,
+                    "max_actual_spacing": max_spacing,
+                    "min_actual_spacing": min_spacing,
+                    "spacing_ratio_avg": float(avg_spacing / point_spacing) if point_spacing > 0 else 0.0,
+                    "spacing_ratio_max": float(max_spacing / point_spacing) if point_spacing > 0 else 0.0,
+                    "actual_distances": actual_distances,
+                    "point_positions": point_positions
+                })
+                # #endregion
             
             # Entferne doppelte Punkte (z.B. Eckpunkte die mehrfach auftreten)
             tolerance = resolution * 0.05
             unique_edge_points = []
+            duplicates_removed = 0
+            
+            # #region agent log - Before deduplication UV (H4)
+            points_before_dedup = len(edge_points)
+            # #endregion
+            
             for u, v in edge_points:
                 is_duplicate = False
                 for eu, ev in unique_edge_points:
                     if abs(u - eu) < tolerance and abs(v - ev) < tolerance:
                         is_duplicate = True
+                        duplicates_removed += 1
                         break
                 if not is_duplicate:
                     unique_edge_points.append((u, v))
             
             edge_points = unique_edge_points
+            
+            # #region agent log - After deduplication UV and final stats (H4)
+            points_after_dedup = len(edge_points)
+            
+            # Logge Zusammenfassung der Edge-Generierung (UV)
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "EDGE_POINT_DISTRIBUTION_ANALYSIS_UV",
+                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary_uv:edge_generation",
+                        "message": "Randpunkt-Verteilung Analyse (UV)",
+                        "data": {
+                            "resolution": float(resolution),
+                            "point_spacing_target": float(point_spacing),
+                            "n_edges": len(edge_generation_stats_uv),
+                            "points_before_dedup": points_before_dedup,
+                            "points_after_dedup": points_after_dedup,
+                            "duplicates_removed": duplicates_removed,
+                            "edge_statistics": edge_generation_stats_uv
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             if not edge_points:
                 return surface_mask_strict
@@ -1688,8 +1909,8 @@ class GridBuilder(ModuleBase):
                 nearest_idx = int(np.argmin(d2))
                 
                 # Aktiviere nur wenn:
-                # 1. Nah genug zum Boundary-Punkt
-                # 2. Innerhalb oder auf dem Polygon-Rand (nicht außerhalb)
+                # 1. Nah genug zum Boundary-Punkt (innerhalb max_distance)
+                # 2. UND Grid-Punkt ist innerhalb oder auf dem Polygon-Rand (NICHT außerhalb)
                 if d2[nearest_idx] <= max_sq_dist and points_inside_or_on_edge[nearest_idx]:
                     mask_flat[nearest_idx] = True
             
