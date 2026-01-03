@@ -124,6 +124,15 @@ class SPL3DOverlayCoordinateAxes(SPL3DOverlayBase):
             polyline = self.pv.PolyData(points)
             polyline.lines = lines
             
+            # 🎯 WICHTIG: Entferne explizit alle Vertices, damit keine Punkte an Segmentenden gerendert werden
+            try:
+                polyline.verts = np.empty(0, dtype=np.int64)
+            except Exception:
+                try:
+                    polyline.verts = []
+                except Exception:
+                    pass
+            
             # Nur DPI-Skalierung, kein Zoom-Faktor (wie bei anderen Achsenlinien)
             scaled_line_width = self._get_scaled_line_width(line_width, apply_zoom=False)
             

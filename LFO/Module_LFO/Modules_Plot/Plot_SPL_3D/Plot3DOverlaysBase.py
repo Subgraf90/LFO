@@ -61,11 +61,24 @@ class SPL3DOverlayBase:
         if not isinstance(actor_names, list):
             actor_names = list(actor_names) if actor_names else []
         
+        if actor_names:
+            print(f"[clear_category] Removing {len(actor_names)} actors from category '{category}': {actor_names}")
+        
+        removed_count = 0
         for name in actor_names:
             try:
-                self.plotter.remove_actor(name)
+                # Prüfe ob Actor existiert, bevor wir versuchen ihn zu entfernen
+                actor_exists = name in self.plotter.renderer.actors if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors') else False
+                if actor_exists:
+                    self.plotter.remove_actor(name)
+                    removed_count += 1
+                    print(f"[clear_category] Removed actor '{name}' from plotter")
+                else:
+                    print(f"[clear_category] Actor '{name}' not found in plotter.renderer.actors (already removed?)")
             except KeyError:
-                pass
+                print(f"[clear_category] KeyError when removing actor '{name}' (not in plotter)")
+            except Exception as e:
+                print(f"[clear_category] Exception when removing actor '{name}': {e}")
             else:
                 if isinstance(self.overlay_actor_names, list):
                     if name in self.overlay_actor_names:
@@ -74,6 +87,9 @@ class SPL3DOverlayBase:
                     self.overlay_actor_names = list(self.overlay_actor_names) if self.overlay_actor_names else []
                     if name in self.overlay_actor_names:
                         self.overlay_actor_names.remove(name)
+        
+        if actor_names:
+            print(f"[clear_category] Removed {removed_count}/{len(actor_names)} actors successfully")
     
     def _add_overlay_mesh(
         self,
@@ -109,8 +125,23 @@ class SPL3DOverlayBase:
                 try:
                     existing_actor = self.plotter.renderer.actors.get(name)
                     if existing_actor is not None:
+                        print(f"[_add_overlay_mesh] Found existing actor '{name}' in plotter, removing before adding new one")
+                        # Prüfe line_width des existierenden Actors vor dem Entfernen (für Debug)
+                        if category == 'axis' and hasattr(existing_actor, 'GetProperty'):
+                            try:
+                                old_prop = existing_actor.GetProperty()
+                                if old_prop and hasattr(old_prop, 'GetLineWidth'):
+                                    old_width = old_prop.GetLineWidth()
+                                    print(f"[_add_overlay_mesh] Existing actor '{name}' had line_width={old_width:.2f} before removal")
+                            except Exception:
+                                pass
                         # Entferne den existierenden Actor, damit er nicht überschrieben wird
                         self.plotter.remove_actor(name)
+                        # Prüfe ob Actor wirklich entfernt wurde
+                        if name in self.plotter.renderer.actors:
+                            print(f"[_add_overlay_mesh] WARNING: Actor '{name}' still exists in plotter after remove_actor()!")
+                        else:
+                            print(f"[_add_overlay_mesh] Actor '{name}' successfully removed from plotter")
                         # Entferne auch aus der Liste der Actor-Namen
                         if hasattr(self, 'overlay_actor_names') and isinstance(self.overlay_actor_names, list):
                             if name in self.overlay_actor_names:
@@ -119,18 +150,24 @@ class SPL3DOverlayBase:
                             category_actors = self._category_actors.get(category, [])
                             if isinstance(category_actors, list) and name in category_actors:
                                 category_actors.remove(name)
-                except Exception:
+                except Exception as e:
                     # Ignoriere Fehler beim Entfernen (Actor existiert möglicherweise nicht)
+                    print(f"[_add_overlay_mesh] Exception while removing existing actor '{name}': {e}")
                     pass
         
+        # 🎯 FIX: Für axis category entfernen wir line_width aus kwargs, damit wir volle Kontrolle über SetLineWidth() haben
+        # Dies verhindert, dass PyVista die line_width bereits beim add_mesh setzt und dann möglicherweise akkumuliert wird
         kwargs = {
             'name': name,
             'opacity': opacity,
-            'line_width': line_width,
             'smooth_shading': False,
             'show_scalar_bar': False,
             'reset_camera': False,
         }
+        # Nur line_width in kwargs setzen, wenn es NICHT die axis category ist
+        # Für axis category wird line_width explizit via SetLineWidth() gesetzt
+        if category != 'axis':
+            kwargs['line_width'] = line_width
 
         if scalars is not None:
             kwargs['scalars'] = scalars
@@ -154,17 +191,121 @@ class SPL3DOverlayBase:
             kwargs['point_size'] = 0
 
         actor = self.plotter.add_mesh(mesh, **kwargs)
+        print(f"[_add_overlay_mesh] Added mesh actor '{name}', category='{category}', line_width={line_width:.2f}")
         
         # Erhöhe Picking-Priorität für Achsenlinien
         if category == 'axis':
+            print(f"[_add_overlay_mesh] Entering axis category block for '{name}'")
             try:
+                print(f"[_add_overlay_mesh] Actor has SetPickable: {hasattr(actor, 'SetPickable')}")
                 if hasattr(actor, 'SetPickable'):
                     actor.SetPickable(True)
+                print(f"[_add_overlay_mesh] Actor has GetProperty: {hasattr(actor, 'GetProperty')}")
                 if hasattr(actor, 'GetProperty'):
                     prop = actor.GetProperty()
+                    print(f"[_add_overlay_mesh] GetProperty() returned: {prop} (type: {type(prop)})")
                     if prop:
                         prop.SetOpacity(1.0)
+                        # 🎯 WICHTIG: Setze render_lines_as_tubes EXPLIZIT auf False, bevor SetLineWidth() aufgerufen wird
+                        # Dies stellt sicher, dass die line_width korrekt interpretiert wird
+                        if render_lines_as_tubes is False:
+                            if hasattr(prop, 'SetRenderLinesAsTubes'):
+                                prop.SetRenderLinesAsTubes(False)
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            actual_width_before = None
+                            if hasattr(prop, 'GetLineWidth'):
+                                try:
+                                    actual_width_before = prop.GetLineWidth()
+                                except Exception:
+                                    pass
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "line-width-check",
+                                    "hypothesisId": "LINE_WIDTH_SET",
+                                    "location": "Plot3DOverlaysBase._add_overlay_mesh:axis_category",
+                                    "message": "SetLineWidth für axis category",
+                                    "data": {
+                                        "name": name,
+                                        "line_width_requested": float(line_width),
+                                        "line_width_before": float(actual_width_before) if actual_width_before is not None else None,
+                                        "line_pattern": line_pattern,
+                                        "render_lines_as_tubes": render_lines_as_tubes
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + '\n')
+                        except Exception:
+                            pass
+                        # #endregion
+                        actual_width_before_print = None
+                        if hasattr(prop, 'GetLineWidth'):
+                            try:
+                                actual_width_before_print = prop.GetLineWidth()
+                            except Exception:
+                                pass
+                        print(f"[_add_overlay_mesh] Setting line_width for '{name}': requested={line_width:.2f}, before={actual_width_before_print:.2f if actual_width_before_print is not None else 'N/A'}, render_lines_as_tubes={render_lines_as_tubes}")
                         prop.SetLineWidth(line_width)
+                        actual_width_after_print = None
+                        if hasattr(prop, 'GetLineWidth'):
+                            try:
+                                actual_width_after_print = prop.GetLineWidth()
+                            except Exception:
+                                pass
+                        print(f"[_add_overlay_mesh] LineWidth after SetLineWidth for '{name}': {actual_width_after_print:.2f if actual_width_after_print is not None else 'N/A'} (requested: {line_width:.2f})")
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            actual_width_after = None
+                            if hasattr(prop, 'GetLineWidth'):
+                                try:
+                                    actual_width_after = prop.GetLineWidth()
+                                except Exception:
+                                    pass
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "line-width-check",
+                                    "hypothesisId": "LINE_WIDTH_VERIFY",
+                                    "location": "Plot3DOverlaysBase._add_overlay_mesh:axis_category",
+                                    "message": "LineWidth nach SetLineWidth",
+                                    "data": {
+                                        "name": name,
+                                        "line_width_requested": float(line_width),
+                                        "line_width_after": float(actual_width_after) if actual_width_after is not None else None,
+                                        "matches": actual_width_after == line_width if actual_width_after is not None else None
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + '\n')
+                        except Exception:
+                            pass
+                        # #endregion
+                        # 🎯 FIX: Setze auch das Line-Pattern hier, falls vorhanden
+                        # Das verhindert, dass das Standard-Pattern (0xFFFF) verwendet wird
+                        if line_pattern is not None:
+                            prop.SetRenderLinesAsTubes(False)
+                            prop.SetLineStipplePattern(int(line_pattern))
+                            prop.SetLineStippleRepeatFactor(max(1, int(line_repeat)))
+                        
+                        # 🎯 WICHTIG: Deaktiviere Punkte explizit für axis category
+                        # Dies verhindert, dass Punkte an Segmentenden beim zweiten Durchlauf sichtbar werden
+                        if hasattr(prop, 'render_points_as_spheres'):
+                            prop.render_points_as_spheres = False
+                        if hasattr(prop, 'point_size'):
+                            prop.point_size = 0
+                        # Alternative Methoden, falls die oben genannten nicht verfügbar sind
+                        try:
+                            if hasattr(prop, 'SetPointSize'):
+                                prop.SetPointSize(0)
+                            if hasattr(prop, 'SetRenderPointsAsSpheres'):
+                                prop.SetRenderPointsAsSpheres(False)
+                        except Exception:
+                            pass
+                        print(f"[_add_overlay_mesh] Deactivated points for axis category '{name}' (point_size=0)")
+                        
                 actor.Modified()
             except Exception:  # noqa: BLE001
                 pass
@@ -204,12 +345,16 @@ class SPL3DOverlayBase:
         
         # Line-Pattern nur bei echten Polylines anwenden
         is_tube_mesh = render_lines_as_tubes is None
+        
         if line_pattern is not None and not is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
             try:
                 actor.prop.SetRenderLinesAsTubes(False)
                 actor.prop.SetLineWidth(line_width)
-                actor.prop.SetLineStipplePattern(int(line_pattern))
+                pattern_set = int(line_pattern)
+                actor.prop.SetLineStipplePattern(pattern_set)
                 actor.prop.SetLineStippleRepeatFactor(max(1, int(line_repeat)))
+                # 🎯 WICHTIG: Actor.Modified() aufrufen, damit das Pattern gerendert wird
+                actor.Modified()
             except Exception:  # noqa: BLE001
                 pass
         elif is_tube_mesh and hasattr(actor, 'prop') and actor.prop is not None:
@@ -225,6 +370,177 @@ class SPL3DOverlayBase:
         
         self.overlay_actor_names.append(name)
         self._category_actors.setdefault(category, []).append(name)
+        
+        return name
+
+    def _add_axis_line_mesh(
+        self,
+        mesh: Any,
+        *,
+        color: str,
+        line_width: float,
+        name: str,
+    ) -> str:
+        """Spezielle Methode zum Hinzufügen von Axis-Linien (XY-Achsen).
+        
+        Diese Methode bietet vollständige Kontrolle über das Rendering von Axis-Linien
+        und stellt sicher, dass die line_width korrekt gesetzt wird, ohne Akkumulation.
+        
+        Args:
+            mesh: PyVista PolyData Mesh mit Linien
+            color: Farbe der Linien (z.B. 'red', 'black')
+            line_width: Liniendicke (wird direkt via SetLineWidth() gesetzt)
+            name: Actor-Name (muss eindeutig sein)
+        
+        Returns:
+            Actor-Name
+        """
+        # Entferne existierenden Actor, falls vorhanden
+        if hasattr(self, 'plotter') and self.plotter is not None:
+            try:
+                existing_actor = self.plotter.renderer.actors.get(name)
+                if existing_actor is not None:
+                    print(f"[_add_axis_line_mesh] Found existing actor '{name}', removing before adding new one")
+                    # Prüfe line_width des existierenden Actors vor dem Entfernen (für Debug)
+                    if hasattr(existing_actor, 'GetProperty'):
+                        try:
+                            old_prop = existing_actor.GetProperty()
+                            if old_prop and hasattr(old_prop, 'GetLineWidth'):
+                                old_width = old_prop.GetLineWidth()
+                                print(f"[_add_axis_line_mesh] Existing actor '{name}' had line_width={old_width:.2f} before removal")
+                        except Exception:
+                            pass
+                    # Entferne den existierenden Actor
+                    self.plotter.remove_actor(name)
+                    # Prüfe ob Actor wirklich entfernt wurde
+                    if name in self.plotter.renderer.actors:
+                        print(f"[_add_axis_line_mesh] WARNING: Actor '{name}' still exists in plotter after remove_actor()!")
+                    else:
+                        print(f"[_add_axis_line_mesh] Actor '{name}' successfully removed from plotter")
+                    # Entferne auch aus der Verwaltung
+                    if hasattr(self, 'overlay_actor_names') and isinstance(self.overlay_actor_names, list):
+                        if name in self.overlay_actor_names:
+                            self.overlay_actor_names.remove(name)
+                    if hasattr(self, '_category_actors') and isinstance(self._category_actors, dict):
+                        category_actors = self._category_actors.get('axis', [])
+                        if isinstance(category_actors, list) and name in category_actors:
+                            category_actors.remove(name)
+            except Exception as e:
+                print(f"[_add_axis_line_mesh] Exception while removing existing actor '{name}': {e}")
+        
+        # Erstelle kwargs OHNE line_width - wir setzen es explizit später
+        kwargs = {
+            'name': name,
+            'color': color,
+            'opacity': 1.0,
+            'smooth_shading': False,
+            'show_scalar_bar': False,
+            'reset_camera': False,
+            'render_lines_as_tubes': False,  # WICHTIG: Explizit False für Linien
+            'render_points_as_spheres': False,
+            'point_size': 0,
+        }
+        
+        # Füge Mesh zum Plotter hinzu
+        actor = self.plotter.add_mesh(mesh, **kwargs)
+        print(f"[_add_axis_line_mesh] Added mesh actor '{name}', line_width will be set to {line_width:.2f}")
+        
+        # Setze alle Eigenschaften für Axis-Linien explizit
+        try:
+            # Setze Picking-Priorität
+            if hasattr(actor, 'SetPickable'):
+                actor.SetPickable(True)
+            
+            # Hole Property-Objekt
+            if hasattr(actor, 'GetProperty'):
+                prop = actor.GetProperty()
+                if prop:
+                    # Setze Opacity
+                    prop.SetOpacity(1.0)
+                    
+                    # 🎯 WICHTIG: Setze render_lines_as_tubes EXPLIZIT auf False, bevor SetLineWidth()
+                    if hasattr(prop, 'SetRenderLinesAsTubes'):
+                        prop.SetRenderLinesAsTubes(False)
+                        print(f"[_add_axis_line_mesh] Set render_lines_as_tubes=False for '{name}'")
+                    
+                    # Prüfe line_width vor dem Setzen (für Debug)
+                    actual_width_before = None
+                    if hasattr(prop, 'GetLineWidth'):
+                        try:
+                            actual_width_before = prop.GetLineWidth()
+                        except Exception:
+                            pass
+                    
+                    print(f"[_add_axis_line_mesh] Setting line_width for '{name}': requested={line_width:.2f}, before={actual_width_before:.2f if actual_width_before is not None else 'N/A'}")
+                    
+                    # Setze line_width explizit
+                    if hasattr(prop, 'SetLineWidth'):
+                        prop.SetLineWidth(line_width)
+                    
+                    # Prüfe line_width nach dem Setzen (für Debug)
+                    actual_width_after = None
+                    if hasattr(prop, 'GetLineWidth'):
+                        try:
+                            actual_width_after = prop.GetLineWidth()
+                        except Exception:
+                            pass
+                    
+                    print(f"[_add_axis_line_mesh] LineWidth after SetLineWidth for '{name}': {actual_width_after:.2f if actual_width_after is not None else 'N/A'} (requested: {line_width:.2f})")
+                    
+                    # 🎯 WICHTIG: Deaktiviere Punkte explizit am Property-Objekt
+                    # Dies verhindert, dass Punkte an Segmentenden beim zweiten Durchlauf sichtbar werden
+                    if hasattr(prop, 'render_points_as_spheres'):
+                        prop.render_points_as_spheres = False
+                    if hasattr(prop, 'point_size'):
+                        prop.point_size = 0
+                    # Alternative Methoden, falls die oben genannten nicht verfügbar sind
+                    try:
+                        if hasattr(prop, 'SetPointSize'):
+                            prop.SetPointSize(0)
+                        if hasattr(prop, 'SetRenderPointsAsSpheres'):
+                            prop.SetRenderPointsAsSpheres(False)
+                    except Exception:
+                        pass
+                    print(f"[_add_axis_line_mesh] Deactivated points for '{name}' (point_size=0, render_points_as_spheres=False)")
+                    
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "line-width-check",
+                                "hypothesisId": "LINE_WIDTH_AXIS_SPECIFIC",
+                                "location": "Plot3DOverlaysBase._add_axis_line_mesh",
+                                "message": "Axis line mesh added with explicit line_width",
+                                "data": {
+                                    "name": name,
+                                    "line_width_requested": float(line_width),
+                                    "line_width_before": float(actual_width_before) if actual_width_before is not None else None,
+                                    "line_width_after": float(actual_width_after) if actual_width_after is not None else None,
+                                    "matches": actual_width_after == line_width if actual_width_after is not None else None,
+                                    "render_lines_as_tubes": False,
+                                    "points_deactivated": True
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + '\n')
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    # Markiere Actor als geändert
+                    actor.Modified()
+            
+        except Exception as e:  # noqa: BLE001
+            print(f"[_add_axis_line_mesh] Exception while setting properties for '{name}': {e}")
+        
+        # Füge zur Verwaltung hinzu
+        if not hasattr(self, 'overlay_actor_names') or not isinstance(self.overlay_actor_names, list):
+            self.overlay_actor_names = []
+        self.overlay_actor_names.append(name)
+        self._category_actors.setdefault('axis', []).append(name)
+        
         return name
 
     def _remove_actor(self, name: str) -> None:

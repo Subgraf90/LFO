@@ -574,27 +574,6 @@ class SPL3DPlotRenderer:
         surfaces_to_process = []
         
         # SCHRITT 1: Sammle Surfaces für Verarbeitung
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json, time as _t
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "grid-analysis",
-                    "hypothesisId": "H2",
-                    "location": "Plot3DSPL._render_surfaces",
-                    "message": "Surfaces für Verarbeitung gesammelt",
-                    "data": {
-                        "n_enabled_surfaces": int(len(enabled_surfaces)),
-                        "surface_ids": [str(sid) for sid, _, _ in enabled_surfaces],
-                        "has_surface_overrides": bool(surface_overrides),
-                        "n_surface_overrides": int(len(surface_overrides)) if surface_overrides else 0
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         for surface_id, points, surface_obj in enabled_surfaces:
             # Berechne Signatur für Cache-Prüfung (schnell, kann im Hauptthread bleiben)
@@ -761,6 +740,7 @@ class SPL3DPlotRenderer:
                             Xg = np.asarray(grid_data.get("X_grid", []))
                             Yg = np.asarray(grid_data.get("Y_grid", []))
                             
+                            
                             # 🎯 Stelle sicher, dass surface_orientation verfügbar ist
                             if 'surface_orientation' not in locals():
                                 geometry_obj = grid_data.get('geometry')
@@ -850,7 +830,34 @@ class SPL3DPlotRenderer:
                             surface_mask = np.asarray(grid_data.get("surface_mask", []))
                             n_vertices = len(triangulated_vertices)
                             n_grid_points = Xg.size
-
+                            # #region agent log - Randpunkte in Plot-Maske prüfen
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    import json, time as _t
+                                    mask_active = int(np.count_nonzero(surface_mask)) if surface_mask.size > 0 else 0
+                                    mask_size = int(surface_mask.size) if surface_mask.size > 0 else 0
+                                    spl_size = int(spl_values_2d.size) if spl_values_2d.size > 0 else 0
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H3,H4,H5",
+                                        "location": "Plot3DSPL._render_surfaces:mask_before_interpolation",
+                                        "message": "Maske vor Interpolation prüfen",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "surface_mask_active_points": mask_active,
+                                            "surface_mask_size": mask_size,
+                                            "spl_values_size": spl_size,
+                                            "n_grid_points": n_grid_points,
+                                            "n_vertices": n_vertices,
+                                            "mask_includes_edge_points": mask_active > 0
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            
                             if is_step_mode:
                                 # ===========================
                                 # COLOR-STEP → NEAREST NEIGHBOUR
@@ -860,7 +867,51 @@ class SPL3DPlotRenderer:
                                     spl_at_verts = spl_values_2d.ravel().copy()
                                     if surface_mask.size == n_grid_points and surface_mask.shape == Xg.shape:
                                         mask_flat = surface_mask.ravel().astype(bool)
+                                        # #region agent log - Randpunkte nach Maskenanwendung (Step-Mode)
+                                        try:
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                import json, time as _t
+                                                points_before_mask = int(np.count_nonzero(np.isfinite(spl_at_verts)))
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H4",
+                                                    "location": "Plot3DSPL._render_surfaces:step_mode_mask_apply",
+                                                    "message": "Randpunkte nach Maskenanwendung (Step-Mode)",
+                                                    "data": {
+                                                        "surface_id": str(surface_id),
+                                                        "points_finite_before_mask": points_before_mask,
+                                                        "mask_active_points": int(np.count_nonzero(mask_flat)),
+                                                        "will_filter_edge_points": True
+                                                    },
+                                                    "timestamp": int(_t.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
                                         spl_at_verts[~mask_flat] = np.nan
+                                        # #region agent log - Randpunkte nach Maskenanwendung (Step-Mode) - nachher
+                                        try:
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                import json, time as _t
+                                                points_after_mask = int(np.count_nonzero(np.isfinite(spl_at_verts)))
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H4",
+                                                    "location": "Plot3DSPL._render_surfaces:step_mode_after_mask",
+                                                    "message": "Randpunkte nach Maskenanwendung (Step-Mode) - Ergebnis",
+                                                    "data": {
+                                                        "surface_id": str(surface_id),
+                                                        "points_finite_after_mask": points_after_mask,
+                                                        "points_filtered_out": points_before_mask - points_after_mask,
+                                                        "edge_points_visible": points_after_mask > 0
+                                                    },
+                                                    "timestamp": int(_t.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
                                 else:
                                     # 🎯 Zusätzliche Vertices: Nearest-Neighbour auf Gridpunkte (diskrete Stufen)
                                     try:
@@ -976,7 +1027,53 @@ class SPL3DPlotRenderer:
                                             & mask_flat.reshape(Yg_arr.shape)[j1, i0]
                                             & mask_flat.reshape(Yg_arr.shape)[j1, i1]
                                         )
+                                        # #region agent log - Randpunkte nach Maskenanwendung (Gradient-Mode)
+                                        try:
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                import json, time as _t
+                                                points_before_mask = int(np.count_nonzero(np.isfinite(spl_at_verts)))
+                                                cell_mask_active = int(np.count_nonzero(cell_mask))
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H4",
+                                                    "location": "Plot3DSPL._render_surfaces:gradient_mode_mask_apply",
+                                                    "message": "Randpunkte nach Maskenanwendung (Gradient-Mode)",
+                                                    "data": {
+                                                        "surface_id": str(surface_id),
+                                                        "points_finite_before_mask": points_before_mask,
+                                                        "cell_mask_active": cell_mask_active,
+                                                        "mask_active_points": int(np.count_nonzero(mask_flat)),
+                                                        "will_filter_edge_points": True
+                                                    },
+                                                    "timestamp": int(_t.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
                                         spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
+                                        # #region agent log - Randpunkte nach Maskenanwendung (Gradient-Mode) - nachher
+                                        try:
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                import json, time as _t
+                                                points_after_mask = int(np.count_nonzero(np.isfinite(spl_at_verts)))
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H4",
+                                                    "location": "Plot3DSPL._render_surfaces:gradient_mode_after_mask",
+                                                    "message": "Randpunkte nach Maskenanwendung (Gradient-Mode) - Ergebnis",
+                                                    "data": {
+                                                        "surface_id": str(surface_id),
+                                                        "points_finite_after_mask": points_after_mask,
+                                                        "points_filtered_out": points_before_mask - points_after_mask,
+                                                        "edge_points_visible": points_after_mask > 0
+                                                    },
+                                                    "timestamp": int(_t.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
 
                                     valid_mask = np.isfinite(spl_at_verts)
                                     if not np.any(valid_mask):
@@ -1008,70 +1105,137 @@ class SPL3DPlotRenderer:
                                         )
                             
                             # 🎯 DEBUG: Prüfe, wie viele Vertices gültige Daten haben
+                            # #region agent log - Vertex Coverage nach Interpolation
                             try:
+                                import json, time as _t
                                 spl_arr = np.asarray(spl_at_verts, dtype=float)
                                 total_vertices = spl_arr.size
                                 finite_mask_vertices = np.isfinite(spl_arr)
                                 n_valid_vertices = int(np.count_nonzero(finite_mask_vertices))
+                                n_invalid_vertices = total_vertices - n_valid_vertices
                                 if total_vertices > 0:
                                     coverage_vertices = n_valid_vertices / float(total_vertices)
                                 else:
                                     coverage_vertices = 0.0
+                                
+                                # Prüfe, ob Vertices auf dem Rand Werte haben
+                                # Lade Polygon-Koordinaten für Rand-Erkennung
+                                edge_vertices_count = 0
+                                edge_vertices_with_values = 0
+                                edge_detection_success = False
+                                edge_detection_error = None
+                                try:
+                                    # Versuche verschiedene Quellen für Polygon-Koordinaten
+                                    points_list = None
+                                    surface_orientation = grid_data.get("orientation", "").lower()
+                                    
+                                    # Quelle 1: geometry_obj aus grid_data
+                                    geometry_obj = grid_data.get('geometry')
+                                    if geometry_obj and hasattr(geometry_obj, 'points') and geometry_obj.points:
+                                        points_list = geometry_obj.points
+                                    # Quelle 2: settings.surface_definitions
+                                    elif hasattr(self.settings, 'surface_definitions'):
+                                        surface_def = self.settings.surface_definitions.get(surface_id)
+                                        if surface_def and hasattr(surface_def, 'points'):
+                                            points_list = surface_def.points
+                                    # Quelle 3: container.surface_geometry
+                                    else:
+                                        surface_geometry = getattr(self.container, "surface_geometry", {})
+                                        if isinstance(surface_geometry, dict):
+                                            geom_data = surface_geometry.get(surface_id, {})
+                                            if geom_data:
+                                                points_list = geom_data.get("points", [])
+                                    
+                                    if points_list and len(points_list) >= 3:
+                                        # Extrahiere Polygon-Koordinaten basierend auf Orientierung
+                                        if surface_orientation == "vertical":
+                                            # Vertikale Flächen: verwende (u,v) basierend auf dominant_axis
+                                            dominant_axis = grid_data.get("dominant_axis", "xz")
+                                            xs = np.array([p.get("x", 0.0) for p in points_list], dtype=float)
+                                            ys = np.array([p.get("y", 0.0) for p in points_list], dtype=float)
+                                            zs = np.array([p.get("z", 0.0) for p in points_list], dtype=float)
+                                            if dominant_axis == "yz":
+                                                polygon_2d = np.column_stack([ys, zs])
+                                                vertex_coords_2d = triangulated_vertices[:, [1, 2]]
+                                            else:  # xz
+                                                polygon_2d = np.column_stack([xs, zs])
+                                                vertex_coords_2d = triangulated_vertices[:, [0, 2]]
+                                        else:
+                                            # Planare/sloped: verwende (x,y)
+                                            polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in points_list if p], dtype=float)
+                                            vertex_coords_2d = triangulated_vertices[:, :2]
+                                        
+                                        if polygon_2d.size > 0 and len(polygon_2d) >= 3:
+                                            # Prüfe Vertices nahe dem Polygon-Rand (innerhalb von resolution)
+                                            resolution = float(grid_data.get("resolution", 1.0))
+                                            edge_distance_threshold = resolution * 1.2  # Erhöht für bessere Erkennung
+                                            
+                                            # Berechne minimale Distanz jedes Vertex zum Polygon-Rand
+                                            n_edges = len(polygon_2d)
+                                            edge_vertex_mask = np.zeros(len(vertex_coords_2d), dtype=bool)
+                                            for i in range(n_edges):
+                                                p1 = polygon_2d[i]
+                                                p2 = polygon_2d[(i + 1) % n_edges]
+                                                edge_vec = p2 - p1
+                                                edge_len = np.linalg.norm(edge_vec)
+                                                if edge_len > 1e-9:
+                                                    edge_vec_norm = edge_vec / edge_len
+                                                    for j, v_coord in enumerate(vertex_coords_2d):
+                                                        v_to_p1 = v_coord - p1
+                                                        t = np.clip(np.dot(v_to_p1, edge_vec_norm), 0.0, edge_len)
+                                                        closest_point_on_edge = p1 + t * edge_vec_norm
+                                                        dist_to_edge = np.linalg.norm(v_coord - closest_point_on_edge)
+                                                        if dist_to_edge <= edge_distance_threshold:
+                                                            edge_vertex_mask[j] = True
+                                            
+                                            edge_vertices_count = int(np.count_nonzero(edge_vertex_mask))
+                                            if edge_vertices_count > 0:
+                                                edge_vertices_with_values = int(np.count_nonzero(finite_mask_vertices & edge_vertex_mask))
+                                            edge_detection_success = True
+                                    else:
+                                        edge_detection_error = "no_points_list" if points_list is None else f"too_few_points_{len(points_list) if points_list else 0}"
+                                except Exception as e:
+                                    edge_detection_error = str(type(e).__name__) + ": " + str(e)
+                                
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "VERTEX_COVERAGE_CHECK",
+                                        "location": "Plot3DSPL._render_surfaces:vertex_coverage_after_interpolation",
+                                        "message": "Vertex Coverage nach Interpolation",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "total_vertices": total_vertices,
+                                            "valid_vertices": n_valid_vertices,
+                                            "invalid_vertices": n_invalid_vertices,
+                                            "coverage_percent": float(coverage_vertices * 100.0),
+                                            "edge_vertices_total": edge_vertices_count,
+                                            "edge_vertices_with_values": edge_vertices_with_values,
+                                            "edge_coverage_percent": float((edge_vertices_with_values / edge_vertices_count * 100.0) if edge_vertices_count > 0 else 0.0),
+                                            "all_vertices_covered": n_invalid_vertices == 0,
+                                            "all_edge_vertices_covered": edge_vertices_with_values == edge_vertices_count if edge_vertices_count > 0 else True,
+                                            "edge_detection_success": edge_detection_success,
+                                            "edge_detection_error": edge_detection_error,
+                                            "surface_orientation": str(surface_orientation) if 'surface_orientation' in locals() else None
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
                                 
                                 if n_valid_vertices == 0:
                                     print(
                                         f"[PlotSPL3D DEBUG] Surface '{surface_id}': "
                                         f"KEINE gültigen SPL-Werte auf Vertices – weiße Fläche im Plot wahrscheinlich."
                                     )
-                                    # #region agent log
-                                    try:
-                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                            import json, time as _t
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "lp08-analysis",
-                                                "hypothesisId": "H3_NO_VALID_VERTICES",
-                                                "location": "Plot3DSPL.py:vertex_sampling",
-                                                "message": "Keine gültigen SPL-Werte auf Vertices",
-                                                "data": {
-                                                    "surface_id": str(surface_id),
-                                                    "n_valid_vertices": int(n_valid_vertices),
-                                                    "total_vertices": int(total_vertices)
-                                                },
-                                                "timestamp": int(_t.time() * 1000)
-                                            }) + "\n")
-                                    except Exception:
-                                        pass
-                                    # #endregion
                                 elif coverage_vertices < 0.3:
                                     print(
                                         f"[PlotSPL3D DEBUG] Surface '{surface_id}': "
                                         f"nur {n_valid_vertices}/{total_vertices} gültige Vertices "
                                         f"(Coverage={coverage_vertices:.2f}) – mögliche weiße Bereiche."
                                     )
-                                    # #region agent log
-                                    try:
-                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                            import json, time as _t
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "lp08-analysis",
-                                                "hypothesisId": "H4_LOW_VERTEX_COVERAGE",
-                                                "location": "Plot3DSPL.py:vertex_sampling",
-                                                "message": "Zu wenige gültige SPL-Werte auf Vertices",
-                                                "data": {
-                                                    "surface_id": str(surface_id),
-                                                    "n_valid_vertices": int(n_valid_vertices),
-                                                    "total_vertices": int(total_vertices),
-                                                    "coverage_vertices": float(coverage_vertices)
-                                                },
-                                                "timestamp": int(_t.time() * 1000)
-                                            }) + "\n")
-                                    except Exception:
-                                        pass
-                                    # #endregion
-                            except Exception:
+                            except Exception as e:
                                 pass
+                            # #endregion
                             
                             # Bestimme Colorbar-Bereich für Visualisierung
                             cbar_min_local = cbar_min
@@ -1098,30 +1262,6 @@ class SPL3DPlotRenderer:
                             if not hasattr(self, "_surface_actors") or not isinstance(self._surface_actors, dict):
                                 self._surface_actors = {}
                             
-                            # #region agent log
-                            try:
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    import json, time as _t
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "grid-analysis",
-                                        "hypothesisId": "H3",
-                                        "location": "Plot3DSPL._render_surfaces",
-                                        "message": "Surface-Mesh erstellt (Triangulation)",
-                                        "data": {
-                                            "surface_id": str(surface_id),
-                                            "n_triangulated_vertices": int(len(triangulated_vertices)) if triangulated_vertices is not None else None,
-                                            "n_triangulated_faces": int(len(triangulated_faces)) if triangulated_faces is not None else None,
-                                            "n_grid_points": int(n_grid_points),
-                                            "n_vertices": int(n_vertices),
-                                            "n_valid_vertices": int(np.count_nonzero(np.isfinite(spl_at_verts))) if 'spl_at_verts' in locals() else None
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
-
                             cached_entry = self._surface_actors.get(surface_id)
                             cached_mesh = None
                             cached_actor = None
@@ -1190,6 +1330,99 @@ class SPL3DPlotRenderer:
                                                 current_vertices, current_faces, current_scalars
                                             )
                                         
+                                        # #region agent log - Subdivision Vertex Coverage
+                                        try:
+                                            import json, time as _t
+                                            scalars_arr = np.asarray(current_scalars, dtype=float)
+                                            total_vertices_subdiv = scalars_arr.size
+                                            finite_mask_subdiv = np.isfinite(scalars_arr)
+                                            valid_vertices_subdiv = int(np.count_nonzero(finite_mask_subdiv))
+                                            nan_vertices_subdiv = total_vertices_subdiv - valid_vertices_subdiv
+                                            coverage_percent_subdiv = (valid_vertices_subdiv / total_vertices_subdiv * 100.0) if total_vertices_subdiv > 0 else 0.0
+                                            
+                                            # Prüfe Rand-Vertices nach Subdivision
+                                            edge_vertices_subdiv = 0
+                                            edge_vertices_valid_subdiv = 0
+                                            try:
+                                                # Lade Polygon-Koordinaten
+                                                points_list = None
+                                                surface_orientation = grid_data.get("orientation", "").lower()
+                                                geometry_obj = grid_data.get('geometry')
+                                                if geometry_obj and hasattr(geometry_obj, 'points') and geometry_obj.points:
+                                                    points_list = geometry_obj.points
+                                                elif hasattr(self.settings, 'surface_definitions'):
+                                                    surface_def = self.settings.surface_definitions.get(surface_id)
+                                                    if surface_def and hasattr(surface_def, 'points'):
+                                                        points_list = surface_def.points
+                                                
+                                                if points_list and len(points_list) >= 3:
+                                                    if surface_orientation == "vertical":
+                                                        dominant_axis = grid_data.get("dominant_axis", "xz")
+                                                        xs = np.array([p.get("x", 0.0) for p in points_list], dtype=float)
+                                                        ys = np.array([p.get("y", 0.0) for p in points_list], dtype=float)
+                                                        zs = np.array([p.get("z", 0.0) for p in points_list], dtype=float)
+                                                        if dominant_axis == "yz":
+                                                            polygon_2d = np.column_stack([ys, zs])
+                                                            vertex_coords_2d = current_vertices[:, [1, 2]]
+                                                        else:
+                                                            polygon_2d = np.column_stack([xs, zs])
+                                                            vertex_coords_2d = current_vertices[:, [0, 2]]
+                                                    else:
+                                                        polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in points_list if p], dtype=float)
+                                                        vertex_coords_2d = current_vertices[:, :2]
+                                                    
+                                                    if polygon_2d.size > 0 and len(polygon_2d) >= 3:
+                                                        resolution = float(grid_data.get("resolution", 1.0))
+                                                        edge_distance_threshold = resolution * 1.2
+                                                        n_edges = len(polygon_2d)
+                                                        edge_vertex_mask = np.zeros(len(vertex_coords_2d), dtype=bool)
+                                                        for i in range(n_edges):
+                                                            p1 = polygon_2d[i]
+                                                            p2 = polygon_2d[(i + 1) % n_edges]
+                                                            edge_vec = p2 - p1
+                                                            edge_len = np.linalg.norm(edge_vec)
+                                                            if edge_len > 1e-9:
+                                                                edge_vec_norm = edge_vec / edge_len
+                                                                for j, v_coord in enumerate(vertex_coords_2d):
+                                                                    v_to_p1 = v_coord - p1
+                                                                    t = np.clip(np.dot(v_to_p1, edge_vec_norm), 0.0, edge_len)
+                                                                    closest_point_on_edge = p1 + t * edge_vec_norm
+                                                                    dist_to_edge = np.linalg.norm(v_coord - closest_point_on_edge)
+                                                                    if dist_to_edge <= edge_distance_threshold:
+                                                                        edge_vertex_mask[j] = True
+                                                        
+                                                        edge_vertices_subdiv = int(np.count_nonzero(edge_vertex_mask))
+                                                        edge_vertices_valid_subdiv = int(np.count_nonzero(finite_mask_subdiv & edge_vertex_mask))
+                                            except Exception:
+                                                pass
+                                            
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "SUBDIVISION_COVERAGE",
+                                                    "location": "Plot3DSPL._render_surfaces:subdivision_coverage",
+                                                    "message": "Vertex Coverage nach Subdivision",
+                                                    "data": {
+                                                        "surface_id": str(surface_id),
+                                                        "total_vertices_subdiv": total_vertices_subdiv,
+                                                        "valid_vertices_subdiv": valid_vertices_subdiv,
+                                                        "nan_vertices_subdiv": nan_vertices_subdiv,
+                                                        "coverage_percent_subdiv": float(coverage_percent_subdiv),
+                                                        "edge_vertices_subdiv": edge_vertices_subdiv,
+                                                        "edge_vertices_valid_subdiv": edge_vertices_valid_subdiv,
+                                                        "edge_coverage_percent_subdiv": float((edge_vertices_valid_subdiv / edge_vertices_subdiv * 100.0) if edge_vertices_subdiv > 0 else 0.0),
+                                                        "all_vertices_covered_subdiv": nan_vertices_subdiv == 0,
+                                                        "all_edge_vertices_covered_subdiv": edge_vertices_valid_subdiv == edge_vertices_subdiv if edge_vertices_subdiv > 0 else True,
+                                                        "subdivision_level": subdivision_level,
+                                                        "original_vertices_count": int(triangulated_vertices.shape[0]) if triangulated_vertices is not None else 0
+                                                    },
+                                                    "timestamp": int(_t.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
+                                        
                                         # Erstelle PyVista PolyData Mesh mit subdividierten Daten
                                         mesh = pv.PolyData(current_vertices, current_faces)
                                         mesh["plot_scalars"] = current_scalars
@@ -1229,12 +1462,121 @@ class SPL3DPlotRenderer:
                                 pass
 
                             # Debug-Ausgabe: Prüfe auf NaN/Inf in den Vertex-Skalaren
+                            # #region agent log - Finale Vertex Coverage im Mesh
                             try:
+                                import json, time as _t
                                 scalars_arr = np.asarray(mesh["plot_scalars"])
                                 total_count = scalars_arr.size
                                 finite_mask = np.isfinite(scalars_arr)
                                 nan_mask = ~finite_mask
                                 nan_count = int(np.count_nonzero(nan_mask))
+                                valid_count = total_count - nan_count
+                                coverage_final = (valid_count / float(total_count) * 100.0) if total_count > 0 else 0.0
+                                
+                                # Prüfe Rand-Vertices im finalen Mesh
+                                edge_vertices_in_mesh = 0
+                                edge_vertices_valid_in_mesh = 0
+                                edge_detection_success_final = False
+                                edge_detection_error_final = None
+                                try:
+                                    # Versuche verschiedene Quellen für Polygon-Koordinaten
+                                    points_list = None
+                                    surface_orientation = grid_data.get("orientation", "").lower()
+                                    
+                                    # Quelle 1: geometry_obj aus grid_data
+                                    geometry_obj = grid_data.get('geometry')
+                                    if geometry_obj and hasattr(geometry_obj, 'points') and geometry_obj.points:
+                                        points_list = geometry_obj.points
+                                    # Quelle 2: settings.surface_definitions
+                                    elif hasattr(self.settings, 'surface_definitions'):
+                                        surface_def = self.settings.surface_definitions.get(surface_id)
+                                        if surface_def and hasattr(surface_def, 'points'):
+                                            points_list = surface_def.points
+                                    # Quelle 3: container.surface_geometry
+                                    else:
+                                        surface_geometry = getattr(self.container, "surface_geometry", {})
+                                        if isinstance(surface_geometry, dict):
+                                            geom_data = surface_geometry.get(surface_id, {})
+                                            if geom_data:
+                                                points_list = geom_data.get("points", [])
+                                    
+                                    if points_list and len(points_list) >= 3:
+                                        mesh_points = np.asarray(mesh.points)
+                                        
+                                        # Extrahiere Polygon-Koordinaten basierend auf Orientierung
+                                        if surface_orientation == "vertical":
+                                            # Vertikale Flächen: verwende (u,v) basierend auf dominant_axis
+                                            dominant_axis = grid_data.get("dominant_axis", "xz")
+                                            xs = np.array([p.get("x", 0.0) for p in points_list], dtype=float)
+                                            ys = np.array([p.get("y", 0.0) for p in points_list], dtype=float)
+                                            zs = np.array([p.get("z", 0.0) for p in points_list], dtype=float)
+                                            if dominant_axis == "yz":
+                                                polygon_2d = np.column_stack([ys, zs])
+                                                vertex_coords_2d = mesh_points[:, [1, 2]]
+                                            else:  # xz
+                                                polygon_2d = np.column_stack([xs, zs])
+                                                vertex_coords_2d = mesh_points[:, [0, 2]]
+                                        else:
+                                            # Planare/sloped: verwende (x,y)
+                                            polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in points_list if p], dtype=float)
+                                            vertex_coords_2d = mesh_points[:, :2]
+                                        
+                                        if polygon_2d.size > 0 and len(polygon_2d) >= 3:
+                                            resolution = float(grid_data.get("resolution", 1.0))
+                                            edge_distance_threshold = resolution * 1.2  # Erhöht für bessere Erkennung
+                                            
+                                            n_edges = len(polygon_2d)
+                                            edge_vertex_mask = np.zeros(len(vertex_coords_2d), dtype=bool)
+                                            for i in range(n_edges):
+                                                p1 = polygon_2d[i]
+                                                p2 = polygon_2d[(i + 1) % n_edges]
+                                                edge_vec = p2 - p1
+                                                edge_len = np.linalg.norm(edge_vec)
+                                                if edge_len > 1e-9:
+                                                    edge_vec_norm = edge_vec / edge_len
+                                                    for j, v_coord in enumerate(vertex_coords_2d):
+                                                        v_to_p1 = v_coord - p1
+                                                        t = np.clip(np.dot(v_to_p1, edge_vec_norm), 0.0, edge_len)
+                                                        closest_point_on_edge = p1 + t * edge_vec_norm
+                                                        dist_to_edge = np.linalg.norm(v_coord - closest_point_on_edge)
+                                                        if dist_to_edge <= edge_distance_threshold:
+                                                            edge_vertex_mask[j] = True
+                                            
+                                            edge_vertices_in_mesh = int(np.count_nonzero(edge_vertex_mask))
+                                            if edge_vertices_in_mesh > 0:
+                                                edge_vertices_valid_in_mesh = int(np.count_nonzero(finite_mask & edge_vertex_mask))
+                                            edge_detection_success_final = True
+                                    else:
+                                        edge_detection_error_final = "no_points_list" if points_list is None else f"too_few_points_{len(points_list) if points_list else 0}"
+                                except Exception as e:
+                                    edge_detection_error_final = str(type(e).__name__) + ": " + str(e)
+                                
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "VERTEX_COVERAGE_FINAL",
+                                        "location": "Plot3DSPL._render_surfaces:vertex_coverage_final_mesh",
+                                        "message": "Finale Vertex Coverage im Mesh",
+                                        "data": {
+                                            "surface_id": str(surface_id),
+                                            "total_vertices_in_mesh": total_count,
+                                            "valid_vertices_in_mesh": valid_count,
+                                            "nan_vertices_in_mesh": nan_count,
+                                            "coverage_percent_final": float(coverage_final),
+                                            "edge_vertices_in_mesh": edge_vertices_in_mesh,
+                                            "edge_vertices_valid_in_mesh": edge_vertices_valid_in_mesh,
+                                            "edge_coverage_percent_final": float((edge_vertices_valid_in_mesh / edge_vertices_in_mesh * 100.0) if edge_vertices_in_mesh > 0 else 0.0),
+                                            "all_vertices_covered_final": nan_count == 0,
+                                            "all_edge_vertices_covered_final": edge_vertices_valid_in_mesh == edge_vertices_in_mesh if edge_vertices_in_mesh > 0 else True,
+                                            "surface_filled_to_edge": nan_count == 0 and (edge_vertices_valid_in_mesh == edge_vertices_in_mesh if edge_vertices_in_mesh > 0 else True),
+                                            "edge_detection_success_final": edge_detection_success_final,
+                                            "edge_detection_error_final": edge_detection_error_final,
+                                            "surface_orientation": str(surface_orientation) if 'surface_orientation' in locals() else None
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                                
                                 if nan_count > 0:
                                     print(f"  └─ ⚠️ plot_scalars enthält {nan_count}/{total_count} NaN/Inf-Werte (Surface={surface_id})")
                                 else:
@@ -1243,6 +1585,7 @@ class SPL3DPlotRenderer:
                                         pass  # Debug-Ausgabe entfernt
                             except Exception as e_debug_scalars:
                                 print(f"  └─ ⚠️ Debug plot_scalars fehlgeschlagen (Surface={surface_id}): {e_debug_scalars}")
+                            # #endregion
                             
                             # Falls wir keinen Actor wiederverwenden konnten, jetzt neu hinzufügen
                             if actor is None:
@@ -1287,27 +1630,6 @@ class SPL3DPlotRenderer:
                             
                             # Entferne aus texture_actors falls vorhanden
                             self._surface_texture_actors.pop(surface_id, None)
-                            
-                            # #region agent log
-                            try:
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    import json, time as _t
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "grid-analysis-v2",
-                                        "hypothesisId": "H2",
-                                        "location": "Plot3DSPL._render_surfaces:individual_surface_plotted",
-                                        "message": "Einzelne Surface geplottet",
-                                        "data": {
-                                            "surface_id": str(surface_id),
-                                            "mesh_n_points": int(mesh.n_points) if hasattr(mesh, 'n_points') else None,
-                                            "mesh_n_cells": int(mesh.n_cells) if hasattr(mesh, 'n_cells') else None
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                             
                             surfaces_processed += 1
                             continue  # Überspringe Texture-Pfad
@@ -1844,28 +2166,6 @@ class SPL3DPlotRenderer:
                 z_coords=z_coords,
                 pv_module=pv,
             )
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "grid-analysis",
-                        "hypothesisId": "H4",
-                        "location": "Plot3DSPL.update_spl_plot",
-                        "message": "Floor-Mesh erstellt",
-                        "data": {
-                            "floor_n_points": int(floor_mesh.n_points) if hasattr(floor_mesh, 'n_points') else None,
-                            "floor_n_cells": int(floor_mesh.n_cells) if hasattr(floor_mesh, 'n_cells') else None,
-                            "plot_x_size": int(len(plot_x)),
-                            "plot_y_size": int(len(plot_y)),
-                            "has_surface_actors": bool(has_surface_actors)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             # Plotte (oder update) den Floor nur, wenn keine Surfaces aktiv sind
             floor_actor = self.plotter.renderer.actors.get(self.FLOOR_NAME)
