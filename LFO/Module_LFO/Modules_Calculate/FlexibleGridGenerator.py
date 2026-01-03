@@ -1136,8 +1136,10 @@ class GridBuilder(ModuleBase):
                 # Fallback: keine sinnvolle Resolution ableitbar → ohne Distanzschranke
                 max_sq_dist = None
             else:
-                # Erlaube nur sehr nahe Punkte (0.3 * Resolution) - nur für Ecken
-                max_sq_dist = float((0.3 * base_res) ** 2)
+                # 🎯 ALLE ECKPUNKTE AKTIVIEREN: Erhöhe max_distance deutlich, damit alle Eckpunkte aktiviert werden
+                # Vorher: 0.3x Resolution (zu restriktiv)
+                # Jetzt: 2.0x Resolution (aktiviert alle Eckpunkte innerhalb des Polygons)
+                max_sq_dist = float((2.0 * base_res) ** 2)
             
             # #region agent log - Vertex Coverage für Ecken prüfen
             activated_vertices = []
@@ -1265,8 +1267,10 @@ class GridBuilder(ModuleBase):
             if base_res <= 0.0:
                 max_sq_dist = None
             else:
-                # Erlaube nur sehr nahe Punkte (0.3 * Resolution) - nur für Ecken
-                max_sq_dist = float((0.3 * base_res) ** 2)
+                # 🎯 ALLE ECKPUNKTE AKTIVIEREN (UV): Erhöhe max_distance deutlich, damit alle Eckpunkte aktiviert werden
+                # Vorher: 0.3x Resolution (zu restriktiv)
+                # Jetzt: 2.0x Resolution (aktiviert alle Eckpunkte innerhalb des Polygons)
+                max_sq_dist = float((2.0 * base_res) ** 2)
             
             # Prüfe welche Grid-Punkte innerhalb oder auf dem Polygon-Rand liegen
             try:
@@ -1315,15 +1319,15 @@ class GridBuilder(ModuleBase):
         geometry: SurfaceGeometry,
         surface_mask_strict: np.ndarray,
         resolution: float,
-        ) -> np.ndarray:
+        ) -> Tuple[np.ndarray, List[Tuple[float, float]]]:
         """
-        Erweitert die Maske um Punkte direkt auf dem Polygon-Rand.
+        Generiert Randpunkte direkt auf dem Polygon-Rand für Triangulation.
         
         Strategie:
         - Generiert gleichmäßig verteilte Punkte entlang jeder Polygon-Kante
-        - Punktabstand: 0.7x Resolution
-        - Findet nächstgelegenen Grid-Punkt für jeden Boundary-Punkt
-        - Aktiviere nur Grid-Punkte, die innerhalb oder auf dem Polygon-Rand liegen
+        - Punktabstand: 0.5x Resolution
+        - Randpunkte werden direkt als additional_vertices für Triangulation verwendet
+        - KEINE Mapping auf Grid-Punkte mehr
         
         Args:
             X_grid: X-Koordinaten des Grids
@@ -1333,7 +1337,9 @@ class GridBuilder(ModuleBase):
             resolution: Grid-Resolution
             
         Returns:
-            Erweiterte Maske mit Boundary-Punkten
+            Tuple von (surface_mask_strict, edge_points_list)
+            - surface_mask_strict: Unveränderte Maske (keine Mapping mehr)
+            - edge_points_list: Liste von (x, y) Tupeln der Randpunkte
         """
         try:
             pts = getattr(geometry, "points", None) or []
@@ -1368,34 +1374,72 @@ class GridBuilder(ModuleBase):
                 dy = y2 - y1
                 segment_len = math.hypot(dx, dy)
                 
+                # #region agent log - Edge analysis H1, H5
+                try:
+                    import json, time as _t
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H1_H5",
+                            "location": "FlexibleGridGenerator._add_edge_points_on_boundary:edge_start",
+                            "message": "Kanten-Analyse Start",
+                            "data": {
+                                "edge_index": i,
+                                "edge_start": (float(x1), float(y1)),
+                                "edge_end": (float(x2), float(y2)),
+                                "segment_len": float(segment_len),
+                                "point_spacing": float(point_spacing),
+                                "expected_points": int(np.ceil(segment_len / point_spacing)) + 1 if segment_len >= 1e-9 else 0
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                
                 if segment_len < 1e-9:
                     # Degenerierte Kante überspringen
                     continue
                 
-                # Anzahl der Punkte entlang dieser Kante basierend auf gewünschtem Abstand
-                # Berechne Anzahl der Segmente: bei n_points=2 gibt es 1 Segment (2 Punkte = Start + Ende)
-                n_segments = max(1, int(np.ceil(segment_len / point_spacing)))
-                n_points = n_segments + 1  # n Segmente benötigen n+1 Punkte (inklusive Ende)
-                
+                # 🎯 FIX: Generiere Punkte mit exaktem Abstand point_spacing entlang der Kante
+                # Starte bei t=0 und füge Punkte hinzu, bis das Ende erreicht ist
                 # #region agent log - Per-edge point calculation (H1, H2, H3)
                 edge_points_before = len(edge_points)
                 point_positions = []
                 # #endregion
                 
-                # Generiere gleichmäßig verteilte Punkte entlang der Kante (inklusive Ende)
-                for j in range(n_points):
-                    # t von 0.0 bis 1.0: gleichmäßige Verteilung über das gesamte Segment
-                    if n_points == 1:
-                        t = 0.0
-                    else:
-                        t = j / (n_points - 1)  # Für n_points=2: t=0.0 und t=1.0
-                    
-                    x_edge = x1 + t * dx
-                    y_edge = y1 + t * dy
+                # Generiere Punkte mit exaktem Abstand point_spacing
+                current_t = 0.0
+                while current_t <= 1.0:
+                    x_edge = x1 + current_t * dx
+                    y_edge = y1 + current_t * dy
                     edge_points.append((x_edge, y_edge))
                     
-                    # #region agent log - Point position tracking (H2)
-                    point_positions.append({"t": float(t), "x": float(x_edge), "y": float(y_edge)})
+                    # #region agent log - Point position tracking H2, H5
+                    point_positions.append({"t": float(current_t), "x": float(x_edge), "y": float(y_edge)})
+                    # #endregion
+                    
+                    # Berechne nächsten t-Wert basierend auf point_spacing
+                    if segment_len > 1e-9:
+                        dt = point_spacing / segment_len
+                        current_t += dt
+                        # Stelle sicher, dass wir nicht über 1.0 hinausgehen
+                        if current_t > 1.0:
+                            # Füge Endpunkt hinzu, wenn noch nicht erreicht
+                            if abs(current_t - 1.0) > 1e-9:
+                                x_edge_end = x1 + 1.0 * dx
+                                y_edge_end = y1 + 1.0 * dy
+                                # Prüfe ob Endpunkt bereits hinzugefügt wurde (Toleranz)
+                                if len(edge_points) == 0 or math.hypot(edge_points[-1][0] - x_edge_end, edge_points[-1][1] - y_edge_end) > resolution * 0.01:
+                                    edge_points.append((x_edge_end, y_edge_end))
+                                    point_positions.append({"t": 1.0, "x": float(x_edge_end), "y": float(y_edge_end)})
+                            break
+                    else:
+                        break
+                    
+                    # #region agent log - Point position tracking H2, H5
+                    point_positions.append({"t": float(current_t), "x": float(x_edge), "y": float(y_edge)})
                     # #endregion
                 
                 # #region agent log - Edge statistics (H1, H2, H3)
@@ -1420,7 +1464,6 @@ class GridBuilder(ModuleBase):
                     "edge_index": i,
                     "segment_len": float(segment_len),
                     "point_spacing_target": float(point_spacing),
-                    "n_points_calculated": n_points,
                     "n_points_generated": points_generated,
                     "avg_actual_spacing": avg_spacing,
                     "max_actual_spacing": max_spacing,
@@ -1437,14 +1480,51 @@ class GridBuilder(ModuleBase):
             unique_edge_points = []
             duplicates_removed = 0
             
-            # #region agent log - Before deduplication (H4)
+            # #region agent log - Before deduplication H3
             points_before_dedup = len(edge_points)
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H3",
+                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary:before_dedup",
+                        "message": "Vor Deduplizierung",
+                        "data": {
+                            "points_before_dedup": points_before_dedup,
+                            "tolerance": float(tolerance)
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
             # #endregion
             for x, y in edge_points:
                 is_duplicate = False
                 for ex, ey in unique_edge_points:
                     if abs(x - ex) < tolerance and abs(y - ey) < tolerance:
                         is_duplicate = True
+                        # #region agent log - Duplicate found H3
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H3",
+                                    "location": "FlexibleGridGenerator._add_edge_points_on_boundary:duplicate_found",
+                                    "message": "Doppelter Punkt gefunden",
+                                    "data": {
+                                        "point": (float(x), float(y)),
+                                        "existing": (float(ex), float(ey)),
+                                        "distance": float(math.hypot(x - ex, y - ey))
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         break
                 if not is_duplicate:
                     unique_edge_points.append((x, y))
@@ -1537,127 +1617,29 @@ class GridBuilder(ModuleBase):
             # #endregion
             
             if not edge_points:
-                return surface_mask_strict
+                return surface_mask_strict, []
             
-            # Finde nächstgelegenen Grid-Punkt für jeden Boundary-Punkt
-            # WICHTIG: Nur Grid-Punkte aktivieren, die innerhalb oder auf dem Polygon-Rand liegen
-            x_flat = X_grid.ravel()
-            y_flat = Y_grid.ravel()
-            mask_flat = surface_mask_strict.ravel()
-            
-            # Prüfe welche Grid-Punkte innerhalb oder auf dem Polygon-Rand liegen
-            # Verwende die bereits vorhandene Punkt-im-Polygon-Prüfung
-            points_inside_mask = self._points_in_polygon_batch(
-                X_grid, Y_grid, pts
-            ).ravel()
-            
-            # Prüfe zusätzlich, ob Punkte auf dem Polygon-Rand liegen
-            # (für Punkte, die durch Ray-Casting nicht erfasst wurden)
-            px = np.array([float(p.get("x", 0.0)) for p in pts], dtype=float)
-            py = np.array([float(p.get("y", 0.0)) for p in pts], dtype=float)
-            boundary_eps = resolution * 0.05  # Strikte Toleranz für "auf dem Rand" (0.05x Resolution)
-            
-            # Erweitere Maske um Punkte, die direkt auf dem Rand liegen
-            points_on_edge = np.zeros_like(points_inside_mask, dtype=bool)
-            n_vertices = len(px)
-            for i in range(n_vertices):
-                p1_idx = i
-                p2_idx = (i + 1) % n_vertices
-                x1, y1 = px[p1_idx], py[p1_idx]
-                x2, y2 = px[p2_idx], py[p2_idx]
-                
-                dx_edge = x2 - x1
-                dy_edge = y2 - y1
-                segment_len = math.hypot(dx_edge, dy_edge)
-                
-                if segment_len > 1e-9:
-                    # Prüfe Abstand jedes Grid-Punkts zur Kante
-                    for j in range(len(x_flat)):
-                        if not points_inside_mask[j]:  # Nur prüfen, wenn nicht bereits inside
-                            # Punkt-zu-Kante-Abstand berechnen
-                            dx_to_p1 = x_flat[j] - x1
-                            dy_to_p1 = y_flat[j] - y1
-                            
-                            # Projektion auf Kante
-                            t = (dx_to_p1 * dx_edge + dy_to_p1 * dy_edge) / (segment_len * segment_len)
-                            t = max(0.0, min(1.0, t))  # Auf Segment begrenzen
-                            
-                            # Nächstgelegener Punkt auf der Kante
-                            proj_x = x1 + t * dx_edge
-                            proj_y = y1 + t * dy_edge
-                            
-                            # Abstand zum projizierten Punkt
-                            dist_to_edge = math.hypot(x_flat[j] - proj_x, y_flat[j] - proj_y)
-                            
-                            if dist_to_edge <= boundary_eps:
-                                points_on_edge[j] = True
-            
-            # Kombiniere: inside oder auf dem Rand
-            points_inside_or_on_edge = points_inside_mask | points_on_edge
-            
-            # Maximal-Abstand: Nur wenn Grid-Punkt sehr nah (0.3x Resolution) - strikte Anforderung
-            max_distance = resolution * 0.3
-            max_sq_dist = max_distance ** 2
-            
-            # Zähle wie viele Punkte vorher aktiv waren
-            points_activated_before = int(np.count_nonzero(mask_flat))
-            
-            # #region agent log - Randpunkte vor Aktivierung
-            edge_points_not_activated = 0
-            edge_points_too_far = 0
-            edge_points_outside = 0
-            # #endregion
-            
-            for ex, ey in edge_points:
-                # Distanz zu allen Grid-Punkten
-                dx = x_flat - ex
-                dy = y_flat - ey
-                d2 = dx * dx + dy * dy
-                
-                # Finde nächstgelegenen Grid-Punkt
-                nearest_idx = int(np.argmin(d2))
-                nearest_distance = np.sqrt(d2[nearest_idx])
-                
-                # Aktiviere nur wenn:
-                # 1. Nah genug zum Boundary-Punkt (innerhalb max_distance)
-                # 2. UND Grid-Punkt ist innerhalb oder auf dem Polygon-Rand (NICHT außerhalb)
-                if d2[nearest_idx] <= max_sq_dist and points_inside_or_on_edge[nearest_idx]:
-                    mask_flat[nearest_idx] = True
-                else:
-                    edge_points_not_activated += 1
-                    if d2[nearest_idx] > max_sq_dist:
-                        edge_points_too_far += 1
-                    if not points_inside_or_on_edge[nearest_idx]:
-                        edge_points_outside += 1
-            
-            # Zähle wie viele Punkte nachher aktiv sind
-            points_activated_after = int(np.count_nonzero(mask_flat))
-            edge_points_activated = points_activated_after - points_activated_before
-            
-            # #region agent log - Boundary-Punkte generiert und aktiviert
+            # 🎯 NEUE LOGIK: Randpunkte werden direkt als additional_vertices verwendet
+            # KEINE Mapping auf Grid-Punkte mehr
+            # #region agent log - Randpunkte generiert (ohne Grid-Mapping)
             try:
+                import json, time as _t
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
                     f.write(json.dumps({
                         "sessionId": "debug-session",
                         "runId": "run1",
-                        "hypothesisId": "BOUNDARY_POINTS_CREATION",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary",
-                        "message": "Randpunkte generiert und aktiviert (lineare Verteilung)",
+                        "hypothesisId": "EDGE_POINTS_AS_VERTICES",
+                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary:edge_points_generated",
+                        "message": "Randpunkte generiert (direkt als Vertices, kein Grid-Mapping)",
                         "data": {
                             "surface_id": str(getattr(geometry, "surface_id", "unknown")),
                             "orientation": str(getattr(geometry, "orientation", "unknown")),
                             "n_edge_points_generated": len(edge_points),
-                            "edge_points_activated": edge_points_activated,
-                            "edge_points_not_activated": edge_points_not_activated if 'edge_points_not_activated' in locals() else 0,
-                            "edge_points_too_far": edge_points_too_far if 'edge_points_too_far' in locals() else 0,
-                            "edge_points_outside": edge_points_outside if 'edge_points_outside' in locals() else 0,
-                            "points_before": points_activated_before,
-                            "points_after": points_activated_after,
+                            "points_before_dedup": points_before_dedup,
+                            "points_after_dedup": len(edge_points),
+                            "duplicates_removed": duplicates_removed,
                             "resolution": float(resolution),
-                            "point_spacing": float(point_spacing),
-                            "max_distance_threshold": float(max_distance),
-                            "total_grid_points": int(X_grid.size)
+                            "point_spacing": float(point_spacing)
                         },
                         "timestamp": int(_t.time() * 1000)
                     }) + "\n")
@@ -1665,10 +1647,11 @@ class GridBuilder(ModuleBase):
                 pass
             # #endregion
             
-            return mask_flat.reshape(surface_mask_strict.shape)
+            # Rückgabe: Unveränderte Maske + Liste der Randpunkte
+            return surface_mask_strict, edge_points
         except Exception:
             # Rein heuristische Verbesserung – Fehler dürfen die Hauptlogik nicht stören
-            return surface_mask_strict
+            return surface_mask_strict, []
     
     def _add_edge_points_on_boundary_uv(
         self,
@@ -1677,15 +1660,15 @@ class GridBuilder(ModuleBase):
         polygon_uv: List[Dict[str, float]],
         surface_mask_strict: np.ndarray,
         resolution: float,
-        ) -> np.ndarray:
+        ) -> Tuple[np.ndarray, List[Tuple[float, float]]]:
         """
-        Erweitert die Maske um Punkte direkt auf dem Polygon-Rand für vertikale Surfaces (in u,v-Koordinaten).
+        Generiert Randpunkte direkt auf dem Polygon-Rand für vertikale Surfaces (in u,v-Koordinaten).
         
         Strategie:
         - Generiert gleichmäßig verteilte Punkte entlang jeder Polygon-Kante
-        - Punktabstand: 0.7x Resolution
-        - Findet nächstgelegenen Grid-Punkt für jeden Boundary-Punkt
-        - Aktiviere nur Grid-Punkte, die innerhalb oder auf dem Polygon-Rand liegen
+        - Punktabstand: 0.5x Resolution
+        - Randpunkte werden direkt als additional_vertices für Triangulation verwendet
+        - KEINE Mapping auf Grid-Punkte mehr
         
         Args:
             U_grid: U-Koordinaten des Grids (u=x für X-Z-Wand, u=y für Y-Z-Wand)
@@ -1695,7 +1678,9 @@ class GridBuilder(ModuleBase):
             resolution: Grid-Resolution
             
         Returns:
-            Erweiterte Maske mit Boundary-Punkten
+            Tuple von (surface_mask_strict, edge_points_list)
+            - surface_mask_strict: Unveränderte Maske (keine Mapping mehr)
+            - edge_points_list: Liste von (u, v) Tupeln der Randpunkte
         """
         try:
             if not polygon_uv or len(polygon_uv) < 3 or U_grid.size == 0 or V_grid.size == 0:
@@ -1706,8 +1691,8 @@ class GridBuilder(ModuleBase):
             pu = np.array([float(p.get("x", 0.0)) for p in polygon_uv], dtype=float)
             pv = np.array([float(p.get("y", 0.0)) for p in polygon_uv], dtype=float)
             
-            # Punktabstand entlang der Kante: 0.7x Resolution
-            point_spacing = resolution * 0.7
+            # Punktabstand entlang der Kante: 0.5x Resolution (gleich wie für planare Flächen)
+            point_spacing = resolution * 0.5
             
             # Sammle alle Boundary-Punkte entlang der Kanten
             edge_points = []
@@ -1729,31 +1714,40 @@ class GridBuilder(ModuleBase):
                     # Degenerierte Kante überspringen
                     continue
                 
-                # Anzahl der Punkte entlang dieser Kante basierend auf gewünschtem Abstand
-                # Berechne Anzahl der Segmente: bei n_points=2 gibt es 1 Segment (2 Punkte = Start + Ende)
-                n_segments = max(1, int(np.ceil(segment_len / point_spacing)))
-                n_points = n_segments + 1  # n Segmente benötigen n+1 Punkte (inklusive Ende)
-                
+                # 🎯 FIX: Generiere Punkte mit exaktem Abstand point_spacing entlang der Kante
                 # #region agent log - Per-edge point calculation UV (H1, H2, H3)
                 edge_points_before = len(edge_points)
                 point_positions = []
                 # #endregion
                 
-                # Generiere gleichmäßig verteilte Punkte entlang der Kante (inklusive Ende)
-                for j in range(n_points):
-                    # t von 0.0 bis 1.0: gleichmäßige Verteilung über das gesamte Segment
-                    if n_points == 1:
-                        t = 0.0
-                    else:
-                        t = j / (n_points - 1)  # Für n_points=2: t=0.0 und t=1.0
-                    
-                    u_edge = u1 + t * du
-                    v_edge = v1 + t * dv
+                # Generiere Punkte mit exaktem Abstand point_spacing
+                current_t = 0.0
+                while current_t <= 1.0:
+                    u_edge = u1 + current_t * du
+                    v_edge = v1 + current_t * dv
                     edge_points.append((u_edge, v_edge))
                     
                     # #region agent log - Point position tracking UV (H2)
-                    point_positions.append({"t": float(t), "u": float(u_edge), "v": float(v_edge)})
+                    point_positions.append({"t": float(current_t), "u": float(u_edge), "v": float(v_edge)})
                     # #endregion
+                    
+                    # Berechne nächsten t-Wert basierend auf point_spacing
+                    if segment_len > 1e-9:
+                        dt = point_spacing / segment_len
+                        current_t += dt
+                        # Stelle sicher, dass wir nicht über 1.0 hinausgehen
+                        if current_t > 1.0:
+                            # Füge Endpunkt hinzu, wenn noch nicht erreicht
+                            if abs(current_t - 1.0) > 1e-9:
+                                u_edge_end = u1 + 1.0 * du
+                                v_edge_end = v1 + 1.0 * dv
+                                # Prüfe ob Endpunkt bereits hinzugefügt wurde (Toleranz)
+                                if len(edge_points) == 0 or math.hypot(edge_points[-1][0] - u_edge_end, edge_points[-1][1] - v_edge_end) > resolution * 0.01:
+                                    edge_points.append((u_edge_end, v_edge_end))
+                                    point_positions.append({"t": 1.0, "u": float(u_edge_end), "v": float(v_edge_end)})
+                            break
+                    else:
+                        break
                 
                 # #region agent log - Edge statistics UV (H1, H2, H3)
                 edge_points_after = len(edge_points)
@@ -1777,7 +1771,6 @@ class GridBuilder(ModuleBase):
                     "edge_index": i,
                     "segment_len": float(segment_len),
                     "point_spacing_target": float(point_spacing),
-                    "n_points_calculated": n_points,
                     "n_points_generated": points_generated,
                     "avg_actual_spacing": avg_spacing,
                     "max_actual_spacing": max_spacing,
@@ -1839,85 +1832,36 @@ class GridBuilder(ModuleBase):
             # #endregion
             
             if not edge_points:
-                return surface_mask_strict
+                return surface_mask_strict, []
             
-            # Finde nächstgelegenen Grid-Punkt für jeden Boundary-Punkt
-            # WICHTIG: Nur Grid-Punkte aktivieren, die innerhalb oder auf dem Polygon-Rand liegen
-            u_flat = U_grid.ravel()
-            v_flat = V_grid.ravel()
-            mask_flat = surface_mask_strict.ravel()
+            # 🎯 NEUE LOGIK: Randpunkte werden direkt als additional_vertices verwendet
+            # KEINE Mapping auf Grid-Punkte mehr
+            # #region agent log - Randpunkte generiert (UV, ohne Grid-Mapping)
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "EDGE_POINTS_AS_VERTICES_UV",
+                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary_uv:edge_points_generated",
+                        "message": "Randpunkte generiert (UV, direkt als Vertices, kein Grid-Mapping)",
+                        "data": {
+                            "n_edge_points_generated": len(edge_points),
+                            "points_before_dedup": points_before_dedup,
+                            "points_after_dedup": len(edge_points),
+                            "duplicates_removed": duplicates_removed,
+                            "resolution": float(resolution),
+                            "point_spacing": float(point_spacing)
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
-            # Prüfe welche Grid-Punkte innerhalb oder auf dem Polygon-Rand liegen
-            points_inside_mask = self._points_in_polygon_batch_uv(
-                U_grid, V_grid, polygon_uv
-            ).ravel()
-            
-            # Prüfe zusätzlich, ob Punkte auf dem Polygon-Rand liegen
-            pu = np.array([float(p.get("x", 0.0)) for p in polygon_uv], dtype=float)
-            pv = np.array([float(p.get("y", 0.0)) for p in polygon_uv], dtype=float)
-            boundary_eps = resolution * 0.05  # Strikte Toleranz für "auf dem Rand" (0.05x Resolution)
-            
-            # Erweitere Maske um Punkte, die direkt auf dem Rand liegen
-            points_on_edge = np.zeros_like(points_inside_mask, dtype=bool)
-            n_vertices = len(pu)
-            for i in range(n_vertices):
-                p1_idx = i
-                p2_idx = (i + 1) % n_vertices
-                u1, v1 = pu[p1_idx], pv[p1_idx]
-                u2, v2 = pu[p2_idx], pv[p2_idx]
-                
-                du_edge = u2 - u1
-                dv_edge = v2 - v1
-                segment_len = math.hypot(du_edge, dv_edge)
-                
-                if segment_len > 1e-9:
-                    # Prüfe Abstand jedes Grid-Punkts zur Kante
-                    for j in range(len(u_flat)):
-                        if not points_inside_mask[j]:  # Nur prüfen, wenn nicht bereits inside
-                            # Punkt-zu-Kante-Abstand berechnen
-                            du_to_p1 = u_flat[j] - u1
-                            dv_to_p1 = v_flat[j] - v1
-                            
-                            # Projektion auf Kante
-                            t = (du_to_p1 * du_edge + dv_to_p1 * dv_edge) / (segment_len * segment_len)
-                            t = max(0.0, min(1.0, t))  # Auf Segment begrenzen
-                            
-                            # Nächstgelegener Punkt auf der Kante
-                            proj_u = u1 + t * du_edge
-                            proj_v = v1 + t * dv_edge
-                            
-                            # Abstand zum projizierten Punkt
-                            dist_to_edge = math.hypot(u_flat[j] - proj_u, v_flat[j] - proj_v)
-                            
-                            if dist_to_edge <= boundary_eps:
-                                points_on_edge[j] = True
-            
-            # Kombiniere: inside oder auf dem Rand
-            points_inside_or_on_edge = points_inside_mask | points_on_edge
-            
-            # Maximal-Abstand: Nur wenn Grid-Punkt sehr nah (0.3x Resolution) - strikte Anforderung
-            max_distance = resolution * 0.3
-            max_sq_dist = max_distance ** 2
-            
-            for eu, ev in edge_points:
-                # Distanz zu allen Grid-Punkten
-                du = u_flat - eu
-                dv = v_flat - ev
-                d2 = du * du + dv * dv
-                
-                # Finde nächstgelegenen Grid-Punkt
-                nearest_idx = int(np.argmin(d2))
-                
-                # Aktiviere nur wenn:
-                # 1. Nah genug zum Boundary-Punkt (innerhalb max_distance)
-                # 2. UND Grid-Punkt ist innerhalb oder auf dem Polygon-Rand (NICHT außerhalb)
-                if d2[nearest_idx] <= max_sq_dist and points_inside_or_on_edge[nearest_idx]:
-                    mask_flat[nearest_idx] = True
-            
-            # Zähle wie viele Punkte nachher aktiv sind
-            points_activated_after = int(np.count_nonzero(mask_flat))
-            points_activated_before = int(np.count_nonzero(surface_mask_strict.ravel()))
-            edge_points_activated = points_activated_after - points_activated_before
+            # Rückgabe: Unveränderte Maske + Liste der Randpunkte
+            return surface_mask_strict, edge_points
             
             # #region agent log - Boundary-Punkte generiert und aktiviert (UV)
             try:
@@ -1958,7 +1902,7 @@ class GridBuilder(ModuleBase):
         min_points_per_dimension: int = 6,
         padding_factor: float = 0.5,
         disable_edge_refinement: bool = False
-        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[List[float]]]:
         """
         Erstellt Grid für eine einzelne Surface mit Mindestanzahl von Punkten.
         
@@ -2375,11 +2319,47 @@ class GridBuilder(ModuleBase):
                     U_grid, V_grid, polygon_uv, surface_mask_strict
                 )
                 # 🎯 FÜGE PUNKTE AUF SURFACE-BEGRENZUNGSLINIE HINZU (in u,v-Koordinaten)
-                surface_mask_strict = self._add_edge_points_on_boundary_uv(
+                surface_mask_strict, edge_points_uv = self._add_edge_points_on_boundary_uv(
                     U_grid, V_grid, polygon_uv, surface_mask_strict, resolution
                 )
                 # 🎯 KEINE DILATATION: Keine Punkte außerhalb des Polygons
                 surface_mask = surface_mask_strict
+                
+                # Transformiere Randpunkte von (u,v) zu (x,y,z) für vertikale Surfaces
+                edge_points_3d = []
+                if edge_points_uv:
+                    for u_edge, v_edge in edge_points_uv:
+                        if use_yz_wall:
+                            # Y-Z-Wand: u = y, v = z, X interpoliert
+                            edge_y = u_edge
+                            edge_z = v_edge
+                            # Für schräge Wände: X interpoliert, sonst konstant
+                            if y_span > eps_line and z_span > 1e-3:
+                                from scipy.interpolate import griddata
+                                points_surface = np.column_stack([ys, zs])
+                                edge_x = griddata(
+                                    points_surface, xs,
+                                    np.array([[u_edge, v_edge]]),
+                                    method='linear', fill_value=float(np.mean(xs))
+                                )[0]
+                            else:
+                                edge_x = float(np.mean(xs))
+                        else:
+                            # X-Z-Wand: u = x, v = z, Y interpoliert
+                            edge_x = u_edge
+                            edge_z = v_edge
+                            # Für schräge Wände: Y interpoliert, sonst konstant
+                            if y_span > eps_line and z_span > 1e-3:
+                                from scipy.interpolate import griddata
+                                points_surface = np.column_stack([xs, zs])
+                                edge_y = griddata(
+                                    points_surface, ys,
+                                    np.array([[u_edge, v_edge]]),
+                                    method='linear', fill_value=float(np.mean(ys))
+                                )[0]
+                            else:
+                                edge_y = float(np.mean(ys))
+                        edge_points_3d.append([edge_x, edge_y, edge_z])
                 
                 # #region agent log - Randpunkte bei Einzelsurface (Y-Z-Wand)
                 try:
@@ -2421,11 +2401,47 @@ class GridBuilder(ModuleBase):
                     U_grid, V_grid, polygon_uv, surface_mask_strict
                 )
                 # 🎯 FÜGE PUNKTE AUF SURFACE-BEGRENZUNGSLINIE HINZU (in u,v-Koordinaten)
-                surface_mask_strict = self._add_edge_points_on_boundary_uv(
+                surface_mask_strict, edge_points_uv = self._add_edge_points_on_boundary_uv(
                     U_grid, V_grid, polygon_uv, surface_mask_strict, resolution
                 )
                 # 🎯 KEINE DILATATION: Keine Punkte außerhalb des Polygons
                 surface_mask = surface_mask_strict
+                
+                # Transformiere Randpunkte von (u,v) zu (x,y,z) für vertikale Surfaces
+                edge_points_3d = []
+                if edge_points_uv:
+                    for u_edge, v_edge in edge_points_uv:
+                        if use_yz_wall:
+                            # Y-Z-Wand: u = y, v = z, X interpoliert
+                            edge_y = u_edge
+                            edge_z = v_edge
+                            # Für schräge Wände: X interpoliert, sonst konstant
+                            if y_span > eps_line and z_span > 1e-3:
+                                from scipy.interpolate import griddata
+                                points_surface = np.column_stack([ys, zs])
+                                edge_x = griddata(
+                                    points_surface, xs,
+                                    np.array([[u_edge, v_edge]]),
+                                    method='linear', fill_value=float(np.mean(xs))
+                                )[0]
+                            else:
+                                edge_x = float(np.mean(xs))
+                        else:
+                            # X-Z-Wand: u = x, v = z, Y interpoliert
+                            edge_x = u_edge
+                            edge_z = v_edge
+                            # Für schräge Wände: Y interpoliert, sonst konstant
+                            if y_span > eps_line and z_span > 1e-3:
+                                from scipy.interpolate import griddata
+                                points_surface = np.column_stack([xs, zs])
+                                edge_y = griddata(
+                                    points_surface, ys,
+                                    np.array([[u_edge, v_edge]]),
+                                    method='linear', fill_value=float(np.mean(ys))
+                                )[0]
+                            else:
+                                edge_y = float(np.mean(ys))
+                        edge_points_3d.append([edge_x, edge_y, edge_z])
                 
                 # #region agent log - Randpunkte bei Einzelsurface (X-Z-Wand)
                 try:
@@ -2470,14 +2486,65 @@ class GridBuilder(ModuleBase):
             )
             # 🎯 NEU: FÜGE PUNKTE AUF SURFACE-BEGRENZUNGSLINIE HINZU
             # Generiert Punkte entlang jeder Polygon-Kante im Abstand resolution/2
-            # Jeder Eckenpunkt wird ebenfalls als Punkt verwendet
-            # WICHTIG: Nur Punkte innerhalb oder auf dem Polygon-Rand werden aktiviert
+            # Randpunkte werden direkt als additional_vertices verwendet (kein Grid-Mapping)
             points_before_boundary = int(np.count_nonzero(surface_mask_strict))
-            surface_mask_strict = self._add_edge_points_on_boundary(
+            surface_mask_strict, edge_points_xy = self._add_edge_points_on_boundary(
                 X_grid, Y_grid, geometry, surface_mask_strict, resolution
             )
             points_after_boundary = int(np.count_nonzero(surface_mask_strict))
             boundary_points_added = points_after_boundary - points_before_boundary
+            
+            # Berechne Z-Koordinaten für Randpunkte (planar/sloped)
+            edge_points_3d = []
+            # #region agent log - Edge points 3D creation H1, H2
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1_H2",
+                        "location": "FlexibleGridGenerator.build_single_surface_grid:edge_points_3d_creation",
+                        "message": "Randpunkte 3D-Erstellung",
+                        "data": {
+                            "surface_id": str(geometry.surface_id),
+                            "edge_points_xy_count": len(edge_points_xy) if edge_points_xy else 0,
+                            "has_plane_model": geometry.plane_model is not None,
+                            "orientation": str(geometry.orientation)
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            if edge_points_xy and geometry.plane_model:
+                for x_edge, y_edge in edge_points_xy:
+                    # Berechne Z-Koordinate aus Plane-Model
+                    edge_z = _evaluate_plane_on_grid(geometry.plane_model, np.array([[x_edge]]), np.array([[y_edge]]))[0, 0]
+                    edge_points_3d.append([x_edge, y_edge, edge_z])
+            elif edge_points_xy:
+                # Fallback: Z = 0 wenn kein Plane-Model
+                edge_points_3d = [[x, y, 0.0] for x, y in edge_points_xy]
+            # #region agent log - Edge points 3D created H1, H2
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1_H2",
+                        "location": "FlexibleGridGenerator.build_single_surface_grid:edge_points_3d_created",
+                        "message": "Randpunkte 3D erstellt",
+                        "data": {
+                            "surface_id": str(geometry.surface_id),
+                            "edge_points_3d_count": len(edge_points_3d),
+                            "edge_points_3d_sample": edge_points_3d[:5] if len(edge_points_3d) > 0 else []
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # #region agent log - Boundary-Punkte hinzugefügt
             try:
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
@@ -2748,15 +2815,18 @@ class GridBuilder(ModuleBase):
         #         f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
         #     )
         
-        # Für planare/schräge Surfaces: Gebe auch die strikte Maske zurück (ohne Erweiterung)
+        # Für planare/schräge Surfaces: Gebe auch die strikte Maske und Randpunkte zurück
         # Für vertikale Surfaces: surface_mask_strict wurde bereits vorher erstellt (vor Dilatation)
         if geometry.orientation in ("planar", "sloped"):
             # surface_mask_strict wurde bereits vorher erstellt
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
+            # edge_points_3d wurde bereits oben berechnet
+            edge_points_3d_list = edge_points_3d if 'edge_points_3d' in locals() else []
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, edge_points_3d_list)
         else:
             # 🎯 KORREKTUR: Vertikale Surfaces haben auch eine strikte Maske (vor Dilatation erstellt)
             # surface_mask_strict wurde bereits oben erstellt (vor Dilatation in Zeile 1598/1610)
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
+            # Für vertikale Surfaces: Randpunkte werden in generate_per_surface generiert
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, [])
 
 
 class GridTransformer(ABC):
@@ -3210,13 +3280,18 @@ class FlexibleGridGenerator(ModuleBase):
                         min_points_per_dimension=min_points_per_dimension,
                         disable_edge_refinement=disable_edge_refinement
                     )
-                if len(result) == 7:
-                    # Neue Version: Mit strikter Maske
+                if len(result) == 8:
+                    # Neue Version: Mit strikter Maske und Randpunkten
+                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, edge_points_3d) = result
+                elif len(result) == 7:
+                    # Alte Version: Mit strikter Maske, aber ohne Randpunkte
                     (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
+                    edge_points_3d = []
                 else:
                     # Alte Version: Ohne strikte Maske (Fallback für vertikale)
                     (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
                     surface_mask_strict = surface_mask  # Für vertikale identisch
+                    edge_points_3d = []
             except (ValueError, Exception) as e:
                 # Fange alle Fehler ab (ValueError, QhullError, etc.) und überspringe die Surface
                 # Kein Fallback - nur die funktionierenden Surfaces werden verwendet
@@ -3547,10 +3622,169 @@ class FlexibleGridGenerator(ModuleBase):
                             # #endregion
                     
                     # 🎯 RANDPUNKTE ALS ZUSÄTZLICHE VERTICES HINZUFÜGEN
-                    # 🎯 NEUE STRATEGIE: Erstelle Randpunkte gemäß Resolution entlang Polygon-Kanten
-                    # Für jede Polygon-Kante: Erstelle Punkte im Abstand `resolution` entlang der Kante
-                    # Dies stellt sicher, dass die Randpunkte-Auflösung konsistent mit der Grid-Resolution ist
-                    if len(surface_points) >= 3:
+                    # 🎯 NEUE STRATEGIE: Verwende Randpunkte aus build_single_surface_grid
+                    # Randpunkte werden direkt als additional_vertices verwendet (kein Grid-Mapping)
+                    # #region agent log - Edge points before adding H1, H2, H3, H4
+                    try:
+                        import json, time as _t
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H1_H2_H3_H4",
+                                "location": "FlexibleGridGenerator.generate_per_surface:edge_points_before_adding",
+                                "message": "Randpunkte vor Hinzufügen",
+                                "data": {
+                                    "surface_id": str(geom.surface_id),
+                                    "edge_points_3d_count": len(edge_points_3d) if 'edge_points_3d' in locals() else 0,
+                                    "additional_vertices_count_before": len(additional_vertices),
+                                    "orientation": str(geom.orientation)
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    if edge_points_3d:
+                        # Prüfe ob Randpunkte innerhalb oder auf dem Polygon-Rand liegen
+                        from matplotlib.path import Path
+                        surface_points = geom.points or []
+                        if len(surface_points) >= 3:
+                            if geom.orientation == "vertical":
+                                # Für vertikale Flächen: Polygon in (u,v)
+                                if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                                    if geom.dominant_axis == "xz":
+                                        polygon_2d = np.array([[p.get("x", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
+                                    elif geom.dominant_axis == "yz":
+                                        polygon_2d = np.array([[p.get("y", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
+                                    else:
+                                        polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                                else:
+                                    polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                            else:
+                                # Planare/schräge Flächen: Polygon in (x,y)
+                                polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                            
+                            polygon_path = Path(polygon_2d)
+                            boundary_tolerance = resolution * 0.1  # Toleranz für "auf dem Rand"
+                        else:
+                            polygon_path = None
+                            boundary_tolerance = 0.0
+                        
+                        # Verwende Randpunkte aus build_single_surface_grid
+                        edge_points_added = 0
+                        edge_points_skipped_duplicate = 0
+                        edge_points_skipped_outside = 0
+                        for edge_point_3d in edge_points_3d:
+                            if len(edge_point_3d) == 3:
+                                x_edge, y_edge, z_edge = edge_point_3d[0], edge_point_3d[1], edge_point_3d[2]
+                                
+                                # 🎯 PRÜFUNG: Ist Randpunkt innerhalb oder auf dem Polygon-Rand?
+                                is_inside_or_on_edge = True
+                                if polygon_path is not None:
+                                    if geom.orientation == "vertical":
+                                        # Für vertikale Flächen: Prüfe in (u,v)
+                                        if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                                            if geom.dominant_axis == "xz":
+                                                point_2d = np.array([x_edge, z_edge])
+                                            elif geom.dominant_axis == "yz":
+                                                point_2d = np.array([y_edge, z_edge])
+                                            else:
+                                                point_2d = np.array([x_edge, y_edge])
+                                        else:
+                                            point_2d = np.array([x_edge, y_edge])
+                                    else:
+                                        # Planare/schräge Flächen: Prüfe in (x,y)
+                                        point_2d = np.array([x_edge, y_edge])
+                                    
+                                    is_inside = polygon_path.contains_point(point_2d)
+                                    if not is_inside:
+                                        # Prüfe ob Punkt auf dem Polygon-Rand liegt
+                                        is_on_edge = False
+                                        n_vertices = len(polygon_2d)
+                                        for i in range(n_vertices):
+                                            p1 = polygon_2d[i]
+                                            p2 = polygon_2d[(i + 1) % n_vertices]
+                                            dx_edge = p2[0] - p1[0]
+                                            dy_edge = p2[1] - p1[1]
+                                            segment_len = math.hypot(dx_edge, dy_edge)
+                                            if segment_len > 1e-9:
+                                                dx_to_p1 = point_2d[0] - p1[0]
+                                                dy_to_p1 = point_2d[1] - p1[1]
+                                                t = (dx_to_p1 * dx_edge + dy_to_p1 * dy_edge) / (segment_len * segment_len)
+                                                t = max(0.0, min(1.0, t))
+                                                proj_point = np.array([p1[0], p1[1]]) + t * np.array([dx_edge, dy_edge])
+                                                dist_to_edge = math.hypot(point_2d[0] - proj_point[0], point_2d[1] - proj_point[1])
+                                                if dist_to_edge <= boundary_tolerance:
+                                                    is_on_edge = True
+                                                    break
+                                        is_inside_or_on_edge = is_inside or is_on_edge
+                                
+                                if not is_inside_or_on_edge:
+                                    edge_points_skipped_outside += 1
+                                    # #region agent log - Edge point outside H3, H4
+                                    try:
+                                        import json, time as _t
+                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                            f.write(json.dumps({
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "H3_H4",
+                                                "location": "FlexibleGridGenerator.generate_per_surface:edge_point_outside",
+                                                "message": "Randpunkt außerhalb Polygon",
+                                                "data": {
+                                                    "surface_id": str(geom.surface_id),
+                                                    "edge_point": [float(x_edge), float(y_edge), float(z_edge)],
+                                                    "is_inside": is_inside if polygon_path is not None else None,
+                                                    "is_on_edge": is_on_edge if polygon_path is not None else None
+                                                },
+                                                "timestamp": int(_t.time() * 1000)
+                                            }) + "\n")
+                                    except Exception:
+                                        pass
+                                    # #endregion
+                                    continue
+                                
+                                # Prüfe ob Punkt bereits existiert
+                                existing_additional = np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+                                if len(existing_additional) > 0:
+                                    distances = np.sqrt((existing_additional[:, 0] - x_edge)**2 + (existing_additional[:, 1] - y_edge)**2)
+                                    min_distance = np.min(distances)
+                                else:
+                                    min_distance = np.inf
+                                
+                                exact_match_tolerance_edge = resolution * 0.05
+                                if min_distance > exact_match_tolerance_edge:
+                                    additional_vertices.append(edge_point_3d)
+                                    edge_points_added += 1
+                                else:
+                                    edge_points_skipped_duplicate += 1
+                        
+                        # #region agent log - Edge points added summary H1, H2, H3, H4
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H1_H2_H3_H4",
+                                    "location": "FlexibleGridGenerator.generate_per_surface:edge_points_added_summary",
+                                    "message": "Randpunkte hinzugefügt - Zusammenfassung",
+                                    "data": {
+                                        "surface_id": str(geom.surface_id),
+                                        "edge_points_3d_count": len(edge_points_3d),
+                                        "edge_points_added": edge_points_added,
+                                        "edge_points_skipped_duplicate": edge_points_skipped_duplicate,
+                                        "edge_points_skipped_outside": edge_points_skipped_outside,
+                                        "additional_vertices_count_after": len(additional_vertices)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                    elif len(surface_points) >= 3:
+                        # Fallback: Generiere Randpunkte hier (für vertikale Surfaces oder wenn nicht aus build_single_surface_grid)
                         exact_match_tolerance_edge = resolution * 0.05  # Toleranz für Duplikate: 5% der Resolution
                         
                         if geom.orientation == "vertical":
