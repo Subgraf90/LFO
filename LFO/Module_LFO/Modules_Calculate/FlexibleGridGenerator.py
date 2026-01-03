@@ -1320,10 +1320,10 @@ class GridBuilder(ModuleBase):
         Erweitert die Maske um Punkte direkt auf dem Polygon-Rand.
         
         Strategie:
-        - Findet Schnittpunkte zwischen Grid-Linien (X und Y) und Polygon-Kanten
-        - Keine höhere Auflösung - nur natürliche Schnittpunkte zwischen Grid und Surface-Linien
-        - Findet nächstgelegenen Grid-Punkt für jeden Schnittpunkt
-        - Aktiviere diese Grid-Punkte in der Maske
+        - Generiert gleichmäßig verteilte Punkte entlang jeder Polygon-Kante
+        - Punktabstand: 0.7x Resolution
+        - Findet nächstgelegenen Grid-Punkt für jeden Boundary-Punkt
+        - Aktiviere nur Grid-Punkte, die innerhalb oder auf dem Polygon-Rand liegen
         
         Args:
             X_grid: X-Koordinaten des Grids
@@ -1345,99 +1345,58 @@ class GridBuilder(ModuleBase):
             if geometry.orientation not in ("planar", "sloped"):
                 return surface_mask_strict
             
-            # 🎯 STRATEGIE: Finde Schnittpunkte zwischen Grid-Linien und Polygon-Kanten
-            # Entscheide basierend auf Surface-Ausdehnung, welche Dimension verwendet werden soll
-            # Extrahiere eindeutige X- und Y-Koordinaten des Grids
-            unique_x = np.unique(X_grid)
-            unique_y = np.unique(Y_grid)
-            
+            # 🎯 STRATEGIE: Gleichmäßige Punkteverteilung entlang jeder Polygon-Kante
             n_vertices = len(pts)
             px = np.array([float(p.get("x", 0.0)) for p in pts], dtype=float)
             py = np.array([float(p.get("y", 0.0)) for p in pts], dtype=float)
             
-            # Berechne Ausdehnung des Polygons in X und Y
-            extent_x = float(np.max(px) - np.min(px))
-            extent_y = float(np.max(py) - np.min(py))
-            
-            # Entscheide, welche Dimension verwendet werden soll
-            # Wenn schmal in Y → verwende nur X-Schnittpunkte (vertikale Grid-Linien)
-            # Wenn schmal in X → verwende nur Y-Schnittpunkte (horizontale Grid-Linien)
-            use_x_intersections = extent_y < extent_x  # Surface ist schmaler in Y → verwende X
-            use_y_intersections = extent_x < extent_y  # Surface ist schmaler in X → verwende Y
-            # Wenn gleich breit → verwende beide
-            if abs(extent_x - extent_y) < resolution * 0.1:
-                use_x_intersections = True
-                use_y_intersections = True
-            
-            # 🎯 FALLBACK: Wenn keine Dimension ausgewählt wurde, verwende beide (sollte nicht vorkommen)
-            if not use_x_intersections and not use_y_intersections:
-                use_x_intersections = True
-                use_y_intersections = True
-            
-            # Sammle alle Schnittpunkte (Grid-Linien mit Polygon-Kanten)
-            intersection_points = []
-            
-            # 🎯 FÜR JEDE GRID-SPALTE (konstantes X): Finde Schnittpunkte mit Polygon-Kanten
-            if use_x_intersections:
-                for x_grid in unique_x:
-                    # Finde alle Schnittpunkte dieser vertikalen Linie mit Polygon-Kanten
-                    for i in range(n_vertices):
-                        x1, y1 = px[i], py[i]
-                        x2, y2 = px[(i + 1) % n_vertices], py[(i + 1) % n_vertices]
-                        
-                        # Kante: Von (x1, y1) zu (x2, y2)
-                        dx = x2 - x1
-                        dy = y2 - y1
-                        
-                        # Prüfe ob vertikale Grid-Linie (x_grid) die Kante schneidet
-                        if abs(dx) > 1e-9:  # Kante nicht vertikal
-                            # Prüfe ob x_grid zwischen x1 und x2 liegt (inklusive Ecken)
-                            if min(x1, x2) <= x_grid <= max(x1, x2):
-                                # Berechne y-Koordinate des Schnittpunkts
-                                t = (x_grid - x1) / dx
-                                if 0.0 <= t <= 1.0:  # Inklusive Ecken (0.0 oder 1.0)
-                                    y_intersect = y1 + t * dy
-                                    # Prüfe ob Schnittpunkt nah an einer Y-Grid-Linie liegt oder direkt darauf
-                                    y_dist_to_grid = np.min(np.abs(unique_y - y_intersect))
-                                    if y_dist_to_grid < resolution * 0.3:  # Toleranz: 30% der Resolution
-                                        intersection_points.append((x_grid, y_intersect))
-            
-            # 🎯 FÜR JEDE GRID-ZEILE (konstantes Y): Finde Schnittpunkte mit Polygon-Kanten
-            if use_y_intersections:
-                for y_grid in unique_y:
-                    # Finde alle Schnittpunkte dieser horizontalen Linie mit Polygon-Kanten
-                    for i in range(n_vertices):
-                        x1, y1 = px[i], py[i]
-                        x2, y2 = px[(i + 1) % n_vertices], py[(i + 1) % n_vertices]
-                        
-                        # Kante: Von (x1, y1) zu (x2, y2)
-                        dx = x2 - x1
-                        dy = y2 - y1
-                        
-                        # Prüfe ob horizontale Grid-Linie (y_grid) die Kante schneidet
-                        if abs(dy) > 1e-9:  # Kante nicht horizontal
-                            # Prüfe ob y_grid zwischen y1 und y2 liegt (inklusive Ecken)
-                            if min(y1, y2) <= y_grid <= max(y1, y2):
-                                # Berechne x-Koordinate des Schnittpunkts
-                                t = (y_grid - y1) / dy
-                                if 0.0 <= t <= 1.0:  # Inklusive Ecken (0.0 oder 1.0)
-                                    x_intersect = x1 + t * dx
-                                    # Prüfe ob Schnittpunkt nah an einer X-Grid-Linie liegt oder direkt darauf
-                                    x_dist_to_grid = np.min(np.abs(unique_x - x_intersect))
-                                    if x_dist_to_grid < resolution * 0.3:  # Toleranz: 30% der Resolution
-                                        intersection_points.append((x_intersect, y_grid))
-            
-            # Entferne doppelte Schnittpunkte (durch Toleranz)
+
+            point_spacing = resolution * 0.5
+            # Sammle alle Boundary-Punkte entlang der Kanten
             edge_points = []
+            
+            for i in range(n_vertices):
+                x1, y1 = px[i], py[i]
+                x2, y2 = px[(i + 1) % n_vertices], py[(i + 1) % n_vertices]
+                
+                # Kante: Von (x1, y1) zu (x2, y2)
+                dx = x2 - x1
+                dy = y2 - y1
+                segment_len = math.hypot(dx, dy)
+                
+                if segment_len < 1e-9:
+                    # Degenerierte Kante überspringen
+                    continue
+                
+                # Anzahl der Punkte entlang dieser Kante (inklusive Start, exklusive Ende)
+                n_points = max(1, int(np.ceil(segment_len / point_spacing)))
+                
+                # Generiere gleichmäßig verteilte Punkte entlang der Kante
+                for j in range(n_points):
+                    # t von 0.0 bis (n_points-1)/n_points, damit der letzte Punkt nicht genau am Ende liegt
+                    # (der Endpunkt wird von der nächsten Kante abgedeckt)
+                    if n_points == 1:
+                        t = 0.0
+                    else:
+                        t = j / n_points
+                    
+                    x_edge = x1 + t * dx
+                    y_edge = y1 + t * dy
+                    edge_points.append((x_edge, y_edge))
+            
+            # Entferne doppelte Punkte (z.B. Eckpunkte die mehrfach auftreten)
             tolerance = resolution * 0.05
-            for x, y in intersection_points:
+            unique_edge_points = []
+            for x, y in edge_points:
                 is_duplicate = False
-                for ex, ey in edge_points:
+                for ex, ey in unique_edge_points:
                     if abs(x - ex) < tolerance and abs(y - ey) < tolerance:
                         is_duplicate = True
                         break
                 if not is_duplicate:
-                        edge_points.append((x, y))
+                    unique_edge_points.append((x, y))
+            
+            edge_points = unique_edge_points
             
             if not edge_points:
                 return surface_mask_strict
@@ -1546,18 +1505,10 @@ class GridBuilder(ModuleBase):
                         "runId": "run1",
                         "hypothesisId": "BOUNDARY_POINTS_CREATION",
                         "location": "FlexibleGridGenerator._add_edge_points_on_boundary",
-                        "message": "Randpunkte generiert und aktiviert",
+                        "message": "Randpunkte generiert und aktiviert (lineare Verteilung)",
                         "data": {
                             "surface_id": str(getattr(geometry, "surface_id", "unknown")),
                             "orientation": str(getattr(geometry, "orientation", "unknown")),
-                            "extent_x": float(extent_x),
-                            "extent_y": float(extent_y),
-                            "use_x_intersections": bool(use_x_intersections),
-                            "use_y_intersections": bool(use_y_intersections),
-                            "extent_x": float(extent_x),
-                            "extent_y": float(extent_y),
-                            "use_x_intersections": bool(use_x_intersections),
-                            "use_y_intersections": bool(use_y_intersections),
                             "n_edge_points_generated": len(edge_points),
                             "edge_points_activated": edge_points_activated,
                             "edge_points_not_activated": edge_points_not_activated if 'edge_points_not_activated' in locals() else 0,
@@ -1566,6 +1517,7 @@ class GridBuilder(ModuleBase):
                             "points_before": points_activated_before,
                             "points_after": points_activated_after,
                             "resolution": float(resolution),
+                            "point_spacing": float(point_spacing),
                             "max_distance_threshold": float(max_distance),
                             "total_grid_points": int(X_grid.size)
                         },
@@ -1592,10 +1544,10 @@ class GridBuilder(ModuleBase):
         Erweitert die Maske um Punkte direkt auf dem Polygon-Rand für vertikale Surfaces (in u,v-Koordinaten).
         
         Strategie:
-        - Findet Schnittpunkte zwischen Grid-Linien (U und V) und Polygon-Kanten
-        - Keine höhere Auflösung - nur natürliche Schnittpunkte zwischen Grid und Surface-Linien
-        - Findet nächstgelegenen Grid-Punkt für jeden Schnittpunkt
-        - Aktiviere diese Grid-Punkte in der Maske
+        - Generiert gleichmäßig verteilte Punkte entlang jeder Polygon-Kante
+        - Punktabstand: 0.7x Resolution
+        - Findet nächstgelegenen Grid-Punkt für jeden Boundary-Punkt
+        - Aktiviere nur Grid-Punkte, die innerhalb oder auf dem Polygon-Rand liegen
         
         Args:
             U_grid: U-Koordinaten des Grids (u=x für X-Z-Wand, u=y für Y-Z-Wand)
@@ -1611,99 +1563,59 @@ class GridBuilder(ModuleBase):
             if not polygon_uv or len(polygon_uv) < 3 or U_grid.size == 0 or V_grid.size == 0:
                 return surface_mask_strict
             
-            # 🎯 STRATEGIE: Finde Schnittpunkte zwischen Grid-Linien und Polygon-Kanten
-            # Entscheide basierend auf Surface-Ausdehnung, welche Dimension verwendet werden soll
-            # Extrahiere eindeutige U- und V-Koordinaten des Grids
-            unique_u = np.unique(U_grid)
-            unique_v = np.unique(V_grid)
-            
+            # 🎯 STRATEGIE: Gleichmäßige Punkteverteilung entlang jeder Polygon-Kante
             n_vertices = len(polygon_uv)
             pu = np.array([float(p.get("x", 0.0)) for p in polygon_uv], dtype=float)
             pv = np.array([float(p.get("y", 0.0)) for p in polygon_uv], dtype=float)
             
-            # Berechne Ausdehnung des Polygons in U und V
-            extent_u = float(np.max(pu) - np.min(pu))
-            extent_v = float(np.max(pv) - np.min(pv))
+            # Punktabstand entlang der Kante: 0.7x Resolution
+            point_spacing = resolution * 0.7
             
-            # Entscheide, welche Dimension verwendet werden soll
-            # Wenn schmal in V → verwende nur U-Schnittpunkte (vertikale Grid-Linien)
-            # Wenn schmal in U → verwende nur V-Schnittpunkte (horizontale Grid-Linien)
-            use_u_intersections = extent_v < extent_u  # Surface ist schmaler in V → verwende U
-            use_v_intersections = extent_u < extent_v  # Surface ist schmaler in U → verwende V
-            # Wenn gleich breit → verwende beide
-            if abs(extent_u - extent_v) < resolution * 0.1:
-                use_u_intersections = True
-                use_v_intersections = True
-            
-            # 🎯 FALLBACK: Wenn keine Dimension ausgewählt wurde, verwende beide (sollte nicht vorkommen)
-            if not use_u_intersections and not use_v_intersections:
-                use_u_intersections = True
-                use_v_intersections = True
-            
-            # Sammle alle Schnittpunkte (Grid-Linien mit Polygon-Kanten)
-            intersection_points = []
-            
-            # 🎯 FÜR JEDE GRID-SPALTE (konstantes U): Finde Schnittpunkte mit Polygon-Kanten
-            if use_u_intersections:
-                for u_grid in unique_u:
-                    # Finde alle Schnittpunkte dieser vertikalen Linie mit Polygon-Kanten
-                    for i in range(n_vertices):
-                        u1, v1 = pu[i], pv[i]
-                        u2, v2 = pu[(i + 1) % n_vertices], pv[(i + 1) % n_vertices]
-                        
-                        # Kante: Von (u1, v1) zu (u2, v2)
-                        du = u2 - u1
-                        dv = v2 - v1
-                    
-                    # Prüfe ob vertikale Grid-Linie (u_grid) die Kante schneidet
-                    if abs(du) > 1e-9:  # Kante nicht vertikal
-                        # Prüfe ob u_grid zwischen u1 und u2 liegt (inklusive Ecken)
-                        if min(u1, u2) <= u_grid <= max(u1, u2):
-                            # Berechne v-Koordinate des Schnittpunkts
-                            t = (u_grid - u1) / du
-                            if 0.0 <= t <= 1.0:  # Inklusive Ecken (0.0 oder 1.0)
-                                v_intersect = v1 + t * dv
-                                # Prüfe ob Schnittpunkt nah an einer V-Grid-Linie liegt oder direkt darauf
-                                v_dist_to_grid = np.min(np.abs(unique_v - v_intersect))
-                                if v_dist_to_grid < resolution * 0.3:  # Toleranz: 30% der Resolution
-                                    intersection_points.append((u_grid, v_intersect))
-            
-            # 🎯 FÜR JEDE GRID-ZEILE (konstantes V): Finde Schnittpunkte mit Polygon-Kanten
-            if use_v_intersections:
-                for v_grid in unique_v:
-                    # Finde alle Schnittpunkte dieser horizontalen Linie mit Polygon-Kanten
-                    for i in range(n_vertices):
-                        u1, v1 = pu[i], pv[i]
-                        u2, v2 = pu[(i + 1) % n_vertices], pv[(i + 1) % n_vertices]
-                        
-                        # Kante: Von (u1, v1) zu (u2, v2)
-                        du = u2 - u1
-                        dv = v2 - v1
-                    
-                    # Prüfe ob horizontale Grid-Linie (v_grid) die Kante schneidet
-                    if abs(dv) > 1e-9:  # Kante nicht horizontal
-                        # Prüfe ob v_grid zwischen v1 und v2 liegt (inklusive Ecken)
-                        if min(v1, v2) <= v_grid <= max(v1, v2):
-                            # Berechne u-Koordinate des Schnittpunkts
-                            t = (v_grid - v1) / dv
-                            if 0.0 <= t <= 1.0:  # Inklusive Ecken (0.0 oder 1.0)
-                                u_intersect = u1 + t * du
-                                # Prüfe ob Schnittpunkt nah an einer U-Grid-Linie liegt oder direkt darauf
-                                u_dist_to_grid = np.min(np.abs(unique_u - u_intersect))
-                                if u_dist_to_grid < resolution * 0.3:  # Toleranz: 30% der Resolution
-                                    intersection_points.append((u_intersect, v_grid))
-            
-            # Entferne doppelte Schnittpunkte (durch Toleranz)
+            # Sammle alle Boundary-Punkte entlang der Kanten
             edge_points = []
+            
+            for i in range(n_vertices):
+                u1, v1 = pu[i], pv[i]
+                u2, v2 = pu[(i + 1) % n_vertices], pv[(i + 1) % n_vertices]
+                
+                # Kante: Von (u1, v1) zu (u2, v2)
+                du = u2 - u1
+                dv = v2 - v1
+                segment_len = math.hypot(du, dv)
+                
+                if segment_len < 1e-9:
+                    # Degenerierte Kante überspringen
+                    continue
+                
+                # Anzahl der Punkte entlang dieser Kante (inklusive Start, exklusive Ende)
+                n_points = max(1, int(np.ceil(segment_len / point_spacing)))
+                
+                # Generiere gleichmäßig verteilte Punkte entlang der Kante
+                for j in range(n_points):
+                    # t von 0.0 bis (n_points-1)/n_points, damit der letzte Punkt nicht genau am Ende liegt
+                    # (der Endpunkt wird von der nächsten Kante abgedeckt)
+                    if n_points == 1:
+                        t = 0.0
+                    else:
+                        t = j / n_points
+                    
+                    u_edge = u1 + t * du
+                    v_edge = v1 + t * dv
+                    edge_points.append((u_edge, v_edge))
+            
+            # Entferne doppelte Punkte (z.B. Eckpunkte die mehrfach auftreten)
             tolerance = resolution * 0.05
-            for u, v in intersection_points:
+            unique_edge_points = []
+            for u, v in edge_points:
                 is_duplicate = False
-                for eu, ev in edge_points:
+                for eu, ev in unique_edge_points:
                     if abs(u - eu) < tolerance and abs(v - ev) < tolerance:
                         is_duplicate = True
                         break
                 if not is_duplicate:
-                    edge_points.append((u, v))
+                    unique_edge_points.append((u, v))
+            
+            edge_points = unique_edge_points
             
             if not edge_points:
                 return surface_mask_strict
@@ -1795,17 +1707,14 @@ class GridBuilder(ModuleBase):
                         "runId": "run1",
                         "hypothesisId": "BOUNDARY_POINTS_CREATION",
                         "location": "FlexibleGridGenerator._add_edge_points_on_boundary_uv",
-                        "message": "Randpunkte generiert und aktiviert (UV)",
+                        "message": "Randpunkte generiert und aktiviert (UV, lineare Verteilung)",
                         "data": {
-                            "extent_u": float(extent_u),
-                            "extent_v": float(extent_v),
-                            "use_u_intersections": bool(use_u_intersections),
-                            "use_v_intersections": bool(use_v_intersections),
                             "n_edge_points_generated": len(edge_points),
                             "edge_points_activated": edge_points_activated,
                             "points_before": points_activated_before,
                             "points_after": points_activated_after,
                             "resolution": float(resolution),
+                            "point_spacing": float(point_spacing),
                             "max_distance_threshold": float(max_distance),
                             "total_grid_points": int(U_grid.size)
                         },
@@ -3637,12 +3546,15 @@ class FlexibleGridGenerator(ModuleBase):
                     additional_vertices_array = np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
                     
                     # 🎯 NEU: DELAUNAY-TRIANGULATION für alle gültigen Punkte
-                    # Sammle alle gültigen Punkte (Grid-Punkte in Maske + additional_vertices)
-                    # Verwende Delaunay-Triangulation für konsistente, überschneidungsfreie Triangulation
-                    use_delaunay_triangulation = False
+                    # 🎯 DELAUNAY-TRIANGULATION: Verwende nur noch Delaunay für konsistente, überschneidungsfreie Triangulation
                     faces_list = []  # Initialisiere faces_list
+                    use_delaunay_triangulation = True  # Immer Delaunay verwenden
                     
-                    if HAS_SCIPY and len(additional_vertices) > 0:
+                    if not HAS_SCIPY:
+                        raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
+                    
+                    # Sammle alle gültigen Punkte (Grid-Punkte in Maske + additional_vertices)
+                    if use_delaunay_triangulation:  # Immer Delaunay verwenden
                         try:
                             # Sammle alle gültigen Punkte
                             valid_vertices_list = []
@@ -3749,8 +3661,6 @@ class FlexibleGridGenerator(ModuleBase):
                                     for v1, v2, v3 in valid_triangles:
                                         faces_list.extend([3, int(v1), int(v2), int(v3)])
                                     
-                                    use_delaunay_triangulation = True
-                                    
                                     # #region agent log - Delaunay-Triangulation erfolgreich
                                     try:
                                         import json, time as _t
@@ -3773,8 +3683,7 @@ class FlexibleGridGenerator(ModuleBase):
                                         pass
                                     # #endregion
                         except Exception as e:
-                            # Bei Fehler: Fallback auf manuelle Triangulation
-                            use_delaunay_triangulation = False
+                            # Bei Fehler: Logge und werfe Exception
                             try:
                                 import json, time as _t
                                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
@@ -4053,17 +3962,11 @@ class FlexibleGridGenerator(ModuleBase):
                             # if len(boundary_indices) > 0:
                             #     print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert ({geom.orientation})")
                     
-                    # 🎯 INITIALISIERE VARIABLEN FÜR STATISTIKEN (werden für beide Triangulationsmethoden verwendet)
-                    active_quads = 0
-                    partial_quads = 0  # Quadrate mit 3 aktiven Ecken
-                    filtered_out = 0  # Dreiecke außerhalb der strikten Maske
-                    corner_vertex_triangles = 0  # Dreiecke mit Eckpunkten
-                    isolated_point_triangles = 0  # Dreiecke für isolierte Punkte
-                    edge_corner_connections = 0  # Verbindungen zwischen Randpunkten und Eckpunkten
-                    edge_to_edge_triangles = 0  # Triangulation entlang der Randlinien
+                    # 🎯 Prüfe ob Triangulation erfolgreich war
+                    if len(faces_list) == 0:
+                        raise RuntimeError(f"Keine Faces für Surface {geom.surface_id} generiert. Delaunay-Triangulation hat keine Dreiecke erstellt.")
                     
-                    # 🎯 FALLBACK: Manuelle Triangulation (nur wenn Delaunay nicht verwendet wurde)
-                    if not use_delaunay_triangulation:
+                    # 🎯 Verarbeite Faces aus Delaunay-Triangulation
                         # Erstelle Index-Mapping: (i, j) → linearer Index
                         # Für ein strukturiertes Grid: index = i * nx + j
                         
@@ -4298,11 +4201,12 @@ class FlexibleGridGenerator(ModuleBase):
                     
                     # 🎯 EXPLIZITE VERBINDUNGEN ZWISCHEN RANDPUNKTEN UND ECKPUNKTEN
                     # Verbinde Randpunkte entlang der Surface-Linien mit Eckpunkten
-                        # NUR wenn manuelle Triangulation verwendet wird (nicht bei Delaunay)
+                    # NUR wenn manuelle Triangulation verwendet wird (nicht bei Delaunay)
                     # 🎯 WICHTIG: Die ersten N additional_vertices sind Ecken (N = Anzahl Polygon-Ecken)
                     # Die restlichen additional_vertices sind Randpunkte
                     corner_vertices_count = min(len(surface_points), len(additional_vertices_array)) if len(surface_points) > 0 and len(additional_vertices_array) > 0 else 0
                     edge_vertices_start_idx = corner_vertices_count
+                    edge_corner_connections = 0  # Initialisiere Zähler für Edge-Corner-Verbindungen
                     
                     if len(surface_points) >= 3 and len(additional_vertices) > 0:
                         # Bestimme Koordinatensystem basierend auf Orientierung
@@ -5342,8 +5246,6 @@ class FlexibleGridGenerator(ModuleBase):
         
         return surface_grids
     
-    # 🗑️ ENTFERNT: generate_group_sum_grid - nicht mehr benötigt, da alle Surfaces identisch behandelt werden
-
     def _make_surface_cache_key(
         self,
         geom: SurfaceGeometry,
