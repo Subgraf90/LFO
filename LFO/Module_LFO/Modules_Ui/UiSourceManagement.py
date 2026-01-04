@@ -312,6 +312,9 @@ class Sources(ModuleBase, QObject):
             
             def custom_dropEvent(event):
                 """Behandelt Drop-Events für Drag & Drop mit Gruppen"""
+                # Speichere Scroll-Position vor dem Drop, um sie danach wiederherzustellen
+                scroll_position = self.sources_tree_widget.verticalScrollBar().value()
+                
                 drop_item = self.sources_tree_widget.itemAt(event.pos())
                 indicator_pos = self.sources_tree_widget.dropIndicatorPosition()
                 
@@ -413,6 +416,10 @@ class Sources(ModuleBase, QObject):
                     event.setDropAction(Qt.MoveAction)
                 else:
                     original_dropEvent(event)
+                
+                # Stelle Scroll-Position wieder her, um automatisches Scrollen zum Item zu verhindern
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.sources_tree_widget.verticalScrollBar().setValue(scroll_position))
                 
                 # Validiere alle Checkboxen nach Drag & Drop
                 self.validate_all_checkboxes()

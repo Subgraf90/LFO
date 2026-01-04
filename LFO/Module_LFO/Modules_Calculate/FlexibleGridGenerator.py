@@ -1622,29 +1622,7 @@ class GridBuilder(ModuleBase):
             # 🎯 NEUE LOGIK: Randpunkte werden direkt als additional_vertices verwendet
             # KEINE Mapping auf Grid-Punkte mehr
             # #region agent log - Randpunkte generiert (ohne Grid-Mapping)
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "EDGE_POINTS_AS_VERTICES",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary:edge_points_generated",
-                        "message": "Randpunkte generiert (direkt als Vertices, kein Grid-Mapping)",
-                        "data": {
-                            "surface_id": str(getattr(geometry, "surface_id", "unknown")),
-                            "orientation": str(getattr(geometry, "orientation", "unknown")),
-                            "n_edge_points_generated": len(edge_points),
-                            "points_before_dedup": points_before_dedup,
-                            "points_after_dedup": len(edge_points),
-                            "duplicates_removed": duplicates_removed,
-                            "resolution": float(resolution),
-                            "point_spacing": float(point_spacing)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
+            # (Logging entfernt - Randpunkt-Logik nicht mehr aktiv)
             # #endregion
             
             # Rückgabe: Unveränderte Maske + Liste der Randpunkte
@@ -3479,6 +3457,29 @@ class FlexibleGridGenerator(ModuleBase):
                             
                             # Füge aktive Grid-Punkte hinzu
                             active_mask_indices = np.where(mask_flat)[0]
+                            active_strict_mask_indices = np.where(mask_strict_flat)[0]
+                            # #region agent log - Mask analysis H1, H2, H3
+                            try:
+                                import json, time as _t
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H1_H2_H3",
+                                        "location": "FlexibleGridGenerator.generate_per_surface:mask_analysis",
+                                        "message": "Mask-Analyse für Triangulation",
+                                        "data": {
+                                            "surface_id": str(geom.surface_id),
+                                            "mask_flat_count": int(len(active_mask_indices)),
+                                            "mask_strict_flat_count": int(len(active_strict_mask_indices)),
+                                            "extended_points_count": int(len(active_mask_indices) - len(active_strict_mask_indices)),
+                                            "total_grid_points": int(X_grid.size)
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
                             for idx in active_mask_indices:
                                 if idx < len(all_vertices):
                                     valid_vertices_list.append(all_vertices[idx])
@@ -3547,17 +3548,72 @@ class FlexibleGridGenerator(ModuleBase):
                                         polygon_path = Path(polygon_2d)
                                         
                                         # Prüfe jeden Dreieck-Schwerpunkt
+                                        triangles_filtered_out = 0
+                                        triangles_with_extended_vertices = 0
+                                        triangles_with_strict_vertices = 0
                                         for tri_idx in triangles_delaunay:
+                                            # Konvertiere Indizes: Delaunay-Indizes → valid_vertex_indices → all_vertices-Indizes
+                                            v1_old = valid_vertex_indices[tri_idx[0]]
+                                            v2_old = valid_vertex_indices[tri_idx[1]]
+                                            v3_old = valid_vertex_indices[tri_idx[2]]
+                                            
+                                            # Prüfe ob Vertices in strikter oder erweiterter Maske sind
+                                            v1_in_strict = (v1_old < len(mask_strict_flat) and mask_strict_flat[v1_old]) if v1_old < len(mask_strict_flat) else False
+                                            v2_in_strict = (v2_old < len(mask_strict_flat) and mask_strict_flat[v2_old]) if v2_old < len(mask_strict_flat) else False
+                                            v3_in_strict = (v3_old < len(mask_strict_flat) and mask_strict_flat[v3_old]) if v3_old < len(mask_strict_flat) else False
+                                            has_strict_vertex = v1_in_strict or v2_in_strict or v3_in_strict
+                                            
+                                            v1_in_extended = v1_old < len(mask_flat) and mask_flat[v1_old]
+                                            v2_in_extended = v2_old < len(mask_flat) and mask_flat[v2_old]
+                                            v3_in_extended = v3_old < len(mask_flat) and mask_flat[v3_old]
+                                            has_extended_vertex = v1_in_extended or v2_in_extended or v3_in_extended
+                                            
                                             # Schwerpunkt des Dreiecks in 2D
                                             centroid_2d = proj_2d[tri_idx].mean(axis=0)
                                             
                                             # Prüfe ob Schwerpunkt im Polygon liegt
-                                            if polygon_path.contains_point(centroid_2d):
-                                                # Konvertiere Indizes: Delaunay-Indizes → valid_vertex_indices → all_vertices-Indizes
-                                                v1_old = valid_vertex_indices[tri_idx[0]]
-                                                v2_old = valid_vertex_indices[tri_idx[1]]
-                                                v3_old = valid_vertex_indices[tri_idx[2]]
+                                            centroid_in_polygon = polygon_path.contains_point(centroid_2d)
+                                            
+                                            # #region agent log - Triangle filtering H1, H2, H3
+                                            if not centroid_in_polygon:
+                                                triangles_filtered_out += 1
+                                                if has_extended_vertex and not has_strict_vertex:
+                                                    triangles_with_extended_vertices += 1
+                                                elif has_strict_vertex:
+                                                    triangles_with_strict_vertices += 1
+                                            # #endregion
+                                            
+                                            # 🎯 FIX: Akzeptiere Dreiecke wenn:
+                                            # 1. Schwerpunkt im Polygon liegt ODER
+                                            # 2. Mindestens ein Vertex in strikter Maske liegt (für Rand-Dreiecke) ODER
+                                            # 3. Alle drei Vertices in erweiterter Maske liegen (für Rand-Dreiecke mit erweiterten Punkten)
+                                            all_vertices_in_extended = v1_in_extended and v2_in_extended and v3_in_extended
+                                            if centroid_in_polygon or has_strict_vertex or all_vertices_in_extended:
                                                 valid_triangles.append((v1_old, v2_old, v3_old))
+                                        
+                                        # #region agent log - Triangle filtering summary H1, H2, H3
+                                        try:
+                                            import json, time as _t
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H1_H2_H3",
+                                                    "location": "FlexibleGridGenerator.generate_per_surface:triangle_filtering",
+                                                    "message": "Dreieck-Filterung Zusammenfassung",
+                                                    "data": {
+                                                        "surface_id": str(geom.surface_id),
+                                                        "total_triangles": int(len(triangles_delaunay)),
+                                                        "valid_triangles": int(len(valid_triangles)),
+                                                        "triangles_filtered_out": triangles_filtered_out,
+                                                        "triangles_with_extended_vertices": triangles_with_extended_vertices,
+                                                        "triangles_with_strict_vertices": triangles_with_strict_vertices
+                                                    },
+                                                    "timestamp": int(_t.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
                                     except Exception:
                                         # Fallback: Verwende alle Delaunay-Dreiecke
                                         for tri_idx in triangles_delaunay:
@@ -3808,8 +3864,11 @@ class FlexibleGridGenerator(ModuleBase):
                                 polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
                                 
                                 # Projiziere jeden Rand-Vertex auf die nächstliegende Polygon-Kante oder Ecke
+                                projection_duplicates = 0
+                                projection_examples = []
                                 for idx in boundary_indices:
                                     v = all_vertices[idx]
+                                    v_before = v.copy()
                                     vx, vy = v[0], v[1]
                                     
                                     # Finde nächstliegenden Punkt auf Polygon-Rand (Kante oder Ecke)
@@ -3875,6 +3934,48 @@ class FlexibleGridGenerator(ModuleBase):
                                                 all_vertices[idx, 2] = float(z_new.flat[0])
                                         except Exception:
                                             pass  # Falls Berechnung fehlschlägt, behalte alte Z-Koordinate
+                                    
+                                    # Prüfe ob Projektion Duplikat erzeugt hat
+                                    v_after = all_vertices[idx]
+                                    projection_tol = actual_resolution * 0.01 if actual_resolution > 0 else 1e-3
+                                    # Prüfe ob es einen anderen Vertex mit gleicher Position gibt
+                                    for other_idx in range(len(all_vertices)):
+                                        if other_idx != idx:
+                                            other_v = all_vertices[other_idx]
+                                            dist = np.linalg.norm(v_after - other_v)
+                                            if dist < projection_tol:
+                                                projection_duplicates += 1
+                                                if len(projection_examples) < 3:
+                                                    projection_examples.append({
+                                                        "boundary_idx": int(idx),
+                                                        "projected_to": [float(closest_x), float(closest_y), float(v_after[2])],
+                                                        "duplicate_with_idx": int(other_idx),
+                                                        "distance": float(dist)
+                                                    })
+                                                break
+                                
+                                # #region agent log - Projection duplicates H5, H6, H7
+                                try:
+                                    import json, time as _t
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "H5_H6_H7",
+                                            "location": "FlexibleGridGenerator.generate_per_surface:projection_duplicates",
+                                            "message": "Duplikate durch Projektion von Randpunkten",
+                                            "data": {
+                                                "surface_id": str(geom.surface_id),
+                                                "boundary_indices_count": int(len(boundary_indices)),
+                                                "projection_duplicates": projection_duplicates,
+                                                "projection_tolerance": float(projection_tol),
+                                                "example_duplicates": projection_examples[:3]
+                                            },
+                                            "timestamp": int(_t.time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                                # #endregion
                             
                             # if len(boundary_indices) > 0:
                             #     print(f"  └─ ✅ {len(boundary_indices)} Rand-Vertices auf Surface-Grenze projiziert ({geom.orientation})")
@@ -4866,6 +4967,59 @@ class FlexibleGridGenerator(ModuleBase):
                         
                         # 🎯 DEDUPLIKATION: Entferne doppelte Vertices
                         vertices_before_dedup = int(len(triangulated_vertices)) if triangulated_vertices is not None and triangulated_vertices.size > 0 else 0
+                        
+                        # #region agent log - Vertex overlap before deduplication H5, H6, H7
+                        try:
+                            import json, time as _t
+                            if vertices_before_dedup > 0:
+                                verts = np.asarray(triangulated_vertices, dtype=float)
+                                # Prüfe Überlappungen mit kleinerer Toleranz (1% der Resolution)
+                                tol_check = float(actual_resolution * 0.01) if actual_resolution > 0 else 1e-3
+                                quant_check = np.round(verts / tol_check) * tol_check
+                                from collections import defaultdict
+                                groups_check: dict[tuple[float, float, float], list[int]] = defaultdict(list)
+                                for idx_v, (qx, qy, qz) in enumerate(quant_check):
+                                    groups_check[(float(qx), float(qy), float(qz))].append(int(idx_v))
+                                
+                                overlap_positions_before = sum(1 for idx_list in groups_check.values() if len(idx_list) > 1)
+                                max_dist_before = 0.0
+                                example_overlaps = []
+                                for (qx, qy, qz), idx_list in groups_check.items():
+                                    if len(idx_list) > 1:
+                                        local_verts = verts[idx_list]
+                                        for i in range(len(local_verts)):
+                                            for j in range(i + 1, len(local_verts)):
+                                                d = float(np.linalg.norm(local_verts[i] - local_verts[j]))
+                                                if d > max_dist_before:
+                                                    max_dist_before = d
+                                        if len(example_overlaps) < 3:
+                                            example_overlaps.append({
+                                                "position": [float(qx), float(qy), float(qz)],
+                                                "vertex_count": len(idx_list),
+                                                "max_distance": float(max([np.linalg.norm(verts[idx_list[i]] - verts[idx_list[j]]) for i in range(len(idx_list)) for j in range(i+1, len(idx_list))])) if len(idx_list) > 1 else 0.0
+                                            })
+                                
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H5_H6_H7",
+                                        "location": "FlexibleGridGenerator.generate_per_surface:overlap_before_dedup",
+                                        "message": "Vertex-Überlappung vor Deduplizierung",
+                                        "data": {
+                                            "surface_id": str(geom.surface_id),
+                                            "vertices_before_dedup": vertices_before_dedup,
+                                            "overlap_positions": overlap_positions_before,
+                                            "max_distance_between_overlaps": float(max_dist_before),
+                                            "check_tolerance": float(tol_check),
+                                            "example_overlaps": example_overlaps[:3]
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        
                         try:
                             # Verwende builder._deduplicate_vertices_and_faces direkt
                             triangulated_vertices, triangulated_faces = self._deduplicate_vertices_and_faces(
@@ -4894,6 +5048,58 @@ class FlexibleGridGenerator(ModuleBase):
                                             "vertices_removed": vertices_removed,
                                             "deduplication_tolerance": float(actual_resolution * 0.05) if actual_resolution > 0 else 0.0,
                                             "resolution": float(actual_resolution)
+                                        },
+                                        "timestamp": int(_t.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            
+                            # #region agent log - Vertex overlap after deduplication H5, H6, H7
+                            try:
+                                import json, time as _t
+                                if vertices_after_dedup > 0:
+                                    verts_after = np.asarray(triangulated_vertices, dtype=float)
+                                    # Prüfe Überlappungen mit kleinerer Toleranz (1% der Resolution)
+                                    tol_check = float(actual_resolution * 0.01) if actual_resolution > 0 else 1e-3
+                                    quant_check = np.round(verts_after / tol_check) * tol_check
+                                    from collections import defaultdict
+                                    groups_check: dict[tuple[float, float, float], list[int]] = defaultdict(list)
+                                    for idx_v, (qx, qy, qz) in enumerate(quant_check):
+                                        groups_check[(float(qx), float(qy), float(qz))].append(int(idx_v))
+                                    
+                                    overlap_positions_after = sum(1 for idx_list in groups_check.values() if len(idx_list) > 1)
+                                    max_dist_after = 0.0
+                                    example_overlaps_after = []
+                                    for (qx, qy, qz), idx_list in groups_check.items():
+                                        if len(idx_list) > 1:
+                                            local_verts = verts_after[idx_list]
+                                            for i in range(len(local_verts)):
+                                                for j in range(i + 1, len(local_verts)):
+                                                    d = float(np.linalg.norm(local_verts[i] - local_verts[j]))
+                                                    if d > max_dist_after:
+                                                        max_dist_after = d
+                                            if len(example_overlaps_after) < 3:
+                                                example_overlaps_after.append({
+                                                    "position": [float(qx), float(qy), float(qz)],
+                                                    "vertex_count": len(idx_list),
+                                                    "max_distance": float(max([np.linalg.norm(verts_after[idx_list[i]] - verts_after[idx_list[j]]) for i in range(len(idx_list)) for j in range(i+1, len(idx_list))])) if len(idx_list) > 1 else 0.0
+                                                })
+                                    
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "H5_H6_H7",
+                                            "location": "FlexibleGridGenerator.generate_per_surface:overlap_after_dedup",
+                                            "message": "Vertex-Überlappung nach Deduplizierung",
+                                            "data": {
+                                                "surface_id": str(geom.surface_id),
+                                                "vertices_after_dedup": vertices_after_dedup,
+                                                "overlap_positions": overlap_positions_after,
+                                                "max_distance_between_overlaps": float(max_dist_after),
+                                                "check_tolerance": float(tol_check),
+                                                "example_overlaps": example_overlaps_after[:3]
                                         },
                                         "timestamp": int(_t.time() * 1000)
                                     }) + "\n")

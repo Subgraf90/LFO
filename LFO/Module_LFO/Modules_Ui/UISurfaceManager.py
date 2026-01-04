@@ -419,6 +419,9 @@ class UISurfaceManager(ModuleBase):
             
             def custom_dropEvent(event):
                 """Behandelt Drop-Events für Drag & Drop mit Gruppen und Surfaces"""
+                # Speichere Scroll-Position vor dem Drop, um sie danach wiederherzustellen
+                scroll_position = self.surface_tree_widget.verticalScrollBar().value()
+                
                 drop_item = self.surface_tree_widget.itemAt(event.pos())
                 indicator_pos = self.surface_tree_widget.dropIndicatorPosition()
                 
@@ -622,6 +625,9 @@ class UISurfaceManager(ModuleBase):
                     # damit die visuelle Position exakt der Drop-Position entspricht.
                     original_dropEvent(event)
 
+                    # Stelle Scroll-Position wieder her, um automatisches Scrollen zum Item zu verhindern
+                    QTimer.singleShot(0, lambda: self.surface_tree_widget.verticalScrollBar().setValue(scroll_position))
+
                     # Schwere Plot-/SPL-Updates leicht verzögert ausführen,
                     # damit der Drop selbst sofort reagiert.
                     QTimer.singleShot(
@@ -634,6 +640,8 @@ class UISurfaceManager(ModuleBase):
                 else:
                     # Standard Drag & Drop Verhalten (Qt kümmert sich komplett darum)
                     original_dropEvent(event)
+                    # Stelle Scroll-Position wieder her, um automatisches Scrollen zum Item zu verhindern
+                    QTimer.singleShot(0, lambda: self.surface_tree_widget.verticalScrollBar().setValue(scroll_position))
                 
                 # Validiere alle Checkboxen nach Drag & Drop
                 self.validate_all_checkboxes()
