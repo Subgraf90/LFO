@@ -1744,6 +1744,40 @@ class SoundFieldCalculator(ModuleBase):
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         surface_mask_flat = surface_mask.reshape(-1)
         
+        # #region agent log - SPL Calculation Points Check
+        try:
+            import json, time as _t
+            triangulated_vertices_count = 0
+            triangulated_vertices_shape = None
+            grid_points_count = int(grid_points.shape[0])
+            active_mask_points = int(np.count_nonzero(surface_mask_flat))
+            has_triangulated_vertices = hasattr(surface_grid, 'triangulated_vertices') and surface_grid.triangulated_vertices is not None and surface_grid.triangulated_vertices.size > 0
+            if has_triangulated_vertices:
+                triangulated_vertices_count = int(len(surface_grid.triangulated_vertices))
+                triangulated_vertices_shape = list(surface_grid.triangulated_vertices.shape) if hasattr(surface_grid.triangulated_vertices, 'shape') else None
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "SPL_CALC_POINTS",
+                    "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:points_check",
+                    "message": "SPL-Berechnung: Welche Punkte werden verwendet?",
+                    "data": {
+                        "surface_id": str(surface_id),
+                        "grid_points_count": grid_points_count,
+                        "active_mask_points": active_mask_points,
+                        "has_triangulated_vertices": has_triangulated_vertices,
+                        "triangulated_vertices_count": triangulated_vertices_count,
+                        "triangulated_vertices_shape": triangulated_vertices_shape,
+                        "uses_grid_points": True,
+                        "uses_triangulated_vertices": False
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # 🎯 VERWENDE NUR SURFACE_MASK: Die Maske enthält bereits alle gewünschten Punkte
         # (Surface-Fläche + Randpunkte + Eckenpunkte)
         # Keine separate erweiterte Maske mehr nötig

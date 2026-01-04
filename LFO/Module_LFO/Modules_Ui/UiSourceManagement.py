@@ -1110,8 +1110,10 @@ class Sources(ModuleBase, QObject):
         # OPTIMIERUNG: Plot nur erstellen, wenn er noch nicht existiert
         if self.windowing_plot is None:
             self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
-            # Kein setFixedHeight - lässt Plot sich anpassen
-            self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # Feste Breite und Höhe, um Verzerrung der Lautsprecher zu vermeiden
+            self.windowing_plot.setFixedWidth(800)
+            self.windowing_plot.setFixedHeight(220)
+            self.windowing_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         else:
             # Plot existiert bereits - prüfe ob er noch gültig ist
             try:
@@ -1122,16 +1124,19 @@ class Sources(ModuleBase, QObject):
             except RuntimeError:
                 # Objekt wurde gelöscht - erstelle neuen Plot
                 self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
-                self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.windowing_plot.setFixedWidth(800)
+                self.windowing_plot.setFixedHeight(220)
+                self.windowing_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         # Setze feste Breite für linke Seite (konsistent mit Speaker Setup)
         left_widget.setFixedWidth(250)
         
-        # Fügen Sie beide Seiten zum Hauptlayout hinzu
+        # Fügen Sie beide Seiten zum Hauptlayout hinzu - links ausgerichtet
         main_layout.addWidget(left_widget)
         main_layout.addWidget(self.windowing_plot)
+        main_layout.addStretch(1)  # Stretch rechts, damit alles links bleibt
 
-        # Kein setStretch nötig - left_widget hat feste Breite, Plot expandiert
+        # Layout-Einstellungen: alles links ausgerichtet
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
 
@@ -1216,14 +1221,16 @@ class Sources(ModuleBase, QObject):
         gridLayout_beamsteering.addWidget(self.Label_ArcInfo, 5, 0, 1, 2)
 
         left_layout.addLayout(gridLayout_beamsteering)
-        left_layout.addStretch(1)  # Fügt Abstand am unteren Ende hinzu
+        # Kein addStretch - Eingabefelder bleiben oben
 
         # Rechte Seite für den Plot
         # OPTIMIERUNG: Plot nur erstellen, wenn er noch nicht existiert
         if self.beamsteering_plot is None:
-            self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
-            # Kein setFixedHeight - lässt Plot sich anpassen
-            self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
+                # Feste Breite und Höhe, um Verzerrung der Lautsprecher zu vermeiden
+                self.beamsteering_plot.setFixedWidth(800)
+                self.beamsteering_plot.setFixedHeight(220)
+                self.beamsteering_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         else:
             # Plot existiert bereits - prüfe ob er noch gültig ist
             try:
@@ -1234,16 +1241,19 @@ class Sources(ModuleBase, QObject):
             except RuntimeError:
                 # Objekt wurde gelöscht - erstelle neuen Plot
                 self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
-                self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.beamsteering_plot.setFixedWidth(800)
+                self.beamsteering_plot.setFixedHeight(220)
+                self.beamsteering_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         # Setze feste Breite für linke Seite (konsistent mit Speaker Setup)
         left_widget.setFixedWidth(250)
         
-        # Fügen Sie beide Seiten zum Hauptlayout hinzu
+        # Fügen Sie beide Seiten zum Hauptlayout hinzu - links ausgerichtet
         main_layout.addWidget(left_widget)
         main_layout.addWidget(self.beamsteering_plot)
+        main_layout.addStretch(1)  # Stretch rechts, damit alles links bleibt
 
-        # Kein setStretch nötig - left_widget hat feste Breite, Plot expandiert
+        # Layout-Einstellungen: alles links ausgerichtet
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
 
@@ -5268,7 +5278,8 @@ class Sources(ModuleBase, QObject):
                         speaker_array.alpha, 
                         value
                     )
-                    self.main_window.update_speaker_array_calculations()
+                    # 🎯 Nur Windowing-Plot aktualisieren, keine Neuberechnung
+                    self.main_window.windowing_calculator(selected_speaker_array_id, update_plot=True)
         except ValueError:
             pass
 
@@ -5300,15 +5311,13 @@ class Sources(ModuleBase, QObject):
                     speaker_array.alpha, 
                     speaker_array.window_restriction
                 )
-    
-            # Berechnen des beamsteerings, windowing, und Impulse
-            self.main_window.update_speaker_array_calculations()
+                
+                # 🎯 Nur Windowing-Plot aktualisieren, keine Neuberechnung
+                self.main_window.windowing_calculator(selected_speaker_array_id, update_plot=True)
             
             if speakerspecs_instance:
                 self.update_input_fields(speakerspecs_instance)  # Aktualisierung der Eingabefelder
                 self.update_widgets(speakerspecs_instance)
-    
-        # self.update_windowing_plot(speakerspecs_instance)
 
 
     def on_Alpha_changed(self):
@@ -5332,8 +5341,8 @@ class Sources(ModuleBase, QObject):
                         speaker_array.window_restriction
                     )
         
-                # Berechnen des beamsteerings, windowing, und Impulse
-                self.main_window.update_speaker_array_calculations()
+                # 🎯 Nur Windowing-Plot aktualisieren, keine Neuberechnung
+                self.main_window.windowing_calculator(selected_speaker_array_id, update_plot=True)
                 
                 if speakerspecs_instance:
                     self.update_input_fields(speakerspecs_instance)  # Aktualisierung der Eingabefelder
@@ -5341,8 +5350,6 @@ class Sources(ModuleBase, QObject):
         except ValueError:
             # Behandeln Sie ungültige Eingaben hier
             pass
-
-        # self.update_windowing_plot(speakerspecs_instance)
 
 
     def on_Sources_set_changed(self):

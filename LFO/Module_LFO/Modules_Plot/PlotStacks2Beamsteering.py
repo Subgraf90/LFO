@@ -67,6 +67,49 @@ class StackDraw_Beamsteering:
             x = base_x + x_offset
             y = base_y
 
+            # Berechne Transform für unverzerrte Lautsprecher-Darstellung
+            # Die Lautsprecher haben Dimensionen in Metern (width x front_height)
+            # Beide Achsen sind in Metern
+            # Um die Lautsprecher unverzerrt zu halten, müssen wir die Höhe basierend auf dem Aspect-Ratio skalieren
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            x_range = xlim[1] - xlim[0]
+            y_range = ylim[1] - ylim[0]
+            
+            # Verwende get_position() und Figure-Größe um die Pixel-Größe der Axes zu berechnen
+            try:
+                fig = self.ax.figure
+                dpi = fig.get_dpi()
+                fig_width_pixels = fig.get_figwidth() * dpi
+                fig_height_pixels = fig.get_figheight() * dpi
+                
+                # Hole die Position der Axes in Figure-Koordinaten (0-1)
+                pos = self.ax.get_position()
+                axes_width_pixels = pos.width * fig_width_pixels
+                axes_height_pixels = pos.height * fig_height_pixels
+            except:
+                # Fallback: Verwende Figure-Größe in Pixeln
+                fig = self.ax.figure
+                dpi = fig.get_dpi()
+                axes_width_pixels = fig.get_figwidth() * dpi * 0.8  # Geschätzt
+                axes_height_pixels = fig.get_figheight() * dpi * 0.8  # Geschätzt
+            
+            if axes_width_pixels > 0 and axes_height_pixels > 0 and x_range > 0 and y_range > 0:
+                # Berechne Daten-Einheiten pro Pixel
+                x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel
+                y_units_per_pixel = y_range / axes_height_pixels  # Meter pro Pixel
+                
+                # Für unverzerrte Darstellung: 1 Meter in X = 1 Meter visuell in Y
+                # front_height ist in Metern, muss aber basierend auf dem Aspect-Ratio skaliert werden
+                # Um die gleiche visuelle Größe zu erreichen (gleiche Anzahl Pixel):
+                # front_height (Meter) / x_units_per_pixel = scaled_height (Meter) / y_units_per_pixel
+                # scaled_height = front_height * (y_units_per_pixel / x_units_per_pixel)
+                scale_factor = y_units_per_pixel / x_units_per_pixel if x_units_per_pixel > 0 else 1.0
+                scaled_front_height = front_height * scale_factor
+            else:
+                # Fallback wenn Größe nicht verfügbar
+                scaled_front_height = front_height
+
             # Zeichne das Rechteck (Frontansicht: width x height)
             # Farbe basierend auf cardio: cardio hat Exit-Face hinten (helleres Grau), normale vorne (mittelgrau)
             body_color_cardio = '#d0d0d0'  # Helleres Grau für Cardio-Body (heller als 3D-Plot für bessere Sichtbarkeit)
@@ -77,7 +120,7 @@ class StackDraw_Beamsteering:
             rect = patches.Rectangle(
                 (x, y),
                 width, 
-                front_height, 
+                scaled_front_height, 
                 ec='black',
                 fc=color
             )

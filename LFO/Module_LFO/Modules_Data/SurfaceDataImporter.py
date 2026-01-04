@@ -677,18 +677,51 @@ class SurfaceDataImporter:
     # ---- DXF support -------------------------------------------------
 
     def _load_dxf_surfaces(self, file_path: Path) -> Dict[str, SurfaceDefinition]:
+        """
+        Lädt Flächen aus einer DXF-Datei.
+        
+        DXF-Flächen-Entitäten:
+        - POLYLINE: 2D/3D Polylinien, geschlossen = Fläche
+        - LWPOLYLINE: 2D Polylinien, geschlossen = Fläche  
+        - 3DFACE: 3D-Fläche mit 3-4 Eckpunkten
+        - MESH: Polygon-Mesh mit Vertices und Faces
+        - SOLID: Gefüllte Fläche (4-Punkt-Fläche)
+        
+        Koordinaten:
+        - Werden im Objektkoordinatensystem (OKS) gespeichert
+        - Gruppencodes 10, 20, 30 für X, Y, Z
+        - INSERT-Entities transformieren Koordinaten (Translation, Skalierung, Rotation)
+        
+        Gruppierung:
+        - BLOCKS: Wiederverwendbare Gruppen von Entitäten
+        - GROUPS: DXF-Gruppen (logische Gruppierung über Handles)
+        - LAYERS: Ebenen-Organisation
+        - INSERT: Block-Instanzen mit Transformationen (verschachtelte Hierarchie)
+        """
         try:
             ezdxf = importlib.import_module("ezdxf")
         except ImportError as exc:  # pragma: no cover
             raise ImportError("Das Paket 'ezdxf' ist nicht installiert.") from exc
 
-        doc = ezdxf.readfile(str(file_path))
+        # Verbesserte Fehlerbehandlung beim Laden
+        try:
+            doc = ezdxf.readfile(str(file_path))
+        except IOError as e:
+            raise ValueError(f"DXF-Datei konnte nicht geöffnet werden: {file_path}") from e
+        except ezdxf.DXFStructureError as e:
+            raise ValueError(f"Ungültige oder beschädigte DXF-Datei: {e}") from e
+        except ezdxf.DXFVersionError as e:
+            raise ValueError(f"DXF-Version wird nicht unterstützt: {e}") from e
+        
+        # Lese Header-Informationen
+        self._read_dxf_header(doc, file_path)
+        
         msp = doc.modelspace()
         self._log_dxf_debug_info(file_path, doc, msp)
         group_lookup = self._build_dxf_group_lookup(doc)
         layer_colors = self._build_layer_color_lookup(doc, ezdxf)
         
-        # Analysiere Tags/Attribute in der DXF-Datei
+        # Analysiere Tags/Attribute in der DXF-Datei (inkl. ATTDEF)
         self._analyze_dxf_tags(doc, msp)
 
         surfaces: Dict[str, SurfaceDefinition] = {}
@@ -910,6 +943,92 @@ class SurfaceDataImporter:
         logger.info("=" * 80)
         
         return surfaces
+
+    def _read_dxf_header(self, doc, file_path: Path) -> None:
+        """
+        Liest wichtige Header-Variablen aus DXF-Datei.
+        
+        Header enthält Metadaten wie:
+        - DXF-Version
+        - Einheiten (Inches, Feet, Millimeters, etc.)
+        - Koordinatensystem (UCS)
+        - Zeichnungsgrenzen (EXTMIN, EXTMAX)
+        """
+        logger = logging.getLogger(__name__)
+        try:
+            header = doc.header
+            
+            # DXF-Version
+            dxf_version = doc.dxfversion
+            logger.info("DXF-Version: %s", dxf_version)
+            if dxf_version < "AC1009":  # R12 oder älter
+                logger.warning("Sehr alte DXF-Version: %s - mögliche Kompatibilitätsprobleme", dxf_version)
+            
+            # Einheiten (1=Inches, 2=Feet, 4=Millimeters, 5=Centimeters, etc.)
+            units = header.get('$INSUNITS', 1)
+            unit_names = {
+                0: "Unitless",
+                1: "Inches",
+                2: "Feet",
+                3: "Miles",
+                4: "Millimeters",
+                5: "Centimeters",
+                6: "Meters",
+                7: "Kilometers",
+                8: "Microinches",
+                9: "Mils",
+                10: "Yards",
+                11: "Angstroms",
+                12: "Nanometers",
+                13: "Microns",
+                14: "Decimeters",
+                15: "Decameters",
+                16: "Hectometers",
+                17: "Gigameters",
+                18: "Astronomical Units",
+                19: "Light Years",
+                20: "Parsecs"
+            }
+            unit_name = unit_names.get(units, f"Unknown ({units})")
+            logger.info("DXF-Einheiten: %s (%s)", unit_name, units)
+            
+            # Koordinatensystem (UCS)
+            ucs_origin = header.get('$UCSORG', None)
+            if ucs_origin:
+                logger.debug("UCS-Origin: %s", ucs_origin)
+            
+            # Zeichnungsgrenzen
+            extmin = header.get('$EXTMIN', None)
+            extmax = header.get('$EXTMAX', None)
+            if extmin and extmax:
+                logger.debug("Zeichnungsgrenzen: MIN=%s, MAX=%s", extmin, extmax)
+            
+        except Exception as e:
+            logger.warning("Fehler beim Lesen der DXF-Header-Informationen: %s", e)
+    
+    def _extract_block_attributes(self, block) -> Dict[str, str]:
+        """
+        Extrahiert Attribute aus Block-Definition (ATTDEF-Entities).
+        
+        ATTDEF (Attribute Definition) definiert die Struktur von Attributen
+        in einem Block. Diese werden in INSERT-Instanzen durch ATTRIB-Entities
+        mit tatsächlichen Werten gefüllt.
+        
+        Returns:
+            Dict mit Attribut-Tag als Key und Standardwert als Value
+        """
+        attributes = {}
+        try:
+            for entity in block:
+                if entity.dxftype() == "ATTDEF":
+                    tag = getattr(entity.dxf, "tag", None)
+                    default = getattr(entity.dxf, "text", None)
+                    if tag:
+                        attributes[tag] = default or ""
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.debug("Fehler beim Extrahieren von Block-Attributen: %s", e)
+        return attributes
 
     def _log_dxf_debug_info(self, file_path: Path, doc, msp) -> None:
         logger = logging.getLogger(__name__)
@@ -1609,7 +1728,16 @@ class SurfaceDataImporter:
     # ---- Tag/Attribut-Extraktion -------------------------------------
 
     def _analyze_dxf_tags(self, doc, msp) -> None:
-        """Analysiert die DXF-Datei auf Tags/Attribute"""
+        """
+        Analysiert die DXF-Datei auf Tags/Attribute.
+        
+        Sucht nach Material-Tags in:
+        - Block-Namen
+        - ATTDEF-Entities (Block-Definition Attribute)
+        - ATTRIB-Entities (INSERT-Instanz Attribute)
+        - Layer-Namen
+        - XDATA/AppData
+        """
         logger = logging.getLogger(__name__)
         tags_found = set()
         
@@ -1641,6 +1769,17 @@ class SurfaceDataImporter:
                 if block_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
                     self._block_tag_map[block.name] = block_name_upper
                     tags_found.add(block_name_upper)
+                
+                # NEU: Prüfe ATTDEF-Entities in Block-Definition
+                block_attributes = self._extract_block_attributes(block)
+                for attr_tag, attr_value in block_attributes.items():
+                    if attr_value:
+                        attr_upper = str(attr_value).strip().upper()
+                        if attr_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                            tags_found.add(attr_upper)
+                            # Speichere Mapping für Block
+                            if block.name not in self._block_tag_map:
+                                self._block_tag_map[block.name] = attr_upper
                 
                 # Prüfe Entities im Block
                 for entity in block:
@@ -1704,7 +1843,15 @@ class SurfaceDataImporter:
         return None
 
     def _extract_tag_from_insert(self, insert_entity, doc) -> Optional[str]:
-        """Extrahiert Tag aus INSERT-Entity über Block-Attribute"""
+        """
+        Extrahiert Tag aus INSERT-Entity über Block-Attribute.
+        
+        Berücksichtigt:
+        - Block-Name selbst (wenn bekanntes Material)
+        - ATTDEF-Entities in Block-Definition (Standardwerte)
+        - ATTRIB-Entities in INSERT-Instanz (tatsächliche Werte)
+        - Layer-Namen der Entities im Block
+        """
         try:
             block_name = getattr(insert_entity.dxf, "name", None)
             if not block_name:
@@ -1724,7 +1871,18 @@ class SurfaceDataImporter:
             if not block:
                 return None
             
-            # Suche nach ATTRIB-Entities im Block
+            # NEU: Extrahiere ATTDEF-Entities aus Block-Definition (Standardwerte)
+            block_attributes = self._extract_block_attributes(block)
+            for attr_tag, attr_value in block_attributes.items():
+                if attr_value:
+                    attr_upper = str(attr_value).strip().upper()
+                    if attr_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                        return attr_upper
+                    # Verwende als Tag, wenn aussagekräftig
+                    if len(str(attr_value).strip()) > 0 and not str(attr_value).strip().isdigit():
+                        return str(attr_value).strip()
+            
+            # Suche nach ATTRIB-Entities im Block (tatsächliche Werte in INSERT-Instanz)
             for entity in block:
                 if entity.dxftype() == "ATTRIB":
                     tag = getattr(entity.dxf, "text", None)
@@ -1751,7 +1909,12 @@ class SurfaceDataImporter:
         return None
 
     def _extract_tag_from_xdata(self, entity) -> Optional[str]:
-        """Extrahiert Tag aus XDATA (Extended Data)"""
+        """
+        Extrahiert Tag aus XDATA (Extended Data).
+        
+        XDATA wird von CAD-Anwendungen verwendet, um erweiterte Informationen
+        an Entities anzuhängen. Strukturierte Suche nach bekannten App-Namen.
+        """
         try:
             if not hasattr(entity, "xdata"):
                 return None
@@ -1760,16 +1923,49 @@ class SurfaceDataImporter:
             if not xdata:
                 return None
             
-            # Suche nach Tag in XDATA
+            # Bekannte App-Namen, die Material-Informationen enthalten könnten
+            known_apps = ["ACAD", "LFO", "SOUNDPLAN", "AUTOCAD", "MATERIAL"]
+            
+            # Zuerst in bekannten Apps suchen
+            for app_name in known_apps:
+                if app_name in xdata:
+                    data = xdata[app_name]
+                    tag = self._parse_xdata_for_tag(data)
+                    if tag:
+                        return tag
+            
+            # Fallback: Durchsuche alle Apps
             for app_name, data in xdata.items():
-                if isinstance(data, (list, tuple)):
-                    for item in data:
-                        if isinstance(item, str):
-                            item_upper = item.upper()
-                            if item_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
-                                return item_upper
+                tag = self._parse_xdata_for_tag(data)
+                if tag:
+                    return tag
+                    
         except Exception:
             pass
+        
+        return None
+    
+    def _parse_xdata_for_tag(self, data) -> Optional[str]:
+        """Hilfsfunktion zum Parsen von XDATA-Daten nach Tags"""
+        if isinstance(data, (list, tuple)):
+            for item in data:
+                if isinstance(item, str):
+                    item_upper = item.upper()
+                    if item_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                        return item_upper
+                    # Suche nach Material-Keywords in Strings
+                    if any(keyword in item_upper for keyword in ["MATERIAL", "TAG", "TYPE"]):
+                        # Versuche Wert nach Keyword zu extrahieren
+                        parts = item_upper.split()
+                        for i, part in enumerate(parts):
+                            if part in ("MATERIAL", "TAG", "TYPE") and i + 1 < len(parts):
+                                candidate = parts[i + 1]
+                                if candidate in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                                    return candidate
+        elif isinstance(data, str):
+            data_upper = data.upper()
+            if data_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                return data_upper
         
         return None
 

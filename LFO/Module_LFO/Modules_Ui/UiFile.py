@@ -528,6 +528,11 @@ class UiFile:
                 return None
 
             sources_instance = self.main_window.sources_instance
+            
+            # 🎯 WICHTIG: Aktiviere das Sources-DockWidget (wechsle von Surface zu Source Ansicht)
+            if hasattr(sources_instance, 'sources_dockWidget') and sources_instance.sources_dockWidget:
+                sources_instance.sources_dockWidget.raise_()
+            
             sources_tree = sources_instance.sources_tree_widget
 
             if sources_tree is None:
@@ -578,11 +583,13 @@ class UiFile:
 
             self.main_window.blockSignals(False)
 
-            if selected_item:
-                with QSignalBlocker(sources_tree):
-                    sources_tree.setCurrentItem(selected_item)
-                sources_instance.refresh_active_selection()
-            elif sources_tree.topLevelItemCount() > 0:
+            # 🎯 WICHTIG: Aktiviere das Sources-DockWidget erneut (falls es durch load_groups_structure in den Hintergrund geraten ist)
+            if hasattr(sources_instance, 'sources_dockWidget') and sources_instance.sources_dockWidget:
+                sources_instance.sources_dockWidget.raise_()
+
+            # 🎯 WICHTIG: Wähle immer das oberste Item nach dem Laden aus
+            # (auch nach load_groups_structure, da sich die Struktur ändern kann)
+            if sources_tree.topLevelItemCount() > 0:
                 first_item = sources_tree.topLevelItem(0)
                 with QSignalBlocker(sources_tree):
                     sources_tree.setCurrentItem(first_item)
