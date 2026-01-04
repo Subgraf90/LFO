@@ -858,11 +858,66 @@ class SPL3DPlotRenderer:
                                 pass
                             # #endregion
                             
+                            # 🎯 OPTIMIERUNG: Lade vertex_source_indices und additional_vertices_spl
+                            vertex_source_indices_list = grid_data.get('vertex_source_indices')
+                            vertex_source_indices = None
+                            if vertex_source_indices_list is not None:
+                                try:
+                                    vertex_source_indices = np.array(vertex_source_indices_list, dtype=np.int64)
+                                except Exception:
+                                    vertex_source_indices = None
+                            
+                            additional_vertices_spl_list = result_data.get('additional_vertices_spl') if result_data else None
+                            additional_vertices_spl = None
+                            if additional_vertices_spl_list is not None:
+                                try:
+                                    additional_vertices_spl = np.array(additional_vertices_spl_list, dtype=complex)
+                                    # Konvertiere zu SPL in dB (wie für Grid-Punkte)
+                                    if time_mode:
+                                        additional_vertices_spl_db = np.real(additional_vertices_spl)
+                                        additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                    elif phase_mode:
+                                        additional_vertices_spl_db = np.angle(additional_vertices_spl)
+                                        additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                    else:
+                                        pressure_magnitude_add = np.abs(additional_vertices_spl)
+                                        pressure_magnitude_add = np.clip(pressure_magnitude_add, 1e-12, None)
+                                        additional_vertices_spl_db = self.functions.mag2db(pressure_magnitude_add)
+                                        additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                except Exception:
+                                    additional_vertices_spl_db = None
+                            else:
+                                additional_vertices_spl_db = None
+                            
                             if is_step_mode:
                                 # ===========================
                                 # COLOR-STEP → NEAREST NEIGHBOUR
                                 # ===========================
-                                if n_vertices == n_grid_points:
+                                # 🎯 OPTIMIERUNG: Verwende vertex_source_indices wenn verfügbar
+                                if vertex_source_indices is not None and len(vertex_source_indices) == n_vertices:
+                                    # Verwende vertex_source_indices für direkte Zuordnung
+                                    spl_at_verts = np.full(n_vertices, np.nan, dtype=float)
+                                    for v_idx in range(n_vertices):
+                                        source_idx = vertex_source_indices[v_idx]
+                                        if source_idx < n_grid_points:
+                                            # Grid-Vertex: Verwende Grid-SPL-Werte
+                                            if source_idx < spl_values_2d.size:
+                                                spl_at_verts[v_idx] = spl_values_2d.ravel()[source_idx]
+                                        else:
+                                            # Additional-Vertex: Verwende additional_vertices_spl
+                                            if additional_vertices_spl_db is not None:
+                                                additional_idx = source_idx - n_grid_points
+                                                if 0 <= additional_idx < len(additional_vertices_spl_db):
+                                                    spl_at_verts[v_idx] = additional_vertices_spl_db[additional_idx]
+                                    
+                                    valid_mask = np.isfinite(spl_at_verts)
+                                    if not np.any(valid_mask):
+                                        # Fallback: Verwende alte Logik
+                                        if n_vertices == n_grid_points:
+                                            spl_at_verts = spl_values_2d.ravel().copy()
+                                        else:
+                                            spl_at_verts = None
+                                elif n_vertices == n_grid_points:
                                     # 🎯 Direkte Zuordnung: Vertices = Grid-Punkte in derselben Reihenfolge
                                     spl_at_verts = spl_values_2d.ravel().copy()
                                     if surface_mask.size == n_grid_points and surface_mask.shape == Xg.shape:

@@ -544,6 +544,11 @@ class SoundFieldCalculator(ModuleBase):
                     grid_data['triangulated_faces'] = grid.triangulated_faces.tolist()
                 if hasattr(grid, 'triangulated_success'):
                     grid_data['triangulated_success'] = grid.triangulated_success
+                # 🎯 OPTIMIERUNG: Füge vertex_source_indices und additional_vertices hinzu
+                if hasattr(grid, 'vertex_source_indices') and grid.vertex_source_indices is not None:
+                    grid_data['vertex_source_indices'] = grid.vertex_source_indices.tolist()
+                if hasattr(grid, 'additional_vertices') and grid.additional_vertices is not None:
+                    grid_data['additional_vertices'] = grid.additional_vertices.tolist()
                 t_tri_duration = (time.perf_counter() - t_tri_start) * 1000
 
                 t_surface_duration = (time.perf_counter() - t_surface_start) * 1000
@@ -784,6 +789,9 @@ class SoundFieldCalculator(ModuleBase):
                     continue
         
         # Für jede Surface einzeln berechnen
+        # 🎯 OPTIMIERUNG: Speichere grid-Objekt für Zugriff auf additional_vertices_spl
+        surface_grids_dict = {surface_id: grid for surface_id, grid in surface_grids_grouped.items()}
+        
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for surface_id, grid in surface_grids_grouped.items():
@@ -953,10 +961,19 @@ class SoundFieldCalculator(ModuleBase):
                     pass
                 # #endregion
                 
-                surface_results_data[surface_id] = {
+                # 🎯 OPTIMIERUNG: Füge additional_vertices_spl hinzu (falls vorhanden)
+                result_data = {
                     "sound_field_p": buffer_array.tolist(),
                     "is_group_sum": False,
                 }
+                
+                # Hole additional_vertices_spl aus grid-Objekt
+                if surface_id in surface_grids_dict:
+                    grid_obj = surface_grids_dict[surface_id]
+                    if hasattr(grid_obj, 'additional_vertices_spl') and grid_obj.additional_vertices_spl is not None:
+                        result_data['additional_vertices_spl'] = grid_obj.additional_vertices_spl.tolist()
+                
+                surface_results_data[surface_id] = result_data
 
         # 🚫 KEINE gruppenweise Summenbildung mehr:
         # Die berechneten Gridpunkte pro Surface werden unverändert an den Plot übergeben.
@@ -1744,6 +1761,35 @@ class SoundFieldCalculator(ModuleBase):
         grid_points = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         surface_mask_flat = surface_mask.reshape(-1)
         
+        # 🎯 NEU: Extrahiere additional_vertices (Rand- und Eckpunkte) für SPL-Berechnung
+        additional_vertices = None
+        if hasattr(surface_grid, 'additional_vertices') and surface_grid.additional_vertices is not None:
+            additional_vertices = surface_grid.additional_vertices
+            if additional_vertices.size > 0 and additional_vertices.ndim == 2 and additional_vertices.shape[1] == 3:
+                pass  # additional_vertices ist gültig
+            else:
+                additional_vertices = None
+        
+        # 🎯 OPTIMIERUNG: Kombiniere Grid-Punkte und additional_vertices für gemeinsame Berechnung
+        active_grid_points = grid_points[surface_mask_flat] if np.any(surface_mask_flat) else np.array([], dtype=float).reshape(0, 3)
+        n_grid_points = len(active_grid_points)
+        
+        if additional_vertices is not None and additional_vertices.size > 0:
+            all_points = np.vstack([active_grid_points, additional_vertices])
+        else:
+            all_points = active_grid_points
+        
+        # Speichere Offsets für spätere Trennung
+        grid_points_end_idx = n_grid_points
+        additional_vertices_start_idx = n_grid_points
+        
+        # 🎯 OPTIMIERUNG: Initialisiere temporäre Variable für additional_vertices_spl
+        # (wird später in der Schleife akkumuliert)
+        if additional_vertices is not None and additional_vertices.size > 0:
+            surface_grid._temp_additional_vertices_spl = np.zeros(len(additional_vertices), dtype=complex)
+        else:
+            surface_grid._temp_additional_vertices_spl = None
+        
         # #region agent log - SPL Calculation Points Check
         try:
             import json, time as _t
@@ -1945,6 +1991,7 @@ class SoundFieldCalculator(ModuleBase):
                     "timestamp": int(__import__('time').time() * 1000)
                 }) + "\n")
             # #endregion
+            
             for isrc in range(len(source_indices)):
                 speaker_name = speaker_array.source_polar_pattern[isrc]
                 # #region agent log
@@ -1965,124 +2012,91 @@ class SoundFieldCalculator(ModuleBase):
                             "source_position_x": float(source_position_x[isrc]) if hasattr(source_position_x, '__iter__') else float(source_position_x),
                             "source_position_y": float(source_position_y[isrc]) if hasattr(source_position_y, '__iter__') else float(source_position_y),
                             "source_position_z": float(source_position_z[isrc]) if hasattr(source_position_z, '__iter__') else float(source_position_z),
-                            "source_azimuth_deg": float(np.degrees(source_azimuth[isrc])) if hasattr(source_azimuth, '__iter__') else float(np.degrees(source_azimuth))
+                            "source_azimuth_deg": float(np.degrees(source_azimuth[isrc])) if hasattr(source_azimuth, '__iter__') else float(np.degrees(source_azimuth)),
+                            "all_points_count": int(len(all_points)),
+                            "grid_points_count": int(n_grid_points),
+                            "additional_vertices_count": int(len(additional_vertices)) if additional_vertices is not None and additional_vertices.size > 0 else 0
                         },
                         "timestamp": int(__import__('time').time() * 1000)
                     }) + "\n")
                 # #endregion
                 
-                # VEKTORISIERTE GEOMETRIE-BERECHNUNG
-                x_distances = X_grid - source_position_x[isrc]
-                y_distances = Y_grid - source_position_y[isrc]
-                horizontal_dists = np.sqrt(x_distances**2 + y_distances**2)
-                z_distance = Z_grid - source_position_z[isrc]
-                source_dists = np.sqrt(horizontal_dists**2 + z_distance**2)
+                # 🎯 OPTIMIERUNG: Berechne alle Punkte (Grid + additional_vertices) zusammen
+                source_pos = np.array([
+                    source_position_x[isrc] if hasattr(source_position_x, '__iter__') else source_position_x,
+                    source_position_y[isrc] if hasattr(source_position_y, '__iter__') else source_position_y,
+                    source_position_z[isrc] if hasattr(source_position_z, '__iter__') else source_position_z
+                ], dtype=float)
                 
-                # VEKTORISIERTE WINKEL-BERECHNUNG
-                source_to_point_angles = np.arctan2(y_distances, x_distances)
-                azimuths = (np.degrees(source_to_point_angles) + np.degrees(source_azimuth[isrc])) % 360
-                azimuths = (360 - azimuths) % 360
-                azimuths = (azimuths + 90) % 360
-                elevations = np.degrees(np.arctan2(z_distance, horizontal_dists))
+                # Berechne Distanzen und Winkel für ALLE Punkte (Grid + additional_vertices)
+                x_distances_all = all_points[:, 0] - source_pos[0]
+                y_distances_all = all_points[:, 1] - source_pos[1]
+                horizontal_dists_all = np.sqrt(x_distances_all**2 + y_distances_all**2)
+                z_distance_all = all_points[:, 2] - source_pos[2]
+                source_dists_all = np.sqrt(horizontal_dists_all**2 + z_distance_all**2)
                 
-                # BATCH-INTERPOLATION
-                polar_gains, polar_phases = self.get_balloon_data_batch(speaker_name, azimuths, elevations)
+                # VEKTORISIERTE WINKEL-BERECHNUNG für alle Punkte
+                source_to_point_angles_all = np.arctan2(y_distances_all, x_distances_all)
+                azimuth_value = source_azimuth[isrc] if hasattr(source_azimuth, '__iter__') else source_azimuth
+                azimuths_all = (np.degrees(source_to_point_angles_all) + np.degrees(azimuth_value)) % 360
+                azimuths_all = (360 - azimuths_all) % 360
+                azimuths_all = (azimuths_all + 90) % 360
+                elevations_all = np.degrees(np.arctan2(z_distance_all, horizontal_dists_all))
                 
-                if polar_gains is not None and polar_phases is not None:
-                    # VEKTORISIERTE WELLENBERECHNUNG
-                    magnitude_linear = 10 ** (polar_gains / 20)
-                    polar_phase_rad = np.radians(polar_phases)
+                # BATCH-INTERPOLATION für alle Punkte
+                polar_gains_all, polar_phases_all = self.get_balloon_data_batch(speaker_name, azimuths_all, elevations_all)
+                
+                if polar_gains_all is not None and polar_phases_all is not None:
+                    # VEKTORISIERTE WELLENBERECHNUNG für alle Punkte
+                    magnitude_linear_all = 10 ** (polar_gains_all / 20)
+                    polar_phase_rad_all = np.radians(polar_phases_all)
                     
-                    source_position = np.array(
-                        [
-                            source_position_x[isrc],
-                            source_position_y[isrc],
-                            source_position_z[isrc],
-                        ],
-                        dtype=float,
-                    )
+                    source_position = source_pos
                     
                     polarity_flag = False
                     if hasattr(speaker_array, 'source_polarity'):
                         try:
-                            polarity_flag = bool(speaker_array.source_polarity[isrc])
+                            polarity_flag = bool(speaker_array.source_polarity[isrc] if hasattr(speaker_array.source_polarity, '__iter__') else speaker_array.source_polarity)
                         except (TypeError, IndexError):
                             polarity_flag = False
 
-                    source_props = {
-                        "magnitude_linear": magnitude_linear.reshape(-1),
-                        "polar_phase_rad": polar_phase_rad.reshape(-1),
-                        "source_level": source_level[isrc],
+                    source_props_all = {
+                        "magnitude_linear": magnitude_linear_all.reshape(-1),
+                        "polar_phase_rad": polar_phase_rad_all.reshape(-1),
+                        "source_level": source_level[isrc] if hasattr(source_level, '__iter__') else source_level,
                         "a_source_pa": a_source_pa,
                         "wave_number": wave_number,
                         "frequency": calculate_frequency,
-                        "source_time": source_time[isrc],
+                        "source_time": source_time[isrc] if hasattr(source_time, '__iter__') else source_time,
                         "polarity": polarity_flag,
-                        "distances": source_dists.reshape(-1),
+                        "distances": source_dists_all.reshape(-1),
                     }
 
-                    # MASKEN-LOGIK: Verwende surface_mask für SPL-Berechnung
-                    # Die Maske enthält bereits alle gewünschten Punkte (Surface-Fläche + Rand + Ecken)
-                    mask_options = {
+                    mask_options_all = {
                         "min_distance": 0.001,
-                        "additional_mask": surface_mask_flat,  # 🎯 SURFACE_MASK: Berechne nur für gewünschte Punkte
                     }
                     
-                    # #region agent log - Surface-Maske für Berechnung
-                    try:
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            import json, time as _t
-                            surface_mask_active = int(np.count_nonzero(surface_mask_flat))
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "BOUNDARY_POINTS_CALC",
-                                "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:before_wave",
-                                "message": "Surface-Maske für Berechnung - enthält Randpunkte und Ecken",
-                                "data": {
-                                    "surface_id": str(surface_id),
-                                    "surface_mask_active_points": surface_mask_active,
-                                    "grid_points_total": int(grid_points.shape[0]),
-                                    "includes_edge_and_corner_points": True
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
-                    
-                    # #region agent log
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "A",
-                            "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                            "message": "Single surface calculation - before wave computation",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "grid_points_count": int(grid_points.shape[0]),
-                                "surface_mask_active_points": int(np.sum(surface_mask_flat)),
-                                "source_level": float(source_level[isrc]),
-                                "source_dists_min": float(np.min(source_dists)),
-                                "source_dists_max": float(np.max(source_dists)),
-                                "source_dists_mean": float(np.mean(source_dists)),
-                                "magnitude_linear_min": float(np.min(magnitude_linear)),
-                                "magnitude_linear_max": float(np.max(magnitude_linear)),
-                                "magnitude_linear_mean": float(np.mean(magnitude_linear))
-                            },
-                            "timestamp": int(__import__('time').time() * 1000)
-                        }) + "\n")
-                    # #endregion
-                    
-                    wave_flat = self._compute_wave_for_points(
-                        grid_points,
+                    # Berechne Wellenfeld für ALLE Punkte zusammen
+                    wave_all = self._compute_wave_for_points(
+                        all_points,
                         source_position,
-                        source_props,
-                        mask_options,
+                        source_props_all,
+                        mask_options_all,
                     )
-                    wave = wave_flat.reshape(source_dists.shape)
+                    
+                    # Trenne Ergebnisse: Grid-Punkte und additional_vertices
+                    wave_grid_flat = wave_all[:grid_points_end_idx]
+                    wave_additional = wave_all[additional_vertices_start_idx:] if len(wave_all) > additional_vertices_start_idx else np.array([], dtype=complex)
+                    
+                    # Forme Grid-Ergebnisse zurück in Grid-Form (ny, nx)
+                    # Erstelle ein leeres Grid und fülle nur die aktiven Punkte
+                    wave_grid_full = np.zeros(grid_points.shape[0], dtype=complex)
+                    wave_grid_full[surface_mask_flat] = wave_grid_flat
+                    wave = wave_grid_full.reshape(X_grid.shape)
+                    
+                    # Speichere additional_vertices_spl (wird später akkumuliert)
+                    if surface_grid._temp_additional_vertices_spl is not None and len(wave_additional) > 0:
+                        surface_grid._temp_additional_vertices_spl += wave_additional
                     
                     # #region agent log - Randpunkte nach Berechnung
                     try:
@@ -2190,6 +2204,19 @@ class SoundFieldCalculator(ModuleBase):
             
             if capture_arrays and array_wave is not None:
                 array_fields[array_key] = array_wave
+        
+        # 🎯 OPTIMIERUNG: additional_vertices_spl wurde bereits zusammen mit Grid-Punkten berechnet
+        # Speichere SPL-Werte in surface_grid (wird später für Plot verwendet)
+        if hasattr(surface_grid, '_temp_additional_vertices_spl'):
+            surface_grid.additional_vertices_spl = surface_grid._temp_additional_vertices_spl
+            # Entferne temporäre Variable
+            delattr(surface_grid, '_temp_additional_vertices_spl')
+        else:
+            # Fallback: Keine additional_vertices vorhanden
+            if additional_vertices is not None and additional_vertices.size > 0:
+                surface_grid.additional_vertices_spl = np.zeros(len(additional_vertices), dtype=complex)
+            else:
+                surface_grid.additional_vertices_spl = None
         
         # #region agent log
         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:

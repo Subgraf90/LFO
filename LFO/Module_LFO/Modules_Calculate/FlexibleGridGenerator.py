@@ -89,6 +89,8 @@ class SurfaceGrid:
     # 🎯 NEU: Mapping von Vertex → Quell-Grid-Index (für Color-Step ohne Interpolation)
     # Länge == Anzahl Vertices (oder None, wenn nicht verfügbar)
     vertex_source_indices: Optional[np.ndarray] = None
+    # 🎯 NEU: Rand- und Eckpunkte (nicht Teil des Grids)
+    additional_vertices: Optional[np.ndarray] = None  # Shape: (N, 3) - Rand- und Eckpunkte-Koordinaten
 
 
 @dataclass
@@ -1901,6 +1903,440 @@ class GridBuilder(ModuleBase):
             # Rein heuristische Verbesserung – Fehler dürfen die Hauptlogik nicht stören
             return surface_mask_strict
     
+    def _calculate_additional_vertices(
+        self,
+        geometry: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        resolution: Optional[float],
+        ) -> np.ndarray:
+        """
+        Berechnet zusätzliche Vertices (Ecken + Randpunkte) für eine Surface.
+        
+        Args:
+            geometry: SurfaceGeometry Objekt
+            X_grid: X-Koordinaten des Grids
+            Y_grid: Y-Koordinaten des Grids
+            Z_grid: Z-Koordinaten des Grids
+            surface_mask: Maske für aktive Grid-Punkte
+            resolution: Grid-Resolution
+            
+        Returns:
+            np.ndarray: Array von additional_vertices (Shape: (N, 3))
+        """
+        # #region agent log - Eintritt _calculate_additional_vertices
+        try:
+            import json, time as _t
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H2",
+                    "location": "GridBuilder._calculate_additional_vertices:entry",
+                    "message": "Eintritt _calculate_additional_vertices",
+                    "data": {
+                        "surface_id": str(geometry.surface_id),
+                        "orientation": str(geometry.orientation),
+                        "resolution": float(resolution) if resolution is not None else None,
+                        "surface_points_count": len(geometry.points) if geometry.points else 0
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        additional_vertices = []
+        surface_points = geometry.points or []
+        
+        if len(surface_points) < 3:
+            # #region agent log - Zu wenige Surface-Punkte
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H3",
+                        "location": "GridBuilder._calculate_additional_vertices:too_few_points",
+                        "message": "Zu wenige Surface-Punkte",
+                        "data": {
+                            "surface_id": str(geometry.surface_id),
+                            "surface_points_count": len(surface_points)
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            return np.array([], dtype=float).reshape(0, 3)
+        
+        # Sammle alle Grid-Punkte für Duplikat-Prüfung
+        grid_points_flat = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
+        mask_flat = surface_mask.reshape(-1)
+        all_vertices = grid_points_flat[mask_flat] if np.any(mask_flat) else np.array([], dtype=float).reshape(0, 3)
+        
+        # 1. Ecken-Punkte hinzufügen
+        if geometry.orientation == "vertical":
+            # VERTIKALE FLÄCHEN: Verwende (u,v)-Koordinaten
+            xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+            ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+            zs = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
+            x_span = float(np.ptp(xs))
+            y_span = float(np.ptp(ys))
+            z_span = float(np.ptp(zs))
+            
+            x_mean = float(np.mean(xs))
+            y_mean = float(np.mean(ys))
+            
+            is_slanted_wall = False
+            is_xz_wall = True
+            
+            if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
+                if geometry.dominant_axis == "yz":
+                    polygon_u = ys
+                    polygon_v = zs
+                    is_xz_wall = False
+                    max_main_span = max(y_span, z_span) if max(y_span, z_span) > 1e-6 else 1.0
+                    x_variation_ratio = x_span / max_main_span if max_main_span > 1e-6 else 0.0
+                    is_slanted_wall = (x_variation_ratio > 0.1 and z_span > 1e-3)
+                elif geometry.dominant_axis == "xz":
+                    polygon_u = xs
+                    polygon_v = zs
+                    is_xz_wall = True
+                    max_main_span = max(x_span, z_span) if max(x_span, z_span) > 1e-6 else 1.0
+                    y_variation_ratio = y_span / max_main_span if max_main_span > 1e-6 else 0.0
+                    is_slanted_wall = (y_variation_ratio > 0.1 and z_span > 1e-3)
+            
+            if is_slanted_wall:
+                from scipy.interpolate import griddata
+                if is_xz_wall:
+                    points_surface = np.column_stack([xs, zs])
+                else:
+                    points_surface = np.column_stack([ys, zs])
+            
+            exact_match_tolerance = 1e-9
+            try:
+                from matplotlib.path import Path
+                polygon_2d_uv = np.column_stack([polygon_u, polygon_v])
+                polygon_path_uv = Path(polygon_2d_uv)
+            except Exception:
+                polygon_path_uv = None
+            
+            for corner_u, corner_v in zip(polygon_u, polygon_v):
+                if is_xz_wall:
+                    distances = np.sqrt((all_vertices[:, 0] - corner_u)**2 + (all_vertices[:, 2] - corner_v)**2)
+                    nearest_idx = int(np.argmin(distances))
+                    nearest_u = float(all_vertices[nearest_idx, 0])
+                    nearest_v = float(all_vertices[nearest_idx, 2])
+                else:
+                    distances = np.sqrt((all_vertices[:, 1] - corner_u)**2 + (all_vertices[:, 2] - corner_v)**2)
+                    nearest_idx = int(np.argmin(distances))
+                    nearest_u = float(all_vertices[nearest_idx, 1])
+                    nearest_v = float(all_vertices[nearest_idx, 2])
+                
+                min_distance = np.min(distances)
+                nearest_inside_polygon = True
+                if polygon_path_uv is not None:
+                    nearest_inside_polygon = polygon_path_uv.contains_point((nearest_u, nearest_v))
+                
+                if min_distance > exact_match_tolerance or not nearest_inside_polygon:
+                    if is_xz_wall:
+                        corner_x = corner_u
+                        corner_z = corner_v
+                        if is_slanted_wall:
+                            from scipy.interpolate import griddata
+                            corner_y = griddata(
+                                points_surface, ys,
+                                np.array([[corner_u, corner_v]]),
+                                method='linear', fill_value=y_mean
+                            )[0]
+                        else:
+                            corner_y = y_mean
+                    else:
+                        corner_y = corner_u
+                        corner_z = corner_v
+                        if is_slanted_wall:
+                            from scipy.interpolate import griddata
+                            corner_x = griddata(
+                                points_surface, xs,
+                                np.array([[corner_u, corner_v]]),
+                                method='linear', fill_value=x_mean
+                            )[0]
+                        else:
+                            corner_x = x_mean
+                    
+                    additional_vertices.append([corner_x, corner_y, corner_z])
+        else:
+            # PLANARE/SCHRÄGE FLÄCHEN: Verwende (x,y)-Koordinaten
+            polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+            polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+            
+            exact_match_tolerance = 1e-9
+            try:
+                from matplotlib.path import Path
+                polygon_path = Path(np.column_stack([polygon_x, polygon_y]))
+            except Exception:
+                polygon_path = None
+            
+            for corner_x, corner_y in zip(polygon_x, polygon_y):
+                distances = np.sqrt((all_vertices[:, 0] - corner_x)**2 + (all_vertices[:, 1] - corner_y)**2)
+                min_distance = np.min(distances)
+                nearest_idx = int(np.argmin(distances))
+                nearest_vertex = (float(all_vertices[nearest_idx, 0]), float(all_vertices[nearest_idx, 1]))
+                
+                nearest_inside_polygon = True
+                if polygon_path is not None:
+                    nearest_inside_polygon = polygon_path.contains_point(nearest_vertex)
+                
+                if min_distance > exact_match_tolerance or not nearest_inside_polygon:
+                    corner_z = 0.0
+                    if geometry.plane_model:
+                        try:
+                            z_new = _evaluate_plane_on_grid(
+                                geometry.plane_model,
+                                np.array([[corner_x]]),
+                                np.array([[corner_y]])
+                            )
+                            if z_new is not None and z_new.size > 0:
+                                corner_z = float(z_new.flat[0])
+                        except Exception:
+                            pass
+                    
+                    additional_vertices.append([corner_x, corner_y, corner_z])
+        
+        # 2. Randpunkte hinzufügen
+        boundary_edge_points = []
+        if resolution is None or resolution <= 0:
+            # Fallback: Verwende Grid-Auflösung aus X/Y-Grid
+            if X_grid.size > 1 and Y_grid.size > 1:
+                x_diffs = np.diff(np.unique(X_grid.ravel()))
+                y_diffs = np.diff(np.unique(Y_grid.ravel()))
+                if x_diffs.size > 0 and y_diffs.size > 0:
+                    point_spacing = min(float(np.mean(x_diffs)), float(np.mean(y_diffs)))
+                else:
+                    point_spacing = 0.5  # Fallback
+            else:
+                point_spacing = 0.5  # Fallback
+        else:
+            point_spacing = resolution
+        
+        # #region agent log - Point spacing bestimmt
+        try:
+            import json, time as _t
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H2",
+                    "location": "GridBuilder._calculate_additional_vertices:point_spacing",
+                    "message": "Point spacing bestimmt",
+                    "data": {
+                        "surface_id": str(geometry.surface_id),
+                        "point_spacing": float(point_spacing),
+                        "resolution_was_none": resolution is None,
+                        "resolution_value": float(resolution) if resolution is not None else None
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        if geometry.orientation == "vertical":
+            xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+            ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+            zs = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
+            x_span = float(np.ptp(xs))
+            y_span = float(np.ptp(ys))
+            z_span = float(np.ptp(zs))
+            
+            is_slanted_wall = False
+            is_xz_wall = True
+            
+            if hasattr(geometry, 'dominant_axis') and geometry.dominant_axis:
+                if geometry.dominant_axis == "yz":
+                    polygon_u = ys
+                    polygon_v = zs
+                    is_xz_wall = False
+                    max_main_span = max(y_span, z_span) if max(y_span, z_span) > 1e-6 else 1.0
+                    x_variation_ratio = x_span / max_main_span if max_main_span > 1e-6 else 0.0
+                    is_slanted_wall = (x_variation_ratio > 0.1 and z_span > 1e-3)
+                elif geometry.dominant_axis == "xz":
+                    polygon_u = xs
+                    polygon_v = zs
+                    is_xz_wall = True
+                    max_main_span = max(x_span, z_span) if max(x_span, z_span) > 1e-6 else 1.0
+                    y_variation_ratio = y_span / max_main_span if max_main_span > 1e-6 else 0.0
+                    is_slanted_wall = (y_variation_ratio > 0.1 and z_span > 1e-3)
+                else:
+                    polygon_u = xs
+                    polygon_v = zs
+                    is_xz_wall = True
+            else:
+                polygon_u = xs
+                polygon_v = zs
+                is_xz_wall = True
+            
+            if is_slanted_wall:
+                from scipy.interpolate import griddata
+                if is_xz_wall:
+                    points_surface = np.column_stack([xs, zs])
+                else:
+                    points_surface = np.column_stack([ys, zs])
+            
+            n_vertices = len(polygon_u)
+            for i in range(n_vertices):
+                u1, v1 = polygon_u[i], polygon_v[i]
+                u2, v2 = polygon_u[(i + 1) % n_vertices], polygon_v[(i + 1) % n_vertices]
+                
+                edge_len = np.sqrt((u2 - u1)**2 + (v2 - v1)**2)
+                if edge_len < 1e-9:
+                    continue
+                
+                n_points_on_edge = max(1, int(np.ceil(edge_len / point_spacing)))
+                for j in range(1, n_points_on_edge):
+                    t = j / n_points_on_edge
+                    u = u1 + t * (u2 - u1)
+                    v = v1 + t * (v2 - v1)
+                    
+                    if is_xz_wall:
+                        x, z = u, v
+                        if is_slanted_wall:
+                            from scipy.interpolate import griddata
+                            y = griddata(
+                                points_surface, ys,
+                                np.array([[x, z]]),
+                                method='linear', fill_value=float(np.mean(ys))
+                            )[0]
+                        else:
+                            y = float(np.mean(ys))
+                    else:
+                        y, z = u, v
+                        if is_slanted_wall:
+                            from scipy.interpolate import griddata
+                            x = griddata(
+                                points_surface, xs,
+                                np.array([[y, z]]),
+                                method='linear', fill_value=float(np.mean(xs))
+                            )[0]
+                        else:
+                            x = float(np.mean(xs))
+                    
+                    boundary_edge_points.append([float(x), float(y), float(z)])
+        else:
+            # PLANARE/SCHRÄGE FLÄCHEN
+            polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
+            polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
+            
+            n_vertices = len(polygon_x)
+            for i in range(n_vertices):
+                x1, y1 = polygon_x[i], polygon_y[i]
+                x2, y2 = polygon_x[(i + 1) % n_vertices], polygon_y[(i + 1) % n_vertices]
+                
+                edge_len = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                if edge_len < 1e-9:
+                    continue
+                
+                n_points_on_edge = max(1, int(np.ceil(edge_len / point_spacing)))
+                for j in range(1, n_points_on_edge):
+                    t = j / n_points_on_edge
+                    x = x1 + t * (x2 - x1)
+                    y = y1 + t * (y2 - y1)
+                    
+                    z = 0.0
+                    if geometry.plane_model:
+                        try:
+                            z_new = _evaluate_plane_on_grid(
+                                geometry.plane_model,
+                                np.array([[x]]),
+                                np.array([[y]])
+                            )
+                            if z_new is not None and z_new.size > 0:
+                                z = float(z_new.flat[0])
+                        except Exception:
+                            pass
+                    
+                    boundary_edge_points.append([float(x), float(y), float(z)])
+        
+        # #region agent log - Boundary edge points vor Duplikat-Prüfung
+        try:
+            import json, time as _t
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H3,H4",
+                    "location": "GridBuilder._calculate_additional_vertices:before_dedup",
+                    "message": "Boundary edge points vor Duplikat-Prüfung",
+                    "data": {
+                        "surface_id": str(geometry.surface_id),
+                        "boundary_edge_points_count": len(boundary_edge_points),
+                        "additional_vertices_corners_count": len(additional_vertices)
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        # 3. Duplikat-Prüfung und Zusammenführung
+        dedup_tolerance = point_spacing * 0.05
+        for edge_point in boundary_edge_points:
+            is_duplicate = False
+            
+            # Prüfe gegen bestehende additional_vertices
+            for existing_vertex in additional_vertices:
+                dist = np.sqrt(
+                    (edge_point[0] - existing_vertex[0])**2 +
+                    (edge_point[1] - existing_vertex[1])**2 +
+                    (edge_point[2] - existing_vertex[2])**2
+                )
+                if dist < dedup_tolerance:
+                    is_duplicate = True
+                    break
+            
+            # Prüfe gegen Grid-Punkte
+            if not is_duplicate:
+                for grid_point in all_vertices:
+                    dist = np.sqrt(
+                        (edge_point[0] - grid_point[0])**2 +
+                        (edge_point[1] - grid_point[1])**2 +
+                        (edge_point[2] - grid_point[2])**2
+                    )
+                    if dist < dedup_tolerance:
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                additional_vertices.append(edge_point)
+        
+        # #region agent log - Ergebnis vor Rückgabe
+        try:
+            import json, time as _t
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H3,H4",
+                    "location": "GridBuilder._calculate_additional_vertices:before_return",
+                    "message": "Ergebnis vor Rückgabe",
+                    "data": {
+                        "surface_id": str(geometry.surface_id),
+                        "additional_vertices_count": len(additional_vertices),
+                        "boundary_edge_points_count": len(boundary_edge_points),
+                        "dedup_tolerance": float(dedup_tolerance)
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        return np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+    
     @measure_time("GridBuilder.build_single_surface_grid")
     def build_single_surface_grid(
         self,
@@ -1909,7 +2345,7 @@ class GridBuilder(ModuleBase):
         min_points_per_dimension: int = 6,
         padding_factor: float = 0.5,
         disable_edge_refinement: bool = False
-        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Erstellt Grid für eine einzelne Surface mit Mindestanzahl von Punkten.
         
@@ -1922,8 +2358,10 @@ class GridBuilder(ModuleBase):
         Returns:
             Tuple von (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask)
         """
+        # Stelle sicher, dass resolution gesetzt ist
         if resolution is None:
             resolution = self.settings.resolution
+        
         t_orientation_start = time.perf_counter() if PERF_ENABLED else None
         
         # 🎯 VERTIKALE SURFACES: Erstelle Grid direkt in (u,v)-Ebene der Fläche
@@ -2992,15 +3430,71 @@ class GridBuilder(ModuleBase):
         #         f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
         #     )
         
+        # 🎯 NEU: Berechne additional_vertices (Ecken + Randpunkte) gleichzeitig mit Grid
+        # Stelle sicher, dass resolution gesetzt ist
+        if resolution is None:
+            resolution = self.settings.resolution
+        
+        # #region agent log - Aufruf _calculate_additional_vertices
+        try:
+            import json, time as _t
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H1",
+                    "location": "GridBuilder.build_single_surface_grid:before_calculate_additional_vertices",
+                    "message": "Aufruf _calculate_additional_vertices",
+                    "data": {
+                        "surface_id": str(geometry.surface_id),
+                        "orientation": str(geometry.orientation),
+                        "resolution": float(resolution) if resolution is not None else None,
+                        "X_grid_shape": list(X_grid.shape),
+                        "Y_grid_shape": list(Y_grid.shape),
+                        "Z_grid_shape": list(Z_grid.shape),
+                        "surface_mask_active": int(np.count_nonzero(surface_mask)) if surface_mask is not None else 0
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        additional_vertices = self._calculate_additional_vertices(
+            geometry, X_grid, Y_grid, Z_grid, surface_mask, resolution
+        )
+        
+        # #region agent log - Ergebnis _calculate_additional_vertices
+        try:
+            import json, time as _t
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H1,H2,H3,H4",
+                    "location": "GridBuilder.build_single_surface_grid:after_calculate_additional_vertices",
+                    "message": "Ergebnis _calculate_additional_vertices",
+                    "data": {
+                        "surface_id": str(geometry.surface_id),
+                        "additional_vertices_count": int(len(additional_vertices)) if additional_vertices is not None and additional_vertices.size > 0 else 0,
+                        "additional_vertices_shape": list(additional_vertices.shape) if additional_vertices is not None and additional_vertices.size > 0 else None,
+                        "additional_vertices_empty": bool(additional_vertices is None or additional_vertices.size == 0)
+                    },
+                    "timestamp": int(_t.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # Für planare/schräge Surfaces: Gebe auch die strikte Maske zurück
         # Für vertikale Surfaces: surface_mask_strict wurde bereits vorher erstellt (vor Dilatation)
         if geometry.orientation in ("planar", "sloped"):
             # surface_mask_strict wurde bereits vorher erstellt
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
         else:
             # 🎯 KORREKTUR: Vertikale Surfaces haben auch eine strikte Maske (vor Dilatation erstellt)
             # surface_mask_strict wurde bereits oben erstellt (vor Dilatation)
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict)
+            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
 
 
 class GridTransformer(ABC):
@@ -3454,13 +3948,40 @@ class FlexibleGridGenerator(ModuleBase):
                         min_points_per_dimension=min_points_per_dimension,
                         disable_edge_refinement=disable_edge_refinement
                     )
-                if len(result) == 7:
-                    # Version: Mit strikter Maske
+                if len(result) == 8:
+                    # Version: Mit strikter Maske + additional_vertices
+                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices) = result
+                    
+                    # #region agent log - additional_vertices aus result
+                    try:
+                        import json, time as _t
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H5",
+                                "location": "FlexibleGridGenerator.generate_per_surface:after_unpack_result",
+                                "message": "additional_vertices aus result",
+                                "data": {
+                                    "surface_id": str(geom.surface_id),
+                                    "additional_vertices_count": int(len(additional_vertices)) if additional_vertices is not None and additional_vertices.size > 0 else 0,
+                                    "additional_vertices_shape": list(additional_vertices.shape) if additional_vertices is not None and additional_vertices.size > 0 else None,
+                                    "additional_vertices_is_array": isinstance(additional_vertices, np.ndarray)
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                elif len(result) == 7:
+                    # Version: Mit strikter Maske (ohne additional_vertices - Fallback)
                     (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
+                    additional_vertices = np.array([], dtype=float).reshape(0, 3)  # Leeres Array als Fallback
                 else:
                     # Alte Version: Ohne strikte Maske (Fallback)
                     (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
                     surface_mask_strict = surface_mask  # Fallback: identisch
+                    additional_vertices = np.array([], dtype=float).reshape(0, 3)  # Leeres Array als Fallback
             except (ValueError, Exception) as e:
                 # Fange alle Fehler ab (ValueError, QhullError, etc.) und überspringe die Surface
                 # Kein Fallback - nur die funktionierenden Surfaces werden verwendet
@@ -3524,6 +4045,15 @@ class FlexibleGridGenerator(ModuleBase):
             triangulated_faces = None
             triangulated_success = False
             vertex_source_indices: Optional[np.ndarray] = None
+            # 🎯 FIX: additional_vertices wurde bereits in build_single_surface_grid berechnet
+            # Nichts überschreiben - verwende die bereits berechneten additional_vertices
+            
+            # 🎯 FIX: Definiere additional_vertices_array außerhalb des try-Blocks, damit es immer verfügbar ist
+            # Konvertiere zu numpy array falls noch nicht geschehen
+            if not isinstance(additional_vertices, np.ndarray):
+                additional_vertices_array = np.array(additional_vertices, dtype=float) if additional_vertices is not None and hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+            else:
+                additional_vertices_array = additional_vertices
             
             try:
                 # Verwende Grid-Punkte innerhalb der Surface-Maske als Vertices
@@ -3577,272 +4107,69 @@ class FlexibleGridGenerator(ModuleBase):
                         pass
                     # #endregion
                     
-                    # 🎯 ZUSÄTZLICHE VERTICES AN POLYGON-ECKEN HINZUFÜGEN (für höhere Auflösung)
-                    # Dies erhöht die Polygon-Dichte an den Ecken, um Lücken zu vermeiden
-                    # 🎯 IDENTISCHE BEHANDLUNG: Für alle Orientierungen (planar, sloped, vertical)
-                    additional_vertices = []
-                    surface_points = geom.points or []
-                    if len(surface_points) >= 3:
-                        # Bestimme Koordinatensystem basierend auf Orientierung
-                        if geom.orientation == "vertical":
-                            # 🎯 VERTIKALE FLÄCHEN: Verwende (u,v)-Koordinaten basierend auf dominant_axis
-                            xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                            ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                            zs = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
-                            x_span = float(np.ptp(xs))
-                            y_span = float(np.ptp(ys))
-                            eps_line = 1e-6
-                            
-                            # 🎯 ZUERST AUSRICHTUNG PRÜFEN: Bestimme (u,v)-Koordinaten basierend auf dominant_axis oder Spannen-Analyse
-                            # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende dominant_axis wenn verfügbar
-                            # Berechne Konstanten-Werte im Voraus
-                            x_mean = float(np.mean(xs))
-                            y_mean = float(np.mean(ys))
-                            z_span = float(np.ptp(zs))
-                            
-                            # 🎯 PRÜFE OB SCHRÄGE WAND: Y variiert bei X-Z-Wänden, X variiert bei Y-Z-Wänden
-                            # 🎯 FIX: Konsistent mit Grid-Erstellung - nur signifikante Variationen als schräg behandeln
-                            is_slanted_wall = False
-                            
-                            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                # Verwende dominant_axis als primäre Quelle (konsistent mit Grid-Erstellung)
-                                if geom.dominant_axis == "yz":
-                                    # Y-Z-Wand: u = y, v = z
-                                    polygon_u = ys
-                                    polygon_v = zs
-                                    is_xz_wall = False
-                                    # Prüfe ob schräg: X variiert signifikant (>10% von max(y_span, z_span))
-                                    max_main_span = max(y_span, z_span) if max(y_span, z_span) > 1e-6 else 1.0
-                                    x_variation_ratio = x_span / max_main_span if max_main_span > 1e-6 else 0.0
-                                    is_slanted_wall = (x_variation_ratio > 0.1 and z_span > 1e-3)
-                                elif geom.dominant_axis == "xz":
-                                    # X-Z-Wand: u = x, v = z
-                                    polygon_u = xs
-                                    polygon_v = zs
-                                    is_xz_wall = True
-                                    # Prüfe ob schräg: Y variiert signifikant (>10% von max(x_span, z_span))
-                                    max_main_span = max(x_span, z_span) if max(x_span, z_span) > 1e-6 else 1.0
-                                    y_variation_ratio = y_span / max_main_span if max_main_span > 1e-6 else 0.0
-                                    is_slanted_wall = (y_variation_ratio > 0.1 and z_span > 1e-3)
-                                else:
-                                    raise ValueError(f"Surface '{geom.surface_id}': Unbekannter dominant_axis '{geom.dominant_axis}'")
-                            
-                            # 🎯 FÜR SCHRÄGE WÄNDE: Interpoliere Y (X-Z-Wand) bzw. X (Y-Z-Wand) aus Surface-Punkten
-                            if is_slanted_wall:
-                                from scipy.interpolate import griddata
-                                if is_xz_wall:
-                                    # X-Z-Wand schräg: Interpoliere Y aus (x,z)-Koordinaten
-                                    points_surface = np.column_stack([xs, zs])
-                                else:
-                                    # Y-Z-Wand schräg: Interpoliere X aus (y,z)-Koordinaten
-                                    points_surface = np.column_stack([ys, zs])
-                            
-                            # Prüfe für jede Polygon-Ecke in (u,v)-Koordinaten
-                            # 🎯 NUR EXAKTE ÜBEREINSTIMMUNG: Toleranz sehr klein (1e-9), nur wenn Punkt exakt auf Ecke liegt
-                            exact_match_tolerance = 1e-9  # Sehr kleine Toleranz für exakte Übereinstimmung
-                            
-                            # Prüfe auch, ob Grid-Punkte innerhalb des Polygons liegen (für vertikale Flächen in u,v)
-                            try:
-                                from matplotlib.path import Path
-                                polygon_2d_uv = np.column_stack([polygon_u, polygon_v])
-                                polygon_path_uv = Path(polygon_2d_uv)
-                            except Exception:
-                                polygon_path_uv = None
-                            
-                            for corner_u, corner_v in zip(polygon_u, polygon_v):
-                                # Prüfe ob bereits ein Vertex EXAKT auf dieser Ecke existiert
-                                # Für vertikale Flächen: Vergleiche in (u,v)-Koordinaten
-                                if is_xz_wall:
-                                    # X-Z-Wand: u = x, v = z
-                                    distances = np.sqrt((all_vertices[:, 0] - corner_u)**2 + (all_vertices[:, 2] - corner_v)**2)
-                                    nearest_idx = int(np.argmin(distances))
-                                    nearest_u = float(all_vertices[nearest_idx, 0])
-                                    nearest_v = float(all_vertices[nearest_idx, 2])
-                                else:
-                                    # Y-Z-Wand: u = y, v = z
-                                    distances = np.sqrt((all_vertices[:, 1] - corner_u)**2 + (all_vertices[:, 2] - corner_v)**2)
-                                    nearest_idx = int(np.argmin(distances))
-                                    nearest_u = float(all_vertices[nearest_idx, 1])
-                                    nearest_v = float(all_vertices[nearest_idx, 2])
-                                
-                                min_distance = np.min(distances)
-                                
-                                # Prüfe ob nächstgelegener Vertex innerhalb des Polygons liegt
-                                nearest_inside_polygon = True
-                                if polygon_path_uv is not None:
-                                    nearest_inside_polygon = polygon_path_uv.contains_point((nearest_u, nearest_v))
-                                
-                                # 🎯 IMMER HINZUFÜGEN: Nur wenn Punkt EXAKT auf Ecke liegt UND innerhalb Polygon, dann überspringen
-                                if min_distance <= exact_match_tolerance and nearest_inside_polygon:
-                                    # Punkt liegt EXAKT auf Ecke → überspringen
-                                    continue
-                                else:
-                                    # Kein exakter Match → füge neuen Vertex hinzu
-                                    # Transformiere (u,v) zurück zu (x,y,z)
-                                    if is_xz_wall:
-                                        # X-Z-Wand: u = x, v = z
-                                        corner_x = corner_u
-                                        corner_z = corner_v
-                                        if is_slanted_wall:
-                                            # Schräge Wand: Y interpoliert aus (x,z)
-                                            from scipy.interpolate import griddata
-                                            corner_y = griddata(
-                                                points_surface, ys,
-                                                np.array([[corner_u, corner_v]]),
-                                                method='linear', fill_value=y_mean
-                                            )[0]
-                                        else:
-                                            # Konstante Wand: Y = konstant
-                                            corner_y = y_mean
-                                    else:
-                                        # Y-Z-Wand: u = y, v = z
-                                        corner_y = corner_u
-                                        corner_z = corner_v
-                                        if is_slanted_wall:
-                                            # Schräge Wand: X interpoliert aus (y,z)
-                                            from scipy.interpolate import griddata
-                                            corner_x = griddata(
-                                                points_surface, xs,
-                                                np.array([[corner_u, corner_v]]),
-                                                method='linear', fill_value=x_mean
-                                            )[0]
-                                        else:
-                                            # Konstante Wand: X = konstant
-                                            corner_x = x_mean
-                                    
-                                    additional_vertices.append([corner_x, corner_y, corner_z])
-                        else:
-                            # PLANARE/SCHRÄGE FLÄCHEN: Verwende (x,y)-Koordinaten
-                            polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                            polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                            
-                            # Prüfe für jede Polygon-Ecke, ob exakt ein Vertex auf dieser Ecke existiert
-                            # 🎯 NUR EXAKTE ÜBEREINSTIMMUNG: Toleranz sehr klein (1e-9), nur wenn Punkt exakt auf Ecke liegt
-                            exact_match_tolerance = 1e-9  # Sehr kleine Toleranz für exakte Übereinstimmung
-                            
-                            # #region agent log - Additional Vertices Analyse (planar/sloped)
-                            additional_vertices_log = []
-                            skipped_vertices_log = []
-                            corner_vertex_analysis = {}  # Analyse für jede Ecke
-                            # #endregion
-                            
-                            # Prüfe auch, ob Grid-Punkte außerhalb des Polygons aktiviert wurden
-                            try:
-                                from matplotlib.path import Path
-                                polygon_path = Path(np.column_stack([polygon_x, polygon_y]))
-                            except Exception:
-                                polygon_path = None
-                            
-                            for corner_idx, (corner_x, corner_y) in enumerate(zip(polygon_x, polygon_y)):
-                                # Prüfe ob bereits ein Vertex EXAKT auf dieser Ecke existiert
-                                distances = np.sqrt((all_vertices[:, 0] - corner_x)**2 + (all_vertices[:, 1] - corner_y)**2)
-                                min_distance = np.min(distances)
-                                nearest_idx = int(np.argmin(distances))
-                                nearest_vertex = (float(all_vertices[nearest_idx, 0]), float(all_vertices[nearest_idx, 1]))
-                                
-                                # Zähle wie viele Vertices sehr nahe an dieser Ecke sind
-                                close_vertices_count = np.sum(distances < (actual_resolution * 0.1))  # 10% Resolution
-                                very_close_vertices_count = np.sum(distances < (actual_resolution * 0.05))  # 5% Resolution
-                                
-                                # 🎯 FIX: Prüfe ob nächstgelegener Vertex innerhalb des Polygons liegt
-                                nearest_inside_polygon = True
-                                if polygon_path is not None:
-                                    nearest_inside_polygon = polygon_path.contains_point(nearest_vertex)
-                                
-                                corner_vertex_analysis[corner_idx] = {
-                                    "corner": (float(corner_x), float(corner_y)),
-                                    "min_distance_to_existing": float(min_distance),
-                                    "nearest_vertex": nearest_vertex,
-                                    "close_vertices_count": int(close_vertices_count),
-                                    "very_close_vertices_count": int(very_close_vertices_count),
-                                    "exact_match_tolerance": float(exact_match_tolerance),
-                                    "resolution": float(actual_resolution)
-                                }
-                                
-                                # 🎯 IMMER HINZUFÜGEN: Nur wenn Punkt EXAKT auf Ecke liegt UND innerhalb Polygon, dann überspringen
-                                if min_distance <= exact_match_tolerance and nearest_inside_polygon:
-                                    # Punkt liegt EXAKT auf Ecke → überspringen
-                                    skipped_vertices_log.append({
-                                        "corner": (float(corner_x), float(corner_y)),
-                                        "min_distance_to_existing": float(min_distance),
-                                        "nearest_existing_vertex": nearest_vertex,
-                                        "tolerance": float(exact_match_tolerance),
-                                        "nearest_inside_polygon": nearest_inside_polygon,
-                                        "reason": "exact_match_on_corner"
-                                    })
-                                else:
-                                    # Kein exakter Match → füge exakte Ecke hinzu
-                                    # Berechne Z-Koordinate für Ecke
-                                    corner_z = 0.0
-                                    if geom.plane_model:
-                                        try:
-                                            z_new = _evaluate_plane_on_grid(
-                                                geom.plane_model,
-                                                np.array([[corner_x]]),
-                                                np.array([[corner_y]])
-                                            )
-                                            if z_new is not None and z_new.size > 0:
-                                                corner_z = float(z_new.flat[0])
-                                        except Exception:
-                                            pass
-                                    
-                                    additional_vertices.append([corner_x, corner_y, corner_z])
-                                    additional_vertices_log.append({
-                                        "corner": (float(corner_x), float(corner_y)),
-                                        "min_distance_to_existing": float(min_distance),
-                                        "nearest_existing_vertex": nearest_vertex,
-                                        "nearest_inside_polygon": nearest_inside_polygon,
-                                        "reason": "no_exact_match"
-                                    })
-                            
-                            # #region agent log - Corner vertex density analysis H8, H9, H10
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "H8_H9_H10",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:corner_vertex_density",
-                                        "message": "Vertex-Dichte an Polygon-Ecken",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "corner_vertex_analysis": {str(k): v for k, v in corner_vertex_analysis.items()},
-                                            "additional_vertices_count": len(additional_vertices),
-                                            "resolution": float(actual_resolution)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
-                        
-                            # #region agent log - Additional Vertices Ergebnisse (planar/sloped)
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "ADDITIONAL_VERTICES_ANALYSIS",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:additional_vertices_planar",
-                                        "message": "Additional Vertices Analyse (planar/sloped)",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "additional_vertices_count": len(additional_vertices_log),
-                                            "skipped_vertices_count": len(skipped_vertices_log),
-                                            "additional_vertices": additional_vertices_log,
-                                            "skipped_vertices": skipped_vertices_log,
-                                            "exact_match_tolerance": float(exact_match_tolerance),
-                                            "resolution": float(resolution)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
+                    # 🎯 HINWEIS: additional_vertices werden jetzt bereits in build_single_surface_grid berechnet
+                    # Die folgende Logik wurde nach _calculate_additional_vertices verschoben
+                    # und wird hier nicht mehr benötigt, da additional_vertices bereits verfügbar sind
                     
-                        # Additional_vertices (Ecken + Randpunkte) werden später hinzugefügt (nach Randpunkten)
+                    # 🎯 VERWENDE BEREITS BEREICHNETE additional_vertices AUS build_single_surface_grid
+                    # additional_vertices wurde bereits oben aus result extrahiert
+                    
+                    # 🎯 ALTE LOGIK ENTFERNT: Die Berechnung von additional_vertices erfolgt jetzt in build_single_surface_grid
+                    # Dies vermeidet Duplikation und stellt sicher, dass alle Punkte gleichzeitig mit dem Grid berechnet werden
+                    
+                    # 🎯 FIX: additional_vertices wurde bereits in build_single_surface_grid berechnet
+                    # Der folgende Code-Block wurde entfernt, da er versucht, additional_vertices.append() aufzurufen,
+                    # aber additional_vertices ist jetzt ein numpy.ndarray, nicht eine Liste.
+                    # Die gesamte Logik für Ecken- und Randpunkte-Berechnung ist jetzt in _calculate_additional_vertices.
+                    
+                    # 🎯 FIX: additional_vertices wurden bereits in build_single_surface_grid berechnet
+                    # Verwende diese direkt - KEINE Neuberechnung mehr!
+                    # Der gesamte Block zur Neuberechnung wurde entfernt, da er versuchte, .append() auf einem numpy.ndarray aufzurufen.
+                    
+                    # 🎯 FIX: additional_vertices_array wurde bereits außerhalb des try-Blocks definiert
+                    # Keine redundante Definition hier nötig - verwende das bereits definierte additional_vertices_array
+                    
+                    # boundary_points_added wird nicht mehr verwendet - nur für Kompatibilität
+                    boundary_points_added = 0
+                    
+                    # Aktualisiere all_vertices mit allen additional_vertices (Ecken + Randpunkte)
+                    if additional_vertices_array.size > 0:
+                        all_vertices = np.vstack([all_vertices, additional_vertices_array])
+                        
+                        # #region agent log - Additional Vertices hinzugefügt (inkl. Randpunkte)
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "ADDITIONAL_VERTICES_ADDED",
+                                    "location": "FlexibleGridGenerator.generate_per_surface:additional_vertices_added",
+                                    "message": "Additional Vertices hinzugefügt (inkl. Randpunkte)",
+                                    "data": {
+                                        "surface_id": str(geom.surface_id),
+                                        "additional_vertices_count": int(additional_vertices_array.size // 3) if additional_vertices_array.size > 0 else 0,
+                                        "additional_vertices_shape": list(additional_vertices_array.shape) if additional_vertices_array.size > 0 else None
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                    
+                    # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
+                    base_vertex_count = X_grid.size
+                    additional_vertex_start_idx = base_vertex_count
+                    
+                    # 🎯 NEU: DELAUNAY-TRIANGULATION für alle gültigen Punkte
+                    # 🎯 DELAUNAY-TRIANGULATION: Verwende nur noch Delaunay für konsistente, überschneidungsfreie Triangulation
+                    faces_list = []  # Initialisiere faces_list
+                    use_delaunay_triangulation = True  # Immer Delaunay verwenden
+                    
+                    if not HAS_SCIPY:
+                        raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
+                    
+                    # Additional_vertices (Ecken + Randpunkte) werden später hinzugefügt (nach Randpunkten)
                     
                     # 🎯 NEUE RANDPUNKT-LOGIK: Direkte Berechnung von Punkten auf Surface-Linie
                     # Erstelle gleichmäßig verteilte Punkte direkt auf Polygon-Kanten
@@ -4063,46 +4390,39 @@ class FlexibleGridGenerator(ModuleBase):
                                     
                                     boundary_edge_points.append([float(x), float(y), float(z)])
                     
-                    # Füge Randpunkte zu additional_vertices hinzu (mit Duplikat-Prüfung)
-                    boundary_points_added = 0
-                    if len(boundary_edge_points) > 0:
-                        dedup_tolerance = actual_resolution * 0.05  # 5% Resolution
-                        for edge_point in boundary_edge_points:
-                            is_duplicate = False
-                            # Prüfe gegen bestehende additional_vertices
-                            if len(additional_vertices) > 0:
-                                for existing_vertex in additional_vertices:
-                                    dist = np.sqrt(
-                                        (edge_point[0] - existing_vertex[0])**2 +
-                                        (edge_point[1] - existing_vertex[1])**2 +
-                                        (edge_point[2] - existing_vertex[2])**2
-                                    )
-                                    if dist < dedup_tolerance:
-                                        is_duplicate = True
-                                        break
-                            
-                            # Prüfe gegen Grid-Punkte
-                            if not is_duplicate:
-                                for grid_idx in range(X_grid.size):
-                                    grid_x = float(X_grid.flat[grid_idx])
-                                    grid_y = float(Y_grid.flat[grid_idx])
-                                    grid_z = float(Z_grid.flat[grid_idx]) if hasattr(Z_grid, 'flat') else 0.0
-                                    dist = np.sqrt(
-                                        (edge_point[0] - grid_x)**2 +
-                                        (edge_point[1] - grid_y)**2 +
-                                        (edge_point[2] - grid_z)**2
-                                    )
-                                    if dist < dedup_tolerance:
-                                        is_duplicate = True
-                                        break
-                            
-                            if not is_duplicate:
-                                additional_vertices.append(edge_point)
-                                boundary_points_added += 1
+                    # 🎯 HINWEIS: additional_vertices werden jetzt bereits in build_single_surface_grid berechnet
+                    # Die Duplikat-Prüfung und Zusammenführung erfolgt jetzt in _calculate_additional_vertices
+                    # boundary_points_added wird nicht mehr hier berechnet
+                    boundary_points_added = 0  # Wird nicht mehr verwendet - nur für Kompatibilität
+                    
+                    # #region agent log - additional_vertices vor zweiter Zuweisung
+                    try:
+                        import json, time as _t
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "OVERWRITE_TRACK",
+                                "location": "FlexibleGridGenerator.generate_per_surface:before_second_array_assignment",
+                                "message": "additional_vertices vor zweiter Zuweisung",
+                                "data": {
+                                    "surface_id": str(geom.surface_id),
+                                    "additional_vertices_is_array": isinstance(additional_vertices, np.ndarray),
+                                    "additional_vertices_count": int(len(additional_vertices)) if hasattr(additional_vertices, '__len__') else 0,
+                                    "additional_vertices_size": int(additional_vertices.size) if isinstance(additional_vertices, np.ndarray) else None,
+                                    "additional_vertices_shape": list(additional_vertices.shape) if isinstance(additional_vertices, np.ndarray) and additional_vertices.size > 0 else None
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    # 🎯 FIX: Entferne duplizierte Zuweisung - additional_vertices_array wurde bereits oben zugewiesen!
+                    # Diese Zuweisung ist redundant und wird entfernt
                     
                     # Aktualisiere all_vertices mit allen additional_vertices (Ecken + Randpunkte)
-                    if len(additional_vertices) > 0:
-                        additional_vertices_array = np.array(additional_vertices, dtype=float)
+                    if len(additional_vertices_array) > 0:
                         all_vertices = np.vstack([all_vertices, additional_vertices_array])
                         
                         # #region agent log - Additional Vertices hinzugefügt (inkl. Randpunkte)
@@ -4156,7 +4476,34 @@ class FlexibleGridGenerator(ModuleBase):
                     # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
                     base_vertex_count = X_grid.size
                     additional_vertex_start_idx = base_vertex_count
-                    additional_vertices_array = np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+                    
+                    # #region agent log - additional_vertices vor dritter Zuweisung
+                    try:
+                        import json, time as _t
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "OVERWRITE_TRACK",
+                                "location": "FlexibleGridGenerator.generate_per_surface:before_third_array_assignment",
+                                "message": "additional_vertices vor dritter Zuweisung",
+                                "data": {
+                                    "surface_id": str(geom.surface_id),
+                                    "additional_vertices_is_array": isinstance(additional_vertices, np.ndarray),
+                                    "additional_vertices_count": int(len(additional_vertices)) if hasattr(additional_vertices, '__len__') else 0,
+                                    "additional_vertices_size": int(additional_vertices.size) if isinstance(additional_vertices, np.ndarray) else None,
+                                    "additional_vertices_shape": list(additional_vertices.shape) if isinstance(additional_vertices, np.ndarray) and additional_vertices.size > 0 else None,
+                                    "additional_vertices_array_exists": 'additional_vertices_array' in locals(),
+                                    "additional_vertices_array_count": int(len(additional_vertices_array)) if 'additional_vertices_array' in locals() and hasattr(additional_vertices_array, '__len__') else None
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    
+                    # 🎯 FIX: Entferne duplizierte Zuweisung - additional_vertices_array wurde bereits oben zugewiesen!
+                    # Diese Zuweisung ist redundant und wird entfernt
                     
                     # 🎯 NEU: DELAUNAY-TRIANGULATION für alle gültigen Punkte
                     # 🎯 DELAUNAY-TRIANGULATION: Verwende nur noch Delaunay für konsistente, überschneidungsfreie Triangulation
@@ -5004,6 +5351,12 @@ class FlexibleGridGenerator(ModuleBase):
                         # Erstelle Mapping: alter Index → neuer Index
                         old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
                         
+                        # 🎯 OPTIMIERUNG: Erstelle vorläufiges vertex_source_indices-Mapping
+                        # Vor der Deduplizierung: Grid-Vertices → Grid-Index, Additional-Vertices → Additional-Index
+                        n_grid_vertices_selected = 0
+                        n_additional_vertices_selected = 0
+                        vertex_source_indices_pre_dedup = []
+                        
                         # Erstelle nur die Vertices, die tatsächlich verwendet werden
                         # Für zusätzliche Vertices: Sie sind nach base_vertex_count, also müssen wir sie separat handhaben
                         if len(all_vertex_indices) > 0:
@@ -5014,6 +5367,12 @@ class FlexibleGridGenerator(ModuleBase):
                             # Erstelle Vertices aus Grid-Punkten
                             if len(grid_vertex_indices) > 0:
                                 grid_vertices = all_vertices[grid_vertex_indices]
+                                n_grid_vertices_selected = len(grid_vertices)
+                                # Mapping: Grid-Vertex → Grid-Index (in surface_mask_flat)
+                                for old_idx in grid_vertex_indices:
+                                    new_idx = old_to_new_index[old_idx]
+                                    # Grid-Vertex: Index = Position in surface_mask_flat
+                                    vertex_source_indices_pre_dedup.append(('grid', old_idx))
                             else:
                                 grid_vertices = np.array([], dtype=float).reshape(0, 3)
                             
@@ -5023,6 +5382,13 @@ class FlexibleGridGenerator(ModuleBase):
                                 additional_indices_local = additional_indices_local[additional_indices_local < len(additional_vertices_array)]
                                 if len(additional_indices_local) > 0:
                                     additional_vertices_selected = additional_vertices_array[additional_indices_local]
+                                    n_additional_vertices_selected = len(additional_vertices_selected)
+                                    # Mapping: Additional-Vertex → Additional-Index (in additional_vertices_array)
+                                    for old_idx in additional_vertex_indices:
+                                        new_idx = old_to_new_index[old_idx]
+                                        local_idx = old_idx - base_vertex_count
+                                        if 0 <= local_idx < len(additional_vertices_array):
+                                            vertex_source_indices_pre_dedup.append(('additional', local_idx))
                                 else:
                                     additional_vertices_selected = np.array([], dtype=float).reshape(0, 3)
                             else:
@@ -5039,6 +5405,7 @@ class FlexibleGridGenerator(ModuleBase):
                                 triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
                         else:
                             triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
+                            vertex_source_indices_pre_dedup = []
                         
                         # #region agent log - Randpunkte in finalen triangulated_vertices
                         try:
@@ -5306,6 +5673,9 @@ class FlexibleGridGenerator(ModuleBase):
                             pass
                         # #endregion
                         
+                        # 🎯 OPTIMIERUNG: Speichere Vertex-Positionen vor Deduplizierung für Mapping
+                        vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
+                        
                         try:
                             # Verwende builder._deduplicate_vertices_and_faces direkt
                             triangulated_vertices, triangulated_faces = self._deduplicate_vertices_and_faces(
@@ -5316,6 +5686,43 @@ class FlexibleGridGenerator(ModuleBase):
                             )
                             vertices_after_dedup = int(len(triangulated_vertices)) if triangulated_vertices is not None and triangulated_vertices.size > 0 else 0
                             vertices_removed = vertices_before_dedup - vertices_after_dedup
+                            
+                            # 🎯 OPTIMIERUNG: Erstelle vertex_source_indices nach Deduplizierung
+                            # Mapping: Neuer Vertex-Index → Source-Index
+                            # Grid-Vertices: Source-Index = Grid-Index in surface_mask_flat (0..N-1)
+                            # Additional-Vertices: Source-Index = N + Additional-Index (N..N+M-1, wobei N = base_vertex_count)
+                            vertex_source_indices = None
+                            if vertices_after_dedup > 0 and len(vertex_source_indices_pre_dedup) > 0 and len(vertices_before_dedup_array) > 0:
+                                try:
+                                    from scipy.spatial.distance import cdist
+                                    # Finde für jeden deduplizierten Vertex den nächstgelegenen Vertex vor Deduplizierung
+                                    distances = cdist(triangulated_vertices, vertices_before_dedup_array)
+                                    nearest_pre_dedup_indices = np.argmin(distances, axis=1)
+                                    
+                                    # Erstelle Mapping: Neuer Index → Source-Index
+                                    vertex_source_indices_mapping = []
+                                    n_grid_total = base_vertex_count
+                                    
+                                    for new_idx in range(vertices_after_dedup):
+                                        pre_dedup_idx = nearest_pre_dedup_indices[new_idx]
+                                        if pre_dedup_idx < len(vertex_source_indices_pre_dedup):
+                                            mapping_type, source_idx = vertex_source_indices_pre_dedup[pre_dedup_idx]
+                                            if mapping_type == 'grid':
+                                                # Grid-Vertex: Index = Grid-Index in surface_mask_flat (0..N-1)
+                                                vertex_source_indices_mapping.append(int(source_idx))
+                                            else:  # 'additional'
+                                                # Additional-Vertex: Index = N + Additional-Index (N..N+M-1)
+                                                vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
+                                        else:
+                                            # Fallback: Verwende Grid-Index 0
+                                            vertex_source_indices_mapping.append(0)
+                                    
+                                    vertex_source_indices = np.array(vertex_source_indices_mapping, dtype=np.int64)
+                                except Exception as e:
+                                    # Bei Fehler: Kein Mapping (wird im Plot interpoliert)
+                                    vertex_source_indices = None
+                            else:
+                                vertex_source_indices = None
                             
                             # #region agent log - Deduplizierung Ergebnisse
                             try:
@@ -5503,6 +5910,83 @@ class FlexibleGridGenerator(ModuleBase):
                 pass
             # #endregion
             
+            # Speichere additional_vertices (wenn vorhanden)
+            # 🎯 FIX: Verwende additional_vertices_array statt additional_vertices, da additional_vertices_array bereits als numpy-Array erstellt wurde
+            # und additional_vertices möglicherweise überschrieben wurde
+            additional_vertices_final = None
+            
+            # #region agent log - additional_vertices vor final-Zuweisung
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H5",
+                        "location": "FlexibleGridGenerator.generate_per_surface:before_final_assignment",
+                        "message": "additional_vertices vor final-Zuweisung",
+                        "data": {
+                            "surface_id": str(geom.surface_id),
+                            "additional_vertices_count": int(len(additional_vertices)) if hasattr(additional_vertices, '__len__') else 0,
+                            "additional_vertices_is_array": isinstance(additional_vertices, np.ndarray),
+                            "additional_vertices_size": int(additional_vertices.size) if isinstance(additional_vertices, np.ndarray) else None,
+                            "additional_vertices_shape": list(additional_vertices.shape) if isinstance(additional_vertices, np.ndarray) and additional_vertices.size > 0 else None,
+                            "additional_vertices_array_exists": 'additional_vertices_array' in locals(),
+                            "additional_vertices_array_count": int(len(additional_vertices_array)) if 'additional_vertices_array' in locals() and hasattr(additional_vertices_array, '__len__') else None,
+                            "additional_vertices_array_is_array": isinstance(additional_vertices_array, np.ndarray) if 'additional_vertices_array' in locals() else None
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # 🎯 FIX: Verwende additional_vertices_array statt additional_vertices
+            # additional_vertices_array wurde bereits oben als numpy-Array erstellt und sollte korrekt sein
+            if 'additional_vertices_array' in locals() and isinstance(additional_vertices_array, np.ndarray):
+                if additional_vertices_array.size > 0:
+                    additional_vertices_final = additional_vertices_array
+                else:
+                    additional_vertices_final = None
+            elif isinstance(additional_vertices, np.ndarray):
+                if additional_vertices.size > 0:
+                    additional_vertices_final = additional_vertices
+                else:
+                    additional_vertices_final = None
+            elif hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0:
+                additional_vertices_final = np.array(additional_vertices, dtype=float)
+            else:
+                additional_vertices_final = None
+            
+            # #region agent log - additional_vertices_final gesetzt
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H5",
+                        "location": "FlexibleGridGenerator.generate_per_surface:after_final_assignment",
+                        "message": "additional_vertices_final gesetzt",
+                        "data": {
+                            "surface_id": str(geom.surface_id),
+                            "additional_vertices_final_is_none": additional_vertices_final is None,
+                            "additional_vertices_final_count": int(len(additional_vertices_final)) if additional_vertices_final is not None and hasattr(additional_vertices_final, '__len__') else 0,
+                            "additional_vertices_final_shape": list(additional_vertices_final.shape) if additional_vertices_final is not None and isinstance(additional_vertices_final, np.ndarray) and additional_vertices_final.size > 0 else None
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # 🎯 OPTIMIERUNG: Hole vertex_source_indices (wurde nach Deduplizierung erstellt)
+            vertex_source_indices_final = None
+            if 'vertex_source_indices' in locals() and vertex_source_indices is not None:
+                vertex_source_indices_final = vertex_source_indices
+            else:
+                vertex_source_indices_final = None
+            
             surface_grid = SurfaceGrid(
                 surface_id=geom.surface_id,
                 sound_field_x=sound_field_x,
@@ -5516,6 +6000,8 @@ class FlexibleGridGenerator(ModuleBase):
                 triangulated_vertices=triangulated_vertices,
                 triangulated_faces=triangulated_faces,
                 triangulated_success=triangulated_success,
+                vertex_source_indices=vertex_source_indices_final,
+                additional_vertices=additional_vertices_final,
             )
 
             # 🎯 DEBUG: Prüfung auf überlappende Vertices in 3D
