@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.transforms as transforms
 import numpy as np
-from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import MultipleLocator, FuncFormatter
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
@@ -89,6 +89,8 @@ class BeamsteeringPlot(QWidget):
                 y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
                 self.ax.set_ylim(y_min, y_max)
             self.ax.set_yticks(y_ticks)
+            # Formatierung auf eine Nachkommastelle
+            self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
 
         # KEIN set_aspect('equal') - würde die Plot-Höhe stark reduzieren
         # Die Lautsprecher werden durch Skalierung in StackDraw_Beamsteering unverzerrt dargestellt
@@ -135,6 +137,9 @@ class BeamsteeringPlot(QWidget):
         
         # Zeichne Stacks NACH Layout-Anpassung (für korrekte Pixel-Größe)
         self.plot_Stacks2Beamsteering(speaker_array_id)
+        
+        # Passe Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden
+        self._adjust_ylim_for_speakers()
         
         self.canvas.draw_idle()
 
@@ -341,6 +346,8 @@ class BeamsteeringPlot(QWidget):
             y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
             
             ax.set_yticks(y_ticks)
+            # Formatierung auf eine Nachkommastelle
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
             
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
@@ -386,6 +393,37 @@ class BeamsteeringPlot(QWidget):
         if not valid:
             return np.array([], dtype=float)
         return np.concatenate(valid)
+
+    def _adjust_ylim_for_speakers(self):
+        """Passt Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden"""
+        try:
+            import matplotlib.patches as patches
+            current_ylim = self.ax.get_ylim()
+            
+            # Finde maximale Y-Position + Höhe aller gezeichneten Rechtecke (Lautsprecher)
+            max_y = current_ylim[1]
+            for patch in self.ax.patches:
+                if isinstance(patch, patches.Rectangle):
+                    patch_y = patch.get_y()
+                    patch_height = patch.get_height()
+                    max_y = max(max_y, patch_y + patch_height)
+            
+            # Füge 0.1m Padding oberhalb der Lautsprecher hinzu
+            padding = 0.1
+            max_y_with_padding = max_y + padding
+            
+            # Erweitere Y-Achsen-Grenze nur nach oben, wenn nötig
+            if max_y_with_padding > current_ylim[1]:
+                # Berechne neue Ticks für erweiterte Grenze
+                y_min = current_ylim[0]
+                y_ticks, step = self._calculate_metric_ticks(y_min, max_y_with_padding)
+                self.ax.set_ylim(y_min, max_y_with_padding)
+                self.ax.set_yticks(y_ticks)
+                # Formatierung auf eine Nachkommastelle
+                self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
+        except Exception:
+            # Bei Fehler nichts ändern
+            pass
 
     @classmethod
     def _normalize_cabinet_entries(cls, cabinet):

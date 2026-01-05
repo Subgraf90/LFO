@@ -664,21 +664,21 @@ class UiFile:
                 with QSignalBlocker(sources_tree):
                     # 🎯 WICHTIG: Lösche alle vorherigen Auswahlen, damit nur ein Item ausgewählt wird
                     sources_tree.clearSelection()
+                    # setCurrentItem() setzt automatisch die Auswahl auf dieses Item
                     sources_tree.setCurrentItem(first_array_item)
-                    # Stelle sicher, dass nur dieses Item ausgewählt ist (nicht mehrere)
-                    sources_tree.setItemSelected(first_array_item, True)
                     # Stelle sicher, dass Parent-Gruppe expandiert ist
                     parent = first_array_item.parent()
                     if parent:
                         parent.setExpanded(True)
                     # 🎯 WICHTIG: Setze Fokus auf Tree, damit Selektion visuell sichtbar ist
                     sources_tree.setFocus()
-                # 🎯 WICHTIG: Aktualisiere Source-UI mit Daten des ausgewählten Arrays
-                # (muss nach setCurrentItem aufgerufen werden, damit alle Eingabefelder gefüllt werden)
+                
                 # #region agent log
                 try:
                     import json
                     import time as time_module
+                    selected_items_before = sources_tree.selectedItems()
+                    current_item_before = sources_tree.currentItem()
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                         f.write(json.dumps({
                             "sessionId": "debug-session",
@@ -690,18 +690,25 @@ class UiFile:
                                 "has_first_array_item": True,
                                 "selected_array_id": int(first_array_item.data(0, Qt.UserRole)) if first_array_item else None,
                                 "selected_text": str(first_array_item.text(0)) if first_array_item else None,
+                                "selected_items_count": len(selected_items_before),
+                                "current_item_id": int(current_item_before.data(0, Qt.UserRole)) if current_item_before else None,
                             },
                             "timestamp": int(time_module.time() * 1000),
                         }) + "\n")
                 except Exception:
                     pass
                 # #endregion
+                
+                # 🎯 WICHTIG: Aktualisiere Source-UI mit Daten des ausgewählten Arrays
+                # (muss NACH dem Signal-Blocker aufgerufen werden, damit die Auswahl wirklich gesetzt ist)
                 sources_instance.refresh_active_selection()
+                
                 # #region agent log
                 try:
                     import json
                     import time as time_module
                     selected_item_after = sources_tree.currentItem()
+                    selected_items_after = sources_tree.selectedItems()
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                         f.write(json.dumps({
                             "sessionId": "debug-session",
@@ -712,6 +719,7 @@ class UiFile:
                             "data": {
                                 "has_selected_item_after": selected_item_after is not None,
                                 "selected_array_id_after": int(selected_item_after.data(0, Qt.UserRole)) if selected_item_after else None,
+                                "selected_items_count_after": len(selected_items_after),
                             },
                             "timestamp": int(time_module.time() * 1000),
                         }) + "\n")

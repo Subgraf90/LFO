@@ -600,10 +600,17 @@ class Sources(ModuleBase, QObject):
         if not hasattr(self, 'sources_tree_widget') or self.sources_tree_widget is None:
             return
 
-        selected_item = self.sources_tree_widget.currentItem()
-        if selected_item is None:
-            return
-
+        # 🎯 WICHTIG: Verwende selectedItems() statt currentItem(), um das erste ausgewählte Item zu bekommen
+        # Wenn mehrere Items ausgewählt sind, verwende das erste
+        selected_items = self.sources_tree_widget.selectedItems()
+        if selected_items:
+            selected_item = selected_items[0]
+        else:
+            # Fallback: Verwende currentItem() wenn keine selectedItems vorhanden sind
+            selected_item = self.sources_tree_widget.currentItem()
+            if selected_item is None:
+                return
+        
         speaker_array_id = selected_item.data(0, Qt.UserRole)
 
         instance = self.get_speakerspecs_instance(speaker_array_id)

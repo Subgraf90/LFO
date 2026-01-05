@@ -161,7 +161,7 @@ class WindowingPlot(QWidget):
             y_data = speaker_array.source_position_x[i]
             x_data = speaker_array.window_restriction
             gain = speaker_array.source_lp_zero[i]
-            self.ax.plot([y_data, y_data], [x_data, gain], linestyle='dotted', color='red')
+            self.ax.plot([y_data, y_data], [x_data, gain], linestyle='dotted', color='red', marker='o', markersize=3, markeredgecolor='red', markerfacecolor='red')
             
         self.canvas.draw_idle()
 

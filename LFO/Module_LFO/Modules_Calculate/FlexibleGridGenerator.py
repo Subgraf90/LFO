@@ -766,12 +766,12 @@ class GridBuilder(ModuleBase):
             # Quantisierte 3D-Koordinaten (reduziert numerisches Rauschen)
             quant = np.round(verts / tol) * tol
 
+            # 🎯 OPTIMIERUNG: Verwende normales Dict statt OrderedDict (schneller)
             # Mapping von quantisierter Position → neuer Vertex-Index
-            from collections import OrderedDict
-
-            pos_to_new_index: "OrderedDict[tuple[float, float, float], int]" = OrderedDict()
+            pos_to_new_index: Dict[tuple[float, float, float], int] = {}
             new_vertices_list: list[np.ndarray] = []
-            old_to_new_index: list[int] = [0] * len(verts)
+            # 🎯 OPTIMIERUNG: Verwende numpy array statt Liste für bessere Performance
+            old_to_new_index = np.zeros(len(verts), dtype=np.int64)
 
             for old_idx, (qx, qy, qz) in enumerate(quant):
                 key = (float(qx), float(qy), float(qz))
@@ -791,31 +791,44 @@ class GridBuilder(ModuleBase):
                 return new_vertices, faces
 
             n_faces = faces.size // 4
-            new_faces_list: list[int] = []
-            removed_degenerate = 0
-
-            for i in range(n_faces):
-                base = i * 4
-                nverts = int(faces[base])
-                if nverts != 3:
-                    # Nur Dreiecke werden erwartet – andere primitives überspringen
-                    continue
-                v1_old = int(faces[base + 1])
-                v2_old = int(faces[base + 2])
-                v3_old = int(faces[base + 3])
-
-                v1 = old_to_new_index[v1_old]
-                v2 = old_to_new_index[v2_old]
-                v3 = old_to_new_index[v3_old]
-
-                # Degenerierte Dreiecke entfernen (weniger als 3 unterschiedliche Vertices)
-                if v1 == v2 or v2 == v3 or v1 == v3:
-                    removed_degenerate += 1
-                    continue
-
-                new_faces_list.extend([3, v1, v2, v3])
-
-            new_faces = np.array(new_faces_list, dtype=np.int64)
+            
+            # 🎯 OPTIMIERUNG: Vektorisierte Face-Verarbeitung wo möglich
+            # Extrahiere alle Vertex-Indices auf einmal
+            face_indices = faces.reshape(-1, 4)  # [n_faces, 4] mit [nverts, v1, v2, v3]
+            triangle_mask = face_indices[:, 0] == 3  # Nur Dreiecke
+            
+            if not np.any(triangle_mask):
+                # Keine Dreiecke gefunden
+                new_faces = np.array([], dtype=np.int64)
+            else:
+                # Mappe alle Vertex-Indices auf einmal
+                v1_old_all = face_indices[triangle_mask, 1].astype(np.int64)
+                v2_old_all = face_indices[triangle_mask, 2].astype(np.int64)
+                v3_old_all = face_indices[triangle_mask, 3].astype(np.int64)
+                
+                # Mappe auf neue Indices (vektorisiert)
+                v1_new_all = old_to_new_index[v1_old_all]
+                v2_new_all = old_to_new_index[v2_old_all]
+                v3_new_all = old_to_new_index[v3_old_all]
+                
+                # Prüfe auf degenerierte Dreiecke (vektorisiert)
+                degenerate_mask = (v1_new_all == v2_new_all) | (v2_new_all == v3_new_all) | (v1_new_all == v3_new_all)
+                removed_degenerate = np.sum(degenerate_mask)
+                
+                # Erstelle neue Faces nur für nicht-degenerierte Dreiecke
+                valid_mask = ~degenerate_mask
+                valid_count = np.sum(valid_mask)
+                
+                if valid_count > 0:
+                    # Pre-allocate array für bessere Performance
+                    new_faces_array = np.empty(valid_count * 4, dtype=np.int64)
+                    new_faces_array[0::4] = 3  # Alle sind Dreiecke
+                    new_faces_array[1::4] = v1_new_all[valid_mask]
+                    new_faces_array[2::4] = v2_new_all[valid_mask]
+                    new_faces_array[3::4] = v3_new_all[valid_mask]
+                    new_faces = new_faces_array
+                else:
+                    new_faces = np.array([], dtype=np.int64)
 
             return new_vertices, new_faces
 
@@ -974,6 +987,40 @@ class GridBuilder(ModuleBase):
         
         return inside.reshape(x_coords.shape)
     
+    def _point_in_polygon_single(
+        self,
+        x: float,
+        y: float,
+        polygon_2d: np.ndarray
+        ) -> bool:
+        """
+        🚀 OPTIMIERT: Einzelne Punkt-im-Polygon-Prüfung für 2D-Polygon-Array.
+        Ersetzt matplotlib.path.Path.contains_point() für bessere Performance.
+        """
+        if len(polygon_2d) < 3:
+            return False
+        
+        px = polygon_2d[:, 0]
+        py = polygon_2d[:, 1]
+        
+        inside = False
+        boundary_eps = 1e-6
+        n = len(px)
+        
+        j = n - 1
+        for i in range(n):
+            xi, yi = px[i], py[i]
+            xj, yj = px[j], py[j]
+            
+            y_above_edge = (yi > y) != (yj > y)
+            intersection_x = (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi
+            if y_above_edge and (x <= intersection_x + boundary_eps):
+                inside = not inside
+            
+            j = i
+        
+        return inside
+    
     def _points_in_polygon_batch_uv(
         self,
         u_coords: np.ndarray,
@@ -1012,27 +1059,34 @@ class GridBuilder(ModuleBase):
     
     def _dilate_mask_minimal(self, mask: np.ndarray) -> np.ndarray:
         """
-        Einfache 3x3-Dilatation für boolesche Masken.
+        🚀 OPTIMIERT: Vektorisierte 3x3-Dilatation für boolesche Masken.
         Wird genutzt, um die Sample-Maske von Surfaces um 1 Zelle zu erweitern,
         analog zur Behandlung der Plot-Maske bei horizontalen Flächen.
-        (Übernommen aus SurfaceGridCalculator)
         """
-        kernel = np.array(
-            [
-                [1, 1, 1],
-                [1, 1, 1],
-                [1, 1, 1],
-            ],
-            dtype=bool,
-        )
-        ny, nx = mask.shape
-        padded = np.pad(mask, ((1, 1), (1, 1)), mode="edge")
-        dilated = np.zeros_like(mask, dtype=bool)
-        for i in range(ny):
-            for j in range(nx):
-                region = padded[i : i + 3, j : j + 3]
-                dilated[i, j] = np.any(region & kernel)
-        return dilated
+        try:
+            from scipy.ndimage import binary_dilation
+            # 🚀 OPTIMIERUNG: Verwende scipy.ndimage.binary_dilation statt Loop
+            # Struktur-Element: 3x3-Kern
+            structure = np.ones((3, 3), dtype=bool)
+            return binary_dilation(mask, structure=structure)
+        except ImportError:
+            # Fallback: Original-Loop-Implementierung wenn scipy nicht verfügbar
+            kernel = np.array(
+                [
+                    [1, 1, 1],
+                    [1, 1, 1],
+                    [1, 1, 1],
+                ],
+                dtype=bool,
+            )
+            ny, nx = mask.shape
+            padded = np.pad(mask, ((1, 1), (1, 1)), mode="edge")
+            dilated = np.zeros_like(mask, dtype=bool)
+            for i in range(ny):
+                for j in range(nx):
+                    region = padded[i : i + 3, j : j + 3]
+                    dilated[i, j] = np.any(region & kernel)
+            return dilated
 
     def _ensure_vertex_coverage(
         self,
@@ -1105,11 +1159,9 @@ class GridBuilder(ModuleBase):
                 # Jetzt: 2.0x Resolution (aktiviert alle Eckpunkte innerhalb des Polygons)
                 max_sq_dist = float((2.0 * base_res) ** 2)
             
-            try:
-                from matplotlib.path import Path
-                polygon_path = Path(np.column_stack([x_vertices, y_vertices]))
-            except Exception:
-                polygon_path = None
+            # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung statt matplotlib.path.Path
+            # Erstelle Polygon-Array für vektorisierte Prüfung
+            polygon_xy = np.column_stack([x_vertices, y_vertices])
             
             # 🎯 FIX: Prüfe ob x_flat/y_flat leer sind (z.B. bei sehr schmalen Grids)
             if x_flat.size == 0 or y_flat.size == 0:
@@ -1133,13 +1185,11 @@ class GridBuilder(ModuleBase):
                     # Ecke liegt zu weit vom Grid entfernt → nicht erzwingen
                     continue
                 
-                # Prüfe ob Grid-Punkt innerhalb des Polygons liegt
-                is_inside = True
-                if polygon_path is not None:
-                    is_inside = polygon_path.contains_point((nearest_x, nearest_y))
-                    if not is_inside:
-                        # 🎯 FIX: Aktiviere Grid-Punkte außerhalb des Polygons NICHT
-                        continue
+                # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung
+                is_inside = self._point_in_polygon_single(nearest_x, nearest_y, polygon_xy)
+                if not is_inside:
+                    # 🎯 FIX: Aktiviere Grid-Punkte außerhalb des Polygons NICHT
+                    continue
                 
                 # Markiere diesen Grid-Punkt als "inside", falls noch nicht gesetzt
                 # UND nur wenn er innerhalb des Polygons liegt
@@ -1203,13 +1253,9 @@ class GridBuilder(ModuleBase):
                 # Jetzt: 2.0x Resolution (aktiviert alle Eckpunkte innerhalb des Polygons)
                 max_sq_dist = float((2.0 * base_res) ** 2)
             
-            # Prüfe welche Grid-Punkte innerhalb oder auf dem Polygon-Rand liegen
-            try:
-                from matplotlib.path import Path
-                polygon_2d = np.column_stack([u_vertices, v_vertices])
-                polygon_path = Path(polygon_2d)
-            except Exception:
-                polygon_path = None
+            # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung statt matplotlib.path.Path
+            # Erstelle Polygon-Array für vektorisierte Prüfung
+            polygon_uv = np.column_stack([u_vertices, v_vertices])
             
             # 🎯 FIX: Prüfe ob u_flat/v_flat leer sind (z.B. bei sehr schmalen Grids)
             if u_flat.size == 0 or v_flat.size == 0:
@@ -1232,13 +1278,11 @@ class GridBuilder(ModuleBase):
                     # Ecke liegt zu weit vom Grid entfernt → nicht erzwingen
                     continue
                 
-                # Prüfe ob Grid-Punkt innerhalb des Polygons liegt
-                is_inside = True
-                if polygon_path is not None:
-                    is_inside = polygon_path.contains_point((nearest_u, nearest_v))
-                    if not is_inside:
-                        # Grid-Punkt außerhalb des Polygons → nicht aktivieren
-                        continue
+                # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung
+                is_inside = self._point_in_polygon_single(nearest_u, nearest_v, polygon_uv)
+                if not is_inside:
+                    # Grid-Punkt außerhalb des Polygons → nicht aktivieren
+                    continue
                 
                 # Markiere diesen Grid-Punkt als "inside", falls noch nicht gesetzt
                 # UND nur wenn er innerhalb des Polygons liegt
@@ -1885,12 +1929,8 @@ class GridBuilder(ModuleBase):
                     points_surface = np.column_stack([ys, zs])
             
             exact_match_tolerance = 1e-9
-            try:
-                from matplotlib.path import Path
-                polygon_2d_uv = np.column_stack([polygon_u, polygon_v])
-                polygon_path_uv = Path(polygon_2d_uv)
-            except Exception:
-                polygon_path_uv = None
+            # 🚀 OPTIMIERUNG: Erstelle Polygon-Array einmal (statt Path-Objekt)
+            polygon_2d_uv = np.column_stack([polygon_u, polygon_v])
             
             for corner_u, corner_v in zip(polygon_u, polygon_v):
                 # 🎯 FIX: Prüfe ob all_vertices leer ist (z.B. bei schmalen Surfaces ohne Grid-Punkte)
@@ -1919,9 +1959,8 @@ class GridBuilder(ModuleBase):
                     nearest_v = float(all_vertices[nearest_idx, 2])
                 
                 min_distance = np.min(distances)
-                nearest_inside_polygon = True
-                if polygon_path_uv is not None:
-                    nearest_inside_polygon = polygon_path_uv.contains_point((nearest_u, nearest_v))
+                # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung
+                nearest_inside_polygon = self._point_in_polygon_single(nearest_u, nearest_v, polygon_2d_uv)
                 
                 if min_distance > exact_match_tolerance or not nearest_inside_polygon:
                     if is_xz_wall:
@@ -1956,11 +1995,8 @@ class GridBuilder(ModuleBase):
             polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
             
             exact_match_tolerance = 1e-9
-            try:
-                from matplotlib.path import Path
-                polygon_path = Path(np.column_stack([polygon_x, polygon_y]))
-            except Exception:
-                polygon_path = None
+            # 🚀 OPTIMIERUNG: Erstelle Polygon-Array einmal (statt Path-Objekt)
+            polygon_xy = np.column_stack([polygon_x, polygon_y])
             
             for corner_x, corner_y in zip(polygon_x, polygon_y):
                 # 🎯 FIX: Prüfe ob all_vertices leer ist (z.B. bei schmalen Surfaces ohne Grid-Punkte)
@@ -1984,11 +2020,11 @@ class GridBuilder(ModuleBase):
                 distances = np.sqrt((all_vertices[:, 0] - corner_x)**2 + (all_vertices[:, 1] - corner_y)**2)
                 min_distance = np.min(distances)
                 nearest_idx = int(np.argmin(distances))
-                nearest_vertex = (float(all_vertices[nearest_idx, 0]), float(all_vertices[nearest_idx, 1]))
+                nearest_x = float(all_vertices[nearest_idx, 0])
+                nearest_y = float(all_vertices[nearest_idx, 1])
                 
-                nearest_inside_polygon = True
-                if polygon_path is not None:
-                    nearest_inside_polygon = polygon_path.contains_point(nearest_vertex)
+                # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung
+                nearest_inside_polygon = self._point_in_polygon_single(nearest_x, nearest_y, polygon_xy)
                 
                 if min_distance > exact_match_tolerance or not nearest_inside_polygon:
                     corner_z = 0.0
@@ -3305,6 +3341,9 @@ class FlexibleGridGenerator(ModuleBase):
           3) generate_per_surface_process_and_create_grids_create_triangulation
           4) generate_per_surface_process_and_create_grids_create_surface_grid
         """
+        t_process_start = time.perf_counter() if PERF_ENABLED else None
+        n_processed = 0
+        
         for geom in geometries:
             # Wenn bereits aus dem Cache kam, ist alles erledigt
             if geom.surface_id in surface_grids:
@@ -3316,16 +3355,28 @@ class FlexibleGridGenerator(ModuleBase):
                 continue
             cache_key, result = entry
             
+            t_surface_start = time.perf_counter() if PERF_ENABLED else None
+            
             # 1. Extrahiere Grid-Ergebnis
+            t_extract_start = time.perf_counter() if PERF_ENABLED else None
             grid_data = self.generate_per_surface_process_and_create_grids_extract_result(result)
+            if PERF_ENABLED and t_extract_start is not None:
+                duration_ms = (time.perf_counter() - t_extract_start) * 1000.0
+                if duration_ms > 1.0:  # Nur bei langsamen Aufrufen loggen
+                    print(f"[PERF] FlexibleGridGenerator.extract_result: {duration_ms:.2f} ms [surface_id={geom.surface_id}]")
             if grid_data is None:
                 continue
             (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices) = grid_data
             
             # 2. Korrigiere Z-Koordinaten
+            t_correct_z_start = time.perf_counter() if PERF_ENABLED else None
             Z_grid = self.generate_per_surface_process_and_create_grids_correct_z(
                 geom, X_grid, Y_grid, Z_grid
             )
+            if PERF_ENABLED and t_correct_z_start is not None:
+                duration_ms = (time.perf_counter() - t_correct_z_start) * 1000.0
+                if duration_ms > 1.0:  # Nur bei langsamen Aufrufen loggen
+                    print(f"[PERF] FlexibleGridGenerator.correct_z: {duration_ms:.2f} ms [surface_id={geom.surface_id}, grid_size={X_grid.size}]")
             
             # 3. Berechne tatsächliche Resolution
             actual_resolution = self.generate_per_surface_process_and_create_grids_calculate_resolution(
@@ -3338,11 +3389,30 @@ class FlexibleGridGenerator(ModuleBase):
             )
             
             # 5. Erstelle SurfaceGrid und fülle Cache
+            t_create_grid_start = time.perf_counter() if PERF_ENABLED else None
             self.generate_per_surface_process_and_create_grids_create_surface_grid(
                 geom, cache_key, surface_grids,
                 sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid,
                 surface_mask, surface_mask_strict, actual_resolution,
                 triangulation_data
+            )
+            if PERF_ENABLED and t_create_grid_start is not None:
+                duration_ms = (time.perf_counter() - t_create_grid_start) * 1000.0
+                if duration_ms > 1.0:  # Nur bei langsamen Aufrufen loggen
+                    print(f"[PERF] FlexibleGridGenerator.create_surface_grid: {duration_ms:.2f} ms [surface_id={geom.surface_id}]")
+            
+            if PERF_ENABLED and t_surface_start is not None:
+                duration_ms = (time.perf_counter() - t_surface_start) * 1000.0
+                print(f"[PERF] FlexibleGridGenerator.process_single_surface: {duration_ms:.2f} ms [surface_id={geom.surface_id}]")
+            
+            n_processed += 1
+        
+        # Performance-Messung: Gesamt-Verarbeitung
+        if PERF_ENABLED and t_process_start is not None:
+            duration_ms = (time.perf_counter() - t_process_start) * 1000.0
+            print(
+                f"[PERF] FlexibleGridGenerator.generate_per_surface.process_and_create: "
+                f"{duration_ms:.2f} ms [n_surfaces={n_processed}]"
             )
     
     # ------------------------------------------------------------------
@@ -3442,6 +3512,8 @@ class FlexibleGridGenerator(ModuleBase):
         actual_resolution: float,
         ) -> Dict[str, Any]:
         """Erstellt Triangulation für SurfaceGrid."""
+        t_triang_start = time.perf_counter() if PERF_ENABLED else None
+        
         # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
         # 🎯 NEU: Verwende Delaunay-Triangulation für konsistente, überschneidungsfreie Triangulation
         triangulated_vertices = None
@@ -3484,13 +3556,25 @@ class FlexibleGridGenerator(ModuleBase):
                 geom, all_vertices, faces_list, mask_flat, base_vertex_count, additional_vertices_array, additional_vertex_start_idx, actual_resolution
             )
             
-            return {
+            result = {
                 'triangulated_vertices': triangulation_result['triangulated_vertices'],
                 'triangulated_faces': triangulation_result['triangulated_faces'],
                 'triangulated_success': triangulation_result['triangulated_success'],
                 'vertex_source_indices': triangulation_result['vertex_source_indices'],
                 'additional_vertices_final': additional_vertices_array,
             }
+            
+            # Performance-Messung: Triangulation
+            if PERF_ENABLED and t_triang_start is not None:
+                duration_ms = (time.perf_counter() - t_triang_start) * 1000.0
+                n_verts = len(triangulation_result['triangulated_vertices']) if triangulation_result['triangulated_vertices'] is not None else 0
+                n_faces = len(triangulation_result['triangulated_faces']) // 4 if triangulation_result['triangulated_faces'] is not None else 0
+                print(
+                    f"[PERF] FlexibleGridGenerator.create_triangulation: "
+                    f"{duration_ms:.2f} ms [surface_id={geom.surface_id}, vertices={n_verts}, faces={n_faces}]"
+                )
+            
+            return result
             
         except Exception as e:
             import traceback
@@ -3596,9 +3680,7 @@ class FlexibleGridGenerator(ModuleBase):
         
         if len(surface_points) >= 3:
             try:
-                from matplotlib.path import Path
-                
-                # Erstelle Polygon-Pfad für Punkt-im-Polygon-Prüfung
+                # 🚀 OPTIMIERUNG: Erstelle Polygon-Array einmal (statt mehrfach)
                 if geom.orientation == "vertical":
                     if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
                         if geom.dominant_axis == "xz":
@@ -3612,32 +3694,45 @@ class FlexibleGridGenerator(ModuleBase):
                 else:
                     polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
                 
-                polygon_path = Path(polygon_2d)
+                # 🚀 OPTIMIERUNG: Vektorisierte Punkt-im-Polygon-Prüfung statt Loop mit contains_point()
+                # Berechne alle Schwerpunkte auf einmal
+                centroids_2d = proj_2d[triangles_delaunay].mean(axis=1)  # Shape: (n_triangles, 2)
                 
-                # Prüfe jeden Dreieck-Schwerpunkt
-                for tri_idx in triangles_delaunay:
-                    v1_old = valid_vertex_indices[tri_idx[0]]
-                    v2_old = valid_vertex_indices[tri_idx[1]]
-                    v3_old = valid_vertex_indices[tri_idx[2]]
-                    
-                    # Prüfe ob Vertices in strikter oder erweiterter Maske sind
-                    v1_in_strict = (v1_old < len(mask_strict_flat) and mask_strict_flat[v1_old]) if v1_old < len(mask_strict_flat) else False
-                    v2_in_strict = (v2_old < len(mask_strict_flat) and mask_strict_flat[v2_old]) if v2_old < len(mask_strict_flat) else False
-                    v3_in_strict = (v3_old < len(mask_strict_flat) and mask_strict_flat[v3_old]) if v3_old < len(mask_strict_flat) else False
-                    has_strict_vertex = v1_in_strict or v2_in_strict or v3_in_strict
-                    
-                    v1_in_extended = v1_old < len(mask_flat) and mask_flat[v1_old]
-                    v2_in_extended = v2_old < len(mask_flat) and mask_flat[v2_old]
-                    v3_in_extended = v3_old < len(mask_flat) and mask_flat[v3_old]
-                    all_vertices_in_extended = v1_in_extended and v2_in_extended and v3_in_extended
-                    
-                    # Schwerpunkt des Dreiecks in 2D
-                    centroid_2d = proj_2d[tri_idx].mean(axis=0)
-                    centroid_in_polygon = polygon_path.contains_point(centroid_2d)
-                    
-                    # Akzeptiere Dreiecke wenn: Schwerpunkt im Polygon ODER mindestens ein Vertex in strikter Maske ODER alle Vertices in erweiterter Maske
-                    if centroid_in_polygon or has_strict_vertex or all_vertices_in_extended:
-                        valid_triangles.append((v1_old, v2_old, v3_old))
+                # Verwende vektorisierte Punkt-im-Polygon-Prüfung
+                centroid_in_polygon_mask = self._points_in_polygon_batch_2d(
+                    centroids_2d[:, 0], centroids_2d[:, 1], polygon_2d
+                )
+                
+                # 🚀 OPTIMIERUNG: Vektorisierte Mask-Prüfung für alle Dreiecke auf einmal
+                v1_indices = valid_vertex_indices[triangles_delaunay[:, 0]]
+                v2_indices = valid_vertex_indices[triangles_delaunay[:, 1]]
+                v3_indices = valid_vertex_indices[triangles_delaunay[:, 2]]
+                
+                # Prüfe ob Vertices in strikter Maske sind (vektorisiert)
+                v1_in_strict = np.where(v1_indices < len(mask_strict_flat), 
+                                       mask_strict_flat[v1_indices], False)
+                v2_in_strict = np.where(v2_indices < len(mask_strict_flat), 
+                                       mask_strict_flat[v2_indices], False)
+                v3_in_strict = np.where(v3_indices < len(mask_strict_flat), 
+                                       mask_strict_flat[v3_indices], False)
+                has_strict_vertex = v1_in_strict | v2_in_strict | v3_in_strict
+                
+                # Prüfe ob alle Vertices in erweiterter Maske sind (vektorisiert)
+                v1_in_extended = np.where(v1_indices < len(mask_flat), mask_flat[v1_indices], False)
+                v2_in_extended = np.where(v2_indices < len(mask_flat), mask_flat[v2_indices], False)
+                v3_in_extended = np.where(v3_indices < len(mask_flat), mask_flat[v3_indices], False)
+                all_vertices_in_extended = v1_in_extended & v2_in_extended & v3_in_extended
+                
+                # 🚀 OPTIMIERUNG: Vektorisierte Filterung statt Loop
+                valid_mask = centroid_in_polygon_mask | has_strict_vertex | all_vertices_in_extended
+                valid_triangle_indices = np.where(valid_mask)[0]
+                
+                # Konvertiere zu Tupeln
+                for tri_idx in valid_triangle_indices:
+                    v1_old = v1_indices[tri_idx]
+                    v2_old = v2_indices[tri_idx]
+                    v3_old = v3_indices[tri_idx]
+                    valid_triangles.append((v1_old, v2_old, v3_old))
             except Exception:
                 # Fallback: Verwende alle Delaunay-Dreiecke
                 for tri_idx in triangles_delaunay:
@@ -3658,6 +3753,42 @@ class FlexibleGridGenerator(ModuleBase):
             faces_list.extend([3, int(v1), int(v2), int(v3)])
         
         return faces_list
+    
+    def _points_in_polygon_batch_2d(
+        self,
+        x_coords: np.ndarray,
+        y_coords: np.ndarray,
+        polygon_2d: np.ndarray
+        ) -> np.ndarray:
+        """
+        🚀 OPTIMIERT: Vektorisierte Punkt-im-Polygon-Prüfung für 2D-Polygon-Array.
+        Ersetzt matplotlib.path.Path.contains_point() für bessere Performance.
+        """
+        if len(polygon_2d) < 3:
+            return np.zeros(len(x_coords), dtype=bool)
+        
+        px = polygon_2d[:, 0]
+        py = polygon_2d[:, 1]
+        
+        n_points = len(x_coords)
+        inside = np.zeros(n_points, dtype=bool)
+        boundary_eps = 1e-6
+        n = len(px)
+        
+        j = n - 1
+        for i in range(n):
+            xi, yi = px[i], py[i]
+            xj, yj = px[j], py[j]
+            
+            y_above_edge = (yi > y_coords) != (yj > y_coords)
+            intersection_x = (xj - xi) * (y_coords - yi) / (yj - yi + 1e-10) + xi
+            intersects = y_above_edge & (x_coords <= intersection_x + boundary_eps)
+            
+            inside = inside ^ intersects
+            
+            j = i
+        
+        return inside
     
     def generate_per_surface_process_and_create_grids_create_triangulation_process_vertices(
         self,
@@ -3776,6 +3907,7 @@ class FlexibleGridGenerator(ModuleBase):
             triangulated_success = False
         
         # Deduplizierung
+        t_dedup_start = time.perf_counter() if PERF_ENABLED else None
         vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
         
         try:
@@ -3786,29 +3918,76 @@ class FlexibleGridGenerator(ModuleBase):
                 geom.surface_id
             )
             
+            if PERF_ENABLED and t_dedup_start is not None:
+                duration_ms = (time.perf_counter() - t_dedup_start) * 1000.0
+                n_before = len(vertices_before_dedup_array)
+                n_after = len(triangulated_vertices)
+                print(
+                    f"[PERF] FlexibleGridGenerator._deduplicate_vertices: "
+                    f"{duration_ms:.2f} ms [n_before={n_before}, n_after={n_after}, reduction={n_before-n_after}]"
+                )
+            
             # Erstelle vertex_source_indices nach Deduplizierung
+            # 🎯 OPTIMIERUNG: Verwende effizientere Methode statt cdist (O(n²))
             vertex_source_indices = None
             if len(triangulated_vertices) > 0 and len(vertex_source_indices_pre_dedup) > 0 and len(vertices_before_dedup_array) > 0:
                 try:
-                    from scipy.spatial.distance import cdist
-                    distances = cdist(triangulated_vertices, vertices_before_dedup_array)
-                    nearest_pre_dedup_indices = np.argmin(distances, axis=1)
+                    t_cdist_start = time.perf_counter() if PERF_ENABLED else None
                     
+                    # OPTIMIERUNG: Verwende quantisierte Koordinaten für schnelleres Matching
+                    # Da Deduplizierung mit Toleranz arbeitet, können wir direkt die quantisierten Werte verwenden
+                    if actual_resolution > 0:
+                        tol = float(actual_resolution) * 0.05
+                    else:
+                        tol = 1e-3
+                    
+                    # Quantisiere beide Vertex-Arrays
+                    quant_new = np.round(triangulated_vertices / tol) * tol
+                    quant_old = np.round(vertices_before_dedup_array / tol) * tol
+                    
+                    # Erstelle Dictionary für schnelles Lookup: quantisierte Position → Index
+                    old_pos_to_idx = {}
+                    for idx, pos in enumerate(quant_old):
+                        key = tuple(pos)
+                        if key not in old_pos_to_idx:
+                            old_pos_to_idx[key] = idx
+                    
+                    # Finde für jeden neuen Vertex den passenden alten Index
                     vertex_source_indices_mapping = []
                     n_grid_total = base_vertex_count
                     
-                    for new_idx in range(len(triangulated_vertices)):
-                        pre_dedup_idx = nearest_pre_dedup_indices[new_idx]
-                        if pre_dedup_idx < len(vertex_source_indices_pre_dedup):
+                    for new_idx, new_pos in enumerate(quant_new):
+                        key = tuple(new_pos)
+                        pre_dedup_idx = old_pos_to_idx.get(key, -1)
+                        
+                        if pre_dedup_idx >= 0 and pre_dedup_idx < len(vertex_source_indices_pre_dedup):
                             mapping_type, source_idx = vertex_source_indices_pre_dedup[pre_dedup_idx]
                             if mapping_type == 'grid':
                                 vertex_source_indices_mapping.append(int(source_idx))
                             else:  # 'additional'
                                 vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
                         else:
-                            vertex_source_indices_mapping.append(0)
+                            # Fallback: Finde nächsten Vertex mit cdist (nur wenn nötig)
+                            from scipy.spatial.distance import cdist
+                            distances = cdist([triangulated_vertices[new_idx]], vertices_before_dedup_array)
+                            nearest_idx = np.argmin(distances[0])
+                            if nearest_idx < len(vertex_source_indices_pre_dedup):
+                                mapping_type, source_idx = vertex_source_indices_pre_dedup[nearest_idx]
+                                if mapping_type == 'grid':
+                                    vertex_source_indices_mapping.append(int(source_idx))
+                                else:
+                                    vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
+                            else:
+                                vertex_source_indices_mapping.append(0)
                     
                     vertex_source_indices = np.array(vertex_source_indices_mapping, dtype=np.int64)
+                    
+                    if PERF_ENABLED and t_cdist_start is not None:
+                        duration_ms = (time.perf_counter() - t_cdist_start) * 1000.0
+                        print(
+                            f"[PERF] FlexibleGridGenerator.create_vertex_source_indices: "
+                            f"{duration_ms:.2f} ms [n_new={len(triangulated_vertices)}, n_old={len(vertices_before_dedup_array)}]"
+                        )
                 except Exception:
                     vertex_source_indices = None
         except Exception:
@@ -3864,20 +4043,26 @@ class FlexibleGridGenerator(ModuleBase):
         self._surface_grid_cache[cache_key] = surface_grid
         surface_grids[geom.surface_id] = surface_grid
         
-        # Debug-Plot (optional)
-        try:
-            self._create_debug_plot_2d(
-                geom=geom,
-                X_grid=X_grid,
-                Y_grid=Y_grid,
-                Z_grid=Z_grid,
-                surface_mask=surface_mask,
-                triangulated_vertices=triangulated_vertices,
-                triangulated_faces=triangulated_faces,
-                resolution=actual_resolution
-            )
-        except Exception:
-            pass
+        # Debug-Plot (optional) - nur wenn aktiviert
+        if DEBUG_FLEXIBLE_GRID:
+            t_debug_start = time.perf_counter() if PERF_ENABLED else None
+            try:
+                self._create_debug_plot_2d(
+                    geom=geom,
+                    X_grid=X_grid,
+                    Y_grid=Y_grid,
+                    Z_grid=Z_grid,
+                    surface_mask=surface_mask,
+                    triangulated_vertices=triangulated_vertices,
+                    triangulated_faces=triangulated_faces,
+                    resolution=actual_resolution
+                )
+            except Exception:
+                pass
+            if PERF_ENABLED and t_debug_start is not None:
+                duration_ms = (time.perf_counter() - t_debug_start) * 1000.0
+                if duration_ms > 1.0:  # Nur bei langsamen Aufrufen loggen
+                    print(f"[PERF] FlexibleGridGenerator._create_debug_plot_2d: {duration_ms:.2f} ms [surface_id={geom.surface_id}]")
     
     def _make_surface_cache_key(
         self,
