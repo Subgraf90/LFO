@@ -80,10 +80,13 @@ class StackDraw_Windowing:
             x = base_x + x_offset
             y = base_y
             
-            # Berechne Transform für unverzerrte Lautsprecher-Darstellung
+            # Im Windowing-Plot ist die Y-Achse in dB (nicht Meter), daher keine Umrechnung für Seitenverhältnis nötig
             # Die Lautsprecher haben Dimensionen in Metern (width x front_height)
             # X-Achse ist in Metern, Y-Achse ist in dB
-            # Um die Lautsprecher unverzerrt zu halten, müssen wir die Höhe basierend auf dem Aspect-Ratio skalieren
+            # Verwende die originale Höhe direkt (in dB-Einheiten)
+            scaled_front_height = front_height
+            
+            # Hole Achsengrenzen und Pixel-Größe für Verzerrungsprüfung
             xlim = self.ax.get_xlim()
             ylim = self.ax.get_ylim()
             x_range = xlim[1] - xlim[0]
@@ -101,26 +104,6 @@ class StackDraw_Windowing:
                 dpi = fig.get_dpi()
                 axes_width_pixels = fig.get_figwidth() * dpi * 0.8  # Geschätzt
                 axes_height_pixels = fig.get_figheight() * dpi * 0.8  # Geschätzt
-            
-            if axes_width_pixels > 0 and axes_height_pixels > 0 and x_range > 0 and y_range > 0:
-                # Berechne Daten-Einheiten pro Pixel
-                x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel
-                y_units_per_pixel = y_range / axes_height_pixels  # dB pro Pixel
-                
-                # Für unverzerrte Darstellung: 1 Meter in X = 1 Meter visuell in Y
-                # front_height ist in Metern, muss aber in dB-Einheiten umgerechnet werden
-                # Um die gleiche visuelle Größe zu erreichen (gleiche Anzahl Pixel):
-                # front_height (Meter) / x_units_per_pixel = scaled_height (dB) / y_units_per_pixel
-                # scaled_height_basis = front_height * (y_units_per_pixel / x_units_per_pixel)
-                scale_factor = y_units_per_pixel / x_units_per_pixel if x_units_per_pixel > 0 else 1.0
-                scaled_front_height = front_height * scale_factor
-
-                # Variante A: zusätzliche visuelle Skalierung der Lautsprecherhöhe
-                visual_scale_factor = 1.6
-                scaled_front_height *= visual_scale_factor
-            else:
-                # Fallback wenn Größe nicht verfügbar
-                scaled_front_height = front_height
             
             # Berechne Pixel-Dimensionen für Verzerrungsprüfung
             width_pixels = (width / x_range) * axes_width_pixels if x_range > 0 else 0

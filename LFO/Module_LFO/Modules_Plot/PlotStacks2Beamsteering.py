@@ -151,14 +151,23 @@ class StackDraw_Beamsteering:
                 x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel (X)
                 y_units_per_pixel = y_range / axes_height_pixels  # Meter pro Pixel (Y)
                 
-                # Für unverzerrte Darstellung: Skaliere Höhe basierend auf Aspect-Ratio
-                # Gleiche Logik wie in Windowing-Plot
-                scale_factor = y_units_per_pixel / x_units_per_pixel if x_units_per_pixel > 0 else 1.0
-                scaled_front_height = front_height * scale_factor
+                # Für unverzerrte Darstellung: Skaliere Höhe so, dass Pixel-Seitenverhältnis = reales Seitenverhältnis
+                # Reales Verhältnis: front_height / width
+                # Pixel-Verhältnis: height_pixels / width_pixels
+                # Wir wollen: height_pixels / width_pixels = front_height / width
+                # 
+                # height_pixels = (scaled_front_height / y_range) * axes_height_pixels
+                # width_pixels = (width / x_range) * axes_width_pixels
+                # 
+                # (scaled_front_height / y_range) * axes_height_pixels / ((width / x_range) * axes_width_pixels) = front_height / width
+                # scaled_front_height = (front_height / width) * (width / x_range) * axes_width_pixels * (y_range / axes_height_pixels)
+                # scaled_front_height = front_height * (y_range / x_range) * (axes_width_pixels / axes_height_pixels)
                 
-                # Variante A: zusätzliche visuelle Skalierung der Lautsprecherhöhe (wie in Windowing)
-                visual_scale_factor = 1.6
-                scaled_front_height *= visual_scale_factor
+                # Korrekte Formel für unverzerrte Darstellung:
+                # Wir wollen: (scaled_front_height / y_range) * axes_height_pixels / ((width / x_range) * axes_width_pixels) = front_height / width
+                # scaled_front_height = front_height * (y_range / x_range) * (axes_width_pixels / axes_height_pixels)
+                aspect_ratio_correction = (y_range / x_range) * (axes_width_pixels / axes_height_pixels) if axes_height_pixels > 0 and x_range > 0 else 1.0
+                scaled_front_height = front_height * aspect_ratio_correction
                 
                 # #region agent log
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
@@ -171,8 +180,7 @@ class StackDraw_Beamsteering:
                         'data': {
                             'x_units_per_pixel': float(x_units_per_pixel),
                             'y_units_per_pixel': float(y_units_per_pixel),
-                            'scale_factor': float(scale_factor),
-                            'visual_scale_factor': float(visual_scale_factor),
+                            'aspect_ratio_correction': float(aspect_ratio_correction),
                             'front_height_m': float(front_height),
                             'scaled_front_height_m': float(scaled_front_height)
                         },

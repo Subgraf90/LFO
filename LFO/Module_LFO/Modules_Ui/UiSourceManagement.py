@@ -547,8 +547,35 @@ class Sources(ModuleBase, QObject):
         # Entsperre Signale am Ende
         if hasattr(self, 'sources_tree_widget'):
             self.sources_tree_widget.blockSignals(False)
-            
-        self.sources_tree_widget.clearSelection()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "SRC_SELECT_H4",
+                    "location": "UiSourceManagement.py:show_sources_dock_widget:before_clearSelection",
+                    "message": "Checking if clearSelection should be called",
+                    "data": {
+                        "top_level_count": int(self.sources_tree_widget.topLevelItemCount()) if hasattr(self, "sources_tree_widget") and self.sources_tree_widget else 0,
+                        "will_clear": bool(hasattr(self, "sources_tree_widget") and self.sources_tree_widget and self.sources_tree_widget.topLevelItemCount() == 0),
+                    },
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
+        # 🎯 OPTIMIERUNG: clearSelection() nur beim ersten Aufbau (wenn Tree leer ist)
+        # Beim File-Load sind bereits Items vorhanden, daher keine Auswahl löschen
+        if hasattr(self, 'sources_tree_widget') and self.sources_tree_widget:
+            if self.sources_tree_widget.topLevelItemCount() == 0:
+                # Tree ist leer → erster Aufbau → Auswahl löschen ist ok
+                self.sources_tree_widget.clearSelection()
+            # Tree hat Items → File-Load oder Update → Auswahl NICHT löschen
         
         # Setze Mindesthöhe des DockWidgets, damit Qt's Layout-System die Größe respektiert
         target_height = 140
@@ -2317,14 +2344,74 @@ class Sources(ModuleBase, QObject):
         """
         Zeigt die Speakerspecs für das ausgewählte Array an und versteckt alle anderen.
         """
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "SRC_DISPLAY_UI",
+                    "location": "UiSourceManagement.py:display_selected_speakerspecs:entry",
+                    "message": "display_selected_speakerspecs called",
+                    "data": {
+                        "has_tree_widget": hasattr(self, 'sources_tree_widget') and self.sources_tree_widget is not None,
+                        "selected_items_count": len(self.sources_tree_widget.selectedItems()) if hasattr(self, 'sources_tree_widget') and self.sources_tree_widget else 0,
+                        "current_item": self.sources_tree_widget.currentItem() is not None if hasattr(self, 'sources_tree_widget') and self.sources_tree_widget else False,
+                    },
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # Hole das ausgewählte Item
         selected_items = self.sources_tree_widget.selectedItems()
         
         if not selected_items:
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "SRC_DISPLAY_UI",
+                        "location": "UiSourceManagement.py:display_selected_speakerspecs:no_selection",
+                        "message": "No selected items, returning early",
+                        "data": {},
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             return
             
         selected_item = selected_items[0]
         speaker_array_id = selected_item.data(0, Qt.UserRole)
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "SRC_DISPLAY_UI",
+                    "location": "UiSourceManagement.py:display_selected_speakerspecs:before_hide",
+                    "message": "About to hide/show speakerspecs",
+                    "data": {
+                        "speaker_array_id": int(speaker_array_id) if speaker_array_id is not None else None,
+                        "instances_count": len(self.speakerspecs_instance),
+                    },
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         # Verstecke alle Speakerspecs
         for instance in self.speakerspecs_instance:
@@ -2335,6 +2422,46 @@ class Sources(ModuleBase, QObject):
         selected_instance = self.get_speakerspecs_instance(speaker_array_id)
         if selected_instance:
             self.show_speakerspecs(selected_instance)
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "SRC_DISPLAY_UI",
+                        "location": "UiSourceManagement.py:display_selected_speakerspecs:after_show",
+                        "message": "show_speakerspecs called for selected instance",
+                        "data": {
+                            "speaker_array_id": int(speaker_array_id) if speaker_array_id is not None else None,
+                            "has_selected_instance": True,
+                        },
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+        else:
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "SRC_DISPLAY_UI",
+                        "location": "UiSourceManagement.py:display_selected_speakerspecs:no_instance",
+                        "message": "No instance found for speaker_array_id",
+                        "data": {
+                            "speaker_array_id": int(speaker_array_id) if speaker_array_id is not None else None,
+                        },
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
     def create_polar_pattern_handler(self, source_index, speaker_array_id):
         """
@@ -2724,6 +2851,24 @@ class Sources(ModuleBase, QObject):
                     item = self.sources_tree_widget.itemAt(event.pos())
                     if item is None:
                         # Klick auf leeres Feld - entferne Auswahl
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SRC_SELECT_H5",
+                                    "location": "UiSourceManagement.py:eventFilter:clear_on_empty_click",
+                                    "message": "Clearing selection because of mouse click on empty area",
+                                    "data": {},
+                                    "timestamp": int(time_module.time() * 1000),
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+
                         self.sources_tree_widget.clearSelection()
                         # Setze currentItem auf None
                         self.sources_tree_widget.setCurrentItem(None)

@@ -105,7 +105,17 @@ class WindowingPlot(QWidget):
         # Lautsprecher werden durch Transform in StackDraw_Windowing unverzerrt dargestellt
         # Plot hat feste Breite und Höhe (800x220 Pixel) durch setFixedWidth/setFixedHeight in UiSourceManagement.py
         
+        # WICHTIG: Layout-Anpassungen VOR dem Zeichnen der Stacks, damit Pixel-Größe korrekt ist
+        self.ax.grid(color='k', linestyle='-', linewidth=0.4)
+        self.ax.set_xlabel("Arc width [m]", fontsize=6)
+        self.ax.set_ylabel("Windowfunction [dB]", fontsize=6)
+        self.ax.tick_params(axis='both', which='both', labelsize=6)
+        
+        # Layout-Anpassungen für konsistente Größe (muss VOR Stack-Zeichnung sein!)
+        self._apply_layout()
+        
         # Zeichne einmal, um sicherzustellen, dass get_window_extent() korrekte Werte liefert
+        # (nach _apply_layout(), damit subplots_adjust() bereits angewendet wurde)
         self.figure.canvas.draw()
         
         # #region agent log
@@ -119,7 +129,7 @@ class WindowingPlot(QWidget):
                 'runId': 'run1',
                 'hypothesisId': 'B',
                 'location': 'PlotWindowing.py:109',
-                'message': 'Windowing: Achsengrenzen und Pixel-Größe vor Stack-Zeichnung',
+                'message': 'Windowing: Achsengrenzen und Pixel-Größe nach Layout-Anpassung, vor Stack-Zeichnung',
                 'data': {
                     'xlim': list(self.ax.get_xlim()),
                     'ylim': list(self.ax.get_ylim()),
@@ -130,16 +140,9 @@ class WindowingPlot(QWidget):
             }) + '\n')
         # #endregion
         
-        # Zeichne Stacks NACH dem Setzen der Achsengrenzen (für korrekten Transform)
+        # Zeichne Stacks NACH Layout-Anpassung (für korrekte Pixel-Größe)
         self.plot_Stacks2Windowing(speaker_array_id)
         
-        self.ax.grid(color='k', linestyle='-', linewidth=0.4)
-        self.ax.set_xlabel("Arc width [m]", fontsize=6)
-        self.ax.set_ylabel("Windowfunction [dB]", fontsize=6)
-        self.ax.tick_params(axis='both', which='both', labelsize=6)
-
-        # Layout-Anpassungen für konsistente Größe
-        self._apply_layout()
         self.canvas.draw_idle()
         
 

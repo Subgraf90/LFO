@@ -757,14 +757,156 @@ class UISurfaceManager(ModuleBase):
             # Lade bestehende Surfaces
             self.load_surfaces()
             
+            # 🎯 WICHTIG: Wähle beim Start automatisch das erste/default Surface aus
+            # (analog zu Sources-Verhalten beim File-Load)
+            def find_first_surface_item():
+                """Findet das erste Surface-Item im Tree (nicht Gruppe)"""
+                default_surface_id = getattr(self.settings, 'DEFAULT_SURFACE_ID', 'surface_default')
+                first_surface_item = None  # Fallback: erstes gefundenes Surface
+                
+                # Durchsuche Top-Level-Items
+                for i in range(self.surface_tree_widget.topLevelItemCount()):
+                    item = self.surface_tree_widget.topLevelItem(i)
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    surface_id = item.data(0, Qt.UserRole)
+                    if isinstance(surface_id, dict):
+                        surface_id = surface_id.get('id')
+                    
+                    # Wenn es ein Surface ist (nicht Gruppe)
+                    if item_type == "surface" and surface_id is not None:
+                        # Default-Surface hat Priorität → sofort zurückgeben
+                        if surface_id == default_surface_id:
+                            return item
+                        # Merke erstes Surface für Fallback
+                        if first_surface_item is None:
+                            first_surface_item = item
+                    
+                    # Wenn es eine Gruppe ist, durchsuche ihre Children
+                    if item_type == "group":
+                        for j in range(item.childCount()):
+                            child = item.child(j)
+                            child_type = child.data(0, Qt.UserRole + 1)
+                            child_surface_id = child.data(0, Qt.UserRole)
+                            if isinstance(child_surface_id, dict):
+                                child_surface_id = child_surface_id.get('id')
+                            
+                            if child_type == "surface" and child_surface_id is not None:
+                                # Default-Surface hat Priorität → sofort zurückgeben
+                                if child_surface_id == default_surface_id:
+                                    return child
+                                # Merke erstes Surface für Fallback
+                                if first_surface_item is None:
+                                    first_surface_item = child
+                
+                # Gib erstes gefundenes Surface zurück (oder None)
+                return first_surface_item
+            
+            first_surface_item = find_first_surface_item()
+            if first_surface_item:
+                # Blockiere Signale während der programmatischen Auswahl
+                self.surface_tree_widget.blockSignals(True)
+                try:
+                    self.surface_tree_widget.setCurrentItem(first_surface_item)
+                    self.surface_tree_widget.scrollToItem(first_surface_item)
+                    # Stelle sicher, dass Parent-Gruppe expandiert ist
+                    parent = first_surface_item.parent()
+                    if parent:
+                        parent.setExpanded(True)
+                    # 🎯 WICHTIG: Setze Fokus auf Tree, damit Selektion visuell sichtbar ist
+                    self.surface_tree_widget.setFocus()
+                finally:
+                    self.surface_tree_widget.blockSignals(False)
+            
             # Rufe show_surfaces_tab auf, um die Tabs zu konfigurieren
+            # (muss nach setCurrentItem aufgerufen werden, damit Tab angezeigt wird)
             self.show_surfaces_tab()
             
         # Entsperre Signale am Ende
         if hasattr(self, 'surface_tree_widget'):
             self.surface_tree_widget.blockSignals(False)
             
-        self.surface_tree_widget.clearSelection()
+            # 🎯 WICHTIG: Nach der Auswahl beim Start den Selection-Handler manuell aufrufen,
+            # damit der 3D-Plot aktualisiert wird (update_overlays wird aufgerufen)
+            # Prüfe ob ein Item ausgewählt wurde (auch außerhalb des if-Blocks verfügbar)
+            if hasattr(self, 'surface_tree_widget') and self.surface_tree_widget:
+                current_item = self.surface_tree_widget.currentItem()
+                if current_item is not None:
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        surface_id = current_item.data(0, Qt.UserRole)
+                        if isinstance(surface_id, dict):
+                            surface_id = surface_id.get('id')
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "SURF_SELECT_START",
+                                "location": "UISurfaceManager.py:show_surface_dock_widget:before_handle_selection",
+                                "message": "About to call _handle_surface_tree_selection_changed after surface selection at startup",
+                                "data": {
+                                    "has_current_item": True,
+                                    "surface_id": str(surface_id) if surface_id else None,
+                                    "item_text": str(current_item.text(0)) if current_item else None,
+                                },
+                                "timestamp": int(time_module.time() * 1000),
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    try:
+                        self._handle_surface_tree_selection_changed()
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURF_SELECT_START",
+                                    "location": "UISurfaceManager.py:show_surface_dock_widget:after_handle_selection",
+                                    "message": "_handle_surface_tree_selection_changed completed successfully",
+                                    "data": {
+                                        "active_surface_id": str(getattr(self.settings, "active_surface_id", None)),
+                                        "active_surface_highlight_ids": list(getattr(self.settings, "active_surface_highlight_ids", [])),
+                                    },
+                                    "timestamp": int(time_module.time() * 1000),
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                    except Exception as e:
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURF_SELECT_START",
+                                    "location": "UISurfaceManager.py:show_surface_dock_widget:handle_selection_error",
+                                    "message": "Error calling _handle_surface_tree_selection_changed",
+                                    "data": {
+                                        "error": str(e),
+                                    },
+                                    "timestamp": int(time_module.time() * 1000),
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        # Fehler hier sollen die restliche UI nicht blockieren
+                        pass
+            
+        # 🎯 OPTIMIERUNG: clearSelection() nur wenn kein Item ausgewählt wurde
+        # (beim Start haben wir bereits ein Item ausgewählt, daher nicht löschen)
+        if hasattr(self, 'surface_tree_widget') and self.surface_tree_widget:
+            if self.surface_tree_widget.currentItem() is None:
+                # Kein Item ausgewählt → Auswahl löschen ist ok
+                self.surface_tree_widget.clearSelection()
+            # Item ist ausgewählt → Auswahl NICHT löschen
         
         # Setze Mindesthöhe des DockWidgets, damit Qt's Layout-System die Größe respektiert
         target_height = 140
@@ -1454,12 +1596,40 @@ class UISurfaceManager(ModuleBase):
             and hasattr(main_window.draw_plots, "draw_spl_plotter")
         ):
             draw_spl = main_window.draw_plots.draw_spl_plotter
-            if hasattr(draw_spl, "update_overlays"):
-                try:
-                    draw_spl.update_overlays(self.settings, self.container)
-                except Exception:
-                    # Fehler hier sollen die restliche UI nicht blockieren
-                    pass
+            # 🎯 WICHTIG: Stelle sicher, dass der Plot initialisiert ist, bevor update_overlays() aufgerufen wird
+            # (beim Start ist der Plot möglicherweise noch nicht initialisiert)
+            if draw_spl is not None:
+                # Prüfe ob Plot bereits initialisiert ist (hat Daten oder wurde initialisiert)
+                plot_initialized = (
+                    hasattr(draw_spl, 'has_data') and draw_spl.has_data
+                ) or (
+                    hasattr(draw_spl, 'plotter') and draw_spl.plotter is not None and 
+                    hasattr(draw_spl.plotter, 'renderer') and draw_spl.plotter.renderer is not None
+                )
+                
+                if not plot_initialized:
+                    # Plot noch nicht initialisiert → initialisiere mit leerem Plot
+                    try:
+                        if hasattr(main_window.draw_plots, 'show_empty_spl'):
+                            main_window.draw_plots.show_empty_spl(preserve_camera=True)
+                    except Exception:
+                        # Fallback: Direkt über Plotter initialisieren
+                        try:
+                            if hasattr(draw_spl, 'initialize_empty_scene'):
+                                draw_spl.initialize_empty_scene(preserve_camera=True)
+                        except Exception:
+                            pass
+                
+                # Jetzt update_overlays() aufrufen, damit Surfaces angezeigt werden
+                if hasattr(draw_spl, "update_overlays"):
+                    try:
+                        draw_spl.update_overlays(self.settings, self.container)
+                        # Render explizit aufrufen, damit Änderungen sofort sichtbar sind
+                        if hasattr(draw_spl, 'render'):
+                            draw_spl.render()
+                    except Exception:
+                        # Fehler hier sollen die restliche UI nicht blockieren
+                        pass
     
     def _get_group_majority_state(self, group_item, column):
         """

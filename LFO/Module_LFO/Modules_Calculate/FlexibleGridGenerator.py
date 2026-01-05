@@ -1774,6 +1774,12 @@ class GridBuilder(ModuleBase):
         """
         Berechnet zusätzliche Vertices (Ecken + Randpunkte) für eine Surface.
         
+        Orchestriert drei klar getrennte Schritte:
+          1) _calculate_additional_vertices_collect_grid_points
+          2) _calculate_additional_vertices_add_corners
+          3) _calculate_additional_vertices_add_boundary_points
+          4) _calculate_additional_vertices_deduplicate_and_merge
+        
         Args:
             geometry: SurfaceGeometry Objekt
             X_grid: X-Koordinaten des Grids
@@ -1785,19 +1791,61 @@ class GridBuilder(ModuleBase):
         Returns:
             np.ndarray: Array von additional_vertices (Shape: (N, 3))
         """
-        
-        additional_vertices = []
         surface_points = geometry.points or []
-        
         if len(surface_points) < 3:
             return np.array([], dtype=float).reshape(0, 3)
         
-        # Sammle alle Grid-Punkte für Duplikat-Prüfung
+        # 1. Sammle Grid-Punkte für Duplikat-Prüfung
+        all_vertices = self._calculate_additional_vertices_collect_grid_points(
+            X_grid, Y_grid, Z_grid, surface_mask
+        )
+        
+        # 2. Ecken-Punkte hinzufügen
+        additional_vertices = self._calculate_additional_vertices_add_corners(
+            geometry, surface_points, all_vertices
+        )
+        
+        # 3. Randpunkte hinzufügen
+        point_spacing = self._calculate_additional_vertices_get_point_spacing(
+            resolution, X_grid, Y_grid
+        )
+        
+        boundary_edge_points = self._calculate_additional_vertices_add_boundary_points(
+            geometry, surface_points, point_spacing
+        )
+        
+        # 4. Duplikat-Prüfung und Zusammenführung
+        additional_vertices = self._calculate_additional_vertices_deduplicate_and_merge(
+            additional_vertices, boundary_edge_points, all_vertices, point_spacing
+        )
+        
+        return np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+    
+    # ------------------------------------------------------------------
+    # Hilfsmethoden für _calculate_additional_vertices (klar zugeordnet über Präfix)
+    # ------------------------------------------------------------------
+    
+    def _calculate_additional_vertices_collect_grid_points(
+        self,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        ) -> np.ndarray:
+        """Sammelt alle aktiven Grid-Punkte für Duplikat-Prüfung."""
         grid_points_flat = np.stack((X_grid, Y_grid, Z_grid), axis=-1).reshape(-1, 3)
         mask_flat = surface_mask.reshape(-1)
-        all_vertices = grid_points_flat[mask_flat] if np.any(mask_flat) else np.array([], dtype=float).reshape(0, 3)
+        return grid_points_flat[mask_flat] if np.any(mask_flat) else np.array([], dtype=float).reshape(0, 3)
+    
+    def _calculate_additional_vertices_add_corners(
+        self,
+        geometry: SurfaceGeometry,
+        surface_points: List[Dict[str, float]],
+        all_vertices: np.ndarray,
+        ) -> List[List[float]]:
+        """Fügt Ecken-Punkte hinzu (vertikal oder planar/sloped)."""
+        additional_vertices = []
         
-        # 1. Ecken-Punkte hinzufügen
         if geometry.orientation == "vertical":
             # VERTIKALE FLÄCHEN: Verwende (u,v)-Koordinaten
             xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
@@ -1958,21 +2006,33 @@ class GridBuilder(ModuleBase):
                     
                     additional_vertices.append([corner_x, corner_y, corner_z])
         
-        # 2. Randpunkte hinzufügen
-        boundary_edge_points = []
+        return additional_vertices
+    
+    def _calculate_additional_vertices_get_point_spacing(
+        self,
+        resolution: Optional[float],
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        ) -> float:
+        """Bestimmt Punktabstand für Randpunkte (mit Fallback)."""
         if resolution is None or resolution <= 0:
             # Fallback: Verwende Grid-Auflösung aus X/Y-Grid
             if X_grid.size > 1 and Y_grid.size > 1:
                 x_diffs = np.diff(np.unique(X_grid.ravel()))
                 y_diffs = np.diff(np.unique(Y_grid.ravel()))
                 if x_diffs.size > 0 and y_diffs.size > 0:
-                    point_spacing = min(float(np.mean(x_diffs)), float(np.mean(y_diffs)))
-                else:
-                    point_spacing = 0.5  # Fallback
-            else:
-                point_spacing = 0.5  # Fallback
-        else:
-            point_spacing = resolution
+                    return min(float(np.mean(x_diffs)), float(np.mean(y_diffs)))
+            return 0.5  # Fallback
+        return resolution
+    
+    def _calculate_additional_vertices_add_boundary_points(
+        self,
+        geometry: SurfaceGeometry,
+        surface_points: List[Dict[str, float]],
+        point_spacing: float,
+        ) -> List[List[float]]:
+        """Fügt Randpunkte entlang der Polygon-Kanten hinzu."""
+        boundary_edge_points = []
         
         if geometry.orientation == "vertical":
             xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
@@ -2090,8 +2150,16 @@ class GridBuilder(ModuleBase):
                     
                     boundary_edge_points.append([float(x), float(y), float(z)])
         
-        
-        # 3. Duplikat-Prüfung und Zusammenführung
+        return boundary_edge_points
+    
+    def _calculate_additional_vertices_deduplicate_and_merge(
+        self,
+        additional_vertices: List[List[float]],
+        boundary_edge_points: List[List[float]],
+        all_vertices: np.ndarray,
+        point_spacing: float,
+        ) -> List[List[float]]:
+        """Prüft Duplikate und fügt Randpunkte zu additional_vertices hinzu."""
         dedup_tolerance = point_spacing * 0.05
         for edge_point in boundary_edge_points:
             is_duplicate = False
@@ -2122,8 +2190,7 @@ class GridBuilder(ModuleBase):
             if not is_duplicate:
                 additional_vertices.append(edge_point)
         
-        
-        return np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+        return additional_vertices
     
     @measure_time("GridBuilder.build_single_surface_grid")
     def build_single_surface_grid(
@@ -2137,6 +2204,12 @@ class GridBuilder(ModuleBase):
         """
         Erstellt Grid für eine einzelne Surface mit Mindestanzahl von Punkten.
         
+        Orchestriert mehrere klar getrennte Schritte:
+          1) build_single_surface_grid_create_base_grid
+          2) build_single_surface_grid_create_mask
+          3) build_single_surface_grid_interpolate_z
+          4) build_single_surface_grid_calculate_additional_vertices
+        
         Args:
             geometry: SurfaceGeometry Objekt
             resolution: Basis-Resolution in Metern (wenn None: settings.resolution)
@@ -2144,7 +2217,7 @@ class GridBuilder(ModuleBase):
             padding_factor: Padding-Faktor für Bounding Box
         
         Returns:
-            Tuple von (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask)
+            Tuple von (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
         """
         # Stelle sicher, dass resolution gesetzt ist
         if resolution is None:
@@ -2152,8 +2225,39 @@ class GridBuilder(ModuleBase):
         
         t_orientation_start = time.perf_counter() if PERF_ENABLED else None
         
-        # 🎯 VERTIKALE SURFACES: Erstelle Grid direkt in (u,v)-Ebene der Fläche
-        # Gleiche Funktionalität wie planare Flächen, nur andere Flächenausrichtung
+        # 1. Erstelle Basis-Grid (X_grid, Y_grid, Z_grid, sound_field_x, sound_field_y)
+        (X_grid, Y_grid, Z_grid, sound_field_x, sound_field_y) = self.build_single_surface_grid_create_base_grid(
+            geometry, resolution
+        )
+        
+        # 2. Erstelle Maske (surface_mask, surface_mask_strict)
+        (surface_mask, surface_mask_strict) = self.build_single_surface_grid_create_mask(
+            geometry, X_grid, Y_grid, Z_grid
+        )
+        
+        # 3. Interpoliere Z-Koordinaten (für planare/schräge Surfaces)
+        Z_grid = self.build_single_surface_grid_interpolate_z(
+            geometry, X_grid, Y_grid, Z_grid
+        )
+        
+        # 4. Berechne additional_vertices
+        additional_vertices = self.build_single_surface_grid_calculate_additional_vertices(
+            geometry, X_grid, Y_grid, Z_grid, surface_mask, resolution
+        )
+        
+        # Rückgabe
+        return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
+    
+    # ------------------------------------------------------------------
+    # Hilfsmethoden für build_single_surface_grid (klar zugeordnet über Präfix)
+    # ------------------------------------------------------------------
+    
+    def build_single_surface_grid_create_base_grid(
+        self,
+        geometry: SurfaceGeometry,
+        resolution: float,
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Erstellt Basis-Grid (X_grid, Y_grid, Z_grid, sound_field_x, sound_field_y)."""
         if geometry.orientation == "vertical":
             # Bestimme Orientierung und erstelle Grid in (u,v)-Ebene
             points = geometry.points
@@ -2189,7 +2293,6 @@ class GridBuilder(ModuleBase):
                     x_variation_ratio = x_span / max_main_span if max_main_span > 1e-6 else 0.0
                     # Nur als schräg behandeln, wenn X-Variation > 10% der Hauptspannen UND Z-Spanne signifikant
                     is_slanted_vertical = (x_variation_ratio > 0.1 and z_span > 1e-3)
-            
             
             
             # 🎯 BEHANDLE SCHRÄGE FLÄCHEN ZUERST (vor den Bedingungen für konstante X/Y)
@@ -2465,11 +2568,17 @@ class GridBuilder(ModuleBase):
             # Erstelle 2D-Meshgrid
             X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
             Z_grid = np.zeros_like(X_grid, dtype=float)
-            
         
-        ny, nx = X_grid.shape
-        
-        # 🎯 VERTIKALE SURFACES: Erstelle Maske direkt in (u,v)-Koordinaten
+        return (X_grid, Y_grid, Z_grid, sound_field_x, sound_field_y)
+    
+    def build_single_surface_grid_create_mask(
+        self,
+        geometry: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        ) -> Tuple[np.ndarray, np.ndarray]:
+        """Erstellt Maske für Grid-Punkte (surface_mask, surface_mask_strict)."""
         if geometry.orientation == "vertical":
             # Bestimme Orientierung und erstelle Maske in (u,v)-Koordinaten
             points = geometry.points
@@ -2574,27 +2683,36 @@ class GridBuilder(ModuleBase):
                 geometry, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict
             )
             
-            
             # 🎯 DEBUG: Grid-Erweiterung (vor Z-Interpolation, damit total_grid_points verfügbar ist)
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            
-            # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
-            # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
-            if Z_grid is None or np.all(Z_grid == 0):
-                Z_grid = np.zeros_like(X_grid, dtype=float)
-            
-            if geometry.plane_model:
-                # Berechne Z-Werte für ALLE Punkte im Grid (linear interpoliert gemäß Plane-Model)
-                # Dies ermöglicht erweiterte Punkte außerhalb der Surface-Grenze
-                Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
-                Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
-                z_span_grid = float(np.max(Z_grid)) - float(np.min(Z_grid))
-                # Nur Warnung ausgeben, wenn Problem erkannt wird
-                if geometry.orientation == "sloped" and z_span_grid < 0.01:
-                    plane_mode = geometry.plane_model.get('mode', 'unknown')
-            else:
+        
+        return (surface_mask, surface_mask_strict)
+    
+    def build_single_surface_grid_interpolate_z(
+        self,
+        geometry: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        ) -> np.ndarray:
+        """Interpoliert Z-Koordinaten für planare/schräge Surfaces."""
+        # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
+        # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
+        if Z_grid is None or np.all(Z_grid == 0):
+            Z_grid = np.zeros_like(X_grid, dtype=float)
+        
+        if geometry.plane_model:
+            # Berechne Z-Werte für ALLE Punkte im Grid (linear interpoliert gemäß Plane-Model)
+            # Dies ermöglicht erweiterte Punkte außerhalb der Surface-Grenze
+            Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
+            Z_grid = Z_values_all  # Setze für alle Punkte, nicht nur innerhalb Surface
+            z_span_grid = float(np.max(Z_grid)) - float(np.min(Z_grid))
+            # Nur Warnung ausgeben, wenn Problem erkannt wird
+            if geometry.orientation == "sloped" and z_span_grid < 0.01:
+                plane_mode = geometry.plane_model.get('mode', 'unknown')
+        else:
                 # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
                 surface_points = geometry.points or []
                 if not surface_points:
@@ -2730,32 +2848,21 @@ class GridBuilder(ModuleBase):
                     Z_grid.fill(surface_z[0])
                     # print(f"  └─ Z-Werte auf konstanten Wert {surface_z[0]:.3f} gesetzt für ALLE {total_grid_points} Punkte")
         
-        # if PERF_ENABLED and t_orientation_start is not None:
-        #     duration_ms = (time.perf_counter() - t_orientation_start) * 1000.0
-        #     pass
-        #         f"[PERF] GridBuilder.build_single_surface_grid.{geometry.orientation}: "
-        #         f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
-        #     )
-        
-        # 🎯 NEU: Berechne additional_vertices (Ecken + Randpunkte) gleichzeitig mit Grid
-        # Stelle sicher, dass resolution gesetzt ist
-        if resolution is None:
-            resolution = self.settings.resolution
-        
-        
-        additional_vertices = self._calculate_additional_vertices(
-            geometry, X_grid, Y_grid,         Z_grid, surface_mask, resolution
+        return Z_grid
+    
+    def build_single_surface_grid_calculate_additional_vertices(
+        self,
+        geometry: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        resolution: float,
+        ) -> np.ndarray:
+        """Berechnet additional_vertices (Ecken + Randpunkte)."""
+        return self._calculate_additional_vertices(
+            geometry, X_grid, Y_grid, Z_grid, surface_mask, resolution
         )
-        
-        # Für planare/schräge Surfaces: Gebe auch die strikte Maske zurück
-        # Für vertikale Surfaces: surface_mask_strict wurde bereits vorher erstellt (vor Dilatation)
-        if geometry.orientation in ("planar", "sloped"):
-            # surface_mask_strict wurde bereits vorher erstellt
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
-        else:
-            # 🎯 KORREKTUR: Vertikale Surfaces haben auch eine strikte Maske (vor Dilatation erstellt)
-            # surface_mask_strict wurde bereits oben erstellt (vor Dilatation)
-            return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
 
 
 class GridTransformer(ABC):
@@ -2821,7 +2928,6 @@ class CartesianTransformer(GridTransformer):
             surface_mask_strict=surface_mask.copy()  # Identisch mit surface_mask
         )
     
-
     def _interpolate_z_coordinates(
         self,
         X_grid: np.ndarray,
@@ -3070,6 +3176,11 @@ class FlexibleGridGenerator(ModuleBase):
         """
         Erstellt für jede enabled Surface ein eigenes Grid mit Mindestanzahl von Punkten.
         
+        Orchestriert mehrere klar getrennte Schritte:
+          1) generate_per_surface_check_cache
+          2) generate_per_surface_build_grids_parallel
+          3) generate_per_surface_process_and_create_grids
+        
         Args:
             enabled_surfaces: Liste von (surface_id, surface_definition) Tupeln
             resolution: Basis-Resolution in Metern (wenn None: settings.resolution)
@@ -3084,12 +3195,37 @@ class FlexibleGridGenerator(ModuleBase):
         # Analysiere Surfaces
         geometries = self.analyzer.analyze_surfaces(enabled_surfaces)
         
+        # Schritt 1: Cache-Prüfung
+        surface_grids, geometries_to_process = self.generate_per_surface_check_cache(
+            geometries, resolution, min_points_per_dimension
+        )
         
-        # Erstelle Grid für jede Surface
+        # Schritt 2: Parallele Grid-Erstellung
+        grid_results = self.generate_per_surface_build_grids_parallel(
+            geometries_to_process, resolution, min_points_per_dimension, disable_edge_refinement
+        )
+        
+        # Schritt 3: Ergebnisse verarbeiten und SurfaceGrids erstellen
+        self.generate_per_surface_process_and_create_grids(
+            geometries, surface_grids, grid_results, resolution, min_points_per_dimension
+        )
+        
+        return surface_grids
+    
+    # ------------------------------------------------------------------
+    # Hilfsmethoden für generate_per_surface (klar zugeordnet über Präfix)
+    # ------------------------------------------------------------------
+    
+    def generate_per_surface_check_cache(
+        self,
+        geometries: List[SurfaceGeometry],
+        resolution: float,
+        min_points_per_dimension: int,
+        ) -> Tuple[Dict[str, SurfaceGrid], List[Tuple[SurfaceGeometry, tuple]]]:
+        """Prüft Cache und gibt bereits gecachte Grids zurück."""
         surface_grids: Dict[str, SurfaceGrid] = {}
-
-        # 🚀 Schritt 1: Cache-Prüfung & Liste der zu berechnenden Geometrien aufbauen
         geometries_to_process: List[Tuple[SurfaceGeometry, tuple]] = []
+        
         for geom in geometries:
             cache_key = self._make_surface_cache_key(
                 geom=geom,
@@ -3102,8 +3238,17 @@ class FlexibleGridGenerator(ModuleBase):
                 surface_grids[geom.surface_id] = cached_grid
             else:
                 geometries_to_process.append((geom, cache_key))
-
-        # 🚀 Schritt 2: build_single_surface_grid parallel für nicht-gecachte Surfaces ausführen
+        
+        return (surface_grids, geometries_to_process)
+    
+    def generate_per_surface_build_grids_parallel(
+        self,
+        geometries_to_process: List[Tuple[SurfaceGeometry, tuple]],
+        resolution: float,
+        min_points_per_dimension: int,
+        disable_edge_refinement: bool,
+        ) -> Dict[str, Tuple[tuple, Any]]:
+        """Baut Grids parallel für nicht-gecachte Surfaces."""
         grid_results: Dict[str, Tuple[tuple, Any]] = {}
         if geometries_to_process:
             t_parallel_start = time.perf_counter() if PERF_ENABLED else None
@@ -3141,7 +3286,25 @@ class FlexibleGridGenerator(ModuleBase):
                     f"{duration_ms:.2f} ms [n_surfaces={len(geometries_to_process)}]"
                 )
         
-        # 🚀 Schritt 3: Ergebnisse weiterverarbeiten (Plane-Korrektur, Triangulation, Cache füllen)
+        return grid_results
+    
+    def generate_per_surface_process_and_create_grids(
+        self,
+        geometries: List[SurfaceGeometry],
+        surface_grids: Dict[str, SurfaceGrid],
+        grid_results: Dict[str, Tuple[tuple, Any]],
+        resolution: float,
+        min_points_per_dimension: int,
+        ) -> None:
+        """
+        Verarbeitet Grid-Ergebnisse und erstellt SurfaceGrids.
+        
+        Orchestriert mehrere klar getrennte Schritte:
+          1) generate_per_surface_process_and_create_grids_extract_result
+          2) generate_per_surface_process_and_create_grids_correct_z
+          3) generate_per_surface_process_and_create_grids_create_triangulation
+          4) generate_per_surface_process_and_create_grids_create_surface_grid
+        """
         for geom in geometries:
             # Wenn bereits aus dem Cache kam, ist alles erledigt
             if geom.surface_id in surface_grids:
@@ -3152,1275 +3315,632 @@ class FlexibleGridGenerator(ModuleBase):
                 # Wurde übersprungen oder ist fehlgeschlagen
                 continue
             cache_key, result = entry
-            # 🛠️ VORBEREITUNG: Für "sloped" Flächen plane_model aus Punkten ableiten, BEVOR Grid erstellt wird
-            # Dies stellt sicher, dass build_single_surface_grid das korrekte plane_model verwendet
-            if geom.orientation == "sloped":
-                if geom.points:
-                    try:
-                        # Extrahiere Z-Werte aus Punkten zur Validierung
-                        points_z = np.array([p.get('z', 0.0) for p in geom.points], dtype=float)
-                        z_span_points = float(np.ptp(points_z)) if len(points_z) > 0 else 0.0
-                        
-                        plane_model_new, error_msg = derive_surface_plane(geom.points)
-                        if plane_model_new is not None:
-                            geom.plane_model = plane_model_new
-                            mode = plane_model_new.get('mode', 'unknown')
-                            # Nur Warnungen ausgeben, wenn Probleme erkannt werden
-                            if mode == "constant":
-                                pass
-                            elif mode in ("x", "y") and abs(plane_model_new.get('slope', 0.0)) < 1e-6:
-                                pass
-                        else:
-                            pass
-                    except Exception as e:
-                        pass
-                else:
-                    pass
             
-            try:
-                result = self.builder.build_single_surface_grid(
-                        geometry=geom,
-                        resolution=resolution,
-                        min_points_per_dimension=min_points_per_dimension,
-                        disable_edge_refinement=disable_edge_refinement
-                    )
-                if len(result) == 8:
-                    # Version: Mit strikter Maske + additional_vertices
-                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices) = result
-                elif len(result) == 7:
-                    # Version: Mit strikter Maske (ohne additional_vertices - Fallback)
-                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
-                    additional_vertices = np.array([], dtype=float).reshape(0, 3)  # Leeres Array als Fallback
-                else:
-                    # Alte Version: Ohne strikte Maske (Fallback)
-                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
-                    surface_mask_strict = surface_mask  # Fallback: identisch
-                    additional_vertices = np.array([], dtype=float).reshape(0, 3)  # Leeres Array als Fallback
-            except (ValueError, Exception) as e:
-                # Fange alle Fehler ab (ValueError, QhullError, etc.) und überspringe die Surface
-                # Kein Fallback - nur die funktionierenden Surfaces werden verwendet
-                error_type = type(e).__name__
-                error_message = str(e)
-                # Surface wird übersprungen bei Fehlern
+            # 1. Extrahiere Grid-Ergebnis
+            grid_data = self.generate_per_surface_process_and_create_grids_extract_result(result)
+            if grid_data is None:
                 continue
+            (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices) = grid_data
             
-            # 🛠️ KORREKTUR: Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene berechnen
-            # Falls plane_model fehlt oder nahezu flache Z-Spanne ergibt, versuche Neu-Bestimmung aus den Punkten.
-            if geom.orientation in ("planar", "sloped"):
-                plane_model_local = geom.plane_model
-                # Für "sloped" Flächen: IMMER plane_model aus Punkten ableiten, wenn nicht vorhanden ODER wenn vorhanden aber falsch
-                # Für "planar" Flächen: Nur ableiten, wenn nicht vorhanden
-                if geom.orientation == "sloped":
-                    # Für schräge Flächen: Immer aus Punkten ableiten, um sicherzustellen, dass es korrekt ist
-                    if geom.points:
-                        plane_model_local, _ = derive_surface_plane(geom.points)
-                        if plane_model_local is None:
-                            raise ValueError(f"Surface '{geom.surface_id}' (sloped): plane_model konnte nicht abgeleitet werden")
-                        geom.plane_model = plane_model_local
-                    else:
-                        pass
-                else:
-                    # Für planare Flächen: Nur ableiten, wenn nicht vorhanden
-                    if plane_model_local is None and geom.points:
-                        plane_model_local, _ = derive_surface_plane(geom.points)
-                        if plane_model_local is None:
-                            raise ValueError(f"Surface '{geom.surface_id}' (planar): plane_model konnte nicht abgeleitet werden")
-                        geom.plane_model = plane_model_local
-                
-                if plane_model_local:
-                    try:
-                        z_old_span = float(Z_grid.max()) - float(Z_grid.min())
-                        Z_eval = _evaluate_plane_on_grid(plane_model_local, X_grid, Y_grid)
-                        if Z_eval is not None and Z_eval.shape == X_grid.shape:
-                            Z_grid = Z_eval
-                            zmin, zmax = float(Z_grid.min()), float(Z_grid.max())
-                            z_span = zmax - zmin
-                            # Nur Warnung ausgeben, wenn Problem erkannt wird
-                            if geom.orientation == "sloped" and z_span < 0.01:
-                                pass
-                    except Exception as e:
-                        pass
-                else:
-                    if geom.orientation == "sloped":
-                        pass
+            # 2. Korrigiere Z-Koordinaten
+            Z_grid = self.generate_per_surface_process_and_create_grids_correct_z(
+                geom, X_grid, Y_grid, Z_grid
+            )
             
-            # Berechne tatsächliche Resolution (kann adaptiv sein)
-            ny, nx = X_grid.shape
-            if len(sound_field_x) > 1 and len(sound_field_y) > 1:
-                actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
-                actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
-                actual_resolution = (actual_resolution_x + actual_resolution_y) / 2.0
+            # 3. Berechne tatsächliche Resolution
+            actual_resolution = self.generate_per_surface_process_and_create_grids_calculate_resolution(
+                sound_field_x, sound_field_y, resolution
+            )
+            
+            # 4. Erstelle Triangulation
+            triangulation_data = self.generate_per_surface_process_and_create_grids_create_triangulation(
+                geom, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices, actual_resolution
+            )
+            
+            # 5. Erstelle SurfaceGrid und fülle Cache
+            self.generate_per_surface_process_and_create_grids_create_surface_grid(
+                geom, cache_key, surface_grids,
+                sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid,
+                surface_mask, surface_mask_strict, actual_resolution,
+                triangulation_data
+            )
+    
+    # ------------------------------------------------------------------
+    # Hilfsmethoden für generate_per_surface_process_and_create_grids
+    # ------------------------------------------------------------------
+    
+    def generate_per_surface_process_and_create_grids_extract_result(
+        self,
+        result: Tuple,
+        ) -> Optional[Tuple]:
+        """Extrahiert Grid-Ergebnis mit Fallback-Unterstützung."""
+        try:
+            if len(result) == 8:
+                # Version: Mit strikter Maske + additional_vertices
+                return result
+            elif len(result) == 7:
+                # Version: Mit strikter Maske (ohne additional_vertices - Fallback)
+                (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
+                additional_vertices = np.array([], dtype=float).reshape(0, 3)
+                return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
             else:
-                actual_resolution = resolution
-            
-            # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
-            # 🎯 NEU: Verwende Delaunay-Triangulation für konsistente, überschneidungsfreie Triangulation
-            triangulated_vertices = None
-            triangulated_faces = None
-            triangulated_success = False
-            vertex_source_indices: Optional[np.ndarray] = None
-            # 🎯 FIX: additional_vertices wurde bereits in build_single_surface_grid berechnet
-            # Nichts überschreiben - verwende die bereits berechneten additional_vertices
-            
-            # 🎯 FIX: Definiere additional_vertices_array außerhalb des try-Blocks, damit es immer verfügbar ist
-            # Konvertiere zu numpy array falls noch nicht geschehen
-            if not isinstance(additional_vertices, np.ndarray):
-                additional_vertices_array = np.array(additional_vertices, dtype=float) if additional_vertices is not None and hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+                # Alte Version: Ohne strikte Maske (Fallback)
+                (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
+                surface_mask_strict = surface_mask  # Fallback: identisch
+                additional_vertices = np.array([], dtype=float).reshape(0, 3)
+                return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
+        except Exception:
+            return None
+    
+    def generate_per_surface_process_and_create_grids_correct_z(
+        self,
+        geom: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        ) -> np.ndarray:
+        """Korrigiert Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene."""
+        # Falls plane_model fehlt oder nahezu flache Z-Spanne ergibt, versuche Neu-Bestimmung aus den Punkten.
+        if geom.orientation in ("planar", "sloped"):
+            plane_model_local = geom.plane_model
+            # Für "sloped" Flächen: IMMER plane_model aus Punkten ableiten, wenn nicht vorhanden ODER wenn vorhanden aber falsch
+            # Für "planar" Flächen: Nur ableiten, wenn nicht vorhanden
+            if geom.orientation == "sloped":
+                # Für schräge Flächen: Immer aus Punkten ableiten, um sicherzustellen, dass es korrekt ist
+                if geom.points:
+                    plane_model_local, _ = derive_surface_plane(geom.points)
+                    if plane_model_local is None:
+                        raise ValueError(f"Surface '{geom.surface_id}' (sloped): plane_model konnte nicht abgeleitet werden")
+                    geom.plane_model = plane_model_local
             else:
-                additional_vertices_array = additional_vertices
+                # Für planare Flächen: Nur ableiten, wenn nicht vorhanden
+                if plane_model_local is None and geom.points:
+                    plane_model_local, _ = derive_surface_plane(geom.points)
+                    if plane_model_local is None:
+                        raise ValueError(f"Surface '{geom.surface_id}' (planar): plane_model konnte nicht abgeleitet werden")
+                    geom.plane_model = plane_model_local
             
-            try:
-                # Verwende Grid-Punkte innerhalb der Surface-Maske als Vertices
-                ny, nx = X_grid.shape
-                # 🎯 KEINE ERWEITERTE MASKE MEHR: Verwende nur strikte Maske
-                # Randpunkte werden als additional_vertices hinzugefügt, nicht über Dilatation
-                mask_flat = surface_mask_strict.ravel()  # Nur strikte Maske (keine Dilatation mehr)
-                mask_strict_flat = surface_mask_strict.ravel()  # Strikte Maske (identisch mit mask_flat)
-                
-                if np.any(mask_flat):
-                    # Erstelle Vertex-Koordinaten aus allen Grid-Punkten (auch inaktive für konsistente Indizes)
-                    # Wir brauchen alle Punkte für die strukturierte Triangulation
-                    all_vertices = np.column_stack([
-                        X_grid.ravel(),  # X-Koordinaten
-                        Y_grid.ravel(),  # Y-Koordinaten
-                        Z_grid.ravel()   # Z-Koordinaten
-                    ])  # Shape: (ny * nx, 3)
-                    
-                    
-                    # 🎯 HINWEIS: additional_vertices werden jetzt bereits in build_single_surface_grid berechnet
-                    # Die folgende Logik wurde nach _calculate_additional_vertices verschoben
-                    # und wird hier nicht mehr benötigt, da additional_vertices bereits verfügbar sind
-                    
-                    # 🎯 VERWENDE BEREITS BEREICHNETE additional_vertices AUS build_single_surface_grid
-                    # additional_vertices wurde bereits oben aus result extrahiert
-                    
-                    # 🎯 ALTE LOGIK ENTFERNT: Die Berechnung von additional_vertices erfolgt jetzt in build_single_surface_grid
-                    # Dies vermeidet Duplikation und stellt sicher, dass alle Punkte gleichzeitig mit dem Grid berechnet werden
-                    
-                    # 🎯 FIX: additional_vertices wurde bereits in build_single_surface_grid berechnet
-                    # Der folgende Code-Block wurde entfernt, da er versucht, additional_vertices.append() aufzurufen,
-                    # aber additional_vertices ist jetzt ein numpy.ndarray, nicht eine Liste.
-                    # Die gesamte Logik für Ecken- und Randpunkte-Berechnung ist jetzt in _calculate_additional_vertices.
-                    
-                    # 🎯 FIX: additional_vertices wurden bereits in build_single_surface_grid berechnet
-                    # Verwende diese direkt - KEINE Neuberechnung mehr!
-                    # Der gesamte Block zur Neuberechnung wurde entfernt, da er versuchte, .append() auf einem numpy.ndarray aufzurufen.
-                    
-                    # 🎯 FIX: additional_vertices_array wurde bereits außerhalb des try-Blocks definiert
-                    # Keine redundante Definition hier nötig - verwende das bereits definierte additional_vertices_array
-                    
-                    # boundary_points_added wird nicht mehr verwendet - nur für Kompatibilität
-                    boundary_points_added = 0
-                    
-                    # Aktualisiere all_vertices mit allen additional_vertices (Ecken + Randpunkte)
-                    if additional_vertices_array.size > 0:
-                        all_vertices = np.vstack([all_vertices, additional_vertices_array])
-                        
-                    
-                    # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
-                    base_vertex_count = X_grid.size
-                    additional_vertex_start_idx = base_vertex_count
-                    
-                    # 🎯 NEU: DELAUNAY-TRIANGULATION für alle gültigen Punkte
-                    # 🎯 DELAUNAY-TRIANGULATION: Verwende nur noch Delaunay für konsistente, überschneidungsfreie Triangulation
-                    faces_list = []  # Initialisiere faces_list
-                    use_delaunay_triangulation = True  # Immer Delaunay verwenden
-                    
-                    if not HAS_SCIPY:
-                        raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
-                    
-                    # Additional_vertices (Ecken + Randpunkte) werden später hinzugefügt (nach Randpunkten)
-                    
-                    # 🎯 NEUE RANDPUNKT-LOGIK: Direkte Berechnung von Punkten auf Surface-Linie
-                    # Erstelle gleichmäßig verteilte Punkte direkt auf Polygon-Kanten
-                    # Diese Punkte werden als additional_vertices hinzugefügt und für Triangulation verwendet
-                    boundary_edge_points = []  # Liste von (x, y, z) Tupeln für Randpunkte
-                    
-                    # Berechne Randpunkte direkt auf Surface-Linie
-                    surface_points_for_boundary = geom.points or []
-                    if len(surface_points_for_boundary) >= 3:
-                        point_spacing = actual_resolution  # Abstand zwischen Randpunkten (Größenordnung: resolution)
-                        
-                        if geom.orientation == "vertical":
-                            # VERTIKALE FLÄCHEN: Berechne in (u,v)-Koordinaten
-                            xs = np.array([p.get("x", 0.0) for p in surface_points_for_boundary], dtype=float)
-                            ys = np.array([p.get("y", 0.0) for p in surface_points_for_boundary], dtype=float)
-                            zs = np.array([p.get("z", 0.0) for p in surface_points_for_boundary], dtype=float)
-                            
-                            # Bestimme (u,v)-Koordinaten basierend auf dominant_axis
-                            # 🎯 KONSISTENT MIT GRID-ERSTELLUNG: Verwende gleiche Logik für Schrägheitsprüfung
-                            x_span = float(np.ptp(xs))
-                            y_span = float(np.ptp(ys))
-                            z_span = float(np.ptp(zs))
-                            eps_line = 1e-6
-                            
-                            is_slanted_wall = False
-                            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                if geom.dominant_axis == "yz":
-                                    polygon_u = ys
-                                    polygon_v = zs
-                                    is_xz_wall = False
-                                    # Prüfe ob schräg: X variiert signifikant (>10% von max(y_span, z_span))
-                                    max_main_span = max(y_span, z_span) if max(y_span, z_span) > 1e-6 else 1.0
-                                    x_variation_ratio = x_span / max_main_span if max_main_span > 1e-6 else 0.0
-                                    is_slanted_wall = (x_variation_ratio > 0.1 and z_span > 1e-3)
-                                elif geom.dominant_axis == "xz":
-                                    polygon_u = xs
-                                    polygon_v = zs
-                                    is_xz_wall = True
-                                    # Prüfe ob schräg: Y variiert signifikant (>10% von max(x_span, z_span))
-                                    max_main_span = max(x_span, z_span) if max(x_span, z_span) > 1e-6 else 1.0
-                                    y_variation_ratio = y_span / max_main_span if max_main_span > 1e-6 else 0.0
-                                    is_slanted_wall = (y_variation_ratio > 0.1 and z_span > 1e-3)
-                                else:
-                                    polygon_u = xs
-                                    polygon_v = zs
-                                    is_xz_wall = True
-                            else:
-                                # Fallback: X-Z-Wand
-                                polygon_u = xs
-                                polygon_v = zs
-                                is_xz_wall = True
-                            
-                            # 🎯 FÜR SCHRÄGE WÄNDE: Bereite Interpolation vor
-                            if is_slanted_wall:
-                                from scipy.interpolate import griddata
-                                if is_xz_wall:
-                                    # X-Z-Wand schräg: Interpoliere Y aus (x,z)-Koordinaten
-                                    points_surface = np.column_stack([xs, zs])
-                                else:
-                                    # Y-Z-Wand schräg: Interpoliere X aus (y,z)-Koordinaten
-                                    points_surface = np.column_stack([ys, zs])
-                            
-                            # Generiere Punkte entlang jeder Kante
-                            n_vertices = len(polygon_u)
-                            for i in range(n_vertices):
-                                u1, v1 = polygon_u[i], polygon_v[i]
-                                u2, v2 = polygon_u[(i + 1) % n_vertices], polygon_v[(i + 1) % n_vertices]
-                                
-                                edge_len = np.sqrt((u2 - u1)**2 + (v2 - v1)**2)
-                                if edge_len < 1e-9:
-                                        continue
-                                    
-                                # Generiere Punkte mit Abstand point_spacing
-                                n_points_on_edge = max(1, int(np.ceil(edge_len / point_spacing)))
-                                for j in range(1, n_points_on_edge):  # Start bei 1, Ende bei n_points_on_edge-1 (Ecken werden separat behandelt)
-                                    t = j / n_points_on_edge
-                                    u = u1 + t * (u2 - u1)
-                                    v = v1 + t * (v2 - v1)
-                                    
-                                    # 🎯 FIX: Transformiere zurück zu (x,y,z) - EXAKT auf Surfacefläche
-                                    if is_xz_wall:
-                                        x, z = u, v
-                                        if is_slanted_wall:
-                                            # Schräge Wand: Y interpoliert aus (x,z)
-                                            y = griddata(
-                                                points_surface, ys,
-                                                np.array([[x, z]]),
-                                                method='linear', fill_value=float(np.mean(ys))
-                                            )[0]
-                                        else:
-                                            # Konstante Wand: Y = Mittelwert
-                                            y = float(np.mean(ys))
-                                    else:
-                                        y, z = u, v
-                                        if is_slanted_wall:
-                                            # Schräge Wand: X interpoliert aus (y,z)
-                                            x = griddata(
-                                                points_surface, xs,
-                                                np.array([[y, z]]),
-                                                method='linear', fill_value=float(np.mean(xs))
-                                            )[0]
-                                        else:
-                                            # Konstante Wand: X = Mittelwert
-                                            x = float(np.mean(xs))
-                                    
-                                    boundary_edge_points.append([float(x), float(y), float(z)])
-                            
-                            
-                        else:
-                            # PLANARE/SCHRÄGE FLÄCHEN: Berechne in (x,y)-Koordinaten
-                            polygon_x = np.array([p.get("x", 0.0) for p in surface_points_for_boundary], dtype=float)
-                            polygon_y = np.array([p.get("y", 0.0) for p in surface_points_for_boundary], dtype=float)
-                            
-                            # Generiere Punkte entlang jeder Kante
-                            n_vertices = len(polygon_x)
-                            for i in range(n_vertices):
-                                x1, y1 = polygon_x[i], polygon_y[i]
-                                x2, y2 = polygon_x[(i + 1) % n_vertices], polygon_y[(i + 1) % n_vertices]
-                                
-                                edge_len = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                                if edge_len < 1e-9:
-                                    continue
-                                
-                                # Generiere Punkte mit Abstand point_spacing
-                                n_points_on_edge = max(1, int(np.ceil(edge_len / point_spacing)))
-                                for j in range(1, n_points_on_edge):  # Start bei 1, Ende bei n_points_on_edge-1 (Ecken werden separat behandelt)
-                                    t = j / n_points_on_edge
-                                    x = x1 + t * (x2 - x1)
-                                    y = y1 + t * (y2 - y1)
-                                    
-                                    # Berechne Z-Koordinate
-                                    z = 0.0
-                                    if geom.plane_model:
-                                        try:
-                                            z_new = _evaluate_plane_on_grid(
-                                                geom.plane_model,
-                                                np.array([[x]]),
-                                                np.array([[y]])
-                                            )
-                                            if z_new is not None and z_new.size > 0:
-                                                z = float(z_new.flat[0])
-                                        except Exception:
-                                            pass
-                                    
-                                    boundary_edge_points.append([float(x), float(y), float(z)])
-                    
-                    # 🎯 HINWEIS: additional_vertices werden jetzt bereits in build_single_surface_grid berechnet
-                    # Die Duplikat-Prüfung und Zusammenführung erfolgt jetzt in _calculate_additional_vertices
-                    # boundary_points_added wird nicht mehr hier berechnet
-                    boundary_points_added = 0  # Wird nicht mehr verwendet - nur für Kompatibilität
-                    
-                    
-                    # 🎯 FIX: Entferne duplizierte Zuweisung - additional_vertices_array wurde bereits oben zugewiesen!
-                    # Diese Zuweisung ist redundant und wird entfernt
-                    
-                    # Aktualisiere all_vertices mit allen additional_vertices (Ecken + Randpunkte)
-                    if len(additional_vertices_array) > 0:
-                        all_vertices = np.vstack([all_vertices, additional_vertices_array])
-                        
-                    
-                    
-                    # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
-                    base_vertex_count = X_grid.size
-                    additional_vertex_start_idx = base_vertex_count
-                    
-                    
-                    # 🎯 FIX: Entferne duplizierte Zuweisung - additional_vertices_array wurde bereits oben zugewiesen!
-                    # Diese Zuweisung ist redundant und wird entfernt
-                    
-                    # 🎯 NEU: DELAUNAY-TRIANGULATION für alle gültigen Punkte
-                    # 🎯 DELAUNAY-TRIANGULATION: Verwende nur noch Delaunay für konsistente, überschneidungsfreie Triangulation
-                    faces_list = []  # Initialisiere faces_list
-                    use_delaunay_triangulation = True  # Immer Delaunay verwenden
-                    
-                    if not HAS_SCIPY:
-                        raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
-                    
-                    # Sammle alle gültigen Punkte (Grid-Punkte in Maske + additional_vertices)
-                    if use_delaunay_triangulation:  # Immer Delaunay verwenden
-                        try:
-                            # Sammle alle gültigen Punkte
-                            valid_vertices_list = []
-                            valid_vertex_indices = []  # Original-Indizes in all_vertices
-                            
-                            # Füge aktive Grid-Punkte hinzu
-                            active_mask_indices = np.where(mask_flat)[0]
-                            active_strict_mask_indices = np.where(mask_strict_flat)[0]
-                            grid_vertices_count = 0
-                            for idx in active_mask_indices:
-                                if idx < len(all_vertices):
-                                    valid_vertices_list.append(all_vertices[idx])
-                                    valid_vertex_indices.append(idx)
-                                    grid_vertices_count += 1
-                            
-                            # Füge additional_vertices hinzu (bereits in all_vertices)
-                            boundary_vertices_count = 0
-                            if len(additional_vertices_array) > 0:
-                                for i in range(len(additional_vertices_array)):
-                                    idx = additional_vertex_start_idx + i
-                                    if idx < len(all_vertices):
-                                        valid_vertices_list.append(all_vertices[idx])
-                                        valid_vertex_indices.append(idx)
-                                        boundary_vertices_count += 1
-                            
-                            
-                            if len(valid_vertices_list) >= 3:
-                                valid_vertices_array = np.array(valid_vertices_list, dtype=float)
-                                
-                                # Bestimme Projektionsebene basierend auf Orientierung
-                                if geom.orientation == "vertical":
-                                    # Vertikale Flächen: Projiziere auf (u,v)-Ebene
-                                    if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                        if geom.dominant_axis == "xz":
-                                            # X-Z-Wand: u = x, v = z
-                                            proj_2d = valid_vertices_array[:, [0, 2]]  # x, z
-                                        elif geom.dominant_axis == "yz":
-                                            # Y-Z-Wand: u = y, v = z
-                                            proj_2d = valid_vertices_array[:, [1, 2]]  # y, z
-                                        else:
-                                            # Fallback: verwende x, y
-                                            proj_2d = valid_vertices_array[:, [0, 1]]
-                                    else:
-                                        # Fallback: verwende x, y
-                                        proj_2d = valid_vertices_array[:, [0, 1]]
-                                else:
-                                    # Planare/schräge Flächen: Projiziere auf (x,y)-Ebene
-                                    proj_2d = valid_vertices_array[:, [0, 1]]  # x, y
-                                
-                                # Delaunay-Triangulation in 2D
-                                tri = Delaunay(proj_2d)
-                                triangles_delaunay = tri.simplices  # Nx3 Array von Indizes
-                                
-                                # Filtere Dreiecke, die außerhalb der Surface-Maske liegen
-                                # Prüfe ob Schwerpunkt jedes Dreiecks innerhalb des Polygons liegt
-                                valid_triangles = []
-                                surface_points = geom.points or []
-                                
-                                if len(surface_points) >= 3:
-                                    try:
-                                        from matplotlib.path import Path
-                                        
-                                        # Erstelle Polygon-Pfad für Punkt-im-Polygon-Prüfung
-                                        if geom.orientation == "vertical":
-                                            # Vertikale Flächen: Polygon in (u,v)
-                                            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                                if geom.dominant_axis == "xz":
-                                                    polygon_2d = np.array([[p.get("x", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
-                                                elif geom.dominant_axis == "yz":
-                                                    polygon_2d = np.array([[p.get("y", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
-                                                else:
-                                                    polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
-                                            else:
-                                                polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
-                                        else:
-                                            # Planare/schräge Flächen: Polygon in (x,y)
-                                            polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
-                                        
-                                        polygon_path = Path(polygon_2d)
-                                        
-                                        # Prüfe jeden Dreieck-Schwerpunkt
-                                        triangles_filtered_out = 0
-                                        triangles_with_extended_vertices = 0
-                                        triangles_with_strict_vertices = 0
-                                        for tri_idx in triangles_delaunay:
-                                                # Konvertiere Indizes: Delaunay-Indizes → valid_vertex_indices → all_vertices-Indizes
-                                                v1_old = valid_vertex_indices[tri_idx[0]]
-                                                v2_old = valid_vertex_indices[tri_idx[1]]
-                                                v3_old = valid_vertex_indices[tri_idx[2]]
-                                                
-                                                # Prüfe ob Vertices in strikter oder erweiterter Maske sind
-                                                v1_in_strict = (v1_old < len(mask_strict_flat) and mask_strict_flat[v1_old]) if v1_old < len(mask_strict_flat) else False
-                                                v2_in_strict = (v2_old < len(mask_strict_flat) and mask_strict_flat[v2_old]) if v2_old < len(mask_strict_flat) else False
-                                                v3_in_strict = (v3_old < len(mask_strict_flat) and mask_strict_flat[v3_old]) if v3_old < len(mask_strict_flat) else False
-                                                has_strict_vertex = v1_in_strict or v2_in_strict or v3_in_strict
-                                                
-                                                v1_in_extended = v1_old < len(mask_flat) and mask_flat[v1_old]
-                                                v2_in_extended = v2_old < len(mask_flat) and mask_flat[v2_old]
-                                                v3_in_extended = v3_old < len(mask_flat) and mask_flat[v3_old]
-                                                has_extended_vertex = v1_in_extended or v2_in_extended or v3_in_extended
-                                                
-                                                # Schwerpunkt des Dreiecks in 2D
-                                                centroid_2d = proj_2d[tri_idx].mean(axis=0)
-                                                
-                                                # Prüfe ob Schwerpunkt im Polygon liegt
-                                                centroid_in_polygon = polygon_path.contains_point(centroid_2d)
-                                                
-                                                # #region agent log - Triangle filtering H1, H2, H3
-                                                if not centroid_in_polygon:
-                                                    triangles_filtered_out += 1
-                                                    if has_extended_vertex and not has_strict_vertex:
-                                                        triangles_with_extended_vertices += 1
-                                                    elif has_strict_vertex:
-                                                        triangles_with_strict_vertices += 1
-                                                # #endregion
-                                                
-                                                # 🎯 FIX: Akzeptiere Dreiecke wenn:
-                                                # 1. Schwerpunkt im Polygon liegt ODER
-                                                # 2. Mindestens ein Vertex in strikter Maske liegt (für Rand-Dreiecke) ODER
-                                                # 3. Alle drei Vertices in erweiterter Maske liegen (für Rand-Dreiecke mit erweiterten Punkten)
-                                                all_vertices_in_extended = v1_in_extended and v2_in_extended and v3_in_extended
-                                                if centroid_in_polygon or has_strict_vertex or all_vertices_in_extended:
-                                                    valid_triangles.append((v1_old, v2_old, v3_old))
-                                        
-                                    except Exception:
-                                        # Fallback: Verwende alle Delaunay-Dreiecke
-                                        for tri_idx in triangles_delaunay:
-                                            v1_old = valid_vertex_indices[tri_idx[0]]
-                                            v2_old = valid_vertex_indices[tri_idx[1]]
-                                            v3_old = valid_vertex_indices[tri_idx[2]]
-                                            valid_triangles.append((v1_old, v2_old, v3_old))
-                                else:
-                                    # Kein Polygon verfügbar: Verwende alle Delaunay-Dreiecke
-                                    for tri_idx in triangles_delaunay:
-                                        v1_old = valid_vertex_indices[tri_idx[0]]
-                                        v2_old = valid_vertex_indices[tri_idx[1]]
-                                        v3_old = valid_vertex_indices[tri_idx[2]]
-                                        valid_triangles.append((v1_old, v2_old, v3_old))
-                                
-                                # Konvertiere zu PyVista-Format: [3, v1, v2, v3, 3, v4, v5, v6, ...]
-                                if len(valid_triangles) > 0:
-                                    for v1, v2, v3 in valid_triangles:
-                                        faces_list.extend([3, int(v1), int(v2), int(v3)])
-                                    
-                        except Exception as e:
-                            # Bei Fehler: werfe Exception
-                            raise
-                    
-                    # 🎯 ALTE PROJEKTIONSLOGIK ENTFERNT - Ersetzt durch direkte Randpunkt-Berechnung oben (vor Triangulation)
-                    # Die alte Projektionslogik (Dilatation + Projektion von boundary_indices) wurde entfernt
-                    # und durch direkte Berechnung von Punkten auf Surface-Linie ersetzt (vor Triangulation)
-                    # 🎯 Prüfe ob Triangulation erfolgreich war
-                    if len(faces_list) == 0:
-                        raise RuntimeError(f"Keine Faces für Surface {geom.surface_id} generiert. Delaunay-Triangulation hat keine Dreiecke erstellt.")
-                    
-                    # 🎯 Initialisiere vertex_indices_in_faces_set aus faces_list (für spätere Verwendung)
-                    # Sammle alle eindeutigen Vertex-Indizes, die in Faces verwendet werden
-                    vertex_indices_in_faces_temp = []
-                    for i in range(0, len(faces_list), 4):
-                        if i + 3 < len(faces_list):
-                            n_verts = faces_list[i]
-                            if n_verts == 3:
-                                vertex_indices_in_faces_temp.extend(faces_list[i+1:i+4])
-                    vertex_indices_in_faces_set = set(vertex_indices_in_faces_temp)
-                    # 🎯 WICHTIG: Die ersten N additional_vertices sind Ecken (N = Anzahl Polygon-Ecken)
-                    # Die restlichen additional_vertices sind Randpunkte
-                    corner_vertices_count = min(len(surface_points), len(additional_vertices_array)) if len(surface_points) > 0 and len(additional_vertices_array) > 0 else 0
-                    edge_vertices_start_idx = corner_vertices_count
-                    edge_corner_connections = 0  # Initialisiere Zähler für Edge-Corner-Verbindungen
-                    edge_to_edge_triangles = 0  # Initialisiere Zähler für Edge-to-Edge-Triangles
-                    
-                    if len(surface_points) >= 3 and len(additional_vertices) > 0:
-                        # Bestimme Koordinatensystem basierend auf Orientierung
-                        if geom.orientation in ("planar", "sloped"):
-                            polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                            polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                            
-                            # Finde Randpunkte (in mask_flat aber nicht in mask_strict_flat oder additional_vertices)
-                            boundary_mask = mask_flat & (~mask_strict_flat)
-                            boundary_indices_local = np.where(boundary_mask)[0]
-                            
-                            # 🎯 WICHTIG: corner_vertices_count wurde bereits oben definiert
-                            n_poly = len(polygon_x)
-                            
-                            # Für jeden Eckpunkt: Finde benachbarte Randpunkte entlang der Kanten
-                            for corner_idx in range(corner_vertices_count):
-                                if corner_idx >= len(additional_vertices_array):
-                                    continue
-                                corner_vertex = additional_vertices_array[corner_idx]
-                                corner_vertex_idx = additional_vertex_start_idx + corner_idx
-                                corner_x, corner_y = corner_vertex[0], corner_vertex[1]
-                                
-                                # Finde die zwei Kanten, die an diesem Eckpunkt anliegen
-                                corner_in_polygon = False
-                                corner_poly_idx = -1
-                                
-                                for i in range(n_poly):
-                                    if abs(polygon_x[i] - corner_x) < 1e-9 and abs(polygon_y[i] - corner_y) < 1e-9:
-                                        corner_in_polygon = True
-                                        corner_poly_idx = i
-                                        break
-                                
-                                if corner_in_polygon:
-                                    # Finde benachbarte Randpunkte entlang der zwei Kanten
-                                    edge_threshold = resolution * 1.5  # Toleranz für "auf der Kante"
-                                    
-                                    # Kante 1: Vom Eckpunkt zum nächsten Polygon-Punkt
-                                    next_poly_idx = (corner_poly_idx + 1) % n_poly
-                                    edge1_start = np.array([corner_x, corner_y])
-                                    edge1_end = np.array([polygon_x[next_poly_idx], polygon_y[next_poly_idx]])
-                                    
-                                    # Kante 2: Vom vorherigen Polygon-Punkt zum Eckpunkt
-                                    prev_poly_idx = (corner_poly_idx - 1 + n_poly) % n_poly
-                                    edge2_start = np.array([polygon_x[prev_poly_idx], polygon_y[prev_poly_idx]])
-                                    edge2_end = np.array([corner_x, corner_y])
-                                    
-                                    # Finde Randpunkte auf beiden Kanten
-                                    edge_points_on_edge1 = []
-                                    edge_points_on_edge2 = []
-                                    
-                                    # 🎯 PRÜFE GRID-PUNKTE AUF DEM RAND
-                                    for boundary_idx in boundary_indices_local:
-                                        if boundary_idx >= len(all_vertices):
-                                            continue
-                                        boundary_vertex = all_vertices[boundary_idx]
-                                        bx, by = boundary_vertex[0], boundary_vertex[1]
-                                        b_point = np.array([bx, by])
-                                        
-                                        # Prüfe ob auf Kante 1
-                                        edge1_vec = edge1_end - edge1_start
-                                        edge1_len = np.linalg.norm(edge1_vec)
-                                        if edge1_len > 1e-9:
-                                            edge1_unit = edge1_vec / edge1_len
-                                            to_point = b_point - edge1_start
-                                            t = np.clip(np.dot(to_point, edge1_unit) / edge1_len, 0.0, 1.0)
-                                            proj_point = edge1_start + t * edge1_vec
-                                            dist_to_edge = np.linalg.norm(b_point - proj_point)
-                                            
-                                            if dist_to_edge < edge_threshold and 0.05 < t < 0.95:  # Nicht zu nah am Eckpunkt
-                                                edge_points_on_edge1.append((boundary_idx, dist_to_edge, t))
-                                        
-                                        # Prüfe ob auf Kante 2
-                                        edge2_vec = edge2_end - edge2_start
-                                        edge2_len = np.linalg.norm(edge2_vec)
-                                        if edge2_len > 1e-9:
-                                            edge2_unit = edge2_vec / edge2_len
-                                            to_point = b_point - edge2_start
-                                            t = np.clip(np.dot(to_point, edge2_unit) / edge2_len, 0.0, 1.0)
-                                            proj_point = edge2_start + t * edge2_vec
-                                            dist_to_edge = np.linalg.norm(b_point - proj_point)
-                                            
-                                            if dist_to_edge < edge_threshold and 0.05 < t < 0.95:  # Nicht zu nah am Eckpunkt
-                                                edge_points_on_edge2.append((boundary_idx, dist_to_edge, t))
-                                    
-                                    # 🎯 PRÜFE RANDPUNKTE ALS ADDITIONAL_VERTICES
-                                    for edge_vertex_idx in range(edge_vertices_start_idx, len(additional_vertices_array)):
-                                        edge_vertex = additional_vertices_array[edge_vertex_idx]
-                                        edge_vertex_global_idx = additional_vertex_start_idx + edge_vertex_idx
-                                        ex, ey = edge_vertex[0], edge_vertex[1]
-                                        e_point = np.array([ex, ey])
-                                        
-                                        # Prüfe ob auf Kante 1
-                                        edge1_vec = edge1_end - edge1_start
-                                        edge1_len = np.linalg.norm(edge1_vec)
-                                        if edge1_len > 1e-9:
-                                            edge1_unit = edge1_vec / edge1_len
-                                            to_point = e_point - edge1_start
-                                            t = np.clip(np.dot(to_point, edge1_unit) / edge1_len, 0.0, 1.0)
-                                            proj_point = edge1_start + t * edge1_vec
-                                            dist_to_edge = np.linalg.norm(e_point - proj_point)
-                                            
-                                            if dist_to_edge < edge_threshold and 0.05 < t < 0.95:  # Nicht zu nah am Eckpunkt
-                                                edge_points_on_edge1.append((edge_vertex_global_idx, dist_to_edge, t))
-                                        
-                                        # Prüfe ob auf Kante 2
-                                        edge2_vec = edge2_end - edge2_start
-                                        edge2_len = np.linalg.norm(edge2_vec)
-                                        if edge2_len > 1e-9:
-                                            edge2_unit = edge2_vec / edge2_len
-                                            to_point = e_point - edge2_start
-                                            t = np.clip(np.dot(to_point, edge2_unit) / edge2_len, 0.0, 1.0)
-                                            proj_point = edge2_start + t * edge2_vec
-                                            dist_to_edge = np.linalg.norm(e_point - proj_point)
-                                            
-                                            if dist_to_edge < edge_threshold and 0.05 < t < 0.95:  # Nicht zu nah am Eckpunkt
-                                                edge_points_on_edge2.append((edge_vertex_global_idx, dist_to_edge, t))
-                                    
-                                    # Sortiere Randpunkte nach Abstand zum Eckpunkt entlang der Kante
-                                    edge_points_on_edge1.sort(key=lambda x: x[2])  # Sortiere nach t (Position auf Kante)
-                                    edge_points_on_edge2.sort(key=lambda x: x[2], reverse=True)  # Sortiere nach t (rückwärts)
-                                    
-                                    # Verbinde Eckpunkt mit nächsten 1-2 Randpunkten auf jeder Kante
-                                    max_points_per_edge = 2  # Maximal 2 Randpunkte pro Kante
-                                    connected_points = []
-                                    
-                                    for idx, dist, t in edge_points_on_edge1[:max_points_per_edge]:
-                                        connected_points.append(idx)
-                                    for idx, dist, t in edge_points_on_edge2[:max_points_per_edge]:
-                                        connected_points.append(idx)
-                                    
-                                    # Erstelle Dreiecke: Eckpunkt + 2 benachbarte Randpunkte
-                                    if len(connected_points) >= 2:
-                                        # Verbinde erste beiden Punkte mit Eckpunkt
-                                        faces_list.extend([3, corner_vertex_idx, connected_points[0], connected_points[1]])
-                                        edge_corner_connections += 1
-                                        
-                                        # Verbinde weitere Punkte paarweise
-                                        for i in range(1, len(connected_points) - 1):
-                                            faces_list.extend([3, corner_vertex_idx, connected_points[i], connected_points[i+1]])
-                                            edge_corner_connections += 1
-                                    elif len(connected_points) == 1:
-                                        # Nur ein Randpunkt: Finde nächsten anderen aktiven Punkt
-                                        if len(vertex_indices_in_faces_set) > 0:
-                                            # 🎯 SICHERHEIT: Filtere nur gültige Indizes
-                                            valid_indices = [idx for idx in vertex_indices_in_faces_set if idx < len(all_vertices)]
-                                            if len(valid_indices) > 0 and connected_points[0] < len(all_vertices):
-                                                other_vertices = all_vertices[valid_indices]
-                                                distances = np.linalg.norm(other_vertices - all_vertices[connected_points[0]], axis=1)
-                                                nearest_other_idx = valid_indices[np.argmin(distances)]
-                                                faces_list.extend([3, corner_vertex_idx, connected_points[0], nearest_other_idx])
-                                            edge_corner_connections += 1
-                        
-                        # 🎯 NEU: EXPLIZITE TRIANGULATION ENTlang DER RANDLINIEN
-                        # Verbinde benachbarte Randpunkte entlang jeder Polygon-Kante miteinander
-                        # Dies stellt sicher, dass alle Randpunkte vollständig trianguliert werden
-                        # NUR wenn manuelle Triangulation verwendet wird (nicht bei Delaunay)
-                        if len(additional_vertices) > edge_vertices_start_idx:
-                            # Sammle alle Randpunkte (additional_vertices ab edge_vertices_start_idx)
-                            edge_vertices_list = []
-                            for i in range(edge_vertices_start_idx, len(additional_vertices_array)):
-                                edge_vertex = additional_vertices_array[i]
-                                edge_vertex_global_idx = additional_vertex_start_idx + i
-                                # 🎯 SICHERHEIT: Prüfe ob Index gültig ist
-                                if edge_vertex_global_idx < len(all_vertices):
-                                    edge_vertices_list.append((edge_vertex_global_idx, edge_vertex))
-                            
-                            if len(edge_vertices_list) > 0 and len(surface_points) >= 3:
-                                # Bestimme Koordinatensystem basierend auf Orientierung
-                                if geom.orientation in ("planar", "sloped"):
-                                    polygon_x = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                                    polygon_y = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                                    
-                                    # Für jede Polygon-Kante: Finde Randpunkte auf dieser Kante und verbinde sie
-                                    n_poly = len(polygon_x)
-                                    for edge_idx in range(n_poly):
-                                        # Kante von Polygon-Punkt edge_idx zu (edge_idx + 1)
-                                        edge_start = np.array([polygon_x[edge_idx], polygon_y[edge_idx]])
-                                        edge_end = np.array([polygon_x[(edge_idx + 1) % n_poly], polygon_y[(edge_idx + 1) % n_poly]])
-                                        
-                                        # Finde alle Randpunkte auf dieser Kante
-                                        edge_points_on_this_edge = []
-                                        edge_threshold = resolution * 0.5  # Toleranz für "auf der Kante"
-                                        
-                                        for edge_vertex_global_idx, edge_vertex in edge_vertices_list:
-                                            ex, ey = edge_vertex[0], edge_vertex[1]
-                                            e_point = np.array([ex, ey])
-                                            
-                                            # Prüfe ob Randpunkt auf dieser Kante liegt
-                                            edge_vec = edge_end - edge_start
-                                            edge_len = np.linalg.norm(edge_vec)
-                                            if edge_len > 1e-9:
-                                                edge_unit = edge_vec / edge_len
-                                                to_point = e_point - edge_start
-                                                t = np.clip(np.dot(to_point, edge_unit) / edge_len, 0.0, 1.0)
-                                                proj_point = edge_start + t * edge_vec
-                                                dist_to_edge = np.linalg.norm(e_point - proj_point)
-                                                
-                                                if dist_to_edge < edge_threshold:
-                                                    edge_points_on_this_edge.append((edge_vertex_global_idx, t, dist_to_edge))
-                                        
-                                        # Sortiere Randpunkte nach Position auf der Kante (t-Wert)
-                                        edge_points_on_this_edge.sort(key=lambda x: x[1])
-                                        
-                                        # Verbinde benachbarte Randpunkte miteinander
-                                        # Erstelle Dreiecke: Randpunkt i, Randpunkt i+1, und nächstgelegener Grid-Punkt
-                                        for i in range(len(edge_points_on_this_edge) - 1):
-                                            idx1, t1, dist1 = edge_points_on_this_edge[i]
-                                            idx2, t2, dist2 = edge_points_on_this_edge[i + 1]
-                                            
-                                            # 🎯 SICHERHEIT: Prüfe ob Indizes gültig sind
-                                            if idx1 >= len(all_vertices) or idx2 >= len(all_vertices):
-                                                continue
-                                            
-                                            # Finde nächstgelegenen aktiven Grid-Punkt für das Dreieck
-                                            # Verwende einen Punkt, der bereits in der Triangulation ist
-                                            if len(vertex_indices_in_faces_set) > 0:
-                                                # Finde den nächstgelegenen Punkt, der nicht einer der beiden Randpunkte ist
-                                                other_indices = [idx for idx in vertex_indices_in_faces_set 
-                                                               if idx != idx1 and idx != idx2 and idx < len(all_vertices)]
-                                                if len(other_indices) > 0:
-                                                    other_vertices = all_vertices[other_indices]
-                                                    edge_vertex1 = all_vertices[idx1]
-                                                    edge_vertex2 = all_vertices[idx2]
-                                                    
-                                                    # Berechne Mittelpunkt der beiden Randpunkte
-                                                    midpoint = (edge_vertex1 + edge_vertex2) / 2.0
-                                                    
-                                                    # Finde nächstgelegenen Punkt zum Mittelpunkt
-                                                    distances = np.linalg.norm(other_vertices - midpoint, axis=1)
-                                                    nearest_idx = other_indices[np.argmin(distances)]
-                                                    
-                                                    # Erstelle Dreieck nur wenn Abstand nicht zu groß
-                                                    max_edge_distance = resolution * 2.0
-                                                    if np.min(distances) <= max_edge_distance:
-                                                        faces_list.extend([3, idx1, idx2, nearest_idx])
-                                                        edge_to_edge_triangles += 1
-                                                        # Füge Indizes zu vertex_indices_in_faces_set hinzu
-                                                        vertex_indices_in_faces_set.add(int(idx1))
-                                                        vertex_indices_in_faces_set.add(int(idx2))
-                                        
-                                        # Verbinde auch den ersten und letzten Randpunkt mit den Eckpunkten
-                                        if len(edge_points_on_this_edge) > 0:
-                                            # Erster Randpunkt: Verbinde mit Start-Eckpunkt
-                                            first_edge_idx, first_t, first_dist = edge_points_on_this_edge[0]
-                                            # Finde Start-Eckpunkt in additional_vertices
-                                            start_corner_idx = None
-                                            for corner_idx in range(corner_vertices_count):
-                                                if corner_idx < len(additional_vertices_array):
-                                                    corner_vertex = additional_vertices_array[corner_idx]
-                                                    corner_x, corner_y = corner_vertex[0], corner_vertex[1]
-                                                    if abs(corner_x - edge_start[0]) < 1e-9 and abs(corner_y - edge_start[1]) < 1e-9:
-                                                        start_corner_idx = additional_vertex_start_idx + corner_idx
-                                                        break
-                                            
-                                            # Letzter Randpunkt: Verbinde mit End-Eckpunkt
-                                            last_edge_idx, last_t, last_dist = edge_points_on_this_edge[-1]
-                                            # Finde End-Eckpunkt in additional_vertices
-                                            end_corner_idx = None
-                                            for corner_idx in range(corner_vertices_count):
-                                                if corner_idx < len(additional_vertices_array):
-                                                    corner_vertex = additional_vertices_array[corner_idx]
-                                                    corner_x, corner_y = corner_vertex[0], corner_vertex[1]
-                                                    if abs(corner_x - edge_end[0]) < 1e-9 and abs(corner_y - edge_end[1]) < 1e-9:
-                                                        end_corner_idx = additional_vertex_start_idx + corner_idx
-                                                        break
-                                            
-                                            # Erstelle Dreiecke mit Eckpunkten und Randpunkten
-                                            if start_corner_idx is not None and len(edge_points_on_this_edge) > 0:
-                                                # 🎯 SICHERHEIT: Prüfe ob Indizes gültig sind
-                                                if first_edge_idx >= len(all_vertices) or start_corner_idx >= len(all_vertices):
-                                                    pass  # Überspringe wenn Indizes ungültig
-                                                elif len(vertex_indices_in_faces_set) > 0:
-                                                    other_indices = [idx for idx in vertex_indices_in_faces_set 
-                                                                   if idx != first_edge_idx and idx != start_corner_idx and idx < len(all_vertices)]
-                                                    if len(other_indices) > 0:
-                                                        other_vertices = all_vertices[other_indices]
-                                                        edge_vertex1 = all_vertices[first_edge_idx]
-                                                        corner_vertex = all_vertices[start_corner_idx]
-                                                        midpoint = (edge_vertex1 + corner_vertex) / 2.0
-                                                        distances = np.linalg.norm(other_vertices - midpoint, axis=1)
-                                                        nearest_idx = other_indices[np.argmin(distances)]
-                                                        max_edge_distance = resolution * 2.0
-                                                        if np.min(distances) <= max_edge_distance:
-                                                            faces_list.extend([3, first_edge_idx, start_corner_idx, nearest_idx])
-                                                            edge_to_edge_triangles += 1
-                                                            vertex_indices_in_faces_set.add(int(first_edge_idx))
-                                            
-                                            if end_corner_idx is not None and len(edge_points_on_this_edge) > 0:
-                                                # 🎯 SICHERHEIT: Prüfe ob Indizes gültig sind
-                                                if last_edge_idx >= len(all_vertices) or end_corner_idx >= len(all_vertices):
-                                                    pass  # Überspringe wenn Indizes ungültig
-                                                elif len(vertex_indices_in_faces_set) > 0:
-                                                    other_indices = [idx for idx in vertex_indices_in_faces_set 
-                                                                   if idx != last_edge_idx and idx != end_corner_idx and idx < len(all_vertices)]
-                                                    if len(other_indices) > 0:
-                                                        other_vertices = all_vertices[other_indices]
-                                                        edge_vertex2 = all_vertices[last_edge_idx]
-                                                        corner_vertex = all_vertices[end_corner_idx]
-                                                        midpoint = (edge_vertex2 + corner_vertex) / 2.0
-                                                        distances = np.linalg.norm(other_vertices - midpoint, axis=1)
-                                                        nearest_idx = other_indices[np.argmin(distances)]
-                                                        max_edge_distance = resolution * 2.0
-                                                        if np.min(distances) <= max_edge_distance:
-                                                            faces_list.extend([3, last_edge_idx, end_corner_idx, nearest_idx])
-                                                            edge_to_edge_triangles += 1
-                                                            vertex_indices_in_faces_set.add(int(last_edge_idx))
-                            
-                    
-                    if len(faces_list) > 0:
-                        # 🎯 OPTIMIERUNG: Nur Vertices innerhalb der Maske verwenden
-                        # Sammle alle eindeutigen Vertex-Indizes, die in Faces verwendet werden
-                        faces_array_temp = np.array(faces_list, dtype=np.int64)
-                        # Extrahiere Vertex-Indices aus Faces (Format: [n, v1, v2, v3, n, v4, v5, v6, ...])
-                        vertex_indices_in_faces = []
-                        for i in range(0, len(faces_list), 4):
-                            if i + 3 < len(faces_list):
-                                n_verts = faces_list[i]
-                                if n_verts == 3:
-                                    vertex_indices_in_faces.extend(faces_list[i+1:i+4])
-                        
-                        # 🎯 RANDPUNKTE INKLUDIEREN: Füge alle aktiven Masken-Punkte hinzu, auch wenn sie nicht in Faces sind
-                        # Dies stellt sicher, dass alle Randpunkte als Vertices erstellt werden
-                        vertex_indices_in_faces_set = set(vertex_indices_in_faces)
-                        
-                        # Prüfe, welche aktiven Masken-Punkte nicht in Faces verwendet werden
-                        # (Dies kann Randpunkte einschließen, auch wenn sie in mask_strict sind)
-                        active_mask_indices = np.where(mask_flat)[0]
-                        active_not_in_faces = [idx for idx in active_mask_indices if idx not in vertex_indices_in_faces_set]
-                        
-                        
-                        # 🎯 OPTIMIERT: Erstelle Faces für isolierte aktive Punkte nur wenn nötig
-                        # Verbinde isolierte Punkte (Randpunkte) explizit mit benachbarten Punkten
-                        # und Eckpunkten entlang der Surface-Linien
-                        faces_created_for_isolated = 0
-                        isolated_added_to_vertices = 0
-                        edge_to_corner_triangles = 0  # Dreiecke zwischen Randpunkten und Eckpunkten
-                        
-                        if len(active_not_in_faces) > 0:
-                            # Für jeden isolierten aktiven Punkt: Finde den nächstgelegenen aktiven Punkt, der bereits in Faces ist
-                            # und erstelle ein kleines Dreieck, damit der Punkt gerendert wird
-                            for isolated_idx in active_not_in_faces:
-                                # 🎯 SICHERHEIT: Prüfe ob Index gültig ist
-                                if isolated_idx >= len(all_vertices):
-                                    continue
-                                
-                                isolated_vertex = all_vertices[isolated_idx]
-                                
-                                # Finde nächstgelegenen aktiven Punkt, der bereits in Faces verwendet wird
-                                if len(vertex_indices_in_faces_set) >= 2:
-                                    # 🎯 SICHERHEIT: Filtere nur gültige Indizes
-                                    valid_indices = [idx for idx in vertex_indices_in_faces_set if idx < len(all_vertices)]
-                                    if len(valid_indices) >= 2:
-                                    # Verwende Punkte, die bereits in Faces sind
-                                        vertices_in_faces = all_vertices[valid_indices]
-                                    
-                                    # Berechne Abstände
-                                    distances = np.sqrt(np.sum((vertices_in_faces - isolated_vertex)**2, axis=1))
-                                    nearest_idx_in_faces = valid_indices[np.argmin(distances)]
-                                    
-                                    # Finde einen zweiten Punkt, um ein Dreieck zu erstellen
-                                    # Verwende den nächstgelegenen Punkt, der nicht der erste ist
-                                    other_indices = [idx for idx in valid_indices if idx != nearest_idx_in_faces]
-                                    if len(other_indices) > 0:
-                                            other_vertices = all_vertices[other_indices]
-                                            distances2 = np.sqrt(np.sum((other_vertices - isolated_vertex)**2, axis=1))
-                                            second_idx = other_indices[np.argmin(distances2)]
-                                            
-                                            # 🎯 OPTIMIERT: Erstelle Dreieck nur wenn Abstand nicht zu groß
-                                            max_isolated_distance = resolution * 2.0  # Maximaler Abstand für Verbindung
-                                            isolated_distance = np.linalg.norm(isolated_vertex - all_vertices[nearest_idx_in_faces])
-                                            
-                                            if isolated_distance <= max_isolated_distance:
-                                                # Erstelle Dreieck: isolierter Punkt + 2 benachbarte Punkte
-                                                faces_list.extend([3, isolated_idx, nearest_idx_in_faces, second_idx])
-                                            vertex_indices_in_faces_set.add(int(isolated_idx))
-                                            faces_created_for_isolated += 1
-                                            isolated_added_to_vertices += 1
-                                elif len(vertex_indices_in_faces_set) == 1:
-                                    # Falls nur 1 Punkt in Faces ist, verwende diesen Punkt zweimal für ein degeneriertes Dreieck
-                                    # (PyVista kann damit umgehen)
-                                    single_idx = list(vertex_indices_in_faces_set)[0]
-                                    faces_list.extend([3, isolated_idx, single_idx, single_idx])
-                                    vertex_indices_in_faces_set.add(int(isolated_idx))
-                                    faces_created_for_isolated += 1
-                                    isolated_added_to_vertices += 1
-                        
-                        
-                        # 🎯 WICHTIG: Füge ALLE aktiven Masken-Punkte hinzu (inkl. Randpunkte)
-                        # Dies stellt sicher, dass alle Punkte als Vertices erstellt werden, auch wenn sie nicht in Faces sind
-                        active_mask_indices = np.where(mask_flat)[0]
-                        for idx in active_mask_indices:
-                            if idx < len(all_vertices):  # Sicherstellen, dass Index gültig ist
-                                vertex_indices_in_faces_set.add(int(idx))
-                        
-                        # Füge auch zusätzliche Vertices hinzu (Polygon-Ecken und Randpunkte)
-                        # 🎯 WICHTIG: additional_vertices wurden bereits zu all_vertices hinzugefügt (Zeile 3371)
-                        # Daher ist len(all_vertices) = base_vertex_count + len(additional_vertices)
-                        if len(additional_vertices) > 0:
-                            for i in range(len(additional_vertices)):
-                                additional_idx = base_vertex_count + i
-                                if additional_idx < len(all_vertices):  # all_vertices enthält bereits additional_vertices
-                                    vertex_indices_in_faces_set.add(int(additional_idx))
-                        
-                        # Prüfe, ob alle aktiven Masken-Punkte jetzt in vertex_indices_in_faces_set sind
-                        missing_indices = [idx for idx in active_mask_indices if idx not in vertex_indices_in_faces_set]
-                        
-                        all_vertex_indices = np.array(sorted(vertex_indices_in_faces_set), dtype=np.int64)
-                        
-                        # Erstelle Mapping: alter Index → neuer Index
-                        old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
-                        
-                        # 🎯 OPTIMIERUNG: Erstelle vorläufiges vertex_source_indices-Mapping
-                        # Vor der Deduplizierung: Grid-Vertices → Grid-Index, Additional-Vertices → Additional-Index
-                        n_grid_vertices_selected = 0
-                        n_additional_vertices_selected = 0
-                        vertex_source_indices_pre_dedup = []
-                        
-                        # Erstelle nur die Vertices, die tatsächlich verwendet werden
-                        # Für zusätzliche Vertices: Sie sind nach base_vertex_count, also müssen wir sie separat handhaben
-                        if len(all_vertex_indices) > 0:
-                            # Trenne normale Grid-Vertices von zusätzlichen Vertices
-                            grid_vertex_indices = all_vertex_indices[all_vertex_indices < base_vertex_count]
-                            additional_vertex_indices = all_vertex_indices[all_vertex_indices >= base_vertex_count]
-                            
-                            # Erstelle Vertices aus Grid-Punkten
-                            if len(grid_vertex_indices) > 0:
-                                grid_vertices = all_vertices[grid_vertex_indices]
-                                n_grid_vertices_selected = len(grid_vertices)
-                                # Mapping: Grid-Vertex → Grid-Index (in surface_mask_flat)
-                                for old_idx in grid_vertex_indices:
-                                    new_idx = old_to_new_index[old_idx]
-                                    # Grid-Vertex: Index = Position in surface_mask_flat
-                                    vertex_source_indices_pre_dedup.append(('grid', old_idx))
-                            else:
-                                grid_vertices = np.array([], dtype=float).reshape(0, 3)
-                            
-                            # Erstelle Vertices aus zusätzlichen Vertices (Polygon-Ecken)
-                            if len(additional_vertex_indices) > 0 and len(additional_vertices_array) > 0:
-                                additional_indices_local = additional_vertex_indices - base_vertex_count
-                                additional_indices_local = additional_indices_local[additional_indices_local < len(additional_vertices_array)]
-                                if len(additional_indices_local) > 0:
-                                    additional_vertices_selected = additional_vertices_array[additional_indices_local]
-                                    n_additional_vertices_selected = len(additional_vertices_selected)
-                                    # Mapping: Additional-Vertex → Additional-Index (in additional_vertices_array)
-                                    for old_idx in additional_vertex_indices:
-                                        new_idx = old_to_new_index[old_idx]
-                                        local_idx = old_idx - base_vertex_count
-                                        if 0 <= local_idx < len(additional_vertices_array):
-                                            vertex_source_indices_pre_dedup.append(('additional', local_idx))
-                                else:
-                                    additional_vertices_selected = np.array([], dtype=float).reshape(0, 3)
-                            else:
-                                additional_vertices_selected = np.array([], dtype=float).reshape(0, 3)
-                            
-                            # Kombiniere beide
-                            if len(grid_vertices) > 0 and len(additional_vertices_selected) > 0:
-                                triangulated_vertices = np.vstack([grid_vertices, additional_vertices_selected])
-                            elif len(grid_vertices) > 0:
-                                triangulated_vertices = grid_vertices
-                            elif len(additional_vertices_selected) > 0:
-                                triangulated_vertices = additional_vertices_selected
-                            else:
-                                triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
-                        else:
-                            triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
-                            vertex_source_indices_pre_dedup = []
-                        
-                        
-                        # Mappe Face-Indizes auf neue Vertex-Indizes
-                        faces_list_mapped = []
-                        missing_indices_count = 0
-                        for i in range(0, len(faces_list), 4):
-                            if i + 3 < len(faces_list):
-                                n_verts = faces_list[i]
-                                if n_verts == 3:
-                                    v1_old = faces_list[i+1]
-                                    v2_old = faces_list[i+2]
-                                    v3_old = faces_list[i+3]
-                                    # Prüfe ob alle Indizes in old_to_new_index vorhanden sind
-                                    if v1_old in old_to_new_index and v2_old in old_to_new_index and v3_old in old_to_new_index:
-                                        faces_list_mapped.extend([
-                                            3,
-                                            old_to_new_index[v1_old],
-                                            old_to_new_index[v2_old],
-                                            old_to_new_index[v3_old]
-                                        ])
-                                    else:
-                                        missing_indices_count += 1
-                        
-                        if len(faces_list_mapped) > 0:
-                            triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
-                            triangulated_success = True
-                            
-                        else:
-                            # Keine Faces erstellt - Triangulation fehlgeschlagen
-                            triangulated_faces = np.array([], dtype=np.int64)
-                            triangulated_success = False
-                        
-                        
-                        
-                        
-                        n_faces = len(faces_list_mapped) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
-                        n_vertices_used = len(all_vertex_indices)  # Anzahl der tatsächlich verwendeten Vertices
-                        # Berechne erwartete Faces nur wenn manuelle Triangulation verwendet wurde
-                        # (bei Delaunay ist diese Berechnung nicht relevant)
-                        if not use_delaunay_triangulation:
-                            expected_faces = active_quads * 2 + partial_quads  # Volle Quadrate: 2 Dreiecke, Rand-Quadrate: 1 Dreieck
-                        else:
-                            expected_faces = 0  # Bei Delaunay wird diese Statistik nicht verwendet
-                        
-                        # 🎯 DEDUPLIKATION: Entferne doppelte Vertices
-                        vertices_before_dedup = int(len(triangulated_vertices)) if triangulated_vertices is not None and triangulated_vertices.size > 0 else 0
-                        
-                        
-                        # 🎯 OPTIMIERUNG: Speichere Vertex-Positionen vor Deduplizierung für Mapping
-                        vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
-                        
-                        try:
-                            # Verwende builder._deduplicate_vertices_and_faces direkt
-                            triangulated_vertices, triangulated_faces = self._deduplicate_vertices_and_faces(
-                                triangulated_vertices,
-                                triangulated_faces,
-                                actual_resolution,
-                                geom.surface_id
-                            )
-                            vertices_after_dedup = int(len(triangulated_vertices)) if triangulated_vertices is not None and triangulated_vertices.size > 0 else 0
-                            vertices_removed = vertices_before_dedup - vertices_after_dedup
-                            
-                            # 🎯 OPTIMIERUNG: Erstelle vertex_source_indices nach Deduplizierung
-                            # Mapping: Neuer Vertex-Index → Source-Index
-                            # Grid-Vertices: Source-Index = Grid-Index in surface_mask_flat (0..N-1)
-                            # Additional-Vertices: Source-Index = N + Additional-Index (N..N+M-1, wobei N = base_vertex_count)
-                            vertex_source_indices = None
-                            if vertices_after_dedup > 0 and len(vertex_source_indices_pre_dedup) > 0 and len(vertices_before_dedup_array) > 0:
-                                try:
-                                    from scipy.spatial.distance import cdist
-                                    # Finde für jeden deduplizierten Vertex den nächstgelegenen Vertex vor Deduplizierung
-                                    distances = cdist(triangulated_vertices, vertices_before_dedup_array)
-                                    nearest_pre_dedup_indices = np.argmin(distances, axis=1)
-                                    
-                                    # Erstelle Mapping: Neuer Index → Source-Index
-                                    vertex_source_indices_mapping = []
-                                    n_grid_total = base_vertex_count
-                                    
-                                    for new_idx in range(vertices_after_dedup):
-                                        pre_dedup_idx = nearest_pre_dedup_indices[new_idx]
-                                        if pre_dedup_idx < len(vertex_source_indices_pre_dedup):
-                                            mapping_type, source_idx = vertex_source_indices_pre_dedup[pre_dedup_idx]
-                                            if mapping_type == 'grid':
-                                                # Grid-Vertex: Index = Grid-Index in surface_mask_flat (0..N-1)
-                                                vertex_source_indices_mapping.append(int(source_idx))
-                                            else:  # 'additional'
-                                                # Additional-Vertex: Index = N + Additional-Index (N..N+M-1)
-                                                vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
-                                        else:
-                                            # Fallback: Verwende Grid-Index 0
-                                            vertex_source_indices_mapping.append(0)
-                                    
-                                    vertex_source_indices = np.array(vertex_source_indices_mapping, dtype=np.int64)
-                                except Exception as e:
-                                    # Bei Fehler: Kein Mapping (wird im Plot interpoliert)
-                                    vertex_source_indices = None
-                            else:
-                                vertex_source_indices = None
-                            
-                            
-                        except Exception as dedupe_error:
-                            # Bei Fehler: Original-Vertices/Faces behalten
+            if plane_model_local:
+                try:
+                    z_old_span = float(Z_grid.max()) - float(Z_grid.min())
+                    Z_eval = _evaluate_plane_on_grid(plane_model_local, X_grid, Y_grid)
+                    if Z_eval is not None and Z_eval.shape == X_grid.shape:
+                        Z_grid = Z_eval
+                        zmin, zmax = float(Z_grid.min()), float(Z_grid.max())
+                        z_span = zmax - zmin
+                        # Nur Warnung ausgeben, wenn Problem erkannt wird
+                        if geom.orientation == "sloped" and z_span < 0.01:
                             pass
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                triangulated_success = False
+                except Exception as e:
+                    pass
+        
+        return Z_grid
+    
+    def generate_per_surface_process_and_create_grids_calculate_resolution(
+        self,
+        sound_field_x: np.ndarray,
+        sound_field_y: np.ndarray,
+        resolution: float,
+        ) -> float:
+        """Berechnet tatsächliche Resolution (kann adaptiv sein)."""
+        if len(sound_field_x) > 1 and len(sound_field_y) > 1:
+            actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
+            actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
+            return (actual_resolution_x + actual_resolution_y) / 2.0
+        else:
+            return resolution
+    
+    def generate_per_surface_process_and_create_grids_create_triangulation(
+        self,
+        geom: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        surface_mask_strict: np.ndarray,
+        additional_vertices: np.ndarray,
+        actual_resolution: float,
+        ) -> Dict[str, Any]:
+        """Erstellt Triangulation für SurfaceGrid."""
+        # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
+        # 🎯 NEU: Verwende Delaunay-Triangulation für konsistente, überschneidungsfreie Triangulation
+        triangulated_vertices = None
+        triangulated_faces = None
+        triangulated_success = False
+        vertex_source_indices: Optional[np.ndarray] = None
+        
+        # Konvertiere additional_vertices zu numpy array
+        if not isinstance(additional_vertices, np.ndarray):
+            additional_vertices_array = np.array(additional_vertices, dtype=float) if additional_vertices is not None and hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+        else:
+            additional_vertices_array = additional_vertices
+        
+        try:
+            # 1. Bereite Vertices vor
+            (all_vertices, base_vertex_count, additional_vertex_start_idx, mask_flat, mask_strict_flat) = \
+                self.generate_per_surface_process_and_create_grids_create_triangulation_prepare_vertices(
+                    X_grid, Y_grid, Z_grid, surface_mask_strict, additional_vertices_array
+                )
             
+            if not np.any(mask_flat):
+                return {
+                    'triangulated_vertices': None,
+                    'triangulated_faces': None,
+                    'triangulated_success': False,
+                    'vertex_source_indices': None,
+                    'additional_vertices_final': additional_vertices_array,
+                }
             
-            # Speichere additional_vertices (wenn vorhanden)
-            # 🎯 FIX: Verwende additional_vertices_array statt additional_vertices, da additional_vertices_array bereits als numpy-Array erstellt wurde
-            # und additional_vertices möglicherweise überschrieben wurde
-            additional_vertices_final = None
+            # 2. Erstelle Delaunay-Triangulation
+            faces_list = self.generate_per_surface_process_and_create_grids_create_triangulation_delaunay(
+                geom, all_vertices, mask_flat, mask_strict_flat, base_vertex_count, additional_vertex_start_idx, additional_vertices_array
+            )
             
-            # 🎯 FIX: Verwende additional_vertices_array statt additional_vertices
-            # additional_vertices_array wurde bereits oben als numpy-Array erstellt und sollte korrekt sein
-            if 'additional_vertices_array' in locals() and isinstance(additional_vertices_array, np.ndarray):
-                if additional_vertices_array.size > 0:
-                    additional_vertices_final = additional_vertices_array
+            if len(faces_list) == 0:
+                raise RuntimeError(f"Keine Faces für Surface {geom.surface_id} generiert. Delaunay-Triangulation hat keine Dreiecke erstellt.")
+            
+            # 3. Verarbeite Vertices und Faces (Mapping, Deduplizierung)
+            triangulation_result = self.generate_per_surface_process_and_create_grids_create_triangulation_process_vertices(
+                geom, all_vertices, faces_list, mask_flat, base_vertex_count, additional_vertices_array, additional_vertex_start_idx, actual_resolution
+            )
+            
+            return {
+                'triangulated_vertices': triangulation_result['triangulated_vertices'],
+                'triangulated_faces': triangulation_result['triangulated_faces'],
+                'triangulated_success': triangulation_result['triangulated_success'],
+                'vertex_source_indices': triangulation_result['vertex_source_indices'],
+                'additional_vertices_final': additional_vertices_array,
+            }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {
+                'triangulated_vertices': None,
+                'triangulated_faces': None,
+                'triangulated_success': False,
+                'vertex_source_indices': None,
+                'additional_vertices_final': additional_vertices_array,
+            }
+    
+    def generate_per_surface_process_and_create_grids_create_triangulation_prepare_vertices(
+        self,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask_strict: np.ndarray,
+        additional_vertices_array: np.ndarray,
+        ) -> Tuple[np.ndarray, int, int, np.ndarray, np.ndarray]:
+        """Bereitet Vertices für Triangulation vor."""
+        ny, nx = X_grid.shape
+        mask_flat = surface_mask_strict.ravel()
+        mask_strict_flat = surface_mask_strict.ravel()
+        
+        # Erstelle Vertex-Koordinaten aus allen Grid-Punkten
+        all_vertices = np.column_stack([
+            X_grid.ravel(),
+            Y_grid.ravel(),
+            Z_grid.ravel()
+        ])
+        
+        # Füge additional_vertices hinzu
+        if additional_vertices_array.size > 0:
+            all_vertices = np.vstack([all_vertices, additional_vertices_array])
+        
+        base_vertex_count = X_grid.size
+        additional_vertex_start_idx = base_vertex_count
+        
+        return (all_vertices, base_vertex_count, additional_vertex_start_idx, mask_flat, mask_strict_flat)
+    
+    def generate_per_surface_process_and_create_grids_create_triangulation_delaunay(
+        self,
+        geom: SurfaceGeometry,
+        all_vertices: np.ndarray,
+        mask_flat: np.ndarray,
+        mask_strict_flat: np.ndarray,
+        base_vertex_count: int,
+        additional_vertex_start_idx: int,
+        additional_vertices_array: np.ndarray,
+        ) -> List[int]:
+        """Erstellt Delaunay-Triangulation und gibt faces_list zurück."""
+        faces_list = []
+        
+        if not HAS_SCIPY:
+            raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
+        
+        # Sammle alle gültigen Punkte (Grid-Punkte in Maske + additional_vertices)
+        valid_vertices_list = []
+        valid_vertex_indices = []
+        
+        # Füge aktive Grid-Punkte hinzu
+        active_mask_indices = np.where(mask_flat)[0]
+        for idx in active_mask_indices:
+            if idx < len(all_vertices):
+                valid_vertices_list.append(all_vertices[idx])
+                valid_vertex_indices.append(idx)
+        
+        # Füge additional_vertices hinzu
+        if len(additional_vertices_array) > 0:
+            for i in range(len(additional_vertices_array)):
+                idx = additional_vertex_start_idx + i
+                if idx < len(all_vertices):
+                    valid_vertices_list.append(all_vertices[idx])
+                    valid_vertex_indices.append(idx)
+        
+        if len(valid_vertices_list) < 3:
+            return faces_list
+        
+        valid_vertices_array = np.array(valid_vertices_list, dtype=float)
+        
+        # Bestimme Projektionsebene basierend auf Orientierung
+        if geom.orientation == "vertical":
+            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                if geom.dominant_axis == "xz":
+                    proj_2d = valid_vertices_array[:, [0, 2]]  # x, z
+                elif geom.dominant_axis == "yz":
+                    proj_2d = valid_vertices_array[:, [1, 2]]  # y, z
                 else:
-                    additional_vertices_final = None
-            elif isinstance(additional_vertices, np.ndarray):
-                if additional_vertices.size > 0:
-                    additional_vertices_final = additional_vertices
+                    proj_2d = valid_vertices_array[:, [0, 1]]
+            else:
+                proj_2d = valid_vertices_array[:, [0, 1]]
+        else:
+            proj_2d = valid_vertices_array[:, [0, 1]]  # x, y
+        
+        # Delaunay-Triangulation in 2D
+        tri = Delaunay(proj_2d)
+        triangles_delaunay = tri.simplices
+        
+        # Filtere Dreiecke, die außerhalb der Surface-Maske liegen
+        valid_triangles = []
+        surface_points = geom.points or []
+        
+        if len(surface_points) >= 3:
+            try:
+                from matplotlib.path import Path
+                
+                # Erstelle Polygon-Pfad für Punkt-im-Polygon-Prüfung
+                if geom.orientation == "vertical":
+                    if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                        if geom.dominant_axis == "xz":
+                            polygon_2d = np.array([[p.get("x", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
+                        elif geom.dominant_axis == "yz":
+                            polygon_2d = np.array([[p.get("y", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
+                        else:
+                            polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                    else:
+                        polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
                 else:
-                    additional_vertices_final = None
-            elif hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0:
-                additional_vertices_final = np.array(additional_vertices, dtype=float)
+                    polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                
+                polygon_path = Path(polygon_2d)
+                
+                # Prüfe jeden Dreieck-Schwerpunkt
+                for tri_idx in triangles_delaunay:
+                    v1_old = valid_vertex_indices[tri_idx[0]]
+                    v2_old = valid_vertex_indices[tri_idx[1]]
+                    v3_old = valid_vertex_indices[tri_idx[2]]
+                    
+                    # Prüfe ob Vertices in strikter oder erweiterter Maske sind
+                    v1_in_strict = (v1_old < len(mask_strict_flat) and mask_strict_flat[v1_old]) if v1_old < len(mask_strict_flat) else False
+                    v2_in_strict = (v2_old < len(mask_strict_flat) and mask_strict_flat[v2_old]) if v2_old < len(mask_strict_flat) else False
+                    v3_in_strict = (v3_old < len(mask_strict_flat) and mask_strict_flat[v3_old]) if v3_old < len(mask_strict_flat) else False
+                    has_strict_vertex = v1_in_strict or v2_in_strict or v3_in_strict
+                    
+                    v1_in_extended = v1_old < len(mask_flat) and mask_flat[v1_old]
+                    v2_in_extended = v2_old < len(mask_flat) and mask_flat[v2_old]
+                    v3_in_extended = v3_old < len(mask_flat) and mask_flat[v3_old]
+                    all_vertices_in_extended = v1_in_extended and v2_in_extended and v3_in_extended
+                    
+                    # Schwerpunkt des Dreiecks in 2D
+                    centroid_2d = proj_2d[tri_idx].mean(axis=0)
+                    centroid_in_polygon = polygon_path.contains_point(centroid_2d)
+                    
+                    # Akzeptiere Dreiecke wenn: Schwerpunkt im Polygon ODER mindestens ein Vertex in strikter Maske ODER alle Vertices in erweiterter Maske
+                    if centroid_in_polygon or has_strict_vertex or all_vertices_in_extended:
+                        valid_triangles.append((v1_old, v2_old, v3_old))
+            except Exception:
+                # Fallback: Verwende alle Delaunay-Dreiecke
+                for tri_idx in triangles_delaunay:
+                    v1_old = valid_vertex_indices[tri_idx[0]]
+                    v2_old = valid_vertex_indices[tri_idx[1]]
+                    v3_old = valid_vertex_indices[tri_idx[2]]
+                    valid_triangles.append((v1_old, v2_old, v3_old))
+        else:
+            # Kein Polygon verfügbar: Verwende alle Delaunay-Dreiecke
+            for tri_idx in triangles_delaunay:
+                v1_old = valid_vertex_indices[tri_idx[0]]
+                v2_old = valid_vertex_indices[tri_idx[1]]
+                v3_old = valid_vertex_indices[tri_idx[2]]
+                valid_triangles.append((v1_old, v2_old, v3_old))
+        
+        # Konvertiere zu PyVista-Format: [3, v1, v2, v3, 3, v4, v5, v6, ...]
+        for v1, v2, v3 in valid_triangles:
+            faces_list.extend([3, int(v1), int(v2), int(v3)])
+        
+        return faces_list
+    
+    def generate_per_surface_process_and_create_grids_create_triangulation_process_vertices(
+        self,
+        geom: SurfaceGeometry,
+        all_vertices: np.ndarray,
+        faces_list: List[int],
+        mask_flat: np.ndarray,
+        base_vertex_count: int,
+        additional_vertices_array: np.ndarray,
+        additional_vertex_start_idx: int,
+        actual_resolution: float,
+        ) -> Dict[str, Any]:
+        """Verarbeitet Vertices und Faces (Mapping, Deduplizierung)."""
+        if len(faces_list) == 0:
+            return {
+                'triangulated_vertices': np.array([], dtype=float).reshape(0, 3),
+                'triangulated_faces': np.array([], dtype=np.int64),
+                'triangulated_success': False,
+                'vertex_source_indices': None,
+            }
+        
+        # Extrahiere Vertex-Indices aus Faces
+        vertex_indices_in_faces = []
+        for i in range(0, len(faces_list), 4):
+            if i + 3 < len(faces_list):
+                n_verts = faces_list[i]
+                if n_verts == 3:
+                    vertex_indices_in_faces.extend(faces_list[i+1:i+4])
+        
+        vertex_indices_in_faces_set = set(vertex_indices_in_faces)
+        
+        # Füge alle aktiven Masken-Punkte hinzu
+        active_mask_indices = np.where(mask_flat)[0]
+        for idx in active_mask_indices:
+            if idx < len(all_vertices):
+                vertex_indices_in_faces_set.add(int(idx))
+        
+        # Füge additional_vertices hinzu
+        if len(additional_vertices_array) > 0:
+            for i in range(len(additional_vertices_array)):
+                additional_idx = base_vertex_count + i
+                if additional_idx < len(all_vertices):
+                    vertex_indices_in_faces_set.add(int(additional_idx))
+        
+        all_vertex_indices = np.array(sorted(vertex_indices_in_faces_set), dtype=np.int64)
+        
+        # Erstelle Mapping: alter Index → neuer Index
+        old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
+        
+        # Erstelle vorläufiges vertex_source_indices-Mapping
+        vertex_source_indices_pre_dedup = []
+        
+        if len(all_vertex_indices) > 0:
+            # Trenne normale Grid-Vertices von zusätzlichen Vertices
+            grid_vertex_indices = all_vertex_indices[all_vertex_indices < base_vertex_count]
+            additional_vertex_indices = all_vertex_indices[all_vertex_indices >= base_vertex_count]
+            
+            # Erstelle Vertices aus Grid-Punkten
+            if len(grid_vertex_indices) > 0:
+                grid_vertices = all_vertices[grid_vertex_indices]
+                for old_idx in grid_vertex_indices:
+                    vertex_source_indices_pre_dedup.append(('grid', old_idx))
             else:
-                additional_vertices_final = None
+                grid_vertices = np.array([], dtype=float).reshape(0, 3)
             
-            # 🎯 OPTIMIERUNG: Hole vertex_source_indices (wurde nach Deduplizierung erstellt)
-            vertex_source_indices_final = None
-            if 'vertex_source_indices' in locals() and vertex_source_indices is not None:
-                vertex_source_indices_final = vertex_source_indices
+            # Erstelle Vertices aus zusätzlichen Vertices
+            if len(additional_vertex_indices) > 0 and len(additional_vertices_array) > 0:
+                additional_indices_local = additional_vertex_indices - base_vertex_count
+                additional_indices_local = additional_indices_local[additional_indices_local < len(additional_vertices_array)]
+                if len(additional_indices_local) > 0:
+                    additional_vertices_selected = additional_vertices_array[additional_indices_local]
+                    for old_idx in additional_vertex_indices:
+                        local_idx = old_idx - base_vertex_count
+                        if 0 <= local_idx < len(additional_vertices_array):
+                            vertex_source_indices_pre_dedup.append(('additional', local_idx))
+                else:
+                    additional_vertices_selected = np.array([], dtype=float).reshape(0, 3)
             else:
-                vertex_source_indices_final = None
+                additional_vertices_selected = np.array([], dtype=float).reshape(0, 3)
             
+            # Kombiniere beide
+            if len(grid_vertices) > 0 and len(additional_vertices_selected) > 0:
+                triangulated_vertices = np.vstack([grid_vertices, additional_vertices_selected])
+            elif len(grid_vertices) > 0:
+                triangulated_vertices = grid_vertices
+            elif len(additional_vertices_selected) > 0:
+                triangulated_vertices = additional_vertices_selected
+            else:
+                triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
+        else:
+            triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
+            vertex_source_indices_pre_dedup = []
+        
+        # Mappe Face-Indizes auf neue Vertex-Indizes
+        faces_list_mapped = []
+        for i in range(0, len(faces_list), 4):
+            if i + 3 < len(faces_list):
+                n_verts = faces_list[i]
+                if n_verts == 3:
+                    v1_old = faces_list[i+1]
+                    v2_old = faces_list[i+2]
+                    v3_old = faces_list[i+3]
+                    if v1_old in old_to_new_index and v2_old in old_to_new_index and v3_old in old_to_new_index:
+                        faces_list_mapped.extend([
+                            3,
+                            old_to_new_index[v1_old],
+                            old_to_new_index[v2_old],
+                            old_to_new_index[v3_old]
+                        ])
+        
+        if len(faces_list_mapped) > 0:
+            triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
+            triangulated_success = True
+        else:
+            triangulated_faces = np.array([], dtype=np.int64)
+            triangulated_success = False
+        
+        # Deduplizierung
+        vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
+        
+        try:
+            triangulated_vertices, triangulated_faces = self._deduplicate_vertices_and_faces(
+                triangulated_vertices,
+                triangulated_faces,
+                actual_resolution,
+                geom.surface_id
+            )
             
-            surface_grid = SurfaceGrid(
-                surface_id=geom.surface_id,
-                sound_field_x=sound_field_x,
-                sound_field_y=sound_field_y,
+            # Erstelle vertex_source_indices nach Deduplizierung
+            vertex_source_indices = None
+            if len(triangulated_vertices) > 0 and len(vertex_source_indices_pre_dedup) > 0 and len(vertices_before_dedup_array) > 0:
+                try:
+                    from scipy.spatial.distance import cdist
+                    distances = cdist(triangulated_vertices, vertices_before_dedup_array)
+                    nearest_pre_dedup_indices = np.argmin(distances, axis=1)
+                    
+                    vertex_source_indices_mapping = []
+                    n_grid_total = base_vertex_count
+                    
+                    for new_idx in range(len(triangulated_vertices)):
+                        pre_dedup_idx = nearest_pre_dedup_indices[new_idx]
+                        if pre_dedup_idx < len(vertex_source_indices_pre_dedup):
+                            mapping_type, source_idx = vertex_source_indices_pre_dedup[pre_dedup_idx]
+                            if mapping_type == 'grid':
+                                vertex_source_indices_mapping.append(int(source_idx))
+                            else:  # 'additional'
+                                vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
+                        else:
+                            vertex_source_indices_mapping.append(0)
+                    
+                    vertex_source_indices = np.array(vertex_source_indices_mapping, dtype=np.int64)
+                except Exception:
+                    vertex_source_indices = None
+        except Exception:
+            pass
+        
+        return {
+            'triangulated_vertices': triangulated_vertices,
+            'triangulated_faces': triangulated_faces,
+            'triangulated_success': triangulated_success,
+            'vertex_source_indices': vertex_source_indices,
+        }
+    
+    def generate_per_surface_process_and_create_grids_create_surface_grid(
+        self,
+        geom: SurfaceGeometry,
+        cache_key: tuple,
+        surface_grids: Dict[str, SurfaceGrid],
+        sound_field_x: np.ndarray,
+        sound_field_y: np.ndarray,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        surface_mask_strict: np.ndarray,
+        actual_resolution: float,
+        triangulation_data: Dict[str, Any],
+        ) -> None:
+        """Erstellt SurfaceGrid und füllt Cache."""
+        triangulated_vertices = triangulation_data.get('triangulated_vertices')
+        triangulated_faces = triangulation_data.get('triangulated_faces')
+        triangulated_success = triangulation_data.get('triangulated_success', False)
+        vertex_source_indices = triangulation_data.get('vertex_source_indices')
+        additional_vertices_final = triangulation_data.get('additional_vertices_final')
+        
+        surface_grid = SurfaceGrid(
+            surface_id=geom.surface_id,
+            sound_field_x=sound_field_x,
+            sound_field_y=sound_field_y,
+            X_grid=X_grid,
+            Y_grid=Y_grid,
+            Z_grid=Z_grid,
+            surface_mask=surface_mask,
+            resolution=actual_resolution,
+            geometry=geom,
+            triangulated_vertices=triangulated_vertices,
+            triangulated_faces=triangulated_faces,
+            triangulated_success=triangulated_success,
+            vertex_source_indices=vertex_source_indices,
+            additional_vertices=additional_vertices_final,
+        )
+        
+        # Im Cache speichern
+        self._surface_grid_cache[cache_key] = surface_grid
+        surface_grids[geom.surface_id] = surface_grid
+        
+        # Debug-Plot (optional)
+        try:
+            self._create_debug_plot_2d(
+                geom=geom,
                 X_grid=X_grid,
                 Y_grid=Y_grid,
                 Z_grid=Z_grid,
                 surface_mask=surface_mask,
-                resolution=actual_resolution,
-                geometry=geom,
                 triangulated_vertices=triangulated_vertices,
                 triangulated_faces=triangulated_faces,
-                triangulated_success=triangulated_success,
-                vertex_source_indices=vertex_source_indices_final,
-                additional_vertices=additional_vertices_final,
+                resolution=actual_resolution
             )
-
-            # 🎯 DEBUG: Prüfung auf überlappende Vertices in 3D
-            # Idee:
-            # - Vertices werden in allen drei Dimensionen (X, Y, Z) leicht quantisiert.
-            # - Wenn mehrere Vertices auf derselben quantisierten 3D-Position liegen,
-            #   werten wir das als „übereinander geplottet“.
-            # - Zusätzlich geben wir eine grobe Spannweite der tatsächlichen Distanzen aus.
-            try:
-                if DEBUG_FLEXIBLE_GRID and triangulated_success and triangulated_vertices is not None:
-                    verts = np.asarray(triangulated_vertices, dtype=float)
-                    if verts.size > 0:
-                        # Toleranz: ca. 1 % der effektiven Grid-Resolution, sonst fixer kleiner Wert
-                        if actual_resolution and actual_resolution > 0:
-                            tol = float(actual_resolution) * 0.01
-                        else:
-                            tol = 1e-3
-                        # Quantisierte 3D-Koordinaten (reduziert numerisches Rauschen)
-                        quant = np.round(verts / tol) * tol
-                        from collections import defaultdict
-                        groups: dict[tuple[float, float, float], list[int]] = defaultdict(list)
-                        for idx_v, (qx, qy, qz) in enumerate(quant):
-                            groups[(float(qx), float(qy), float(qz))].append(int(idx_v))
-
-                        overlap_positions = 0
-                        max_local_span = 0.0
-                        # Optional: Beispielkoordinaten sammeln (max. 3)
-                        example_positions: list[tuple[float, float, float]] = []
-
-                        for (qx, qy, qz), idx_list in groups.items():
-                            if len(idx_list) <= 1:
-                                continue
-                            overlap_positions += 1
-                            # Berechne maximale euklidische Distanz innerhalb dieser Gruppe
-                            local_verts = verts[idx_list]
-                            local_max = 0.0
-                            if len(local_verts) > 1:
-                                for i in range(len(local_verts)):
-                                    for j in range(i + 1, len(local_verts)):
-                                        d = float(np.linalg.norm(local_verts[i] - local_verts[j]))
-                                        if d > local_max:
-                                            local_max = d
-                            if local_max > max_local_span:
-                                max_local_span = local_max
-                            if len(example_positions) < 3:
-                                example_positions.append((qx, qy, qz))
-
-                        # Vertex-Overlap-Analyse (Debug-Logging entfernt)
-            except Exception:
-                # Reiner Debug-Helper – darf die Hauptlogik nicht beeinflussen
-                pass
-            
-            # Im Cache speichern
-            self._surface_grid_cache[cache_key] = surface_grid
-            surface_grids[geom.surface_id] = surface_grid
-            
-            # #region agent debug plot - 2D Debug Plot für Surface
-            try:
-                self._create_debug_plot_2d(
-                    geom=geom,
-                    X_grid=X_grid,
-                    Y_grid=Y_grid,
-                    Z_grid=Z_grid,
-                    surface_mask=surface_mask,
-                    triangulated_vertices=triangulated_vertices,
-                    triangulated_faces=triangulated_faces,
-                    resolution=actual_resolution
-                )
-            except Exception as e:
-                # Debug-Plot-Fehler dürfen die Hauptlogik nicht stören
-                pass
-            # #endregion
-            
-            points_in_surface = int(np.sum(surface_mask))
-            total_points = int(X_grid.size)
-            
-            # 🎯 QUALITÄTS-CHECK: Erkennen, ob das Polygon nur teilweise vom Grid erfasst wird
-            # Idee:
-            # - Fläche der Bounding-Box ~ erwartete Anzahl Grid-Punkte
-            # - Vergleich mit tatsächlich aktiven Punkten in der Maske
-            # - Wenn Verhältnis sehr klein ist, könnte ein Teil des Polygons (z.B. Spitzen) fehlen
-            try:
-                coverage_info = {}
-                if geom.bbox is not None and actual_resolution is not None and actual_resolution > 0:
-                    min_x, max_x, min_y, max_y = geom.bbox
-                    width = float(max_x - min_x)
-                    height = float(max_y - min_y)
-                    bbox_area = max(width * height, 0.0)
-                    
-                    if bbox_area > 0.0:
-                        # Erwartete Punktzahl im Sinne einer groben Obergrenze
-                        approx_expected_points = bbox_area / float(actual_resolution ** 2)
-                        approx_expected_points = max(approx_expected_points, 1.0)
-                        coverage_ratio = points_in_surface / approx_expected_points
-                        coverage_info = {
-                            "bbox_area": bbox_area,
-                            "approx_expected_points": approx_expected_points,
-                            "coverage_ratio": coverage_ratio,
-                        }
-                        
-                        # Heuristische Schwelle:
-                        # - Mindestens 1 aktiver Punkt vorhanden (also nicht komplett leer)
-                        # - Aber deutlich weniger als ~50 % der "erwarteten" Belegung
-                        if points_in_surface > 0 and coverage_ratio < 0.5:
-                            pass  # Debug-Warnung entfernt
-            except Exception:
-                # Qualitäts-Check ist rein diagnostisch – Fehler hier dürfen niemals die Berechnung stoppen
-                pass
-            
-            # 🎯 DEBUG: Zusätzliche Info für vertikale Flächen
-            is_vertical = geom.orientation == "vertical"
-            if is_vertical:
-                xs = X_grid.flatten()
-                ys = Y_grid.flatten()
-                zs = Z_grid.flatten()
-                x_span = float(np.ptp(xs))
-                y_span = float(np.ptp(ys))
-                z_span = float(np.ptp(zs))
-            else:
-                pass
-        
-        return surface_grids
+        except Exception:
+            pass
+    
+    def _make_surface_cache_key(
+        self,
+        geom: SurfaceGeometry,
+        resolution: float,
+        min_points: int,
+        ) -> tuple:
+        """
+        Erzeugt einen stabilen Cache-Key für eine Surface-Geometrie.
+        Berücksichtigt:
+        - surface_id
+        - Orientierung
+        - verwendete Resolution
+        - min_points_per_dimension
+        - diskretisierte Punktkoordinaten
+        - globale Geometrie-Version (Settings.geometry_version)
+        """
+        points = geom.points or []
+        # Runde Koordinaten leicht, um numerisches Rauschen zu unterdrücken
+        pts_key = tuple(
+            (
+                round(float(p.get("x", 0.0)), 4),
+                round(float(p.get("y", 0.0)), 4),
+                round(float(p.get("z", 0.0)), 4),
+            )
+            for p in points
+        )
+        geometry_version = int(getattr(self.settings, "geometry_version", 0))
+        return (
+            str(geom.surface_id),
+            str(getattr(geom, "orientation", "")),
+            round(float(resolution), 4),
+            int(min_points),
+            pts_key,
+            geometry_version,
+        )
+    
+    def _create_cache_hash(
+        self,
+        enabled_surfaces: List[Tuple[str, Dict]],
+        resolution: Optional[float]
+        ) -> str:
+        """Erstellt Hash für Cache-Vergleich"""
+        # Hash: Anzahl Surfaces + Resolution + globale Geometrie-Version
+        n_surfaces = len(enabled_surfaces)
+        res_str = str(resolution) if resolution else "default"
+        geometry_version = int(getattr(self.settings, "geometry_version", 0))
+        return f"{n_surfaces}_{res_str}_v{geometry_version}"
+    
+    def _create_debug_plot_2d(
+        self,
+        geom: SurfaceGeometry,
+        X_grid: np.ndarray,
+        Y_grid: np.ndarray,
+        Z_grid: np.ndarray,
+        surface_mask: np.ndarray,
+        triangulated_vertices: Optional[np.ndarray],
+        triangulated_faces: Optional[np.ndarray],
+        resolution: float,
+        ) -> None:
+        """Erstellt optionalen 2D Debug-Plot für Surface."""
+        # Debug-Plot-Funktionalität (optional implementiert)
+        pass
     
     def _make_surface_cache_key(
         self,

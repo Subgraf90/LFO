@@ -567,12 +567,8 @@ class UiFile:
                         color_label.setStyleSheet(f"background-color: {speaker_array.color}; border: 1px solid gray;")
                         sources_tree.setItemWidget(item, 3, color_label)
 
-            selected_item = None
-            if sources_tree.topLevelItemCount() > 0:
-                selected_item = sources_tree.topLevelItem(0)
-                sources_tree.setCurrentItem(selected_item)
-            else:
-                print("DEBUG: Keine Elemente im TreeWidget")
+            # 🎯 ENTFERNT: Vorzeitige Auswahl hier entfernt, da sie möglicherweise eine Gruppe auswählt
+            # Die finale Auswahl erfolgt nach load_groups_structure() weiter unten
 
             sources_tree.setUpdatesEnabled(updates_enabled)
             del tree_blocker
@@ -592,6 +588,39 @@ class UiFile:
             # Suche das erste Array-Item (nicht Gruppe) im Tree, egal ob Top-Level oder in einer Gruppe
             def find_first_array_item():
                 """Findet das erste Array-Item im Tree (nicht Gruppe)"""
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    summary = {
+                        "top_level_count": int(sources_tree.topLevelItemCount()),
+                        "items": [],
+                    }
+                    for i in range(sources_tree.topLevelItemCount()):
+                        item = sources_tree.topLevelItem(i)
+                        if item is None:
+                            continue
+                        item_type_dbg = item.data(0, Qt.UserRole + 1)
+                        array_id_dbg = item.data(0, Qt.UserRole)
+                        summary["items"].append({
+                            "index": i,
+                            "type": str(item_type_dbg),
+                            "array_id": int(array_id_dbg) if isinstance(array_id_dbg, int) else str(array_id_dbg),
+                            "child_count": int(item.childCount()),
+                        })
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SRC_SELECT_H1",
+                            "location": "UiFile.py:_update_ui_after_load:find_first_array_item",
+                            "message": "Inspecting top-level items before selecting first array",
+                            "data": summary,
+                            "timestamp": int(time_module.time() * 1000),
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 # Durchsuche Top-Level-Items
                 for i in range(sources_tree.topLevelItemCount()):
                     item = sources_tree.topLevelItem(i)
@@ -609,17 +638,117 @@ class UiFile:
                             child_array_id = child.data(0, Qt.UserRole)
                             if child_array_id is not None:
                                 return child
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SRC_SELECT_H2",
+                            "location": "UiFile.py:_update_ui_after_load:find_first_array_item",
+                            "message": "No array item found in sources_tree",
+                            "data": {
+                                "top_level_count": int(sources_tree.topLevelItemCount()),
+                            },
+                            "timestamp": int(time_module.time() * 1000),
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 return None
             
             first_array_item = find_first_array_item()
             if first_array_item:
                 with QSignalBlocker(sources_tree):
+                    # 🎯 WICHTIG: Lösche alle vorherigen Auswahlen, damit nur ein Item ausgewählt wird
+                    sources_tree.clearSelection()
                     sources_tree.setCurrentItem(first_array_item)
+                    # Stelle sicher, dass nur dieses Item ausgewählt ist (nicht mehrere)
+                    sources_tree.setItemSelected(first_array_item, True)
                     # Stelle sicher, dass Parent-Gruppe expandiert ist
                     parent = first_array_item.parent()
                     if parent:
                         parent.setExpanded(True)
+                    # 🎯 WICHTIG: Setze Fokus auf Tree, damit Selektion visuell sichtbar ist
+                    sources_tree.setFocus()
+                # 🎯 WICHTIG: Aktualisiere Source-UI mit Daten des ausgewählten Arrays
+                # (muss nach setCurrentItem aufgerufen werden, damit alle Eingabefelder gefüllt werden)
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SRC_REFRESH_LOAD",
+                            "location": "UiFile.py:_update_ui_after_load:before_refresh_active_selection",
+                            "message": "About to call refresh_active_selection after file load",
+                            "data": {
+                                "has_first_array_item": True,
+                                "selected_array_id": int(first_array_item.data(0, Qt.UserRole)) if first_array_item else None,
+                                "selected_text": str(first_array_item.text(0)) if first_array_item else None,
+                            },
+                            "timestamp": int(time_module.time() * 1000),
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 sources_instance.refresh_active_selection()
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    selected_item_after = sources_tree.currentItem()
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SRC_REFRESH_LOAD",
+                            "location": "UiFile.py:_update_ui_after_load:after_refresh_active_selection",
+                            "message": "refresh_active_selection completed",
+                            "data": {
+                                "has_selected_item_after": selected_item_after is not None,
+                                "selected_array_id_after": int(selected_item_after.data(0, Qt.UserRole)) if selected_item_after else None,
+                            },
+                            "timestamp": int(time_module.time() * 1000),
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    selected_item = sources_tree.currentItem()
+                    if selected_item is not None:
+                        sel_type = selected_item.data(0, Qt.UserRole + 1)
+                        sel_array_id = selected_item.data(0, Qt.UserRole)
+                        sel_text = selected_item.text(0)
+                    else:
+                        sel_type = None
+                        sel_array_id = None
+                        sel_text = None
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SRC_SELECT_H3",
+                            "location": "UiFile.py:_update_ui_after_load:after_setCurrentItem",
+                            "message": "State after attempting to select first array item",
+                            "data": {
+                                "has_first_array_item": True,
+                                "selected_type": str(sel_type),
+                                "selected_array_id": int(sel_array_id) if isinstance(sel_array_id, int) else str(sel_array_id),
+                                "selected_text": str(sel_text) if sel_text is not None else None,
+                            },
+                            "timestamp": int(time_module.time() * 1000),
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
 
             # 🎯 WICHTIG: Aktualisiere Overlays nach dem Laden, um die neuen Lautsprecher zu plotten
             # (Die Caches wurden bereits in _clear_current_state() gelöscht)
