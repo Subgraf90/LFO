@@ -699,9 +699,37 @@ class UiFile:
                     pass
                 # #endregion
                 
-                # 🎯 WICHTIG: Aktualisiere Source-UI mit Daten des ausgewählten Arrays
-                # (muss NACH dem Signal-Blocker aufgerufen werden, damit die Auswahl wirklich gesetzt ist)
-                sources_instance.refresh_active_selection()
+                # 🎯 OPTIMIERUNG: Bündele alle UI-Updates während des Ladens, um Flackern zu vermeiden
+                # Deaktiviere Updates für das gesamte DockWidget und Tab-Widget während aller UI-Änderungen
+                dock_widget = sources_instance.sources_dockWidget if hasattr(sources_instance, 'sources_dockWidget') else None
+                tab_widget = sources_instance.tab_widget if hasattr(sources_instance, 'tab_widget') else None
+                
+                updates_enabled_dock = dock_widget.updatesEnabled() if dock_widget else True
+                updates_enabled_tab = tab_widget.updatesEnabled() if tab_widget else True
+                
+                if dock_widget:
+                    dock_widget.setUpdatesEnabled(False)
+                if tab_widget:
+                    tab_widget.setUpdatesEnabled(False)
+                
+                try:
+                    # 🎯 WICHTIG: Aktualisiere Source-UI mit Daten des ausgewählten Arrays
+                    # (muss NACH dem Signal-Blocker aufgerufen werden, damit die Auswahl wirklich gesetzt ist)
+                    # skip_plots=True: Plot-Updates werden separat am Ende durchgeführt, um Flackern zu vermeiden
+                    sources_instance.refresh_active_selection(skip_plots=True)
+                    
+                    # 🎯 OPTIMIERUNG: Plot-Updates am Ende durchführen, nachdem alle UI-Updates abgeschlossen sind
+                    # Dies reduziert Flackern, da die Plots erst nach allen anderen Updates gerendert werden
+                    sources_instance.update_beamsteering_windowing_plots()
+                finally:
+                    # Aktiviere Updates wieder, damit alle Änderungen auf einmal gerendert werden
+                    if tab_widget:
+                        tab_widget.setUpdatesEnabled(updates_enabled_tab)
+                        tab_widget.update()
+                    if dock_widget:
+                        dock_widget.setUpdatesEnabled(updates_enabled_dock)
+                        # Trigger explizites Update, damit alle Änderungen sichtbar werden
+                        dock_widget.update()
                 
                 # #region agent log
                 try:

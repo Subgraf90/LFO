@@ -67,6 +67,33 @@ class StackDraw_Windowing:
             if front_height <= 0:
                 return
             
+            # #region agent log - Ursprungsabmessungen Windowing
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'DIMENSIONS',
+                    'location': 'PlotStacks2Windowing.py:66',
+                    'message': 'Windowing: Ursprungsabmessungen aus Cabinet-Daten',
+                    'data': {
+                        'isrc': int(isrc),
+                        'width_original_m': float(width),
+                        'front_height_original_m': float(front_height),
+                        'cabinet_width': cabinet.get('width'),
+                        'cabinet_front_height': cabinet.get('front_height'),
+                        'cabinet_height': cabinet.get('height'),
+                        'aspect_ratio_original': float(front_height / width) if width > 0 else 0,
+                        'vergleich': {
+                            'breite_m': float(width),
+                            'hoehe_m': float(front_height),
+                            'hoehe_div_breite': float(front_height / width) if width > 0 else 0
+                        }
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+            # #endregion
+            
             is_cardio = bool(cabinet.get('cardio', False))
             x_offset = float(cabinet.get('x_offset', 0.0))
             
@@ -85,6 +112,43 @@ class StackDraw_Windowing:
             # X-Achse ist in Metern, Y-Achse ist in dB
             # Verwende die originale Höhe direkt (in dB-Einheiten)
             scaled_front_height = front_height
+            
+            # #region agent log - Abmessungsberechnung Windowing
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'DIMENSIONS',
+                    'location': 'PlotStacks2Windowing.py:87',
+                    'message': 'Windowing: Abmessungsberechnung - keine Skalierung (Y-Achse in dB)',
+                    'data': {
+                        'isrc': int(isrc),
+                        'breite': {
+                            'original_m': float(width),
+                            'verwendet_m': float(width),
+                            'skaliert': False,
+                            'skalierungsfaktor': 1.0
+                        },
+                        'hoehe': {
+                            'original_m': float(front_height),
+                            'verwendet_dB': float(scaled_front_height),
+                            'skaliert': False,
+                            'skalierungsfaktor': 1.0
+                        },
+                        'keine_skalierung': True,
+                        'grund': 'Y-Achse in dB, keine Seitenverhältnis-Korrektur nötig',
+                        'vergleich': {
+                            'breite_original_m': float(width),
+                            'hoehe_original_m': float(front_height),
+                            'breite_verwendet_m': float(width),
+                            'hoehe_verwendet_dB': float(scaled_front_height),
+                            'aspect_ratio_original': float(front_height / width) if width > 0 else 0
+                        }
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+            # #endregion
             
             # Hole Achsengrenzen und Pixel-Größe für Verzerrungsprüfung
             xlim = self.ax.get_xlim()
@@ -128,29 +192,57 @@ class StackDraw_Windowing:
             self.ax.add_patch(rect)
             self.left_positions.append(x)
             
-            # #region agent log
+            # #region agent log - Finale Abmessungen beim Zeichnen Windowing
             import json
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 f.write(json.dumps({
                     'sessionId': 'debug-session',
                     'runId': 'run1',
-                    'hypothesisId': 'E',
-                    'location': 'PlotStacks2Windowing.py:135',
-                    'message': 'Windowing: Rechteck erstellt - Verzerrungsprüfung',
+                    'hypothesisId': 'DIMENSIONS',
+                    'location': 'PlotStacks2Windowing.py:192',
+                    'message': 'Windowing: Rechteck gezeichnet - verwendete Abmessungen',
                     'data': {
-                        'x': float(x),
-                        'y': float(y),
-                        'width_m': float(width),
-                        'scaled_front_height_dB': float(scaled_front_height),
-                        'front_height_original_m': float(front_height),
-                        'width_pixels': float(width_pixels),
-                        'height_pixels': float(height_pixels),
-                        'aspect_ratio_pixels': float(aspect_ratio_pixels),
-                        'aspect_ratio_real': float(aspect_ratio_real),
-                        'x_range': float(x_range),
-                        'y_range': float(y_range),
-                        'axes_width_pixels': float(axes_width_pixels),
-                        'axes_height_pixels': float(axes_height_pixels)
+                        'isrc': int(isrc),
+                        'position': {
+                            'x_m': float(x),
+                            'y_dB': float(y),
+                            'oberkante_y_dB': float(y + scaled_front_height)
+                        },
+                        'abmessungen_original': {
+                            'breite_m': float(width),
+                            'hoehe_m': float(front_height),
+                            'aspect_ratio': float(aspect_ratio_real)
+                        },
+                        'abmessungen_verwendet': {
+                            'breite_m': float(width),
+                            'hoehe_dB': float(scaled_front_height),
+                            'aspect_ratio_pixel': float(aspect_ratio_pixels)
+                        },
+                        'pixel_dimensionen': {
+                            'breite_px': float(width_pixels),
+                            'hoehe_px': float(height_pixels),
+                            'aspect_ratio_px': float(aspect_ratio_pixels)
+                        },
+                        'skalierung': {
+                            'breite_faktor': 1.0,
+                            'hoehe_faktor': 1.0,
+                            'hoehe_original_m': float(front_height),
+                            'hoehe_verwendet_dB': float(scaled_front_height),
+                            'keine_skalierung': True
+                        },
+                        'achsen': {
+                            'x_range_m': float(x_range),
+                            'y_range_dB': float(y_range),
+                            'axes_width_pixels': float(axes_width_pixels),
+                            'axes_height_pixels': float(axes_height_pixels)
+                        },
+                        'vergleich': {
+                            'breite_original_vs_verwendet': float(width) == float(width),
+                            'hoehe_original_vs_verwendet': float(front_height) == float(scaled_front_height),
+                            'aspect_ratio_original': float(aspect_ratio_real),
+                            'aspect_ratio_pixel': float(aspect_ratio_pixels),
+                            'hinweis': 'Y-Achse in dB, daher keine direkte Vergleichbarkeit der Höhe'
+                        }
                     },
                     'timestamp': int(__import__('time').time() * 1000)
                 }) + '\n')

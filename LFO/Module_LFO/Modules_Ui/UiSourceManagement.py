@@ -593,10 +593,34 @@ class Sources(ModuleBase, QObject):
         QTimer.singleShot(100, apply_resize)  # 100ms Verzögerung, damit Qt's Layout fertig ist
         
 
-    def refresh_active_selection(self):
+    def refresh_active_selection(self, skip_plots=False):
         """
         Aktualisiert alle UI-Elemente für das aktuell ausgewählte Array einmalig.
+        
+        Args:
+            skip_plots: Wenn True, werden Plot-Updates übersprungen (z.B. beim Laden, um Flackern zu vermeiden)
         """
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            import traceback
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:entry",
+                    "message": "refresh_active_selection called",
+                    "data": {
+                        "caller": "".join(traceback.format_stack()[-3:-2]).strip() if len(traceback.format_stack()) > 3 else "unknown",
+                    },
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         if not hasattr(self, 'sources_tree_widget') or self.sources_tree_widget is None:
             return
 
@@ -615,18 +639,216 @@ class Sources(ModuleBase, QObject):
 
         instance = self.get_speakerspecs_instance(speaker_array_id)
         if instance and instance.get('gridLayout_sources') is None:
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "UI_UPDATE_SEQUENCE",
+                        "location": "UiSourceManagement.py:refresh_active_selection:before_init_ui",
+                        "message": "About to call init_ui",
+                        "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self.init_ui(instance, self.speaker_tab_layout)
 
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_display",
+                    "message": "About to call display_selected_speakerspecs",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.display_selected_speakerspecs()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_input_fields",
+                    "message": "About to call update_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None, "has_instance": instance is not None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if instance:
             self.update_input_fields(instance)
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_sources",
+                    "message": "About to call update_sources_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.update_sources_input_fields()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_length",
+                    "message": "About to call update_source_length_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.update_source_length_input_fields()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_position",
+                    "message": "About to call update_array_position_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.update_array_position_input_fields()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_beamsteering",
+                    "message": "About to call update_beamsteering_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.update_beamsteering_input_fields()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_windowing",
+                    "message": "About to call update_windowing_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.update_windowing_input_fields()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:before_update_gain_delay",
+                    "message": "About to call update_gain_delay_input_fields",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         self.update_gain_delay_input_fields()
-        self.update_beamsteering_windowing_plots()
+        
+        # 🎯 OPTIMIERUNG: Plot-Updates nur durchführen, wenn nicht übersprungen (z.B. beim Laden)
+        if not skip_plots:
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "UI_UPDATE_SEQUENCE",
+                        "location": "UiSourceManagement.py:refresh_active_selection:before_update_plots",
+                        "message": "About to call update_beamsteering_windowing_plots",
+                        "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None},
+                        "timestamp": int(time_module.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            self.update_beamsteering_windowing_plots()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "UI_UPDATE_SEQUENCE",
+                    "location": "UiSourceManagement.py:refresh_active_selection:exit",
+                    "message": "refresh_active_selection completed",
+                    "data": {"speaker_array_id": int(speaker_array_id) if speaker_array_id else None, "skip_plots": skip_plots},
+                    "timestamp": int(time_module.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
     
 
 
