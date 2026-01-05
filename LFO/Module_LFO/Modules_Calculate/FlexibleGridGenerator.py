@@ -33,6 +33,7 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     SurfaceDefinition,
     _evaluate_plane_on_grid,
 )
+from Module_LFO.Modules_Data.settings_state import Settings
 from Module_LFO.Modules_Data.SurfaceValidator import triangulate_points
 
 # Prüfe ob scipy verfügbar ist
@@ -3250,6 +3251,98 @@ class FlexibleGridGenerator(ModuleBase):
         if use_file_cache:
             import tempfile
             self._cache_file_dir = tempfile.mkdtemp(prefix="lfo_grid_cache_")
+        
+        # 🎯 SURFACE-ÄNDERUNGS-TRACKING: Track individuelle Surface-Änderungen
+        # Key: surface_id, Value: Änderungs-Version (wird bei Änderungen erhöht)
+        self._surface_change_tracker: Dict[str, int] = {}
+    
+    def invalidate_surface_cache(self, surface_id: str) -> int:
+        """
+        Invalidiert Cache für ein spezifisches Surface.
+        
+        🎯 OPTIMIERT: Direkter Zugriff auf Cache für bessere Performance.
+        
+        Args:
+            surface_id: ID des zu invalidierenden Surfaces
+        
+        Returns:
+            Anzahl gelöschter Cache-Einträge
+        """
+        # Markiere Surface als geändert
+        self._surface_change_tracker[surface_id] = \
+            self._surface_change_tracker.get(surface_id, 0) + 1
+        
+        # 🎯 OPTIMIERUNG: Direkter Zugriff auf Cache (schneller als Prädikat-Funktion)
+        with self._grid_cache._lock:
+            keys_to_remove = [
+                key for key in self._grid_cache._cache.keys()
+                if isinstance(key, tuple) and len(key) > 0 and str(key[0]) == str(surface_id)
+            ]
+            for key in keys_to_remove:
+                self._grid_cache._cache.pop(key, None)
+            # Aktualisiere Statistiken
+            self._grid_cache._stats.size = len(self._grid_cache._cache)
+            return len(keys_to_remove)
+    
+    def invalidate_surface_group_cache(self, group_id: str) -> int:
+        """
+        Invalidiert Cache für alle Surfaces einer Gruppe.
+        
+        Args:
+            group_id: ID der Surface-Gruppe
+        
+        Returns:
+            Anzahl gelöschter Cache-Einträge
+        """
+        # Hole alle Surface-IDs der Gruppe
+        surface_ids = self._get_surface_ids_for_group(group_id)
+        total_invalidated = 0
+        for surface_id in surface_ids:
+            total_invalidated += self.invalidate_surface_cache(surface_id)
+        return total_invalidated
+    
+    def _get_surface_ids_for_group(self, group_id: str) -> List[str]:
+        """
+        Gibt alle Surface-IDs einer Gruppe zurück.
+        
+        Args:
+            group_id: ID der Surface-Gruppe
+        
+        Returns:
+            Liste von Surface-IDs
+        """
+        surface_ids = []
+        surface_definitions = getattr(self.settings, 'surface_definitions', {})
+        if isinstance(surface_definitions, dict):
+            for sid, surface in surface_definitions.items():
+                if isinstance(surface, SurfaceDefinition):
+                    if getattr(surface, 'group_id', None) == group_id:
+                        surface_ids.append(sid)
+                elif isinstance(surface, dict):
+                    if surface.get('group_id') == group_id:
+                        surface_ids.append(sid)
+        return surface_ids
+    
+    def is_surface_unchanged(self, surface_id: str, cache_key: tuple) -> bool:
+        """
+        Prüft ob Surface seit letztem Cache-Eintrag unverändert ist.
+        
+        Args:
+            surface_id: ID des Surfaces
+            cache_key: Cache-Key des Surfaces
+        
+        Returns:
+            True wenn Surface unverändert ist, False sonst
+        """
+        # Prüfe ob Cache-Eintrag existiert
+        cached_grid = self._grid_cache.get(cache_key)
+        if cached_grid is None:
+            return False
+        
+        # Prüfe ob Surface seit Cache-Eintrag geändert wurde
+        current_version = self._surface_change_tracker.get(surface_id, 0)
+        # Wenn Surface nicht im Tracker → wurde nie geändert (seit Start)
+        return current_version == 0
     
     @property
     def _cache_stats(self):
@@ -4190,13 +4283,18 @@ class FlexibleGridGenerator(ModuleBase):
         ) -> tuple:
         """
         Erzeugt einen stabilen Cache-Key für eine Surface-Geometrie.
+        
+        🎯 OPTIMIERUNG: Key OHNE geometry_version - ermöglicht gezielte Invalidierung!
+        
         Berücksichtigt:
         - surface_id
         - Orientierung
         - verwendete Resolution
         - min_points_per_dimension
-        - diskretisierte Punktkoordinaten
-        - globale Geometrie-Version (Settings.geometry_version)
+        - diskretisierte Punktkoordinaten (Hash der Punkte)
+        
+        NICHT mehr enthalten:
+        - geometry_version (wurde entfernt für gezielte Invalidierung)
         """
         points = geom.points or []
         # Runde Koordinaten leicht, um numerisches Rauschen zu unterdrücken
@@ -4208,14 +4306,15 @@ class FlexibleGridGenerator(ModuleBase):
             )
             for p in points
         )
-        geometry_version = int(getattr(self.settings, "geometry_version", 0))
+        # 🎯 WICHTIG: geometry_version NICHT mehr im Key!
+        # Stattdessen: Individuelle Surface-Änderungen werden über _surface_change_tracker getrackt
         return (
             str(geom.surface_id),
             str(getattr(geom, "orientation", "")),
             round(float(resolution), 4),
             int(min_points),
             pts_key,
-            geometry_version,
+            # geometry_version entfernt!
         )
     
     def _create_cache_hash(
@@ -4253,13 +4352,18 @@ class FlexibleGridGenerator(ModuleBase):
         ) -> tuple:
         """
         Erzeugt einen stabilen Cache-Key für eine Surface-Geometrie.
+        
+        🎯 OPTIMIERUNG: Key OHNE geometry_version - ermöglicht gezielte Invalidierung!
+        
         Berücksichtigt:
         - surface_id
         - Orientierung
         - verwendete Resolution
         - min_points_per_dimension
-        - diskretisierte Punktkoordinaten
-        - globale Geometrie-Version (Settings.geometry_version)
+        - diskretisierte Punktkoordinaten (Hash der Punkte)
+        
+        NICHT mehr enthalten:
+        - geometry_version (wurde entfernt für gezielte Invalidierung)
         """
         points = geom.points or []
         # Runde Koordinaten leicht, um numerisches Rauschen zu unterdrücken
@@ -4271,14 +4375,15 @@ class FlexibleGridGenerator(ModuleBase):
             )
             for p in points
         )
-        geometry_version = int(getattr(self.settings, "geometry_version", 0))
+        # 🎯 WICHTIG: geometry_version NICHT mehr im Key!
+        # Stattdessen: Individuelle Surface-Änderungen werden über _surface_change_tracker getrackt
         return (
             str(geom.surface_id),
             str(getattr(geom, "orientation", "")),
             round(float(resolution), 4),
             int(min_points),
             pts_key,
-            geometry_version,
+            # geometry_version entfernt!
         )
     
     def _create_cache_hash(

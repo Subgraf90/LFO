@@ -2499,6 +2499,14 @@ class UISurfaceManager(ModuleBase):
                         self._update_group_checkbox_state(parent, 1)
                         parent = parent.parent()
         
+        # 🎯 CACHE-INVALIDIERUNG: Bei enable/disable Änderungen Cache löschen
+        if hasattr(self.main_window, '_grid_generator') and self.main_window._grid_generator:
+            grid_generator = self.main_window._grid_generator
+            for sid in surfaces_to_update:
+                # Invalidiere Cache für betroffene Surfaces
+                if hasattr(grid_generator, 'invalidate_surface_cache'):
+                    grid_generator.invalidate_surface_cache(sid)
+        
         # Prüfe, ob Surface aktiviert oder deaktiviert wurde
         if not skip_calculations:
             if enable_value:
@@ -2645,6 +2653,14 @@ class UISurfaceManager(ModuleBase):
                         self._update_group_checkbox_state(parent, 2)
                         parent = parent.parent()
         
+        # 🎯 CACHE-INVALIDIERUNG: Bei hide/disable Änderungen Cache löschen
+        if hasattr(self.main_window, '_grid_generator') and self.main_window._grid_generator:
+            grid_generator = self.main_window._grid_generator
+            for sid in surfaces_to_update:
+                # Invalidiere Cache für betroffene Surfaces
+                if hasattr(grid_generator, 'invalidate_surface_cache'):
+                    grid_generator.invalidate_surface_cache(sid)
+        
         # Prüfe, ob Hide aktiviert oder deaktiviert wird
         if not skip_calculations:
             if hide_value:
@@ -2747,11 +2763,11 @@ class UISurfaceManager(ModuleBase):
                             if hasattr(plotter, 'render'):
                                 plotter.render()
                         
-                        # 🎯 NEU: Bei Hide → Axis Plot aktualisieren (ohne versteckte Surfaces)
-                        # Dies stellt sicher, dass Axis Plot ohne die Daten des versteckten Surfaces aktualisiert wird
-                        if hasattr(self.main_window, 'calculate_axes'):
-                            print(f"[PLOT] Surface hide → calculate_axes() (Axis Plot ohne versteckte Surfaces)")
-                            self.main_window.calculate_axes(update_plot=True)
+                        # 🎯 FIX: Bei Hide → Axis Plot NICHT sofort berechnen (verhindert Hängen)
+                        # Stattdessen: Nur Overlays aktualisieren, Axis Plot wird später aktualisiert
+                        # wenn update_plots_for_surface_state() aufgerufen wird
+                        # calculate_axes() wird dort aufgerufen, wenn nötig
+                        # (Vermeidet Blockierung beim Hide)
 
                 # Entferne auch Grid- und Ergebnisdaten aus calculation_spl, damit beim Unhide
                 # ein frischer Grid/SPL für dieses Surface berechnet wird.
@@ -4230,12 +4246,38 @@ class UISurfaceManager(ModuleBase):
         
         # 4. OFFSET ANWENDEN: Für jedes Surface alle Punkte verschieben
         # 🎯 WICHTIG: Surfaces können sich Punkt-Referenzen teilen!
-        # Daher müssen wir jeden Punkt nur EINMAL verschieben, auch wenn er von mehreren Surfaces verwendet wird.
+        # 🎯 FIX: Rand-Surfaces (außerhalb der Gruppe) sollten NICHT verschoben werden!
+        # Lösung: Prüfe ob Punkt auch von Surface außerhalb der Gruppe verwendet wird.
+        # Wenn ja: Erstelle Kopie des Punktes, bevor verschoben wird.
         surface_store = getattr(self.settings, 'surface_definitions', {})
         updated_surfaces = []
         
-        # 🎯 LÖSUNG: Sammle alle eindeutigen Punkt-Referenzen (basierend auf id() der Dict-Objekte)
-        # und verschiebe jeden Punkt nur einmal
+        # 🎯 SCHRITT 1: Identifiziere alle Surfaces außerhalb der Gruppe
+        all_surface_ids = set(surface_store.keys())
+        group_surface_ids = set(surface_ids)
+        surfaces_outside_group = all_surface_ids - group_surface_ids
+        
+        # 🎯 SCHRITT 2: Sammle alle Punkt-Referenzen von Surfaces außerhalb der Gruppe
+        points_used_outside_group = set()
+        for surface_id in surfaces_outside_group:
+            surface = surface_store.get(surface_id)
+            if not surface:
+                continue
+            
+            if isinstance(surface, SurfaceDefinition):
+                points = surface.points
+            else:
+                points = surface.get('points', [])
+            
+            if not points:
+                continue
+            
+            # Sammle alle Punkt-Referenzen
+            for point in points:
+                if isinstance(point, dict):
+                    points_used_outside_group.add(id(point))
+        
+        # 🎯 SCHRITT 3: Verschiebe Punkte - aber erstelle Kopien für geteilte Punkte
         processed_points = set()  # Set von id(point) um doppelte Verschiebung zu vermeiden
         
         for surface_id in surface_ids:
@@ -4252,22 +4294,53 @@ class UISurfaceManager(ModuleBase):
             if not points:
                 continue
             
-            # Wende Offset auf alle Punkte an - aber nur wenn der Punkt noch nicht verarbeitet wurde
+            # Erstelle neue Punkt-Liste (mit Kopien für geteilte Punkte)
+            new_points = []
             for point in points:
                 if not isinstance(point, dict):
+                    new_points.append(point)
                     continue
                 
-                # Prüfe ob dieser Punkt bereits verarbeitet wurde (gleiche Referenz)
                 point_id = id(point)
-                if point_id not in processed_points:
-                    # Punkt noch nicht verarbeitet - verschiebe ihn
+                
+                # Prüfe ob Punkt bereits verarbeitet wurde
+                if point_id in processed_points:
+                    # Punkt wurde bereits verschoben - verwende bereits verschobene Version
+                    # (aber nur wenn Punkt nicht außerhalb der Gruppe verwendet wird)
+                    if point_id not in points_used_outside_group:
+                        new_points.append(point)
+                    else:
+                        # Punkt wird außerhalb verwendet - sollte bereits kopiert worden sein
+                        new_points.append(point)
+                    continue
+                
+                # Prüfe ob Punkt auch von Surface außerhalb der Gruppe verwendet wird
+                if point_id in points_used_outside_group:
+                    # 🎯 FIX: Punkt wird auch außerhalb der Gruppe verwendet!
+                    # Erstelle Kopie des Punktes, bevor verschoben wird
+                    point_copy = {
+                        'x': point.get('x', 0.0) + offset_x,
+                        'y': point.get('y', 0.0) + offset_y,
+                        'z': point.get('z', 0.0) + offset_z,
+                    }
+                    new_points.append(point_copy)
+                    # Original-Punkt bleibt unverändert (für Rand-Surfaces)
+                else:
+                    # Punkt wird nur innerhalb der Gruppe verwendet - verschiebe direkt
                     point['x'] = point.get('x', 0.0) + offset_x
                     point['y'] = point.get('y', 0.0) + offset_y
                     point['z'] = point.get('z', 0.0) + offset_z
+                    new_points.append(point)
                     processed_points.add(point_id)
             
-            # Aktualisiere plane_model (wichtig für SPL-Berechnung)
-            plane_model, _ = derive_surface_plane(points)
+            # Ersetze Punkt-Liste mit neuer Liste (enthält Kopien für geteilte Punkte)
+            if isinstance(surface, SurfaceDefinition):
+                surface.points = new_points
+            else:
+                surface['points'] = new_points
+            
+            # Aktualisiere plane_model (wichtig für SPL-Berechnung) mit neuen Punkten
+            plane_model, _ = derive_surface_plane(new_points)
             if isinstance(surface, SurfaceDefinition):
                 surface.plane_model = plane_model
             else:

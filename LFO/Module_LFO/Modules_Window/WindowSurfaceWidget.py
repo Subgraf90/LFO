@@ -1017,6 +1017,12 @@ class SurfaceDockWidget(QDockWidget):
             # Surface ist versteckt → keine Berechnung/Plot nötig
             return
 
+        # 🎯 CACHE-INVALIDIERUNG: Bei Geometrie-Änderungen Cache für dieses Surface löschen
+        if hasattr(self.main_window, '_grid_generator') and self.main_window._grid_generator:
+            grid_generator = self.main_window._grid_generator
+            if hasattr(grid_generator, 'invalidate_surface_cache'):
+                grid_generator.invalidate_surface_cache(surface_id)
+        
         # 🎯 Trigger Calc/Plot Update: Punkt-Änderungen beeinflussen Berechnung und Plot
         # (Grid-Erstellung basiert auf Surface-Koordinaten, Overlays zeigen Surface-Geometrie)
         if hasattr(self.main_window, "draw_plots"):
