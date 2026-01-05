@@ -98,6 +98,23 @@ class BeamsteeringPlot(QWidget):
         # Zeichne einmal, um sicherzustellen, dass get_window_extent() korrekte Werte liefert
         self.figure.canvas.draw()
         
+        # #region agent log
+        import json
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'B',
+                'location': 'PlotBeamsteering.py:99',
+                'message': 'Beamsteering: Achsengrenzen vor Stack-Zeichnung',
+                'data': {
+                    'xlim': list(self.ax.get_xlim()),
+                    'ylim': list(self.ax.get_ylim())
+                },
+                'timestamp': int(__import__('time').time() * 1000)
+            }) + '\n')
+        # #endregion
+        
         # Zeichne Stacks NACH dem Setzen der Achsengrenzen (für korrekten Transform)
         self.plot_Stacks2Beamsteering(speaker_array_id)
         

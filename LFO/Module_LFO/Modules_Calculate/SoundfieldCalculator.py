@@ -697,9 +697,16 @@ class SoundFieldCalculator(ModuleBase):
                     Xg = np.asarray(grid.X_grid, dtype=float)
                     Yg = np.asarray(grid.Y_grid, dtype=float)
                     Zg = np.asarray(grid.Z_grid, dtype=float)
-                    if Xg.size == 0 or Yg.size == 0 or Zg.size == 0:
+                    # 🎯 FIX: Erlaube Surfaces mit leeren Grids, wenn additional_vertices vorhanden sind
+                    has_additional_vertices = hasattr(grid, 'additional_vertices') and grid.additional_vertices is not None and grid.additional_vertices.size > 0
+                    if (Xg.size == 0 or Yg.size == 0 or Zg.size == 0) and not has_additional_vertices:
                         continue
-                    surface_results_buffers[sid] = np.zeros_like(Zg, dtype=complex)
+                    # Wenn Grid leer ist, aber additional_vertices vorhanden sind, erstelle leeres Grid
+                    if Xg.size == 0 or Yg.size == 0 or Zg.size == 0:
+                        # Erstelle ein minimales Grid für Surfaces mit nur additional_vertices
+                        surface_results_buffers[sid] = np.zeros((1, 1), dtype=complex)
+                    else:
+                        surface_results_buffers[sid] = np.zeros_like(Zg, dtype=complex)
                     surface_grid_cache[sid] = {
                         "X": Xg,
                         "Y": Yg,
@@ -782,9 +789,15 @@ class SoundFieldCalculator(ModuleBase):
             for sid, grid in surface_grids_grouped.items():
                 try:
                     Xg = np.asarray(grid.X_grid, dtype=float)
-                    if Xg.size == 0:
+                    # 🎯 FIX: Erlaube Surfaces mit leeren Grids, wenn additional_vertices vorhanden sind
+                    has_additional_vertices = hasattr(grid, 'additional_vertices') and grid.additional_vertices is not None and grid.additional_vertices.size > 0
+                    if Xg.size == 0 and not has_additional_vertices:
                         continue
-                    surface_results_buffers[sid] = np.zeros_like(Xg, dtype=complex)
+                    # Wenn Grid leer ist, aber additional_vertices vorhanden sind, erstelle leeres Grid
+                    if Xg.size == 0:
+                        surface_results_buffers[sid] = np.zeros((1, 1), dtype=complex)
+                    else:
+                        surface_results_buffers[sid] = np.zeros_like(Xg, dtype=complex)
                 except Exception:
                     continue
         
@@ -1776,6 +1789,42 @@ class SoundFieldCalculator(ModuleBase):
         
         if additional_vertices is not None and additional_vertices.size > 0:
             all_points = np.vstack([active_grid_points, additional_vertices])
+            
+            # #region agent log - Prüfe ob Zentroid in additional_vertices enthalten ist
+            try:
+                import json, time as _t
+                # Suche nach Zentroid (bekannte Koordinaten für lp_06_tri4: -6.4222784, 3.9903199333333332)
+                # Prüfe ob ein Punkt nahe dem Zentroid vorhanden ist (für alle Surfaces)
+                centroid_found = False
+                centroid_idx = None
+                for idx, vertex in enumerate(additional_vertices):
+                    # Prüfe ob dieser Punkt ein möglicher Zentroid ist (erste Punkte sind oft Zentroid)
+                    if idx == 0:  # Zentroid wird als erster Punkt hinzugefügt
+                        centroid_found = True
+                        centroid_idx = idx
+                        break
+                
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "CENTROID_IN_SPL",
+                        "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:centroid_check",
+                        "message": "Prüfe ob Zentroid in SPL-Berechnung verwendet wird",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "n_grid_points": int(n_grid_points),
+                            "n_additional_vertices": int(len(additional_vertices)),
+                            "n_all_points": int(len(all_points)),
+                            "centroid_found_in_additional": bool(centroid_found),
+                            "centroid_idx": int(centroid_idx) if centroid_idx is not None else None,
+                            "first_additional_vertex": list(additional_vertices[0]) if len(additional_vertices) > 0 else None
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
         else:
             all_points = active_grid_points
         

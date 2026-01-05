@@ -475,6 +475,27 @@ class SPL3DPlotRenderer:
                 
                 if enabled and not hidden and len(points) >= 3:
                     enabled_surfaces.append((str(surface_id), points, surface_obj))
+                    # #region agent log - Surface in enabled_surfaces hinzugefügt
+                    try:
+                        import json, time as _t
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "ENABLED_SURFACES_DEBUG",
+                                "location": "Plot3DSPL._render_surfaces:enabled_surfaces_added",
+                                "message": "Surface in enabled_surfaces hinzugefügt",
+                                "data": {
+                                    "surface_id": str(surface_id),
+                                    "points_count": len(points),
+                                    "enabled": enabled,
+                                    "hidden": hidden
+                                },
+                                "timestamp": int(_t.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     
                     
         
@@ -580,6 +601,27 @@ class SPL3DPlotRenderer:
             poly_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
             poly_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
             if poly_x.size == 0 or poly_y.size == 0:
+                # #region agent log - Surface übersprungen (leere poly_x/poly_y)
+                try:
+                    import json, time as _t
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                            "location": "Plot3DSPL._render_surfaces:surface_skipped_empty_poly",
+                            "message": "Surface übersprungen (leere poly_x oder poly_y)",
+                            "data": {
+                                "surface_id": str(surface_id),
+                                "poly_x_size": int(poly_x.size),
+                                "poly_y_size": int(poly_y.size),
+                                "points_count": len(points)
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 continue
             
             # Plane-Model wird nicht mehr für Textur-Cache benötigt, aber für spätere Verwendung berechnen
@@ -590,8 +632,48 @@ class SPL3DPlotRenderer:
             plane_model, _ = derive_surface_plane(dict_points)
             
             # Per-Surface Overrides aus neuem Grid nutzen (nur Positionen; keine Fallbacks)
-            override = surface_overrides.get(surface_id)
+            override = surface_overrides.get(surface_id) if surface_overrides else None
+            # #region agent log - Prüfe override für Surface
+            try:
+                import json, time as _t
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                        "location": "Plot3DSPL._render_surfaces:override_check",
+                        "message": "Prüfe override für Surface",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "override_exists": override is not None,
+                            "surface_overrides_is_none": surface_overrides is None,
+                            "surface_overrides_keys": list(surface_overrides.keys()) if surface_overrides else []
+                        },
+                        "timestamp": int(_t.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             if not override:
+                # #region agent log - Surface übersprungen in _render_surfaces (keine override)
+                try:
+                    import json, time as _t
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                            "location": "Plot3DSPL._render_surfaces:surface_skipped_no_override",
+                            "message": "Surface übersprungen in _render_surfaces (keine override)",
+                            "data": {
+                                "surface_id": str(surface_id),
+                                "surface_overrides_keys": list(surface_overrides.keys()) if surface_overrides else []
+                            },
+                            "timestamp": int(_t.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
                 continue
             sx = override.get("source_x", np.array([]))
             sy = override.get("source_y", np.array([]))
@@ -1758,9 +1840,69 @@ class SPL3DPlotRenderer:
                     Xg = np.asarray(grid_data.get("X_grid", []))
                     Yg = np.asarray(grid_data.get("Y_grid", []))
                     
-                    if Xg.size == 0 or Yg.size == 0:
-                        
+                    # 🎯 FIX: Prüfe auch auf additional_vertices_spl für Surfaces mit leeren Grids
+                    result_data_check = surface_results_data.get(sid, {})
+                    has_additional_vertices_spl_check = result_data_check.get('additional_vertices_spl') is not None
+                    
+                    if (Xg.size == 0 or Yg.size == 0) and not has_additional_vertices_spl_check:
+                        # #region agent log - Surface übersprungen (leere Grids, keine additional_vertices_spl)
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                                    "location": "Plot3DSPL.update_spl_plot:surface_skipped_empty_grid",
+                                    "message": "Surface übersprungen (leere Grids, keine additional_vertices_spl)",
+                                    "data": {
+                                        "surface_id": str(sid),
+                                        "Xg_size": int(Xg.size),
+                                        "Yg_size": int(Yg.size),
+                                        "has_additional_vertices_spl": bool(has_additional_vertices_spl_check)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         continue
+                    
+                    result_data = surface_results_data[sid]
+                    
+                    # 🎯 FIX: Für Surfaces mit leeren Grids aber mit additional_vertices_spl
+                    # erstelle surface_overrides mit Dummy-Daten direkt
+                    if Xg.size == 0 or Yg.size == 0:
+                        # Surface hat leere Grids, aber additional_vertices_spl ist vorhanden
+                        # Erstelle Dummy-Daten als Marker (die eigentliche Triangulation kommt aus surface_grids_data)
+                        surface_overrides[sid] = {
+                            "source_x": np.array([0.0], dtype=float),
+                            "source_y": np.array([0.0], dtype=float),
+                            "values": np.array([[0.0]], dtype=float),
+                        }
+                        # #region agent log - surface_overrides für leere Grids erstellt
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                                    "location": "Plot3DSPL.update_spl_plot:surface_overrides_empty_grid",
+                                    "message": "surface_overrides für Surface mit leeren Grids erstellt",
+                                    "data": {
+                                        "surface_id": str(sid),
+                                        "Xg_size": int(Xg.size),
+                                        "Yg_size": int(Yg.size),
+                                        "has_additional_vertices_spl": bool(has_additional_vertices_spl_check)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        continue  # Überspringe weitere Verarbeitung für diesen Fall
+                    
                     if Xg.ndim == 2 and Yg.ndim == 2:
                         # Achsen aus dem strukturierten Grid ableiten
                         gx = Xg[0, :] if Xg.shape[1] > 0 else Xg.ravel()
@@ -1769,10 +1911,77 @@ class SPL3DPlotRenderer:
                         
                         continue
 
-                    result_data = surface_results_data[sid]
                     sound_field_p_complex = np.array(result_data.get('sound_field_p', []), dtype=complex)
-
-                    if sound_field_p_complex.size == 0:
+                    
+                    # 🎯 FIX: Prüfe auch auf additional_vertices_spl für Surfaces mit 0 Grid-Punkten
+                    has_additional_vertices_spl = result_data.get('additional_vertices_spl') is not None
+                    
+                    # 🎯 FIX: Prüfe, ob sound_field_p_complex nur Nullen/NaNs enthält (keine aktiven Grid-Punkte)
+                    # Dies kann passieren, wenn Xg.size != 0, aber alle Grid-Punkte außerhalb des Polygons sind
+                    has_valid_grid_points = False
+                    if sound_field_p_complex.size > 0:
+                        # Prüfe, ob es gültige (nicht-Null, nicht-NaN) Werte gibt
+                        valid_mask = np.isfinite(sound_field_p_complex) & (np.abs(sound_field_p_complex) > 1e-12)
+                        has_valid_grid_points = np.any(valid_mask)
+                    
+                    # Wenn keine gültigen Grid-Punkte vorhanden sind, aber additional_vertices_spl vorhanden ist,
+                    # verwende den Dummy-Pfad (wie bei leeren Grids)
+                    if not has_valid_grid_points and has_additional_vertices_spl:
+                        # Surface hat keine gültigen Grid-Punkte, aber additional_vertices_spl ist vorhanden
+                        # Erstelle Dummy-Daten als Marker (die eigentliche Triangulation kommt aus surface_grids_data)
+                        surface_overrides[sid] = {
+                            "source_x": np.array([0.0], dtype=float),
+                            "source_y": np.array([0.0], dtype=float),
+                            "values": np.array([[0.0]], dtype=float),
+                        }
+                        # #region agent log - surface_overrides für Surface ohne gültige Grid-Punkte erstellt
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                                    "location": "Plot3DSPL.update_spl_plot:surface_overrides_no_valid_grid_points",
+                                    "message": "surface_overrides für Surface ohne gültige Grid-Punkte erstellt (mit additional_vertices_spl)",
+                                    "data": {
+                                        "surface_id": str(sid),
+                                        "Xg_size": int(Xg.size),
+                                        "Yg_size": int(Yg.size),
+                                        "sound_field_p_complex_size": int(sound_field_p_complex.size),
+                                        "has_valid_grid_points": bool(has_valid_grid_points),
+                                        "has_additional_vertices_spl": bool(has_additional_vertices_spl)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        continue  # Überspringe weitere Verarbeitung für diesen Fall
+                    
+                    if sound_field_p_complex.size == 0 and not has_additional_vertices_spl:
+                        # #region agent log - Surface übersprungen (sound_field_p_complex.size == 0, keine additional_vertices_spl)
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                                    "location": "Plot3DSPL.update_spl_plot:surface_skipped_zero_sound_field",
+                                    "message": "Surface übersprungen (sound_field_p_complex.size == 0, keine additional_vertices_spl)",
+                                    "data": {
+                                        "surface_id": str(sid),
+                                        "sound_field_p_complex_size": int(sound_field_p_complex.size),
+                                        "Xg_size": int(Xg.size),
+                                        "Yg_size": int(Yg.size),
+                                        "has_additional_vertices_spl": bool(has_additional_vertices_spl)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         continue
 
                     if sound_field_p_complex.shape != Xg.shape:
@@ -1825,17 +2034,72 @@ class SPL3DPlotRenderer:
                                 # Größe stimmt nicht überein, kann nicht interpoliert werden ohne Quell-Koordinaten
                                 continue
                     
-                    # Konvertiere komplexe Werte zu dB (wie im neuen Modul)
-                    pressure_magnitude = np.abs(sound_field_p_complex)
-                    pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
-                    spl_values_db = self.functions.mag2db(pressure_magnitude)
-                    spl_values_db = np.nan_to_num(spl_values_db, nan=0.0, posinf=0.0, neginf=0.0)
-                    
-                    surface_overrides[sid] = {
-                        "source_x": np.asarray(gx, dtype=float),
-                        "source_y": np.asarray(gy, dtype=float),
-                        "values": spl_values_db,  # Direkt die berechneten Werte verwenden
-                    }
+                    # 🎯 FIX: Für Surfaces mit 0 Grid-Punkten aber mit additional_vertices_spl
+                    # erstelle surface_overrides mit Dummy-Daten (als Marker, da Triangulation aus surface_grids_data kommt)
+                    if sound_field_p_complex.size == 0:
+                        # Surface hat keine Grid-Punkte, aber additional_vertices_spl ist vorhanden
+                        # Erstelle Dummy-Daten als Marker (die eigentliche Triangulation kommt aus surface_grids_data)
+                        surface_overrides[sid] = {
+                            "source_x": np.array([0.0], dtype=float),
+                            "source_y": np.array([0.0], dtype=float),
+                            "values": np.array([[0.0]], dtype=float),
+                        }
+                        # #region agent log - surface_overrides für sound_field_p_complex.size == 0 erstellt
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                                    "location": "Plot3DSPL.update_spl_plot:surface_overrides_zero_sound_field",
+                                    "message": "surface_overrides für Surface mit sound_field_p_complex.size == 0 erstellt",
+                                    "data": {
+                                        "surface_id": str(sid),
+                                        "sound_field_p_complex_size": int(sound_field_p_complex.size),
+                                        "Xg_size": int(Xg.size),
+                                        "Yg_size": int(Yg.size),
+                                        "has_additional_vertices_spl": bool(has_additional_vertices_spl)
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                    else:
+                        # Konvertiere komplexe Werte zu dB (wie im neuen Modul)
+                        pressure_magnitude = np.abs(sound_field_p_complex)
+                        pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
+                        spl_values_db = self.functions.mag2db(pressure_magnitude)
+                        spl_values_db = np.nan_to_num(spl_values_db, nan=0.0, posinf=0.0, neginf=0.0)
+                        
+                        surface_overrides[sid] = {
+                            "source_x": np.asarray(gx, dtype=float),
+                            "source_y": np.asarray(gy, dtype=float),
+                            "values": spl_values_db,  # Direkt die berechneten Werte verwenden
+                        }
+                        # #region agent log - surface_overrides für normale Surface erstellt
+                        try:
+                            import json, time as _t
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "SURFACE_OVERRIDES_DEBUG",
+                                    "location": "Plot3DSPL.update_spl_plot:surface_overrides_normal",
+                                    "message": "surface_overrides für normale Surface erstellt",
+                                    "data": {
+                                        "surface_id": str(sid),
+                                        "Xg_size": int(Xg.size),
+                                        "Yg_size": int(Yg.size),
+                                        "sound_field_p_complex_size": int(sound_field_p_complex.size),
+                                        "spl_values_db_shape": list(spl_values_db.shape) if hasattr(spl_values_db, 'shape') else None
+                                    },
+                                    "timestamp": int(_t.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                 except Exception as e:
                     # Wenn etwas schiefgeht, einfach ohne Override weiterarbeiten
                     continue

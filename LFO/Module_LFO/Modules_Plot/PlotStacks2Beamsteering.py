@@ -76,6 +76,28 @@ class StackDraw_Beamsteering:
             x_range = xlim[1] - xlim[0]
             y_range = ylim[1] - ylim[0]
             
+            # #region agent log
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'PlotStacks2Beamsteering.py:74',
+                    'message': 'Beamsteering: Achsengrenzen vor Pixel-Berechnung',
+                    'data': {
+                        'xlim': list(xlim),
+                        'ylim': list(ylim),
+                        'x_range': float(x_range),
+                        'y_range': float(y_range),
+                        'front_height_m': float(front_height),
+                        'width_m': float(width),
+                        'isrc': int(isrc)
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+            # #endregion
+            
             # Verwende get_position() und Figure-Größe um die Pixel-Größe der Axes zu berechnen
             try:
                 fig = self.ax.figure
@@ -87,28 +109,109 @@ class StackDraw_Beamsteering:
                 pos = self.ax.get_position()
                 axes_width_pixels = pos.width * fig_width_pixels
                 axes_height_pixels = pos.height * fig_height_pixels
-            except:
+                
+                # #region agent log
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'A',
+                        'location': 'PlotStacks2Beamsteering.py:88',
+                        'message': 'Beamsteering: Pixel-Größen berechnet',
+                        'data': {
+                            'axes_width_pixels': float(axes_width_pixels),
+                            'axes_height_pixels': float(axes_height_pixels),
+                            'fig_width_pixels': float(fig_width_pixels),
+                            'fig_height_pixels': float(fig_height_pixels),
+                            'pos_width': float(pos.width),
+                            'pos_height': float(pos.height),
+                            'dpi': float(dpi),
+                            'method': 'get_position'
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+                # #endregion
+            except Exception as e:
                 # Fallback: Verwende Figure-Größe in Pixeln
                 fig = self.ax.figure
                 dpi = fig.get_dpi()
                 axes_width_pixels = fig.get_figwidth() * dpi * 0.8  # Geschätzt
                 axes_height_pixels = fig.get_figheight() * dpi * 0.8  # Geschätzt
+                
+                # #region agent log
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'A',
+                        'location': 'PlotStacks2Beamsteering.py:95',
+                        'message': 'Beamsteering: Fallback Pixel-Größen',
+                        'data': {
+                            'axes_width_pixels': float(axes_width_pixels),
+                            'axes_height_pixels': float(axes_height_pixels),
+                            'error': str(e)
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+                # #endregion
             
             if axes_width_pixels > 0 and axes_height_pixels > 0 and x_range > 0 and y_range > 0:
                 # Berechne Daten-Einheiten pro Pixel
                 x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel
                 y_units_per_pixel = y_range / axes_height_pixels  # Meter pro Pixel
                 
-                # Für unverzerrte Darstellung: 1 Meter in X = 1 Meter visuell in Y
-                # front_height ist in Metern, muss aber basierend auf dem Aspect-Ratio skaliert werden
-                # Um die gleiche visuelle Größe zu erreichen (gleiche Anzahl Pixel):
-                # front_height (Meter) / x_units_per_pixel = scaled_height (Meter) / y_units_per_pixel
-                # scaled_height = front_height * (y_units_per_pixel / x_units_per_pixel)
+                # Ziel: Lautsprecher sollen im Plot nicht verzerrt werden.
+                # D.h. das Seitenverhältnis (width : front_height) soll in Pixeln erhalten bleiben,
+                # auch wenn die Achsen unterschiedlich skaliert sind.
+                #
+                # width_pixels  = width / x_units_per_pixel
+                # height_pixels = scaled_front_height / y_units_per_pixel
+                # Für unverzerrte Darstellung gilt:
+                #   width_pixels / height_pixels = width / front_height
+                # => scaled_front_height = front_height * (y_units_per_pixel / x_units_per_pixel)
                 scale_factor = y_units_per_pixel / x_units_per_pixel if x_units_per_pixel > 0 else 1.0
                 scaled_front_height = front_height * scale_factor
+                
+                # #region agent log
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'C',
+                        'location': 'PlotStacks2Beamsteering.py:107',
+                        'message': 'Beamsteering: Skalierung berechnet für unverzerrte Darstellung',
+                        'data': {
+                            'x_units_per_pixel': float(x_units_per_pixel),
+                            'y_units_per_pixel': float(y_units_per_pixel),
+                            'scale_factor': float(scale_factor),
+                            'front_height_m': float(front_height),
+                            'scaled_front_height_m': float(scaled_front_height)
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+                # #endregion
             else:
-                # Fallback wenn Größe nicht verfügbar
+                # Fallback wenn Größe nicht verfügbar: zeichne ohne Korrektur (kann verzerrt sein)
                 scaled_front_height = front_height
+                
+                # #region agent log
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'PlotStacks2Beamsteering.py:111',
+                        'message': 'Beamsteering: Fallback verwendet, Höhe 1:1 in m',
+                        'data': {
+                            'axes_width_pixels': float(axes_width_pixels),
+                            'axes_height_pixels': float(axes_height_pixels),
+                            'x_range': float(x_range),
+                            'y_range': float(y_range),
+                            'scaled_front_height': float(scaled_front_height)
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+                # #endregion
 
             # Zeichne das Rechteck (Frontansicht: width x height)
             # Farbe basierend auf cardio: cardio hat Exit-Face hinten (helleres Grau), normale vorne (mittelgrau)
@@ -125,6 +228,26 @@ class StackDraw_Beamsteering:
                 fc=color
             )
             self.ax.add_patch(rect)
+            
+            # #region agent log
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'PlotStacks2Beamsteering.py:127',
+                    'message': 'Beamsteering: Rechteck erstellt',
+                    'data': {
+                        'x': float(x),
+                        'y': float(y),
+                        'width': float(width),
+                        'scaled_front_height': float(scaled_front_height),
+                        'front_height_original': float(front_height)
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+            # #endregion
             
         except Exception as e:
             print(f"Fehler beim Zeichnen eines Lautsprechers: {str(e)}")
