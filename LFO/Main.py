@@ -168,11 +168,18 @@ class MainWindow(QtWidgets.QMainWindow):
         - LRU-Eviction
         - Beschreibung
         """
-        # Grid Cache: Großer Cache für viele Surfaces
+        # Grid Cache: Speicherbasiert statt count-basiert
+        # 🎯 MEMORY-BASIERT: Cache-Größe basiert auf Memory-Verbrauch, nicht Anzahl Einträge
+        # Typische Surface-Grid-Größe: ~5-50 MB pro Surface (abhängig von Resolution)
+        # Mit max_memory_mb=500 MB können ~10-100 Surfaces gecacht werden (je nach Größe)
         cache_manager.register_cache(
             CacheType.GRID,
-            max_size=int(getattr(self.settings, "surface_grid_cache_size", 1000)),
-            description="Surface Grid Cache - Speichert generierte Grids für Surfaces"
+            max_size=10000,  # Hohes Count-Limit (wird durch Memory-Limit begrenzt)
+            max_memory_mb=float(getattr(self.settings, "surface_grid_cache_memory_mb", 500.0)),  # 500 MB Memory-Limit
+            memory_eviction_enabled=False,  # Memory-Eviction deaktiviert (nur Monitoring)
+            ttl_seconds=None,  # Deaktiviert - zu aggressiv bei interaktiver Nutzung
+            max_idle_seconds=None,  # Deaktiviert - LRU-Eviction reicht aus
+            description="Surface Grid Cache - Speichert generierte Grids für Surfaces (Memory-basiert)"
         )
         
         # Calc Geometry Cache: Mittelgroßer Cache für Geometrie-Berechnungen

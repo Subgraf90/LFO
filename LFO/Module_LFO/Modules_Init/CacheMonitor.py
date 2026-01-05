@@ -7,10 +7,16 @@ Verwendung:
     monitor = CacheMonitor()
     monitor.print_stats()
     monitor.print_detailed_stats()
+    monitor.print_memory_overview()  # System-RAM + Cache-RAM
 """
 
 from typing import Dict, Any, Optional
-from Module_LFO.Modules_Init.CacheManager import cache_manager, CacheType
+from Module_LFO.Modules_Init.CacheManager import cache_manager, CacheType, estimate_memory_size
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 
 class CacheMonitor:
@@ -45,6 +51,7 @@ class CacheMonitor:
                 print(f"  {cache_name}:")
                 print(f"    Hit-Rate: {cache_stats['hit_rate']:.2f}%")
                 print(f"    Size: {cache_stats['size']}/{data['config']['max_size']}")
+                print(f"    Memory: {cache_stats.get('memory_usage_mb', 0.0):.1f} MB")
                 print(f"    Hits: {cache_stats['hits']}, Misses: {cache_stats['misses']}")
     
     def print_detailed_stats(self, cache_type: Optional[CacheType] = None):
@@ -72,6 +79,9 @@ class CacheMonitor:
         print(f"\n{cache_name}:")
         print(f"  Hit-Rate: {stats['hit_rate']:.2f}%")
         print(f"  Size: {stats['size']}/{config['max_size']}")
+        print(f"  Memory: {stats.get('memory_usage_mb', 0.0):.1f} MB")
+        if config.get('max_memory_mb'):
+            print(f"  Memory-Limit: {config['max_memory_mb']:.1f} MB")
         print(f"  Hits: {stats['hits']}, Misses: {stats['misses']}")
     
     def _print_detailed_cache_stats(self, cache_name: str, data: Dict[str, Any]):
@@ -88,7 +98,13 @@ class CacheMonitor:
         print(f"  Total Accesses: {stats['total_accesses']}")
         print(f"  Hit-Rate: {stats['hit_rate']:.2f}%")
         print(f"  Size: {stats['size']}/{config['max_size']}")
+        print(f"  Memory: {stats.get('memory_usage_mb', 0.0):.1f} MB")
+        if config.get('max_memory_mb'):
+            print(f"  Memory-Limit: {config['max_memory_mb']:.1f} MB")
+            memory_usage_ratio = stats.get('memory_usage_mb', 0.0) / config['max_memory_mb'] * 100
+            print(f"  Memory-Auslastung: {memory_usage_ratio:.1f}%")
         print(f"  Evictions: {stats['evictions']}")
+        print(f"  Memory-Evictions: {stats.get('memory_evictions', 0)}")
         print(f"  File Loads: {stats['file_loads']}")
         print(f"  File Saves: {stats['file_saves']}")
         if stats['last_access']:
@@ -177,6 +193,97 @@ class CacheMonitor:
         """Leert alle Caches"""
         self.cache_manager.clear_all_caches()
         print("✅ Alle Caches geleert")
+    
+    def print_memory_overview(self, container=None):
+        """
+        Druckt Memory-Übersicht: System-RAM + Cache-RAM + Snapshot-RAM
+        
+        Args:
+            container: Optional DataContainer für Snapshot-Memory
+        """
+        print("\n" + "="*60)
+        print("MEMORY-ÜBERSICHT")
+        print("="*60)
+        
+        # System-RAM
+        if PSUTIL_AVAILABLE:
+            try:
+                mem = psutil.virtual_memory()
+                print(f"\nSystem-RAM:")
+                print(f"  Total: {mem.total / (1024**3):.2f} GB")
+                print(f"  Verfügbar: {mem.available / (1024**3):.2f} GB")
+                print(f"  Verwendet: {mem.used / (1024**3):.2f} GB ({mem.percent:.1f}%)")
+                print(f"  Frei: {mem.free / (1024**3):.2f} GB")
+            except Exception as e:
+                print(f"  ⚠️  Fehler beim Abrufen der System-RAM-Info: {e}")
+        else:
+            print("\nSystem-RAM:")
+            print("  ⚠️  psutil nicht verfügbar - System-RAM kann nicht überwacht werden")
+        
+        # Cache-RAM
+        print(f"\nCache-RAM:")
+        all_stats = self.cache_manager.get_cache_stats()
+        total_cache_memory = 0.0
+        for cache_name, data in all_stats.items():
+            cache_memory = data['stats'].get('memory_usage_mb', 0.0)
+            total_cache_memory += cache_memory
+            max_memory = data['config'].get('max_memory_mb')
+            if max_memory:
+                print(f"  {cache_name}: {cache_memory:.1f} MB / {max_memory:.1f} MB")
+            else:
+                print(f"  {cache_name}: {cache_memory:.1f} MB (kein Limit)")
+        print(f"  Total Cache-RAM: {total_cache_memory:.1f} MB")
+        
+        # Snapshot-RAM
+        if container:
+            print(f"\nSnapshot-RAM:")
+            try:
+                calculation_axes = getattr(container, 'calculation_axes', {})
+                snapshot_memory = 0.0
+                snapshot_count = 0
+                
+                for key, snapshot_data in calculation_axes.items():
+                    if key != "aktuelle_simulation":  # Nur Snapshots, nicht aktuelle Simulation
+                        snapshot_count += 1
+                        try:
+                            snapshot_mb = estimate_memory_size(snapshot_data)
+                            snapshot_memory += snapshot_mb
+                        except Exception:
+                            pass
+                
+                print(f"  Anzahl Snapshots: {snapshot_count}")
+                print(f"  Total Snapshot-RAM: {snapshot_memory:.1f} MB")
+                if snapshot_count > 0:
+                    avg_memory = snapshot_memory / snapshot_count
+                    print(f"  Durchschnitt pro Snapshot: {avg_memory:.1f} MB")
+            except Exception as e:
+                print(f"  ⚠️  Fehler beim Berechnen der Snapshot-Memory: {e}")
+        
+        # Gesamt-Übersicht
+        print(f"\n{'='*60}")
+        print("GESAMT-ÜBERSICHT")
+        print(f"{'='*60}")
+        if PSUTIL_AVAILABLE:
+            try:
+                mem = psutil.virtual_memory()
+                process = psutil.Process()
+                process_memory_mb = process.memory_info().rss / (1024**2)
+                print(f"  Prozess-RAM: {process_memory_mb:.1f} MB")
+                print(f"  Cache-RAM: {total_cache_memory:.1f} MB")
+                if container:
+                    snapshot_memory = 0.0
+                    try:
+                        calculation_axes = getattr(container, 'calculation_axes', {})
+                        for key, snapshot_data in calculation_axes.items():
+                            if key != "aktuelle_simulation":
+                                snapshot_memory += estimate_memory_size(snapshot_data)
+                    except Exception:
+                        pass
+                    print(f"  Snapshot-RAM: {snapshot_memory:.1f} MB")
+                    print(f"  Andere RAM: {process_memory_mb - total_cache_memory - snapshot_memory:.1f} MB")
+                print(f"  System-RAM verwendet: {mem.percent:.1f}%")
+            except Exception:
+                pass
 
 
 # Convenience-Funktion für einfachen Zugriff

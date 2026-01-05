@@ -259,6 +259,18 @@ class UiFile:
                         overlay_speakers._stack_signature_cache.clear()
                         overlay_speakers._overlay_array_cache.clear()
         
+        # 🎯 CACHE-BEREINIGUNG: Bereinige Cache für nicht-existierende Surfaces beim Laden
+        if hasattr(self.main_window, '_grid_generator') and self.main_window._grid_generator:
+            grid_generator = self.main_window._grid_generator
+            grid_cache = grid_generator._grid_cache
+            if grid_cache:
+                surface_store = getattr(self.settings, 'surface_definitions', {})
+                valid_surface_ids = set(surface_store.keys())
+                if valid_surface_ids:
+                    cleaned = grid_cache.cleanup_unused_surfaces(valid_surface_ids)
+                    if cleaned > 0:
+                        print(f"[CACHE] Beim Laden: {cleaned} Cache-Einträge für nicht-existierende Surfaces bereinigt")
+        
         self._close_widgets()
 
     def _safe_close(self, widget):

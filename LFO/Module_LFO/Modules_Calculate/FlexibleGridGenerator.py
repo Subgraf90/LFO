@@ -3410,6 +3410,11 @@ class FlexibleGridGenerator(ModuleBase):
         if resolution is None:
             resolution = self.settings.resolution
         
+        # 🎯 BEREINIGUNG: Nur gelegentlich, nicht bei jedem Aufruf (Performance)
+        # Bereinigung erfolgt bei:
+        # - Laden von Dateien (UiFile.load_file)
+        # - Speichern von Dateien (UiFile._save_data)
+        # - Explizite Cache-Bereinigung (CacheMonitor)
         # Analysiere Surfaces
         geometries = self.analyzer.analyze_surfaces(enabled_surfaces)
         
