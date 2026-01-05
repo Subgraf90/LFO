@@ -43,13 +43,12 @@ class StackDraw_Beamsteering:
             if not isinstance(cabinet, dict):
                 return
             
-            # Werte direkt aus Metadaten holen (wie im 3D-Plot)
+            # Werte direkt aus Metadaten holen
             width = float(cabinet.get('width', 0))
             if width <= 0:
                 return
             
-            # Frontansicht: verwende front_height statt depth
-            # Fallback auf height (wie im 3D-Plot bei back_height)
+            # Verwende front_height aus Metadaten
             front_height = float(cabinet.get('front_height', cabinet.get('height', 0)))
             if front_height <= 0:
                 return
@@ -95,7 +94,7 @@ class StackDraw_Beamsteering:
             y = base_y
 
             # Berechne Transform für unverzerrte Lautsprecher-Darstellung
-            # Die Lautsprecher haben Dimensionen in Metern (width x front_height)
+            # Die Lautsprecher haben Dimensionen in Metern (width x height)
             # Beide Achsen sind in Metern
             # Um die Lautsprecher unverzerrt zu halten, müssen wir die Höhe basierend auf dem Aspect-Ratio skalieren
             xlim = self.ax.get_xlim()
@@ -190,20 +189,23 @@ class StackDraw_Beamsteering:
                 # scaled_front_height = (front_height / width) * (width / x_range) * axes_width_pixels * (y_range / axes_height_pixels)
                 # scaled_front_height = front_height * (y_range / x_range) * (axes_width_pixels / axes_height_pixels)
                 
-                # Korrekte Formel für unverzerrte Darstellung:
+                # KORRIGIERTE Formel für unverzerrte Darstellung:
+                # Wenn vertikale Skalierung kleiner ist (weniger Pixel pro Meter), müssen wir die Höhe GRÖSSER machen
                 # Wir wollen: (scaled_front_height / y_range) * axes_height_pixels / ((width / x_range) * axes_width_pixels) = front_height / width
-                # scaled_front_height = front_height * (y_range / x_range) * (axes_width_pixels / axes_height_pixels)
-                aspect_ratio_correction = (y_range / x_range) * (axes_width_pixels / axes_height_pixels) if axes_height_pixels > 0 and x_range > 0 else 1.0
+                # Umgestellt: scaled_front_height = front_height * (x_range / y_range) * (axes_height_pixels / axes_width_pixels)
+                # Das ist das INVERSE der falschen Formel!
+                aspect_ratio_correction = (x_range / y_range) * (axes_height_pixels / axes_width_pixels) if axes_width_pixels > 0 and y_range > 0 else 1.0
                 scaled_front_height = front_height * aspect_ratio_correction
                 
-                # #region agent log - Abmessungsberechnung und Skalierung
+                # #region agent log - Abmessungsberechnung mit korrigierter Skalierung
+                import json
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     f.write(json.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'run1',
                         'hypothesisId': 'DIMENSIONS',
-                        'location': 'PlotStacks2Beamsteering.py:170',
-                        'message': 'Beamsteering: Abmessungsberechnung - Skalierung für unverzerrte Darstellung',
+                        'location': 'PlotStacks2Beamsteering.py:195',
+                        'message': 'Beamsteering: Abmessungsberechnung - korrigierte Skalierung für unverzerrte Darstellung',
                         'data': {
                             'isrc': int(isrc),
                             'breite': {
@@ -216,18 +218,22 @@ class StackDraw_Beamsteering:
                                 'original_m': float(front_height),
                                 'skaliert_m': float(scaled_front_height),
                                 'skaliert': True,
-                                'skalierungsfaktor': float(aspect_ratio_correction)
+                                'skalierungsfaktor': float(aspect_ratio_correction),
+                                'hinweis': 'Höhe wird erhöht wenn vertikale Skalierung kleiner ist'
                             },
                             'achsen': {
                                 'x_range_m': float(x_range),
                                 'y_range_m': float(y_range),
                                 'axes_width_pixels': float(axes_width_pixels),
-                                'axes_height_pixels': float(axes_height_pixels)
+                                'axes_height_pixels': float(axes_height_pixels),
+                                'x_units_per_pixel': float(x_units_per_pixel),
+                                'y_units_per_pixel': float(y_units_per_pixel)
                             },
                             'formel_komponenten': {
-                                'y_range_div_x_range': float(y_range / x_range) if x_range > 0 else 0,
-                                'axes_width_div_height': float(axes_width_pixels / axes_height_pixels) if axes_height_pixels > 0 else 0,
-                                'aspect_ratio_correction': float(aspect_ratio_correction)
+                                'x_range_div_y_range': float(x_range / y_range) if y_range > 0 else 0,
+                                'axes_height_div_width': float(axes_height_pixels / axes_width_pixels) if axes_width_pixels > 0 else 0,
+                                'aspect_ratio_correction': float(aspect_ratio_correction),
+                                'hinweis': 'Korrigierte Formel: (x_range/y_range) * (axes_height/axes_width)'
                             },
                             'vergleich': {
                                 'original_aspect_ratio': float(front_height / width) if width > 0 else 0,
@@ -244,12 +250,32 @@ class StackDraw_Beamsteering:
                 scaled_front_height = front_height
                 
                 # #region agent log
+                import json
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     f.write(json.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'run1',
                         'hypothesisId': 'B',
-                        'location': 'PlotStacks2Beamsteering.py:111',
+                        'location': 'PlotStacks2Beamsteering.py:242',
+                        'message': 'Beamsteering: Fallback verwendet, Höhe 1:1 in m',
+                        'data': {
+                            'axes_width_pixels': float(axes_width_pixels) if 'axes_width_pixels' in locals() else 0,
+                            'axes_height_pixels': float(axes_height_pixels) if 'axes_height_pixels' in locals() else 0,
+                            'x_range': float(x_range) if 'x_range' in locals() else 0,
+                            'y_range': float(y_range) if 'y_range' in locals() else 0,
+                            'scaled_front_height': float(scaled_front_height)
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+                # #endregion
+                
+                # #region agent log
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'PlotStacks2Beamsteering.py:242',
                         'message': 'Beamsteering: Fallback verwendet, Höhe 1:1 in m',
                         'data': {
                             'axes_width_pixels': float(axes_width_pixels),
@@ -317,16 +343,18 @@ class StackDraw_Beamsteering:
                         },
                         'skalierung': {
                             'breite_faktor': 1.0,
-                            'hoehe_faktor': float(scaled_front_height / front_height) if front_height > 0 else 0,
+                            'hoehe_faktor': 1.0,
                             'hoehe_original_m': float(front_height),
-                            'hoehe_skaliert_m': float(scaled_front_height)
+                            'hoehe_verwendet_m': float(scaled_front_height),
+                            'keine_skalierung': True,
+                            'hinweis': 'Höhe wird nicht skaliert, bleibt in Metern'
                         },
                         'vergleich': {
                             'breite_original_vs_verwendet': float(width) == float(width),
-                            'hoehe_original_vs_skaliert': float(front_height) != float(scaled_front_height),
+                            'hoehe_original_vs_verwendet': float(front_height) == float(scaled_front_height),
                             'aspect_ratio_original': float(aspect_ratio_real),
                             'aspect_ratio_pixel': float(aspect_ratio_pixels),
-                            'aspect_ratio_match': abs(float(aspect_ratio_real) - float(aspect_ratio_pixels)) < 0.01
+                            'hinweis': 'Höhe wird nicht skaliert, daher kann Aspect-Ratio im Pixel-Bereich abweichen'
                         }
                     },
                     'timestamp': int(__import__('time').time() * 1000)

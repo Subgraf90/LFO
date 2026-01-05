@@ -26,6 +26,7 @@ from threading import Lock
 
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Init.Logging import PERF_ENABLED, measure_time
+from Module_LFO.Modules_Init.CacheManager import cache_manager, CacheType, LRUCache
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
     derive_surface_plane,
     evaluate_surface_plane,
@@ -1117,7 +1118,7 @@ class GridBuilder(ModuleBase):
             return binary_dilation(mask, structure=structure)
         except ImportError:
             # Fallback: Original-Loop-Implementierung wenn scipy nicht verfügbar
-        kernel = np.array(
+            kernel = np.array(
             [
                 [1, 1, 1],
                 [1, 1, 1],
@@ -1233,9 +1234,9 @@ class GridBuilder(ModuleBase):
                 
                 # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung
                 is_inside = self._point_in_polygon_single(nearest_x, nearest_y, polygon_xy)
-                    if not is_inside:
-                        # 🎯 FIX: Aktiviere Grid-Punkte außerhalb des Polygons NICHT
-                        continue
+                if not is_inside:
+                    # 🎯 FIX: Aktiviere Grid-Punkte außerhalb des Polygons NICHT
+                    continue
                 
                 # Markiere diesen Grid-Punkt als "inside", falls noch nicht gesetzt
                 # UND nur wenn er innerhalb des Polygons liegt
@@ -1326,9 +1327,9 @@ class GridBuilder(ModuleBase):
                 
                 # 🚀 OPTIMIERUNG: Verwende vektorisierte Punkt-im-Polygon-Prüfung
                 is_inside = self._point_in_polygon_single(nearest_u, nearest_v, polygon_uv)
-                    if not is_inside:
-                        # Grid-Punkt außerhalb des Polygons → nicht aktivieren
-                        continue
+                if not is_inside:
+                    # Grid-Punkt außerhalb des Polygons → nicht aktivieren
+                    continue
                 
                 # Markiere diesen Grid-Punkt als "inside", falls noch nicht gesetzt
                 # UND nur wenn er innerhalb des Polygons liegt
@@ -1976,7 +1977,7 @@ class GridBuilder(ModuleBase):
             
             exact_match_tolerance = 1e-9
             # 🚀 OPTIMIERUNG: Erstelle Polygon-Array einmal (statt Path-Objekt)
-                polygon_2d_uv = np.column_stack([polygon_u, polygon_v])
+            polygon_2d_uv = np.column_stack([polygon_u, polygon_v])
             
             for corner_u, corner_v in zip(polygon_u, polygon_v):
                 # 🎯 FIX: Prüfe ob all_vertices leer ist (z.B. bei schmalen Surfaces ohne Grid-Punkte)
@@ -2058,7 +2059,7 @@ class GridBuilder(ModuleBase):
                             )
                             if z_new is not None and z_new.size > 0:
                                 corner_z = float(z_new.flat[0])
-            except Exception:
+                        except Exception:
                             pass
                     additional_vertices.append([corner_x, corner_y, corner_z])
                     continue
@@ -2780,12 +2781,12 @@ class GridBuilder(ModuleBase):
         Z_grid: np.ndarray,
         ) -> np.ndarray:
         """Interpoliert Z-Koordinaten für planare/schräge Surfaces."""
-            # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
-            # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
-            if Z_grid is None or np.all(Z_grid == 0):
-                Z_grid = np.zeros_like(X_grid, dtype=float)
-            
-            if geometry.plane_model:
+        # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
+        # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
+        if Z_grid is None or np.all(Z_grid == 0):
+            Z_grid = np.zeros_like(X_grid, dtype=float)
+        
+        if geometry.plane_model:
                 # Berechne Z-Werte für ALLE Punkte im Grid (linear interpoliert gemäß Plane-Model)
                 # Dies ermöglicht erweiterte Punkte außerhalb der Surface-Grenze
                 Z_values_all = _evaluate_plane_on_grid(geometry.plane_model, X_grid, Y_grid)
@@ -2794,8 +2795,8 @@ class GridBuilder(ModuleBase):
                 # Nur Warnung ausgeben, wenn Problem erkannt wird
                 if geometry.orientation == "sloped" and z_span_grid < 0.01:
                     plane_mode = geometry.plane_model.get('mode', 'unknown')
-            else:
-                # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
+        else:
+            # Fallback: Kein Plane-Model – nutze vorhandene Surface-Punkte
                 surface_points = geometry.points or []
                 if not surface_points:
                     raise ValueError(f"Surface '{geometry.surface_id}': kein Plane-Model und keine Surface-Punkte vorhanden.")
@@ -2810,9 +2811,8 @@ class GridBuilder(ModuleBase):
                 if z_variation:
                     # 🎯 VERTIKALE SURFACES: Z_grid ist bereits korrekt gesetzt, überspringe Interpolation
                     if geometry.orientation == "vertical":
-                    # Für vertikale Flächen wird Z_grid bereits beim Grid-Aufbau korrekt gesetzt.
-                    pass
-
+                        # Für vertikale Flächen wird Z_grid bereits beim Grid-Aufbau korrekt gesetzt.
+                        pass
                     elif geometry.orientation == "planar" or geometry.orientation == "sloped":
                         # Für planare/schräge Surfaces: Z-Werte hängen von beiden Koordinaten ab (u, v)
                         xs = surface_x
@@ -2922,7 +2922,7 @@ class GridBuilder(ModuleBase):
                             if np.isnan(Z_interp).any():
                                 raise ValueError("Z-Interpolation liefert NaN außerhalb des gültigen Polygons.")
                             Z_grid = Z_interp.reshape(X_grid.shape)
-                        # Debug-Ausgabe entfernt
+                            # Debug-Ausgabe entfernt
                         except Exception as e:
                             raise RuntimeError(f"Z-Interpolation (linear) fehlgeschlagen: {e}")
                 else:
@@ -3152,7 +3152,7 @@ class CartesianTransformer(GridTransformer):
                         expected_ratio = z_from_surface / n_surfaces
                         # Debug-Ausgaben entfernt – nur interne Konsistenzprüfung
                         if abs(z_final - expected_ratio) < abs(z_final - z_from_surface) * 0.1:
-                        break
+                            break
         
         # Debug: Statistiken
         valid_mask = np.abs(Z_grid) > 1e-6  # Punkte mit Z≠0
@@ -3211,7 +3211,7 @@ class FlexibleGridGenerator(ModuleBase):
     - 'fdtd': Für FDTD (später)
     """
     
-    def __init__(self, settings):
+    def __init__(self, settings, grid_cache: Optional[LRUCache] = None):
         super().__init__(settings)
         self.settings = settings
         self.analyzer = SurfaceAnalyzer(settings)
@@ -3223,21 +3223,54 @@ class FlexibleGridGenerator(ModuleBase):
         self._cached_base_grid: Optional[BaseGrid] = None
         self._cached_geometries: Optional[List[SurfaceGeometry]] = None
         self._cache_hash: Optional[str] = None
-        # Cache für per-Surface-Grids (inkl. Triangulation), um bei wiederholten
-        # Berechnungen mit unveränderter Geometrie Zeit zu sparen.
-        # Key: (surface_id, orientation, resolution, min_points, points_signature)
-        # 🎯 OPTIMIERUNG: Verwende CachedSurfaceGrid statt SurfaceGrid für ~30-40% weniger Memory
-        # 🎯 EVICTION: Einträge werden nur beim Hinzufügen neuer Einträge entfernt (wenn Limit erreicht)
-        max_cache_size = int(getattr(settings, "surface_grid_cache_size", 1000))  # Default: 1000 Surfaces
-        self._surface_grid_cache: OrderedDict[tuple, CachedSurfaceGrid] = OrderedDict()
-        self._surface_cache_max_size = max_cache_size
-        self._surface_cache_lock = Lock()
-        self._cache_stats = {
-            'hits': 0,
-            'misses': 0,
-            'evictions': 0,
-            'size': 0,
+        
+        # 🎯 CACHE-MANAGER INTEGRATION: Nutze Cache-Manager oder übergebenen Cache
+        if grid_cache is None:
+            # Erstelle neuen Cache über Cache-Manager
+            max_cache_size = int(getattr(settings, "surface_grid_cache_size", 1000))
+            self._grid_cache = cache_manager.get_or_create_cache(
+                CacheType.GRID,
+                max_size=max_cache_size,
+                description="Surface Grid Cache"
+            )
+        else:
+            # Nutze übergebenen Cache (Shared Instance)
+            self._grid_cache = grid_cache
+        
+        # 🎯 WRAPPER FÜR KOMPATIBILITÄT: Exponiere _cache als _surface_grid_cache
+        # Damit bestehender Code weiterhin funktioniert
+        self._surface_grid_cache = self._grid_cache._cache
+        self._surface_cache_max_size = self._grid_cache.max_size
+        self._surface_cache_lock = self._grid_cache._lock
+        
+        # File-Cache Support (optional)
+        use_file_cache = bool(getattr(settings, "surface_grid_cache_to_file", False))
+        self._use_file_cache = use_file_cache
+        self._cache_file_dir = None
+        if use_file_cache:
+            import tempfile
+            self._cache_file_dir = tempfile.mkdtemp(prefix="lfo_grid_cache_")
+    
+    @property
+    def _cache_stats(self):
+        """
+        Property für Backward-Kompatibilität: Gibt Cache-Statistiken zurück.
+        
+        Nutzt Cache-Manager Statistiken und konvertiert sie ins alte Format.
+        """
+        stats = self._grid_cache.get_stats()
+        return {
+            'hits': stats.hits,
+            'misses': stats.misses,
+            'evictions': stats.evictions,
+            'size': stats.size,
+            'file_loads': stats.file_loads,
+            'file_saves': stats.file_saves,
         }
+        
+        # 🎯 STATISTIKEN: Nutze Cache-Manager Statistiken
+        # Für Backward-Kompatibilität: Exponiere _cache_stats als Property
+        # Das ermöglicht bestehendem Code, auf Statistiken zuzugreifen
     
     def _deduplicate_vertices_and_faces(
         self,
@@ -3324,16 +3357,20 @@ class FlexibleGridGenerator(ModuleBase):
                 resolution=float(resolution),
                 min_points=min_points_per_dimension,
             )
-            with self._surface_cache_lock:
-                # Prüfe ob Key existiert
-                cached_grid = self._surface_grid_cache.get(cache_key)
+            # 🎯 CACHE-MANAGER: Nutze Cache-Manager für Thread-Safe Zugriff
+            cached_grid = self._grid_cache.get(cache_key)
             if cached_grid is not None:
-                    # 🎯 OPTIMIERUNG: Konvertiere CachedSurfaceGrid zurück zu SurfaceGrid
-                    surface_grids[geom.surface_id] = cached_grid.to_surface_grid(geom)
-                    self._cache_stats['hits'] += 1
+                # Cache Hit: Konvertiere CachedSurfaceGrid zurück zu SurfaceGrid
+                surface_grids[geom.surface_id] = cached_grid.to_surface_grid(geom)
             else:
+                # 🎯 OPTIMIERUNG: Prüfe File-Cache falls aktiviert
+                if self._use_file_cache:
+                    file_cached = self._load_from_file_cache(cache_key, geom)
+                    if file_cached is not None:
+                        surface_grids[geom.surface_id] = file_cached
+                        continue
+                # Cache Miss: Muss neu berechnet werden
                 geometries_to_process.append((geom, cache_key))
-                    self._cache_stats['misses'] += 1
 
         return (surface_grids, geometries_to_process)
     
@@ -3488,15 +3525,15 @@ class FlexibleGridGenerator(ModuleBase):
             if len(result) == 8:
                 # Version: Mit strikter Maske + additional_vertices
                 return result
-                elif len(result) == 7:
-                    # Version: Mit strikter Maske (ohne additional_vertices - Fallback)
-                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
+            elif len(result) == 7:
+                # Version: Mit strikter Maske (ohne additional_vertices - Fallback)
+                (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict) = result
                 additional_vertices = np.array([], dtype=float).reshape(0, 3)
                 return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
-                else:
-                    # Alte Version: Ohne strikte Maske (Fallback)
-                    (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
-                    surface_mask_strict = surface_mask  # Fallback: identisch
+            else:
+                # Alte Version: Ohne strikte Maske (Fallback)
+                (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask) = result
+                surface_mask_strict = surface_mask  # Fallback: identisch
                 additional_vertices = np.array([], dtype=float).reshape(0, 3)
                 return (sound_field_x, sound_field_y, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict, additional_vertices)
         except Exception:
@@ -3510,8 +3547,8 @@ class FlexibleGridGenerator(ModuleBase):
         Z_grid: np.ndarray,
         ) -> np.ndarray:
         """Korrigiert Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene."""
-            # Falls plane_model fehlt oder nahezu flache Z-Spanne ergibt, versuche Neu-Bestimmung aus den Punkten.
-            if geom.orientation in ("planar", "sloped"):
+        # Falls plane_model fehlt oder nahezu flache Z-Spanne ergibt, versuche Neu-Bestimmung aus den Punkten.
+        if geom.orientation in ("planar", "sloped"):
                 plane_model_local = geom.plane_model
                 # Für "sloped" Flächen: IMMER plane_model aus Punkten ableiten, wenn nicht vorhanden ODER wenn vorhanden aber falsch
                 # Für "planar" Flächen: Nur ableiten, wenn nicht vorhanden
@@ -3553,11 +3590,11 @@ class FlexibleGridGenerator(ModuleBase):
         resolution: float,
         ) -> float:
         """Berechnet tatsächliche Resolution (kann adaptiv sein)."""
-            if len(sound_field_x) > 1 and len(sound_field_y) > 1:
-                actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
-                actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
+        if len(sound_field_x) > 1 and len(sound_field_y) > 1:
+            actual_resolution_x = (sound_field_x.max() - sound_field_x.min()) / (len(sound_field_x) - 1)
+            actual_resolution_y = (sound_field_y.max() - sound_field_y.min()) / (len(sound_field_y) - 1)
             return (actual_resolution_x + actual_resolution_y) / 2.0
-            else:
+        else:
             return resolution
     
     def generate_per_surface_process_and_create_grids_create_triangulation(
@@ -3573,20 +3610,20 @@ class FlexibleGridGenerator(ModuleBase):
         ) -> Dict[str, Any]:
         """Erstellt Triangulation für SurfaceGrid."""
         t_triang_start = time.perf_counter() if PERF_ENABLED else None
-            
-            # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
-            # 🎯 NEU: Verwende Delaunay-Triangulation für konsistente, überschneidungsfreie Triangulation
-            triangulated_vertices = None
-            triangulated_faces = None
-            triangulated_success = False
-            vertex_source_indices: Optional[np.ndarray] = None
+        
+        # 🎯 TRIANGULATION: Erstelle triangulierte Vertices aus Grid-Punkten
+        # 🎯 NEU: Verwende Delaunay-Triangulation für konsistente, überschneidungsfreie Triangulation
+        triangulated_vertices = None
+        triangulated_faces = None
+        triangulated_success = False
+        vertex_source_indices: Optional[np.ndarray] = None
         
         # Konvertiere additional_vertices zu numpy array
-                    if not isinstance(additional_vertices, np.ndarray):
-                        additional_vertices_array = np.array(additional_vertices, dtype=float) if additional_vertices is not None and hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
-                    else:
-                        additional_vertices_array = additional_vertices
-                    
+        if not isinstance(additional_vertices, np.ndarray):
+            additional_vertices_array = np.array(additional_vertices, dtype=float) if additional_vertices is not None and hasattr(additional_vertices, '__len__') and len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
+        else:
+            additional_vertices_array = additional_vertices
+        
         try:
             # 1. Bereite Vertices vor
             (all_vertices, base_vertex_count, additional_vertex_start_idx, mask_flat, mask_strict_flat) = \
@@ -3669,10 +3706,10 @@ class FlexibleGridGenerator(ModuleBase):
         
         # Füge additional_vertices hinzu
         if additional_vertices_array.size > 0:
-                        all_vertices = np.vstack([all_vertices, additional_vertices_array])
-                        
-                    base_vertex_count = X_grid.size
-                    additional_vertex_start_idx = base_vertex_count
+            all_vertices = np.vstack([all_vertices, additional_vertices_array])
+        
+        base_vertex_count = X_grid.size
+        additional_vertex_start_idx = base_vertex_count
         
         return (all_vertices, base_vertex_count, additional_vertex_start_idx, mask_flat, mask_strict_flat)
     
@@ -3688,72 +3725,72 @@ class FlexibleGridGenerator(ModuleBase):
         ) -> List[int]:
         """Erstellt Delaunay-Triangulation und gibt faces_list zurück."""
         faces_list = []
-                    
-                    if not HAS_SCIPY:
-                        raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
-                    
-                    # Sammle alle gültigen Punkte (Grid-Punkte in Maske + additional_vertices)
-                            valid_vertices_list = []
+        
+        if not HAS_SCIPY:
+            raise RuntimeError(f"scipy ist erforderlich für Delaunay-Triangulation. Surface: {geom.surface_id}")
+        
+        # Sammle alle gültigen Punkte (Grid-Punkte in Maske + additional_vertices)
+        valid_vertices_list = []
         valid_vertex_indices = []
-                            
-                            # Füge aktive Grid-Punkte hinzu
-                            active_mask_indices = np.where(mask_flat)[0]
-                            for idx in active_mask_indices:
-                                if idx < len(all_vertices):
-                                    valid_vertices_list.append(all_vertices[idx])
-                                    valid_vertex_indices.append(idx)
-                            
+        
+        # Füge aktive Grid-Punkte hinzu
+        active_mask_indices = np.where(mask_flat)[0]
+        for idx in active_mask_indices:
+            if idx < len(all_vertices):
+                valid_vertices_list.append(all_vertices[idx])
+                valid_vertex_indices.append(idx)
+        
         # Füge additional_vertices hinzu
-                            if len(additional_vertices_array) > 0:
-                                for i in range(len(additional_vertices_array)):
-                                    idx = additional_vertex_start_idx + i
-                                    if idx < len(all_vertices):
-                                        valid_vertices_list.append(all_vertices[idx])
-                                        valid_vertex_indices.append(idx)
+        if len(additional_vertices_array) > 0:
+            for i in range(len(additional_vertices_array)):
+                idx = additional_vertex_start_idx + i
+                if idx < len(all_vertices):
+                    valid_vertices_list.append(all_vertices[idx])
+                    valid_vertex_indices.append(idx)
         
         if len(valid_vertices_list) < 3:
             return faces_list
         
-                                valid_vertices_array = np.array(valid_vertices_list, dtype=float)
-                                
-                                # Bestimme Projektionsebene basierend auf Orientierung
-                                if geom.orientation == "vertical":
-                                    if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                        if geom.dominant_axis == "xz":
-                                            proj_2d = valid_vertices_array[:, [0, 2]]  # x, z
-                                        elif geom.dominant_axis == "yz":
-                                            proj_2d = valid_vertices_array[:, [1, 2]]  # y, z
-                                        else:
-                                            proj_2d = valid_vertices_array[:, [0, 1]]
-                                    else:
-                                        proj_2d = valid_vertices_array[:, [0, 1]]
-                                else:
-                                    proj_2d = valid_vertices_array[:, [0, 1]]  # x, y
-                                
-                                # Delaunay-Triangulation in 2D
-                                tri = Delaunay(proj_2d)
+        valid_vertices_array = np.array(valid_vertices_list, dtype=float)
+        
+        # Bestimme Projektionsebene basierend auf Orientierung
+        if geom.orientation == "vertical":
+            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                if geom.dominant_axis == "xz":
+                    proj_2d = valid_vertices_array[:, [0, 2]]  # x, z
+                elif geom.dominant_axis == "yz":
+                    proj_2d = valid_vertices_array[:, [1, 2]]  # y, z
+                else:
+                    proj_2d = valid_vertices_array[:, [0, 1]]
+            else:
+                proj_2d = valid_vertices_array[:, [0, 1]]
+        else:
+            proj_2d = valid_vertices_array[:, [0, 1]]  # x, y
+        
+        # Delaunay-Triangulation in 2D
+        tri = Delaunay(proj_2d)
         triangles_delaunay = tri.simplices
-                                
-                                # Filtere Dreiecke, die außerhalb der Surface-Maske liegen
-                                valid_triangles = []
-                                surface_points = geom.points or []
-                                
-                                if len(surface_points) >= 3:
-                                    try:
+        
+        # Filtere Dreiecke, die außerhalb der Surface-Maske liegen
+        valid_triangles = []
+        surface_points = geom.points or []
+        
+        if len(surface_points) >= 3:
+            try:
                 # 🚀 OPTIMIERUNG: Erstelle Polygon-Array einmal (statt mehrfach)
-                                        if geom.orientation == "vertical":
-                                            if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                                if geom.dominant_axis == "xz":
-                                                    polygon_2d = np.array([[p.get("x", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
-                                                elif geom.dominant_axis == "yz":
-                                                    polygon_2d = np.array([[p.get("y", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
-                                                else:
-                                                    polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
-                                            else:
-                                                polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
-                                        else:
-                                            polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
-                                        
+                if geom.orientation == "vertical":
+                    if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
+                        if geom.dominant_axis == "xz":
+                            polygon_2d = np.array([[p.get("x", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
+                        elif geom.dominant_axis == "yz":
+                            polygon_2d = np.array([[p.get("y", 0.0), p.get("z", 0.0)] for p in surface_points], dtype=float)
+                        else:
+                            polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                    else:
+                        polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                else:
+                    polygon_2d = np.array([[p.get("x", 0.0), p.get("y", 0.0)] for p in surface_points], dtype=float)
+                
                 # 🚀 OPTIMIERUNG: Vektorisierte Punkt-im-Polygon-Prüfung statt Loop mit contains_point()
                 # Berechne alle Schwerpunkte auf einmal
                 centroids_2d = proj_2d[triangles_delaunay].mean(axis=1)  # Shape: (n_triangles, 2)
@@ -3792,25 +3829,25 @@ class FlexibleGridGenerator(ModuleBase):
                     v1_old = v1_indices[tri_idx]
                     v2_old = v2_indices[tri_idx]
                     v3_old = v3_indices[tri_idx]
-                                                    valid_triangles.append((v1_old, v2_old, v3_old))
-                                    except Exception:
-                                        # Fallback: Verwende alle Delaunay-Dreiecke
-                                        for tri_idx in triangles_delaunay:
-                                            v1_old = valid_vertex_indices[tri_idx[0]]
-                                            v2_old = valid_vertex_indices[tri_idx[1]]
-                                            v3_old = valid_vertex_indices[tri_idx[2]]
-                                            valid_triangles.append((v1_old, v2_old, v3_old))
-                                else:
-                                    # Kein Polygon verfügbar: Verwende alle Delaunay-Dreiecke
-                                    for tri_idx in triangles_delaunay:
-                                        v1_old = valid_vertex_indices[tri_idx[0]]
-                                        v2_old = valid_vertex_indices[tri_idx[1]]
-                                        v3_old = valid_vertex_indices[tri_idx[2]]
-                                        valid_triangles.append((v1_old, v2_old, v3_old))
-                                
-                                # Konvertiere zu PyVista-Format: [3, v1, v2, v3, 3, v4, v5, v6, ...]
-                                    for v1, v2, v3 in valid_triangles:
-                                        faces_list.extend([3, int(v1), int(v2), int(v3)])
+                    valid_triangles.append((v1_old, v2_old, v3_old))
+            except Exception:
+                # Fallback: Verwende alle Delaunay-Dreiecke
+                for tri_idx in triangles_delaunay:
+                    v1_old = valid_vertex_indices[tri_idx[0]]
+                    v2_old = valid_vertex_indices[tri_idx[1]]
+                    v3_old = valid_vertex_indices[tri_idx[2]]
+                    valid_triangles.append((v1_old, v2_old, v3_old))
+        else:
+            # Kein Polygon verfügbar: Verwende alle Delaunay-Dreiecke
+            for tri_idx in triangles_delaunay:
+                v1_old = valid_vertex_indices[tri_idx[0]]
+                v2_old = valid_vertex_indices[tri_idx[1]]
+                v3_old = valid_vertex_indices[tri_idx[2]]
+                valid_triangles.append((v1_old, v2_old, v3_old))
+        
+        # Konvertiere zu PyVista-Format: [3, v1, v2, v3, 3, v4, v5, v6, ...]
+        for v1, v2, v3 in valid_triangles:
+            faces_list.extend([3, int(v1), int(v2), int(v3)])
                                     
         return faces_list
     
@@ -3871,37 +3908,37 @@ class FlexibleGridGenerator(ModuleBase):
             }
         
         # Extrahiere Vertex-Indices aus Faces
-                        vertex_indices_in_faces = []
-                        for i in range(0, len(faces_list), 4):
-                            if i + 3 < len(faces_list):
-                                n_verts = faces_list[i]
-                                if n_verts == 3:
-                                    vertex_indices_in_faces.extend(faces_list[i+1:i+4])
-                        
-                        vertex_indices_in_faces_set = set(vertex_indices_in_faces)
-                        
+        vertex_indices_in_faces = []
+        for i in range(0, len(faces_list), 4):
+            if i + 3 < len(faces_list):
+                n_verts = faces_list[i]
+                if n_verts == 3:
+                    vertex_indices_in_faces.extend(faces_list[i+1:i+4])
+        
+        vertex_indices_in_faces_set = set(vertex_indices_in_faces)
+        
         # Füge alle aktiven Masken-Punkte hinzu
-                        active_mask_indices = np.where(mask_flat)[0]
-                        for idx in active_mask_indices:
+        active_mask_indices = np.where(mask_flat)[0]
+        for idx in active_mask_indices:
             if idx < len(all_vertices):
-                                vertex_indices_in_faces_set.add(int(idx))
-                        
+                vertex_indices_in_faces_set.add(int(idx))
+        
         # Füge additional_vertices hinzu
         if len(additional_vertices_array) > 0:
             for i in range(len(additional_vertices_array)):
-                                additional_idx = base_vertex_count + i
+                additional_idx = base_vertex_count + i
                 if additional_idx < len(all_vertices):
-                                    vertex_indices_in_faces_set.add(int(additional_idx))
-                        
-                        all_vertex_indices = np.array(sorted(vertex_indices_in_faces_set), dtype=np.int64)
-                        
-                        # Erstelle Mapping: alter Index → neuer Index
-                        old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
-                        
+                    vertex_indices_in_faces_set.add(int(additional_idx))
+        
+        all_vertex_indices = np.array(sorted(vertex_indices_in_faces_set), dtype=np.int64)
+        
+        # Erstelle Mapping: alter Index → neuer Index
+        old_to_new_index = {old_idx: new_idx for new_idx, old_idx in enumerate(all_vertex_indices)}
+        
         # Erstelle vorläufiges vertex_source_indices-Mapping
-                        vertex_source_indices_pre_dedup = []
-                        
-                        if len(all_vertex_indices) > 0:
+        vertex_source_indices_pre_dedup = []
+        
+        if len(all_vertex_indices) > 0:
                             # Trenne normale Grid-Vertices von zusätzlichen Vertices
                             grid_vertex_indices = all_vertex_indices[all_vertex_indices < base_vertex_count]
                             additional_vertex_indices = all_vertex_indices[all_vertex_indices >= base_vertex_count]
@@ -3914,7 +3951,7 @@ class FlexibleGridGenerator(ModuleBase):
                             else:
                                 grid_vertices = np.array([], dtype=float).reshape(0, 3)
                             
-            # Erstelle Vertices aus zusätzlichen Vertices
+                            # Erstelle Vertices aus zusätzlichen Vertices
                             if len(additional_vertex_indices) > 0 and len(additional_vertices_array) > 0:
                                 additional_indices_local = additional_vertex_indices - base_vertex_count
                                 additional_indices_local = additional_indices_local[additional_indices_local < len(additional_vertices_array)]
@@ -3938,13 +3975,13 @@ class FlexibleGridGenerator(ModuleBase):
                                 triangulated_vertices = additional_vertices_selected
                             else:
                                 triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
-                        else:
-                            triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
-                            vertex_source_indices_pre_dedup = []
-                        
-                        # Mappe Face-Indizes auf neue Vertex-Indizes
-                        faces_list_mapped = []
-                        for i in range(0, len(faces_list), 4):
+        else:
+            triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
+            vertex_source_indices_pre_dedup = []
+        
+        # Mappe Face-Indizes auf neue Vertex-Indizes
+        faces_list_mapped = []
+        for i in range(0, len(faces_list), 4):
                             if i + 3 < len(faces_list):
                                 n_verts = faces_list[i]
                                 if n_verts == 3:
@@ -3958,25 +3995,25 @@ class FlexibleGridGenerator(ModuleBase):
                                             old_to_new_index[v2_old],
                                             old_to_new_index[v3_old]
                                         ])
-                        
-                        if len(faces_list_mapped) > 0:
-                            triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
-                            triangulated_success = True
-                        else:
-                            triangulated_faces = np.array([], dtype=np.int64)
-                            triangulated_success = False
+        
+        if len(faces_list_mapped) > 0:
+            triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
+            triangulated_success = True
+        else:
+            triangulated_faces = np.array([], dtype=np.int64)
+            triangulated_success = False
         
         # Deduplizierung
         t_dedup_start = time.perf_counter() if PERF_ENABLED else None
-                        vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
-                        
-                        try:
-                            triangulated_vertices, triangulated_faces = self._deduplicate_vertices_and_faces(
-                                triangulated_vertices,
-                                triangulated_faces,
-                                actual_resolution,
-                                geom.surface_id
-                            )
+        vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
+        
+        try:
+            triangulated_vertices, triangulated_faces = self._deduplicate_vertices_and_faces(
+                triangulated_vertices,
+                triangulated_faces,
+                actual_resolution,
+                geom.surface_id
+            )
         except Exception:
             pass
         
@@ -3991,7 +4028,7 @@ class FlexibleGridGenerator(ModuleBase):
             
         # Erstelle vertex_source_indices nach Deduplizierung
         # 🎯 OPTIMIERUNG: Verwende effizientere Methode statt cdist (O(n²))
-                            vertex_source_indices = None
+        vertex_source_indices = None
         if len(triangulated_vertices) > 0 and len(vertex_source_indices_pre_dedup) > 0 and len(vertices_before_dedup_array) > 0:
             try:
                 t_cdist_start = time.perf_counter() if PERF_ENABLED else None
@@ -4015,20 +4052,20 @@ class FlexibleGridGenerator(ModuleBase):
                         old_pos_to_idx[key] = idx
                 
                 # Finde für jeden neuen Vertex den passenden alten Index
-                                    vertex_source_indices_mapping = []
-                                    n_grid_total = base_vertex_count
-                                    
+                vertex_source_indices_mapping = []
+                n_grid_total = base_vertex_count
+                
                 for new_idx, new_pos in enumerate(quant_new):
                     key = tuple(new_pos)
                     pre_dedup_idx = old_pos_to_idx.get(key, -1)
                     
                     if pre_dedup_idx >= 0 and pre_dedup_idx < len(vertex_source_indices_pre_dedup):
-                                            mapping_type, source_idx = vertex_source_indices_pre_dedup[pre_dedup_idx]
-                                            if mapping_type == 'grid':
-                                                vertex_source_indices_mapping.append(int(source_idx))
-                                            else:  # 'additional'
-                                                vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
-                                        else:
+                        mapping_type, source_idx = vertex_source_indices_pre_dedup[pre_dedup_idx]
+                        if mapping_type == 'grid':
+                            vertex_source_indices_mapping.append(int(source_idx))
+                        else:  # 'additional'
+                            vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
+                    else:
                         # Fallback: Finde nächsten Vertex mit cdist (nur wenn nötig)
                         from scipy.spatial.distance import cdist
                         distances = cdist([triangulated_vertices[new_idx]], vertices_before_dedup_array)
@@ -4040,9 +4077,9 @@ class FlexibleGridGenerator(ModuleBase):
                             else:
                                 vertex_source_indices_mapping.append(int(n_grid_total + source_idx))
                         else:
-                                            vertex_source_indices_mapping.append(0)
-                                    
-                                    vertex_source_indices = np.array(vertex_source_indices_mapping, dtype=np.int64)
+                            vertex_source_indices_mapping.append(0)
+                
+                vertex_source_indices = np.array(vertex_source_indices_mapping, dtype=np.int64)
                 
                 if PERF_ENABLED and t_cdist_start is not None:
                     duration_ms = (time.perf_counter() - t_cdist_start) * 1000.0
@@ -4050,7 +4087,7 @@ class FlexibleGridGenerator(ModuleBase):
                         f"[PERF] FlexibleGridGenerator.create_vertex_source_indices: "
                         f"{duration_ms:.2f} ms [n_new={len(triangulated_vertices)}, n_old={len(vertices_before_dedup_array)}]"
                     )
-                            except Exception:
+            except Exception:
                 vertex_source_indices = None
         
         return {
@@ -4081,8 +4118,8 @@ class FlexibleGridGenerator(ModuleBase):
         triangulated_success = triangulation_data.get('triangulated_success', False)
         vertex_source_indices = triangulation_data.get('vertex_source_indices')
         additional_vertices_final = triangulation_data.get('additional_vertices_final')
-            
-            surface_grid = SurfaceGrid(
+        
+        surface_grid = SurfaceGrid(
                 surface_id=geom.surface_id,
                 sound_field_x=sound_field_x,
                 sound_field_y=sound_field_y,
@@ -4097,7 +4134,7 @@ class FlexibleGridGenerator(ModuleBase):
                 triangulated_success=triangulated_success,
                 vertex_source_indices=vertex_source_indices,
                 additional_vertices=additional_vertices_final,
-            )
+        )
 
         # 🎯 OPTIMIERUNG: Konvertiere zu CachedSurfaceGrid für Cache (spart ~30-40% Memory)
         cached_grid = CachedSurfaceGrid(
@@ -4115,26 +4152,14 @@ class FlexibleGridGenerator(ModuleBase):
             additional_vertices=additional_vertices_final,
         )
         
-            # Im Cache speichern - Eviction nur beim Hinzufügen neuer Einträge
-            with self._surface_cache_lock:
-                # Wenn Key bereits existiert, überschreibe ihn
-                if cache_key in self._surface_grid_cache:
-                    # Überschreibe existierenden Eintrag (wird aktualisiert)
-                    self._surface_grid_cache[cache_key] = cached_grid
-                        else:
-                    # Neuer Eintrag: Prüfe ob Cache-Limit erreicht
-                    # 🎯 EVICTION: Nur beim Hinzufügen neuer Einträge entfernen
-                    if len(self._surface_grid_cache) >= self._surface_cache_max_size:
-                        # Entferne ältesten Eintrag (erster im OrderedDict)
-                        oldest_key = next(iter(self._surface_grid_cache))
-                        del self._surface_grid_cache[oldest_key]
-                        self._cache_stats['evictions'] += 1
-                    
-                    # Füge neuen Eintrag hinzu (wird automatisch ans Ende gesetzt)
-                    self._surface_grid_cache[cache_key] = cached_grid
-                    self._cache_stats['size'] = len(self._surface_grid_cache)
+        # 🎯 CACHE-MANAGER: Speichere im Cache-Manager (Thread-Safe, LRU-Eviction automatisch)
+        self._grid_cache.set(cache_key, cached_grid)
         
-            surface_grids[geom.surface_id] = surface_grid
+        # 🎯 OPTIMIERUNG: Speichere auch in File-Cache falls aktiviert
+        if self._use_file_cache:
+            self._save_to_file_cache(cache_key, cached_grid)
+        
+        surface_grids[geom.surface_id] = surface_grid
             
         # Debug-Plot (optional) - nur wenn aktiviert
         if DEBUG_FLEXIBLE_GRID:

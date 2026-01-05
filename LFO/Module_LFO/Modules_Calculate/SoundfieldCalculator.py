@@ -4,6 +4,7 @@ import numpy as np
 import time
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase
 from Module_LFO.Modules_Calculate.FlexibleGridGenerator import FlexibleGridGenerator
+from Module_LFO.Modules_Init.CacheManager import cache_manager, CacheType
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from Module_LFO.Modules_Init.Logging import measure_time, perf_section
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
@@ -18,7 +19,7 @@ DEBUG_SOUNDFIELD = bool(int(__import__("os").environ.get("LFO_DEBUG_SOUNDFIELD",
 
 
 class SoundFieldCalculator(ModuleBase):
-    def __init__(self, settings, data, calculation_spl):
+    def __init__(self, settings, data, calculation_spl, grid_generator=None):
         super().__init__(settings)
         self.settings = settings
         self.data = data
@@ -27,13 +28,33 @@ class SoundFieldCalculator(ModuleBase):
         # 🚀 PERFORMANCE: Cache für optimierten Balloon-Data Zugriff
         self._data_container = None  # Wird bei Bedarf gesetzt
         
-        # 🎯 GEOMETRY CACHE: Verhindert unnötige Neuberechnungen
-        self._geometry_cache = {}  # {source_key: {distances, azimuths, elevations}}
-        self._grid_cache = None    # Gespeichertes Grid
+        # 🎯 CACHE-MANAGER INTEGRATION: Nutze Cache-Manager für Geometry Cache
+        max_geometry_cache_size = int(getattr(settings, "geometry_cache_size", 1000))
+        self._geometry_cache_obj = cache_manager.get_or_create_cache(
+            CacheType.CALC_GEOMETRY,
+            max_size=max_geometry_cache_size,
+            description="Geometry Cache for Sound Field Calculation"
+        )
+        # Wrapper für Backward-Kompatibilität
+        self._geometry_cache = self._geometry_cache_obj._cache
+        
+        # 🎯 CACHE-MANAGER INTEGRATION: Nutze Cache-Manager für Grid Cache
+        self._grid_cache_obj = cache_manager.get_or_create_cache(
+            CacheType.CALC_GRID,
+            max_size=int(getattr(settings, "calc_grid_cache_size", 100)),
+            description="Grid Cache for Sound Field Calculation"
+        )
+        # Alte Variablen für Backward-Kompatibilität
+        self._grid_cache = None    # Wird bei Bedarf gesetzt
         self._grid_hash = None     # Hash der Grid-Parameter
         
-        # 🎯 GRID-GENERATOR: Flexible Grid-Erstellung
-        self._grid_generator = FlexibleGridGenerator(settings)
+        # 🎯 SHARED GRID GENERATOR: Nutze übergebenen Grid-Generator oder erstelle neuen
+        if grid_generator is None:
+            # Fallback: Erstelle neuen Grid-Generator (ohne Shared Cache)
+            self._grid_generator = FlexibleGridGenerator(settings)
+        else:
+            # Nutze Shared Grid-Generator (Cache bleibt erhalten!)
+            self._grid_generator = grid_generator
 
     def _compute_surface_contribution_for_source(
         self,

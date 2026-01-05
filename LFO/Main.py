@@ -45,6 +45,8 @@ from Module_LFO.Modules_Calculate.CalculationHandler import CalculationHandler
 from Module_LFO.Modules_Data.data_module import DataContainer
 from Module_LFO.Modules_Data.settings_state import Settings
 
+from Module_LFO.Modules_Init.CacheManager import cache_manager, CacheType
+
 from Module_LFO.Modules_Window.WindowPlotsMainwindow import DrawPlotsMainwindow
 from Module_LFO.Modules_Window.WindowWidgets import DrawWidgets
 from Module_LFO.Modules_Window.WindowSnapshotWidget import SnapshotWidget
@@ -105,6 +107,12 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Calculation Handler für Berechnungslogik
         self.calculation_handler = CalculationHandler(self.settings)
+        
+        # 🎯 CACHE-MANAGER: Initialisiere alle Caches mit individuellen Konfigurationen
+        self._initialize_caches()
+        
+        # 🎯 SHARED GRID GENERATOR: Erstelle einmalig für alle Berechnungen
+        self._grid_generator = None  # Wird bei Bedarf erstellt
 
         self._initialize_default_plot_flags()
 
@@ -150,7 +158,76 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Verbinde die Action mit der Methode
         self.ui.actionManage_Speaker.triggered.connect(self.show_manage_speaker)
+    
+    def _initialize_caches(self):
+        """
+        Initialisiert alle Caches mit individuellen Konfigurationen.
         
+        Jeder Cache kann einzeln konfiguriert werden:
+        - Maximale Größe
+        - LRU-Eviction
+        - Beschreibung
+        """
+        # Grid Cache: Großer Cache für viele Surfaces
+        cache_manager.register_cache(
+            CacheType.GRID,
+            max_size=int(getattr(self.settings, "surface_grid_cache_size", 1000)),
+            description="Surface Grid Cache - Speichert generierte Grids für Surfaces"
+        )
+        
+        # Calc Geometry Cache: Mittelgroßer Cache für Geometrie-Berechnungen
+        cache_manager.register_cache(
+            CacheType.CALC_GEOMETRY,
+            max_size=int(getattr(self.settings, "geometry_cache_size", 1000)),
+            description="Geometry Cache - Speichert Distanzen, Azimuts, Elevations"
+        )
+        
+        # Calc Grid Cache: Kleinerer Cache (Grids sind groß im Memory)
+        cache_manager.register_cache(
+            CacheType.CALC_GRID,
+            max_size=int(getattr(self.settings, "calc_grid_cache_size", 100)),
+            description="Grid Cache - Speichert berechnete Grids für Sound Field"
+        )
+        
+        # Plot Caches: Individuell konfiguriert für Rendering-Optimierungen
+        cache_manager.register_cache(
+            CacheType.PLOT_SURFACE_ACTORS,
+            max_size=int(getattr(self.settings, "plot_surface_actors_cache_size", 500)),
+            description="Surface Actor Cache - Speichert PyVista Mesh-Actors"
+        )
+        
+        cache_manager.register_cache(
+            CacheType.PLOT_TEXTURE,
+            max_size=int(getattr(self.settings, "plot_texture_cache_size", 500)),
+            description="Texture Cache - Speichert Textur-Signaturen"
+        )
+        
+        cache_manager.register_cache(
+            CacheType.PLOT_GEOMETRY,
+            max_size=int(getattr(self.settings, "plot_geometry_cache_size", 100)),
+            description="Plot Geometry Cache - Speichert Plot-Geometrie (plot_x, plot_y)"
+        )
+    
+    def _get_or_create_grid_generator(self):
+        """
+        Gibt den Shared Grid-Generator zurück oder erstellt ihn bei Bedarf.
+        
+        Der Grid-Generator wird einmalig erstellt und über alle Berechnungen
+        hinweg geteilt, damit der Cache erhalten bleibt.
+        """
+        if self._grid_generator is None:
+            from Module_LFO.Modules_Calculate.FlexibleGridGenerator import FlexibleGridGenerator
+            
+            # Hole Grid-Cache vom Cache-Manager
+            grid_cache = cache_manager.get_cache(CacheType.GRID)
+            
+            # Erstelle Grid-Generator mit Shared Cache
+            self._grid_generator = FlexibleGridGenerator(
+                self.settings,
+                grid_cache=grid_cache
+            )
+        
+        return self._grid_generator
 
     # ---- PLOT METHODEN ----
 
@@ -787,7 +864,23 @@ class MainWindow(QtWidgets.QMainWindow):
             update_polarplots: Polar-Plot aktualisieren
         """
         calculator_cls = self.calculation_handler.select_soundfield_calculator_class()
-        calculator_instance = calculator_cls(self.settings, self.container.data, self.container.calculation_spl)
+        
+        # 🎯 SHARED GRID GENERATOR: Nutze geteilten Grid-Generator für Cache-Persistenz
+        shared_grid_generator = self._get_or_create_grid_generator()
+        
+        # Erstelle Calculator mit Shared Grid-Generator
+        # Falls Calculator grid_generator-Parameter nicht unterstützt, wird er ignoriert (Backward-Kompatibilität)
+        try:
+            calculator_instance = calculator_cls(
+                self.settings,
+                self.container.data,
+                self.container.calculation_spl,
+                grid_generator=shared_grid_generator
+            )
+        except TypeError:
+            # Fallback: Calculator unterstützt grid_generator-Parameter nicht (alte Version)
+            calculator_instance = calculator_cls(self.settings, self.container.data, self.container.calculation_spl)
+        
         calculator_instance.set_data_container(self.container)  # 🚀 ERFORDERLICH für optimierte Balloon-Daten!
 
         frequency_progress_ctx = None

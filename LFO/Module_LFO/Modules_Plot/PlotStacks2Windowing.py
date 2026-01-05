@@ -56,13 +56,12 @@ class StackDraw_Windowing:
             if not isinstance(cabinet, dict):
                 return
             
-            # Werte direkt aus Metadaten holen (wie im 3D-Plot)
+            # Werte direkt aus Metadaten holen
             width = float(cabinet.get('width', 0))
             if width <= 0:
                 return
             
-            # Frontansicht: verwende front_height statt depth
-            # Fallback auf height (wie im 3D-Plot bei back_height)
+            # Verwende front_height aus Metadaten
             front_height = float(cabinet.get('front_height', cabinet.get('height', 0)))
             if front_height <= 0:
                 return
@@ -74,7 +73,7 @@ class StackDraw_Windowing:
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'DIMENSIONS',
-                    'location': 'PlotStacks2Windowing.py:66',
+                    'location': 'PlotStacks2Windowing.py:70',
                     'message': 'Windowing: Ursprungsabmessungen aus Cabinet-Daten',
                     'data': {
                         'isrc': int(isrc),
@@ -120,7 +119,7 @@ class StackDraw_Windowing:
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'DIMENSIONS',
-                    'location': 'PlotStacks2Windowing.py:87',
+                    'location': 'PlotStacks2Windowing.py:122',
                     'message': 'Windowing: Abmessungsberechnung - keine Skalierung (Y-Achse in dB)',
                     'data': {
                         'isrc': int(isrc),
@@ -175,7 +174,7 @@ class StackDraw_Windowing:
             aspect_ratio_pixels = height_pixels / width_pixels if width_pixels > 0 else 0
             aspect_ratio_real = front_height / width if width > 0 else 0
             
-            # Zeichne nur das Rechteck (Frontansicht: width x height)
+            # Zeichne nur das Rechteck (Frontansicht: width x front_height)
             # Farbe basierend auf cardio: cardio hat Exit-Face hinten (helleres Grau), normale vorne (mittelgrau)
             body_color_cardio = '#d0d0d0'  # Helleres Grau für Cardio-Body (heller als 3D-Plot für bessere Sichtbarkeit)
             exit_color_front = '#808080'  # Mittleres Grau für Front-Exit-Face (heller als 3D-Plot für bessere Sichtbarkeit)
