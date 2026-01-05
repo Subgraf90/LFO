@@ -106,7 +106,50 @@ class StackDraw_Windowing:
             x = base_x + x_offset
             y = base_y
             
-            # Hole Achsengrenzen und Pixel-Größe für aspect_ratio_correction
+            # Im Windowing-Plot ist die Y-Achse in dB (nicht Meter), daher keine Umrechnung für Seitenverhältnis nötig
+            # Die Lautsprecher haben Dimensionen in Metern (width x front_height)
+            # X-Achse ist in Metern, Y-Achse ist in dB
+            # Verwende die originale Höhe direkt (in dB-Einheiten)
+            scaled_front_height = front_height
+            
+            # #region agent log - Abmessungsberechnung Windowing
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'DIMENSIONS',
+                    'location': 'PlotStacks2Windowing.py:122',
+                    'message': 'Windowing: Abmessungsberechnung - keine Skalierung (Y-Achse in dB)',
+                    'data': {
+                        'isrc': int(isrc),
+                        'breite': {
+                            'original_m': float(width),
+                            'verwendet_m': float(width),
+                            'skaliert': False,
+                            'skalierungsfaktor': 1.0
+                        },
+                        'hoehe': {
+                            'original_m': float(front_height),
+                            'verwendet_dB': float(scaled_front_height),
+                            'skaliert': False,
+                            'skalierungsfaktor': 1.0
+                        },
+                        'keine_skalierung': True,
+                        'grund': 'Y-Achse in dB, keine Seitenverhältnis-Korrektur nötig',
+                        'vergleich': {
+                            'breite_original_m': float(width),
+                            'hoehe_original_m': float(front_height),
+                            'breite_verwendet_m': float(width),
+                            'hoehe_verwendet_dB': float(scaled_front_height),
+                            'aspect_ratio_original': float(front_height / width) if width > 0 else 0
+                        }
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+            # #endregion
+            
+            # Hole Achsengrenzen und Pixel-Größe für Verzerrungsprüfung
             xlim = self.ax.get_xlim()
             ylim = self.ax.get_ylim()
             x_range = xlim[1] - xlim[0]
@@ -124,98 +167,6 @@ class StackDraw_Windowing:
                 dpi = fig.get_dpi()
                 axes_width_pixels = fig.get_figwidth() * dpi * 0.8  # Geschätzt
                 axes_height_pixels = fig.get_figheight() * dpi * 0.8  # Geschätzt
-            
-                # NEUE LÖSUNG: Verwende Transform mit gleicher Skalierung für X und Y
-                # Die Breite verwendet die normale Plot-Achse (X in Metern), die Höhe verwendet die gleiche Skalierung wie X
-                # Dies stellt sicher, dass die Lautsprecher unverzerrt dargestellt werden (1.35m x 0.57m)
-                if axes_width_pixels > 0 and axes_height_pixels > 0 and x_range > 0 and y_range > 0:
-                    # Berechne Skalierung der X-Achse (Meter pro Pixel)
-                    x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel (X)
-                    y_units_per_pixel = y_range / axes_height_pixels  # dB pro Pixel (Y)
-                    
-                    # Skaliere Höhe so, dass sie die gleiche Pixel-Distanz pro Meter wie X hat
-                    # Wenn X: 0.04 m/px und Y: 0.08 dB/px, dann muss Höhe um Faktor (x_units_per_pixel / y_units_per_pixel) skaliert werden
-                    # Aber Y ist in dB, nicht in Metern - wir müssen die Höhe in dB-Einheiten anpassen
-                    # Die Höhe ist 1.35 m, aber wird in dB-Einheiten gezeichnet
-                    # Wir wollen: Höhe in dB-Einheiten = front_height * (x_units_per_pixel / y_units_per_pixel)
-                    # Das bedeutet: Wenn X mehr Pixel pro Meter hat als Y pro dB, dann muss Höhe erhöht werden
-                    scale_factor = x_units_per_pixel / y_units_per_pixel if y_units_per_pixel > 0 else 1.0
-                    scaled_front_height = front_height * scale_factor
-                    aspect_ratio_correction = scale_factor  # Für Logs
-                
-                # #region agent log - Abmessungsberechnung Windowing mit korrigierter Skalierung
-                import json
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'run1',
-                        'hypothesisId': 'DIMENSIONS',
-                        'location': 'PlotStacks2Windowing.py:140',
-                        'message': 'Windowing: Abmessungsberechnung - korrigierte Skalierung für unverzerrte Darstellung',
-                        'data': {
-                            'isrc': int(isrc),
-                            'breite': {
-                                'original_m': float(width),
-                                'verwendet_m': float(width),
-                                'skaliert': False,
-                                'skalierungsfaktor': 1.0
-                            },
-                            'hoehe': {
-                                'original_m': float(front_height),
-                                'skaliert_dB': float(scaled_front_height),
-                                'skaliert': True,
-                                'skalierungsfaktor': float(aspect_ratio_correction),
-                                'hinweis': 'Höhe wird erhöht wenn vertikale Skalierung kleiner ist (weniger Pixel pro Einheit)'
-                            },
-                            'achsen': {
-                                'x_range_m': float(x_range),
-                                'y_range_dB': float(y_range),
-                                'axes_width_pixels': float(axes_width_pixels),
-                                'axes_height_pixels': float(axes_height_pixels),
-                                'x_units_per_pixel': float(x_units_per_pixel),
-                                'y_units_per_pixel': float(y_units_per_pixel)
-                            },
-                            'formel_komponenten': {
-                                'x_range_div_y_range': float(x_range / y_range) if y_range > 0 else 0,
-                                'axes_height_div_width': float(axes_height_pixels / axes_width_pixels) if axes_width_pixels > 0 else 0,
-                                'aspect_ratio_correction': float(aspect_ratio_correction),
-                                'hinweis': 'Korrekte Formel: (x_range/y_range) * (axes_height/axes_width) - erhöht Höhe wenn vertikale Skalierung kleiner'
-                            },
-                            'vergleich': {
-                                'breite_original_m': float(width),
-                                'hoehe_original_m': float(front_height),
-                                'breite_verwendet_m': float(width),
-                                'hoehe_verwendet_dB': float(scaled_front_height),
-                                'aspect_ratio_original': float(front_height / width) if width > 0 else 0,
-                                'aspect_ratio_skaliert': float(scaled_front_height / width) if width > 0 else 0
-                            }
-                        },
-                        'timestamp': int(__import__('time').time() * 1000)
-                    }) + '\n')
-                # #endregion
-            else:
-                # Fallback wenn Größe nicht verfügbar: zeichne ohne Korrektur (kann verzerrt sein)
-                scaled_front_height = front_height
-                
-                # #region agent log
-                import json
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'run1',
-                        'hypothesisId': 'B',
-                        'location': 'PlotStacks2Windowing.py:195',
-                        'message': 'Windowing: Fallback verwendet, Höhe 1:1',
-                        'data': {
-                            'axes_width_pixels': float(axes_width_pixels) if 'axes_width_pixels' in locals() else 0,
-                            'axes_height_pixels': float(axes_height_pixels) if 'axes_height_pixels' in locals() else 0,
-                            'x_range': float(x_range) if 'x_range' in locals() else 0,
-                            'y_range': float(y_range) if 'y_range' in locals() else 0,
-                            'scaled_front_height': float(scaled_front_height)
-                        },
-                        'timestamp': int(__import__('time').time() * 1000)
-                    }) + '\n')
-                # #endregion
             
             # Berechne Pixel-Dimensionen für Verzerrungsprüfung
             width_pixels = (width / x_range) * axes_width_pixels if x_range > 0 else 0

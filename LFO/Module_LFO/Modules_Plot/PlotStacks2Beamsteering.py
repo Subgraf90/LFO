@@ -77,7 +77,7 @@ class StackDraw_Beamsteering:
                         }
                     },
                     'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
+                }) + '\n')
             # #endregion
             
             is_cardio = bool(cabinet.get('cardio', False))
@@ -92,28 +92,6 @@ class StackDraw_Beamsteering:
             # x_offset gibt die Position der linken Kante des Lautsprechers relativ zum Stack-Mittelpunkt an
             x = base_x + x_offset
             y = base_y
-            
-            # #region agent log - Position vor Berechnung
-            import json
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'C',
-                    'location': 'PlotStacks2Beamsteering.py:94',
-                    'message': 'Beamsteering: Position vor Berechnung',
-                    'data': {
-                        'isrc': int(isrc),
-                        'base_x': float(base_x),
-                        'base_y': float(base_y),
-                        'x_offset': float(x_offset),
-                        'x': float(x),
-                        'y': float(y),
-                        'ax_ylim': list(self.ax.get_ylim()) if hasattr(self.ax, 'get_ylim') else None
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
-            # #endregion
 
             # Berechne Transform für unverzerrte Lautsprecher-Darstellung
             # Die Lautsprecher haben Dimensionen in Metern (width x height)
@@ -143,7 +121,7 @@ class StackDraw_Beamsteering:
                         'isrc': int(isrc)
                     },
                     'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
+                }) + '\n')
             # #endregion
             
             # Verwende get_window_extent() um die tatsächliche Pixel-Größe der Axes zu erhalten
@@ -194,19 +172,18 @@ class StackDraw_Beamsteering:
                     }) + '\n')
                 # #endregion
             
-            # KEINE SKALIERUNG MEHR: Die sekundäre Y-Achse (ax_speakers) hat die gleiche Skalierung wie die X-Achse
-            # Daher verwenden wir direkt front_height ohne Skalierung
+            # KEINE SKALIERUNG: Verwende front_height direkt ohne Manipulation
             scaled_front_height = front_height
             
-            # #region agent log - Abmessungsberechnung ohne Skalierung (sekundäre Achse verwendet)
+            # #region agent log - Abmessungsberechnung ohne Skalierung
             import json
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 f.write(json.dumps({
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'DIMENSIONS',
-                    'location': 'PlotStacks2Beamsteering.py:197',
-                    'message': 'Beamsteering: Abmessungsberechnung - keine Skalierung (sekundäre Achse mit gleicher Skalierung wie X)',
+                    'location': 'PlotStacks2Beamsteering.py:175',
+                    'message': 'Beamsteering: Abmessungsberechnung - keine Skalierung',
                     'data': {
                         'isrc': int(isrc),
                         'breite': {
@@ -218,28 +195,8 @@ class StackDraw_Beamsteering:
                             'original_m': float(front_height),
                             'verwendet_m': float(scaled_front_height),
                             'skaliert': False,
-                            'hinweis': 'Sekundäre Y-Achse hat gleiche Skalierung wie X-Achse, daher keine Skalierung nötig'
+                            'hinweis': 'Keine Skalierung - front_height wird direkt verwendet'
                         }
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
-            # #endregion
-            
-            # #region agent log - Nach Skalierung, vor Rectangle
-            import json
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'C',
-                    'location': 'PlotStacks2Beamsteering.py:300',
-                    'message': 'Beamsteering: Nach Skalierung, vor Rectangle-Zeichnung',
-                    'data': {
-                        'isrc': int(isrc),
-                        'scaled_front_height': float(scaled_front_height),
-                        'width': float(width),
-                        'x': float(x),
-                        'y': float(y)
                     },
                     'timestamp': int(__import__('time').time() * 1000)
                 }, default=str) + '\n')
@@ -258,38 +215,6 @@ class StackDraw_Beamsteering:
             aspect_ratio_pixels = height_pixels / width_pixels if width_pixels > 0 else 0
             aspect_ratio_real = front_height / width if width > 0 else 0
             
-            # #region agent log - Vor dem Zeichnen
-            import json
-            try:
-                ax_ylim = list(self.ax.get_ylim()) if hasattr(self.ax, 'get_ylim') else None
-                ax_xlim = list(self.ax.get_xlim()) if hasattr(self.ax, 'get_xlim') else None
-                y_in_range = None
-                if ax_ylim is not None:
-                    y_in_range = bool(float(y) >= ax_ylim[0] and float(y + scaled_front_height) <= ax_ylim[1])
-            except Exception as e:
-                ax_ylim = None
-                ax_xlim = None
-                y_in_range = None
-            
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'C',
-                    'location': 'PlotStacks2Beamsteering.py:261',
-                    'message': 'Beamsteering: Vor Rectangle-Zeichnung',
-                    'data': {
-                        'isrc': int(isrc),
-                        'position': {'x': float(x), 'y': float(y)},
-                        'dimensions': {'width': float(width), 'height': float(scaled_front_height)},
-                        'ax_ylim': ax_ylim,
-                        'ax_xlim': ax_xlim,
-                        'y_in_range': bool(y_in_range) if y_in_range is not None else None
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
-            # #endregion
-            
             rect = patches.Rectangle(
                 (x, y),
                 width, 
@@ -298,23 +223,6 @@ class StackDraw_Beamsteering:
                 fc=color
             )
             self.ax.add_patch(rect)
-            
-            # #region agent log - Nach dem Zeichnen
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'C',
-                    'location': 'PlotStacks2Beamsteering.py:342',
-                    'message': 'Beamsteering: Nach Rectangle-Zeichnung',
-                    'data': {
-                        'isrc': int(isrc),
-                        'patches_count': len(self.ax.patches),
-                        'rect_added': True
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
-            # #endregion
             
             # #region agent log - Finale Abmessungen beim Zeichnen
             import json
@@ -352,19 +260,19 @@ class StackDraw_Beamsteering:
                             'hoehe_faktor': 1.0,
                             'hoehe_original_m': float(front_height),
                             'hoehe_verwendet_m': float(scaled_front_height),
-                            'keine_skalierung': bool(True),
+                            'keine_skalierung': True,
                             'hinweis': 'Höhe wird nicht skaliert, bleibt in Metern'
                         },
                         'vergleich': {
-                            'breite_original_vs_verwendet': bool(float(width) == float(width)),
-                            'hoehe_original_vs_verwendet': bool(float(front_height) == float(scaled_front_height)),
+                            'breite_original_vs_verwendet': float(width) == float(width),
+                            'hoehe_original_vs_verwendet': float(front_height) == float(scaled_front_height),
                             'aspect_ratio_original': float(aspect_ratio_real),
                             'aspect_ratio_pixel': float(aspect_ratio_pixels),
                             'hinweis': 'Höhe wird nicht skaliert, daher kann Aspect-Ratio im Pixel-Bereich abweichen'
                         }
                     },
                     'timestamp': int(__import__('time').time() * 1000)
-                }, default=str) + '\n')
+                }) + '\n')
             # #endregion
             
         except Exception as e:

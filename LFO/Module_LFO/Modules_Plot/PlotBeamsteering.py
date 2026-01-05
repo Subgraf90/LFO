@@ -16,8 +16,6 @@ class BeamsteeringPlot(QWidget):
         self.figure = Figure(figsize=(width, height), dpi=dpi)
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111)
-        # Sekundäre Y-Achse für Lautsprecher mit gleicher Skalierung wie X-Achse
-        self.ax_speakers = None  # Wird beim Zeichnen erstellt
         self.container = container
         self.figure.tight_layout()
         
@@ -38,8 +36,6 @@ class BeamsteeringPlot(QWidget):
 
     def beamsteering_plot(self, speaker_array_id):
         self.ax.clear()  # Löschen des vorherigen Plots
-        # Setze sekundäre Achse zurück
-        self.ax_speakers = None
         
         speaker_array = self.settings.get_speaker_array(speaker_array_id)
 
@@ -139,69 +135,7 @@ class BeamsteeringPlot(QWidget):
             }) + '\n')
         # #endregion
         
-        # Erstelle sekundäre Y-Achse für Lautsprecher mit gleicher Skalierung wie X-Achse
-        # Diese Achse wird nur für die Lautsprecher verwendet und hat die gleiche Meter-pro-Pixel-Skalierung wie X
-        xlim = self.ax.get_xlim()
-        x_range = xlim[1] - xlim[0]
-        ylim = self.ax.get_ylim()
-        y_range = ylim[1] - ylim[0]
-        
-        # Berechne die Skalierung der X-Achse (Meter pro Pixel)
-        axes_width_pixels = bbox.width
-        axes_height_pixels = bbox.height
-        x_units_per_pixel = x_range / axes_width_pixels if axes_width_pixels > 0 and x_range > 0 else 1.0
-        y_units_per_pixel = y_range / axes_height_pixels if axes_height_pixels > 0 and y_range > 0 else 1.0
-        
-        # Erstelle sekundäre Y-Achse mit gleicher Skalierung wie X
-        # Die sekundäre Achse hat die gleiche Meter-pro-Pixel-Skalierung wie X
-        self.ax_speakers = self.ax.twinx()
-        
-        # Setze die Y-Limits der sekundären Achse so, dass sie die gleiche Skalierung wie X hat
-        # Wenn X: x_range m in axes_width_pixels px = x_units_per_pixel m/px
-        # Dann soll Y auch x_units_per_pixel m/px haben
-        # Wenn die Achse axes_height_pixels px hoch ist, dann brauchen wir:
-        # y_range_speakers = axes_height_pixels * x_units_per_pixel
-        # Die Y-Limits müssen so gesetzt werden, dass die Range = axes_height_pixels * x_units_per_pixel ist
-        y_range_speakers = axes_height_pixels * x_units_per_pixel if x_units_per_pixel > 0 else y_range
-        
-        # Setze Y-Limits der sekundären Achse so, dass sie die gleiche Skalierung wie X hat
-        # Wir verwenden y=0 als Mittelpunkt und erweitern symmetrisch nach oben und unten
-        # Damit haben X und Y die gleiche Meter-pro-Pixel-Skalierung
-        y_center = 0.0  # Nullpunkt bei 0
-        y_min_speakers = y_center - y_range_speakers / 2
-        y_max_speakers = y_center + y_range_speakers / 2
-        self.ax_speakers.set_ylim(y_min_speakers, y_max_speakers)
-        
-        # #region agent log - Sekundäre Achse erstellt
-        import json
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'C',
-                'location': 'PlotBeamsteering.py:170',
-                'message': 'Beamsteering: Sekundäre Achse erstellt',
-                'data': {
-                    'ax_ylim': list(ylim),
-                    'ax_speakers_ylim': list(self.ax_speakers.get_ylim()),
-                    'x_range': float(x_range),
-                    'y_range': float(y_range),
-                    'y_range_speakers': float(y_range_speakers),
-                    'x_units_per_pixel': float(x_units_per_pixel),
-                    'y_units_per_pixel': float(y_units_per_pixel),
-                    'y_center': float(y_center),
-                    'hinweis': 'Sekundäre Achse hat gleiche Meter-pro-Pixel-Skalierung wie X-Achse, Nullpunkt bei 0'
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-        # #endregion
-        
-        # Mache die sekundäre Achse unsichtbar (keine Ticks/Labels), da sie nur für Lautsprecher-Darstellung verwendet wird
-        self.ax_speakers.set_yticks([])
-        self.ax_speakers.spines['right'].set_visible(False)
-        
         # Zeichne Stacks NACH Layout-Anpassung (für korrekte Pixel-Größe)
-        # Übergebe die sekundäre Achse für die Lautsprecher
         self.plot_Stacks2Beamsteering(speaker_array_id)
         
         # Passe Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden
@@ -250,7 +184,7 @@ class BeamsteeringPlot(QWidget):
                     speaker_array.source_azimuth,
                     self.settings.width,
                     self.settings.length,
-                    self.ax_speakers if self.ax_speakers is not None else self.ax,  # Verwende sekundäre Achse mit gleicher Skalierung wie X
+                    self.ax,
                     cabinet_data=array_cabinets
                 )
                 
@@ -464,16 +398,11 @@ class BeamsteeringPlot(QWidget):
         """Passt Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden"""
         try:
             import matplotlib.patches as patches
-            
-            # Verwende die sekundäre Achse, wenn vorhanden (Lautsprecher werden dort gezeichnet)
-            ax_to_check = self.ax_speakers if self.ax_speakers is not None else self.ax
-            current_ylim = ax_to_check.get_ylim()
+            current_ylim = self.ax.get_ylim()
             
             # Finde maximale Y-Position + Höhe aller gezeichneten Rechtecke (Lautsprecher)
             max_y = current_ylim[1]
-            # Prüfe Patches auf der sekundären Achse (wo Lautsprecher gezeichnet werden)
-            patches_to_check = ax_to_check.patches if hasattr(ax_to_check, 'patches') else []
-            for patch in patches_to_check:
+            for patch in self.ax.patches:
                 if isinstance(patch, patches.Rectangle):
                     patch_y = patch.get_y()
                     patch_height = patch.get_height()
@@ -488,13 +417,10 @@ class BeamsteeringPlot(QWidget):
                 # Berechne neue Ticks für erweiterte Grenze
                 y_min = current_ylim[0]
                 y_ticks, step = self._calculate_metric_ticks(y_min, max_y_with_padding)
-                
-                # Setze neue Y-Limits NUR auf der sekundären Achse (wo Lautsprecher gezeichnet werden)
-                # Die Hauptachse behält ihre ursprünglichen Limits für die Daten-Darstellung
-                ax_to_check.set_ylim(y_min, max_y_with_padding)
-                
-                # Die Hauptachse wird NICHT angepasst, da sie die Daten zeigt
-                # Die sekundäre Achse ist unsichtbar und zeigt nur die Lautsprecher
+                self.ax.set_ylim(y_min, max_y_with_padding)
+                self.ax.set_yticks(y_ticks)
+                # Formatierung auf eine Nachkommastelle
+                self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
         except Exception:
             # Bei Fehler nichts ändern
             pass
