@@ -172,30 +172,61 @@ class StackDraw_Beamsteering:
                     }) + '\n')
                 # #endregion
             
+            # NEUE LÖSUNG: Verwende Transform mit gleicher Skalierung für X und Y
+            # Die Breite verwendet die normale Plot-Achse, die Höhe verwendet die gleiche Skalierung wie X
+            # Dies stellt sicher, dass die Lautsprecher unverzerrt dargestellt werden (1.35m x 0.57m)
+            
+            # Berechne die Skalierung der X-Achse (Meter pro Pixel)
+            x_units_per_pixel = x_range / axes_width_pixels if axes_width_pixels > 0 and x_range > 0 else 1.0
+            
+            # Verwende die originale Höhe ohne Skalierung - wird durch Transform korrigiert
+            scaled_front_height = front_height
+            
+            # Erstelle einen blended Transform:
+            # - X-Koordinaten: normale Daten-Koordinaten (self.ax.transData)
+            # - Y-Koordinaten: Transform mit gleicher Skalierung wie X
+            import matplotlib.transforms as transforms
+            
+            # Transform für Y: Skaliere so, dass 1 Meter in Y = 1 Meter in X (gleiche Pixel-Distanz)
+            # Wir müssen die Y-Koordinaten so transformieren, dass sie die gleiche Skalierung wie X haben
+            # Das bedeutet: y_transformed = y_data * (x_range / y_range) * (axes_height_pixels / axes_width_pixels)
+            # Aber einfacher: Verwende einen Transform, der die Y-Koordinaten direkt mit der X-Skalierung zeichnet
+            
+            # Erstelle Transform: X aus transData, Y mit gleicher Skalierung wie X
+            # Die Höhe wird direkt in Metern verwendet, aber der Transform skaliert sie so, dass sie visuell korrekt ist
+            # Wir zeichnen das Rechteck mit width x front_height in Metern, aber der Transform sorgt für gleiche Skalierung
+            
+            # Einfachste Lösung: Verwende die originale Höhe und zeichne mit einem Transform,
+            # der die Y-Koordinaten so skaliert, dass sie die gleiche Pixel-Distanz wie X haben
+            # Das bedeutet: y_plot = y_data * (x_units_per_pixel / y_units_per_pixel)
+            
+            # Berechne Transform-Faktor für Y, um gleiche Skalierung wie X zu erreichen
+            y_units_per_pixel = y_range / axes_height_pixels if axes_height_pixels > 0 and y_range > 0 else 1.0
+            y_scale_factor = x_units_per_pixel / y_units_per_pixel if y_units_per_pixel > 0 else 1.0
+            
+            # Transform: Y-Koordinaten werden mit y_scale_factor multipliziert, um gleiche Skalierung wie X zu haben
+            # Aber wir müssen die Höhe entsprechend anpassen, damit sie visuell korrekt ist
+            # Wenn y_scale_factor > 1, dann wird Y gestreckt -> Höhe muss reduziert werden
+            # Wenn y_scale_factor < 1, dann wird Y gestaucht -> Höhe muss erhöht werden
+            # scaled_front_height = front_height / y_scale_factor
+            
+            # Warte, das ist kompliziert. Lass mich einen einfacheren Ansatz verwenden:
+            # Zeichne das Rechteck direkt mit width x front_height, aber verwende einen Transform,
+            # der nur die Y-Koordinaten so skaliert, dass sie die gleiche Einheit pro Pixel wie X haben
+            
+            # Einfachste Lösung: Verwende die originale Höhe, aber skaliere sie so, dass sie visuell korrekt ist
+            # Wenn X: 0.04 m/px und Y: 0.03 m/px, dann muss Höhe um Faktor (0.04/0.03) erhöht werden
+            # scaled_front_height = front_height * (x_units_per_pixel / y_units_per_pixel)
+            
+            # NEUE LÖSUNG: Wenn eine sekundäre Y-Achse verwendet wird (twinx()),
+            # hat diese bereits die gleiche Skalierung wie X, daher keine Skalierung nötig
+            # Prüfe, ob self.ax eine sekundäre Achse ist (hat get_shared_y_axes())
+            # Oder verwende einfach immer die Skalierung, da die sekundäre Achse die Limits entsprechend setzt
             if axes_width_pixels > 0 and axes_height_pixels > 0 and x_range > 0 and y_range > 0:
-                # Berechne Daten-Einheiten pro Pixel
-                x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel (X)
-                y_units_per_pixel = y_range / axes_height_pixels  # Meter pro Pixel (Y)
-                
-                # Für unverzerrte Darstellung: Skaliere Höhe so, dass Pixel-Seitenverhältnis = reales Seitenverhältnis
-                # Reales Verhältnis: front_height / width
-                # Pixel-Verhältnis: height_pixels / width_pixels
-                # Wir wollen: height_pixels / width_pixels = front_height / width
-                # 
-                # height_pixels = (scaled_front_height / y_range) * axes_height_pixels
-                # width_pixels = (width / x_range) * axes_width_pixels
-                # 
-                # (scaled_front_height / y_range) * axes_height_pixels / ((width / x_range) * axes_width_pixels) = front_height / width
-                # scaled_front_height = (front_height / width) * (width / x_range) * axes_width_pixels * (y_range / axes_height_pixels)
-                # scaled_front_height = front_height * (y_range / x_range) * (axes_width_pixels / axes_height_pixels)
-                
-                # KORRIGIERTE Formel für unverzerrte Darstellung:
-                # Wenn vertikale Skalierung kleiner ist (weniger Pixel pro Meter), müssen wir die Höhe GRÖSSER machen
-                # Wir wollen: (scaled_front_height / y_range) * axes_height_pixels / ((width / x_range) * axes_width_pixels) = front_height / width
-                # Umgestellt: scaled_front_height = front_height * (x_range / y_range) * (axes_height_pixels / axes_width_pixels)
-                # Das ist das INVERSE der falschen Formel!
-                aspect_ratio_correction = (x_range / y_range) * (axes_height_pixels / axes_width_pixels) if axes_width_pixels > 0 and y_range > 0 else 1.0
-                scaled_front_height = front_height * aspect_ratio_correction
+                # Fallback: Skaliere Höhe, damit sie visuell korrekt ist
+                # Wenn x_units_per_pixel > y_units_per_pixel, dann wird Y gestaucht -> Höhe muss erhöht werden
+                scale_factor = x_units_per_pixel / y_units_per_pixel if y_units_per_pixel > 0 else 1.0
+                scaled_front_height = front_height * scale_factor
                 
                 # #region agent log - Abmessungsberechnung mit korrigierter Skalierung
                 import json
@@ -219,7 +250,7 @@ class StackDraw_Beamsteering:
                                 'skaliert_m': float(scaled_front_height),
                                 'skaliert': True,
                                 'skalierungsfaktor': float(aspect_ratio_correction),
-                                'hinweis': 'Höhe wird erhöht wenn vertikale Skalierung kleiner ist'
+                                'hinweis': 'Höhe wird erhöht wenn vertikale Skalierung kleiner ist (weniger Pixel pro Meter)'
                             },
                             'achsen': {
                                 'x_range_m': float(x_range),
@@ -233,7 +264,7 @@ class StackDraw_Beamsteering:
                                 'x_range_div_y_range': float(x_range / y_range) if y_range > 0 else 0,
                                 'axes_height_div_width': float(axes_height_pixels / axes_width_pixels) if axes_width_pixels > 0 else 0,
                                 'aspect_ratio_correction': float(aspect_ratio_correction),
-                                'hinweis': 'Korrigierte Formel: (x_range/y_range) * (axes_height/axes_width)'
+                                'hinweis': 'Korrekte Formel: (x_range/y_range) * (axes_height/axes_width) - erhöht Höhe wenn vertikale Skalierung kleiner'
                             },
                             'vergleich': {
                                 'original_aspect_ratio': float(front_height / width) if width > 0 else 0,
