@@ -143,26 +143,6 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
         x_base_line_width = 2.0 if selected_axis == 'x' else 1.5
         x_line_width = self._get_scaled_line_width(x_base_line_width, apply_zoom=False)
         print(f"[Axis Lines] X-Achse: base_width={x_base_line_width:.2f}, scaled_width={x_line_width:.2f}, color={x_line_color}, selected={selected_axis}")
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "line-width-check",
-                    "hypothesisId": "LINE_WIDTH_X",
-                    "location": "Plot3DOverlaysAxis.draw_axis_lines",
-                    "message": "X-Achse line_width berechnet",
-                    "data": {
-                        "selected_axis": selected_axis,
-                        "x_base_line_width": float(x_base_line_width),
-                        "x_line_width": float(x_line_width),
-                        "x_line_color": x_line_color
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + '\n')
-        except Exception:
-            pass
-        # #endregion
         
         # Sammle alle X- und Z-Koordinaten der Schnittpunkte für Flächenausdehnung
         all_x_coords = []
@@ -196,26 +176,6 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
         y_base_line_width = 2.0 if selected_axis == 'y' else 1.5
         y_line_width = self._get_scaled_line_width(y_base_line_width, apply_zoom=False)
         print(f"[Axis Lines] Y-Achse: base_width={y_base_line_width:.2f}, scaled_width={y_line_width:.2f}, color={y_line_color}, selected={selected_axis}")
-        # #region agent log
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "line-width-check",
-                    "hypothesisId": "LINE_WIDTH_Y",
-                    "location": "Plot3DOverlaysAxis.draw_axis_lines",
-                    "message": "Y-Achse line_width berechnet",
-                    "data": {
-                        "selected_axis": selected_axis,
-                        "y_base_line_width": float(y_base_line_width),
-                        "y_line_width": float(y_line_width),
-                        "y_line_color": y_line_color
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + '\n')
-        except Exception:
-            pass
-        # #endregion
         
         # Sammle alle Y- und Z-Koordinaten der Schnittpunkte für Flächenausdehnung
         all_y_coords = []
@@ -730,27 +690,6 @@ class SPL3DOverlayAxis(SPL3DOverlayBase):
             # Rendere alle Segmente in einem einzigen Actor
             # 🎯 Verwende die spezielle Methode für Axis-Linien, die vollständige Kontrolle über das Rendering bietet
             print(f"[Axis Lines] Rendering: actor={actor_name}, line_width={line_width:.2f}, color={color}, segments={len(segments)}")
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "line-width-check",
-                        "hypothesisId": "LINE_WIDTH_RENDER",
-                        "location": "Plot3DOverlaysAxis._render_batched_segments",
-                        "message": "_add_axis_line_mesh aufgerufen mit line_width",
-                        "data": {
-                            "actor_name": actor_name,
-                            "line_width": float(line_width),
-                            "color": color,
-                            "n_segments": len(segments),
-                            "total_points": point_offset
-                        },
-                        "timestamp": int(time.time() * 1000)
-                    }) + '\n')
-            except Exception:
-                pass
-            # #endregion
             self._add_axis_line_mesh(
                 polyline,
                 color=color,

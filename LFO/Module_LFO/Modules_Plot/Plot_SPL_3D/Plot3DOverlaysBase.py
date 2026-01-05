@@ -211,35 +211,6 @@ class SPL3DOverlayBase:
                         if render_lines_as_tubes is False:
                             if hasattr(prop, 'SetRenderLinesAsTubes'):
                                 prop.SetRenderLinesAsTubes(False)
-                        # #region agent log
-                        try:
-                            import json
-                            import time as time_module
-                            actual_width_before = None
-                            if hasattr(prop, 'GetLineWidth'):
-                                try:
-                                    actual_width_before = prop.GetLineWidth()
-                                except Exception:
-                                    pass
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "line-width-check",
-                                    "hypothesisId": "LINE_WIDTH_SET",
-                                    "location": "Plot3DOverlaysBase._add_overlay_mesh:axis_category",
-                                    "message": "SetLineWidth für axis category",
-                                    "data": {
-                                        "name": name,
-                                        "line_width_requested": float(line_width),
-                                        "line_width_before": float(actual_width_before) if actual_width_before is not None else None,
-                                        "line_pattern": line_pattern,
-                                        "render_lines_as_tubes": render_lines_as_tubes
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + '\n')
-                        except Exception:
-                            pass
-                        # #endregion
                         actual_width_before_print = None
                         if hasattr(prop, 'GetLineWidth'):
                             try:
@@ -255,34 +226,6 @@ class SPL3DOverlayBase:
                             except Exception:
                                 pass
                         print(f"[_add_overlay_mesh] LineWidth after SetLineWidth for '{name}': {actual_width_after_print:.2f if actual_width_after_print is not None else 'N/A'} (requested: {line_width:.2f})")
-                        # #region agent log
-                        try:
-                            import json
-                            import time as time_module
-                            actual_width_after = None
-                            if hasattr(prop, 'GetLineWidth'):
-                                try:
-                                    actual_width_after = prop.GetLineWidth()
-                                except Exception:
-                                    pass
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "line-width-check",
-                                    "hypothesisId": "LINE_WIDTH_VERIFY",
-                                    "location": "Plot3DOverlaysBase._add_overlay_mesh:axis_category",
-                                    "message": "LineWidth nach SetLineWidth",
-                                    "data": {
-                                        "name": name,
-                                        "line_width_requested": float(line_width),
-                                        "line_width_after": float(actual_width_after) if actual_width_after is not None else None,
-                                        "matches": actual_width_after == line_width if actual_width_after is not None else None
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + '\n')
-                        except Exception:
-                            pass
-                        # #endregion
                         # 🎯 FIX: Setze auch das Line-Pattern hier, falls vorhanden
                         # Das verhindert, dass das Standard-Pattern (0xFFFF) verwendet wird
                         if line_pattern is not None:
@@ -503,31 +446,6 @@ class SPL3DOverlayBase:
                         pass
                     print(f"[_add_axis_line_mesh] Deactivated points for '{name}' (point_size=0, render_points_as_spheres=False)")
                     
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "line-width-check",
-                                "hypothesisId": "LINE_WIDTH_AXIS_SPECIFIC",
-                                "location": "Plot3DOverlaysBase._add_axis_line_mesh",
-                                "message": "Axis line mesh added with explicit line_width",
-                                "data": {
-                                    "name": name,
-                                    "line_width_requested": float(line_width),
-                                    "line_width_before": float(actual_width_before) if actual_width_before is not None else None,
-                                    "line_width_after": float(actual_width_after) if actual_width_after is not None else None,
-                                    "matches": actual_width_after == line_width if actual_width_after is not None else None,
-                                    "render_lines_as_tubes": False,
-                                    "points_deactivated": True
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + '\n')
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     # Markiere Actor als geändert
                     actor.Modified()

@@ -90,6 +90,9 @@ class BeamsteeringPlot(QWidget):
                 self.ax.set_ylim(y_min, y_max)
             self.ax.set_yticks(y_ticks)
 
+        # KEIN set_aspect('equal') - würde die Plot-Höhe stark reduzieren
+        # Die Lautsprecher werden durch Skalierung in StackDraw_Beamsteering unverzerrt dargestellt
+
         # Finale Plot-Einstellungen
         # KEIN axis('equal') - Plot hat feste Breite, beide Achsen sind in Metern
         # Lautsprecher werden durch Transform in StackDraw_Beamsteering unverzerrt dargestellt
@@ -100,16 +103,21 @@ class BeamsteeringPlot(QWidget):
         
         # #region agent log
         import json
+        bbox = self.ax.get_window_extent()
+        axes_width_pixels = bbox.width
+        axes_height_pixels = bbox.height
         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
             f.write(json.dumps({
                 'sessionId': 'debug-session',
                 'runId': 'run1',
                 'hypothesisId': 'B',
                 'location': 'PlotBeamsteering.py:99',
-                'message': 'Beamsteering: Achsengrenzen vor Stack-Zeichnung',
+                'message': 'Beamsteering: Achsengrenzen und Pixel-Größe vor Stack-Zeichnung',
                 'data': {
                     'xlim': list(self.ax.get_xlim()),
-                    'ylim': list(self.ax.get_ylim())
+                    'ylim': list(self.ax.get_ylim()),
+                    'axes_width_pixels': float(axes_width_pixels),
+                    'axes_height_pixels': float(axes_height_pixels)
                 },
                 'timestamp': int(__import__('time').time() * 1000)
             }) + '\n')
@@ -348,7 +356,8 @@ class BeamsteeringPlot(QWidget):
                 # Deaktiviere constrained_layout vollständig
                 self.ax.figure.set_constrained_layout(False)
                 # Passe die Plot-Ränder an Canvas-Größe an (Beamsteering-Plot)
-                self.ax.figure.subplots_adjust(left=0.15, right=0.95, top=0.90, bottom=0.15)
+                # Mehr Platz unten/links, damit Achsenbeschriftungen vollständig sichtbar sind
+                self.ax.figure.subplots_adjust(left=0.18, right=0.97, top=0.93, bottom=0.22)
             except Exception:
                 pass
             # Zeichne nur wenn Canvas vorhanden

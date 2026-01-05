@@ -335,35 +335,6 @@ class SoundFieldCalculator(ModuleBase):
                 X_grid_combined, Y_grid_combined = np.meshgrid(unique_x, unique_y, indexing='xy')
                 Z_grid_combined = np.zeros_like(X_grid_combined, dtype=float)
                 surface_mask_combined = np.zeros_like(X_grid_combined, dtype=bool)
-                # #region agent log
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        # Berechne Gesamtanzahl Gridpunkte aus einzelnen Surfaces
-                        total_individual_grid_points = sum(
-                            int(grid.X_grid.size) if hasattr(grid, 'X_grid') else 0
-                            for grid in surface_grids_grouped.values()
-                        )
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "grid-analysis-v2",
-                            "hypothesisId": "H1",
-                            "location": "SoundfieldCalculator._calculate_sound_field_complex",
-                            "message": "Kombiniertes Grid erstellt",
-                            "data": {
-                                "n_surfaces": len(surface_grids_grouped),
-                                "unique_x_count": int(len(unique_x)),
-                                "unique_y_count": int(len(unique_y)),
-                                "combined_grid_points": int(X_grid_combined.size),
-                                "combined_grid_shape": list(X_grid_combined.shape),
-                                "total_individual_grid_points": int(total_individual_grid_points),
-                                "grid_duplication_factor": float(total_individual_grid_points / X_grid_combined.size) if X_grid_combined.size > 0 else 0.0
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
             else:
                 return [], np.array([]), np.array([]), ({} if capture_arrays else None)
         
@@ -509,30 +480,6 @@ class SoundFieldCalculator(ModuleBase):
                     'dominant_axis': getattr(grid.geometry, 'dominant_axis', None),
                 }
                 
-                # #region agent log - Randpunkte in surface_grids_data
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        mask_active = int(np.count_nonzero(grid.surface_mask))
-                        mask_size = int(grid.surface_mask.size)
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "BOUNDARY_POINTS_GRIDS",
-                            "location": "SoundfieldCalculator._calculate_sound_field_complex:surface_grids_data",
-                            "message": "Randpunkte in surface_grids_data prüfen",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "surface_mask_active_points": mask_active,
-                                "surface_mask_size": mask_size,
-                                "grid_shape": list(grid.X_grid.shape) if hasattr(grid, 'X_grid') else None,
-                                "grid_size": int(grid.X_grid.size) if hasattr(grid, 'X_grid') else None
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 t_dict_duration = (time.perf_counter() - t_dict_start) * 1000
 
@@ -758,25 +705,6 @@ class SoundFieldCalculator(ModuleBase):
         # ============================================================
         # Berechne für jede Surface einzeln mit _calculate_sound_field_for_surface_grid
         # Dies stellt sicher, dass Boundary-Punkte verwendet werden
-        # #region agent log - Einzelberechnung pro Surface
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json, time as _t
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "INDIVIDUAL_SURFACE_CALC",
-                    "location": "SoundfieldCalculator._calculate_sound_field_complex:individual_surfaces",
-                    "message": "Starte Einzelberechnung pro Surface",
-                    "data": {
-                        "n_surfaces": len(surface_grids_grouped),
-                        "surface_ids": list(surface_grids_grouped.keys())
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
 
         # Berechne für jede Surface einzeln
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -826,26 +754,6 @@ class SoundFieldCalculator(ModuleBase):
                     # Speichere Ergebnis in surface_results_buffers
                     if sound_field_p_surface is not None and surface_id in surface_results_buffers:
                         surface_results_buffers[surface_id] = sound_field_p_surface
-                        # #region agent log - Einzelberechnung erfolgreich
-                        try:
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                import json, time as _t
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "INDIVIDUAL_SURFACE_CALC",
-                                    "location": "SoundfieldCalculator._calculate_sound_field_complex:surface_completed",
-                                    "message": "Einzelberechnung für Surface abgeschlossen",
-                                    "data": {
-                                        "surface_id": str(surface_id),
-                                        "result_shape": list(sound_field_p_surface.shape) if sound_field_p_surface is not None else None,
-                                        "result_nonzero": int(np.count_nonzero(sound_field_p_surface)) if sound_field_p_surface is not None else None
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                 except Exception as e:
                     # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
                     print(f"⚠️  [SoundFieldCalculator] Fehler bei Berechnung für Surface '{surface_id}': {e}")
@@ -930,49 +838,6 @@ class SoundFieldCalculator(ModuleBase):
                 # Puffer immer in komplexes Array konvertieren
                 buffer_array = np.asarray(buffer, dtype=complex)
                 
-                # #region agent log - Randpunkte in surface_results_data
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        # Prüfe, ob Randpunkte in den SPL-Werten sind
-                        if surface_id in surface_grids_data:
-                            grid_data_check = surface_grids_data[surface_id]
-                            surface_mask_check = np.asarray(grid_data_check.get("surface_mask", []), dtype=bool)
-                            if surface_mask_check.size > 0 and buffer_array.size > 0:
-                                mask_active = int(np.count_nonzero(surface_mask_check))
-                                buffer_nonzero = int(np.count_nonzero(buffer_array))
-                                buffer_finite = int(np.sum(np.isfinite(buffer_array)))
-                                # Prüfe, ob SPL-Werte für aktive Masken-Punkte vorhanden sind
-                                if surface_mask_check.size == buffer_array.size:
-                                    spl_at_mask = buffer_array.ravel()[surface_mask_check.ravel()]
-                                    spl_at_mask_nonzero = int(np.count_nonzero(spl_at_mask)) if spl_at_mask.size > 0 else 0
-                                    spl_at_mask_finite = int(np.sum(np.isfinite(spl_at_mask))) if spl_at_mask.size > 0 else 0
-                                else:
-                                    spl_at_mask_nonzero = None
-                                    spl_at_mask_finite = None
-                                
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "BOUNDARY_POINTS_RESULTS",
-                                    "location": "SoundfieldCalculator._calculate_sound_field_complex:surface_results_data",
-                                    "message": "Randpunkte in surface_results_data prüfen",
-                                    "data": {
-                                        "surface_id": str(surface_id),
-                                        "surface_mask_active_points": mask_active,
-                                        "surface_mask_size": int(surface_mask_check.size),
-                                        "buffer_size": int(buffer_array.size),
-                                        "buffer_nonzero": buffer_nonzero,
-                                        "buffer_finite": buffer_finite,
-                                        "sizes_match": surface_mask_check.size == buffer_array.size,
-                                        "spl_at_mask_nonzero": spl_at_mask_nonzero,
-                                        "spl_at_mask_finite": spl_at_mask_finite
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 # 🎯 OPTIMIERUNG: Füge additional_vertices_spl hinzu (falls vorhanden)
                 result_data = {
@@ -1429,15 +1294,11 @@ class SoundFieldCalculator(ModuleBase):
                         if hasattr(grid, 'triangulated_success'):
                             if not grid.triangulated_success:
                                 grid_triangulation_failed = True
-                                if DEBUG_SOUNDFIELD:
-                                    print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}': Grid-Triangulation fehlgeschlagen (triangulated_success=False)")
                         # Prüfe auch, ob aktive Grid-Punkte vorhanden sind
                         if hasattr(grid, 'surface_mask'):
                             active_points = np.sum(grid.surface_mask)
                             if active_points == 0:
                                 grid_triangulation_failed = True
-                                if DEBUG_SOUNDFIELD:
-                                    print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}': Keine aktiven Grid-Punkte (0 aktive Punkte)")
                 
                 # Prüfe Punkt-basierte Triangulation (für alle Surfaces mit 3+ Punkten)
                 # WICHTIG: Auch wenn Grids existieren, sollte die Punkt-Triangulation funktionieren
@@ -1448,13 +1309,9 @@ class SoundFieldCalculator(ModuleBase):
                         if not triangles or len(triangles) == 0:
                             # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
                             is_valid_for_spl = False
-                            if DEBUG_SOUNDFIELD:
-                                print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' mit {len(points)} Punkten: Punkt-Triangulation fehlgeschlagen (keine Dreiecke)")
                     except Exception as e:
                         # Triangulation fehlgeschlagen - Surface ist nicht für SPL verwendbar
                         is_valid_for_spl = False
-                        if DEBUG_SOUNDFIELD:
-                            print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' mit {len(points)} Punkten: Punkt-Triangulation fehlgeschlagen ({e})")
                 
                 # Wenn Grid-Triangulation fehlgeschlagen ist, Surface als ungültig markieren
                 if grid_triangulation_failed:
@@ -1464,8 +1321,7 @@ class SoundFieldCalculator(ModuleBase):
                 if is_valid_for_spl:
                     enabled.append((surface_id, surface_data))
                 else:
-                    if DEBUG_SOUNDFIELD:
-                        print(f"[DEBUG SoundFieldCalculator] Surface '{surface_id}' wird übersprungen (ungültig)")
+                    pass
             except Exception as e:
                 # Bei Fehler in Validierung: Surface überspringen
                 if DEBUG_SOUNDFIELD:
@@ -1709,55 +1565,11 @@ class SoundFieldCalculator(ModuleBase):
         Y_grid = surface_grid.Y_grid
         Z_grid = surface_grid.Z_grid
         surface_mask = surface_grid.surface_mask
-        # #region agent log - Maske in Berechnung
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json, time as _t
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "A",
-                    "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:mask_check",
-                    "message": "Maske in Berechnung",
-                    "data": {
-                        "surface_id": str(surface_id),
-                        "mask_shape": list(surface_mask.shape) if hasattr(surface_mask, 'shape') else None,
-                        "mask_size": int(surface_mask.size) if hasattr(surface_mask, 'size') else None,
-                        "active_points_in_mask": int(np.count_nonzero(surface_mask)) if hasattr(surface_mask, 'size') else None,
-                        "total_grid_points": int(X_grid.size) if hasattr(X_grid, 'size') else None
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         # 🎯 IDENTISCHE BEHANDLUNG: Vertikale und planare Flächen verwenden die gleiche Berechnung
         surface_id = surface_grid.geometry.surface_id
         orientation = surface_grid.geometry.orientation
         
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            import json
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "A",
-                "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                "message": "Single surface - grid parameters",
-                "data": {
-                    "surface_id": str(surface_id),
-                    "grid_shape": {"X": list(X_grid.shape), "Y": list(Y_grid.shape), "Z": list(Z_grid.shape)},
-                    "grid_size": int(X_grid.size),
-                    "x_range": [float(np.min(X_grid)), float(np.max(X_grid))],
-                    "y_range": [float(np.min(Y_grid)), float(np.max(Y_grid))],
-                    "z_range": [float(np.min(Z_grid)), float(np.max(Z_grid))],
-                    "mask_points": int(np.sum(surface_mask)),
-                    "mask_shape": list(surface_mask.shape)
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
         
         # Initialisiere Schallfeld
         ny, nx = X_grid.shape
@@ -1790,41 +1602,6 @@ class SoundFieldCalculator(ModuleBase):
         if additional_vertices is not None and additional_vertices.size > 0:
             all_points = np.vstack([active_grid_points, additional_vertices])
             
-            # #region agent log - Prüfe ob Zentroid in additional_vertices enthalten ist
-            try:
-                import json, time as _t
-                # Suche nach Zentroid (bekannte Koordinaten für lp_06_tri4: -6.4222784, 3.9903199333333332)
-                # Prüfe ob ein Punkt nahe dem Zentroid vorhanden ist (für alle Surfaces)
-                centroid_found = False
-                centroid_idx = None
-                for idx, vertex in enumerate(additional_vertices):
-                    # Prüfe ob dieser Punkt ein möglicher Zentroid ist (erste Punkte sind oft Zentroid)
-                    if idx == 0:  # Zentroid wird als erster Punkt hinzugefügt
-                        centroid_found = True
-                        centroid_idx = idx
-                        break
-                
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "CENTROID_IN_SPL",
-                        "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:centroid_check",
-                        "message": "Prüfe ob Zentroid in SPL-Berechnung verwendet wird",
-                        "data": {
-                            "surface_id": str(surface_id),
-                            "n_grid_points": int(n_grid_points),
-                            "n_additional_vertices": int(len(additional_vertices)),
-                            "n_all_points": int(len(all_points)),
-                            "centroid_found_in_additional": bool(centroid_found),
-                            "centroid_idx": int(centroid_idx) if centroid_idx is not None else None,
-                            "first_additional_vertex": list(additional_vertices[0]) if len(additional_vertices) > 0 else None
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
         else:
             all_points = active_grid_points
         
@@ -1839,112 +1616,15 @@ class SoundFieldCalculator(ModuleBase):
         else:
             surface_grid._temp_additional_vertices_spl = None
         
-        # #region agent log - SPL Calculation Points Check
-        try:
-            import json, time as _t
-            triangulated_vertices_count = 0
-            triangulated_vertices_shape = None
-            grid_points_count = int(grid_points.shape[0])
-            active_mask_points = int(np.count_nonzero(surface_mask_flat))
-            has_triangulated_vertices = hasattr(surface_grid, 'triangulated_vertices') and surface_grid.triangulated_vertices is not None and surface_grid.triangulated_vertices.size > 0
-            if has_triangulated_vertices:
-                triangulated_vertices_count = int(len(surface_grid.triangulated_vertices))
-                triangulated_vertices_shape = list(surface_grid.triangulated_vertices.shape) if hasattr(surface_grid.triangulated_vertices, 'shape') else None
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "SPL_CALC_POINTS",
-                    "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:points_check",
-                    "message": "SPL-Berechnung: Welche Punkte werden verwendet?",
-                    "data": {
-                        "surface_id": str(surface_id),
-                        "grid_points_count": grid_points_count,
-                        "active_mask_points": active_mask_points,
-                        "has_triangulated_vertices": has_triangulated_vertices,
-                        "triangulated_vertices_count": triangulated_vertices_count,
-                        "triangulated_vertices_shape": triangulated_vertices_shape,
-                        "uses_grid_points": True,
-                        "uses_triangulated_vertices": False
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         # 🎯 VERWENDE NUR SURFACE_MASK: Die Maske enthält bereits alle gewünschten Punkte
         # (Surface-Fläche + Randpunkte + Eckenpunkte)
         # Keine separate erweiterte Maske mehr nötig
-        # #region agent log - Surface-Maske für SPL-Berechnung
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json, time as _t
-                surface_mask_active = int(np.count_nonzero(surface_mask_flat))
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H1,H2",
-                    "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:surface_mask",
-                    "message": "Surface-Maske für SPL-Berechnung",
-                    "data": {
-                        "surface_id": str(surface_id),
-                        "surface_mask_active_points": surface_mask_active,
-                        "surface_mask_size": int(surface_mask_flat.size),
-                        "includes_edge_and_corner_points": True
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         # Iteriere über alle Lautsprecher-Arrays
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            import json
-            all_arrays = list(self.settings.speaker_arrays.items())
-            active_arrays = [(k, a) for k, a in all_arrays if not (a.mute or a.hide)]
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "D",
-                "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                "message": "Source filtering - single surface calculation",
-                "data": {
-                    "surface_id": str(surface_id),
-                    "total_arrays": len(all_arrays),
-                    "active_arrays_count": len(active_arrays),
-                    "active_array_keys": [k for k, _ in active_arrays],
-                    "skipped_arrays": [k for k, a in all_arrays if (a.mute or a.hide)],
-                    "skipped_mute": [k for k, a in all_arrays if a.mute],
-                    "skipped_hide": [k for k, a in all_arrays if a.hide]
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
         for array_key, speaker_array in self.settings.speaker_arrays.items():
             if speaker_array.mute or speaker_array.hide:
                 continue
-            # #region agent log
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "D",
-                    "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                    "message": "Processing source in single surface calculation",
-                    "data": {
-                        "surface_id": str(surface_id),
-                        "array_key": str(array_key),
-                        "source_count": len(speaker_array.source_polar_pattern),
-                        "mute": bool(speaker_array.mute),
-                        "hide": bool(speaker_array.hide)
-                    },
-                    "timestamp": int(__import__('time').time() * 1000)
-                }) + "\n")
-            # #endregion
             
             array_wave = np.zeros_like(sound_field_p, dtype=complex) if capture_arrays else None
             
@@ -1988,87 +1668,11 @@ class SoundFieldCalculator(ModuleBase):
             source_level = speaker_array.source_level + source_gain
             source_level = self.functions.db2mag(np.array(source_level))
             
-            # #region agent log
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "D",
-                    "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                    "message": "Source parameters for single surface calculation",
-                    "data": {
-                        "surface_id": str(surface_id),
-                        "array_key": str(array_key),
-                        "source_polar_pattern": list(speaker_array.source_polar_pattern) if hasattr(speaker_array, 'source_polar_pattern') else [],
-                        "source_count": len(speaker_array.source_polar_pattern) if hasattr(speaker_array, 'source_polar_pattern') else 0,
-                        "source_level_raw": float(speaker_array.source_level) if isinstance(speaker_array.source_level, (int, float)) else list(speaker_array.source_level) if hasattr(speaker_array.source_level, '__iter__') else None,
-                        "source_gain": float(source_gain) if isinstance(source_gain, (int, float)) else list(source_gain) if hasattr(source_gain, '__iter__') else None,
-                        "source_level_after_gain": list(source_level) if hasattr(source_level, '__iter__') else float(source_level),
-                        "source_delay": float(source_delay) if isinstance(source_delay, (int, float)) else list(source_delay) if hasattr(source_delay, '__iter__') else None,
-                        "source_time_raw": float(speaker_array.source_time) if isinstance(speaker_array.source_time, (int, float)) else list(speaker_array.source_time) if hasattr(speaker_array.source_time, '__iter__') else None,
-                        "source_time_after_delay": list(source_time),
-                        "source_azimuth_deg": list(np.degrees(source_azimuth)) if hasattr(source_azimuth, '__iter__') else float(np.degrees(source_azimuth)),
-                        "source_position_x": list(source_position_x) if hasattr(source_position_x, '__iter__') else float(source_position_x) if source_position_x is not None else None,
-                        "source_position_y": list(source_position_y) if hasattr(source_position_y, '__iter__') else float(source_position_y) if source_position_y is not None else None,
-                        "source_position_z": list(source_position_z) if hasattr(source_position_z, '__iter__') else float(source_position_z) if source_position_z is not None else None,
-                        "mute": bool(speaker_array.mute),
-                        "hide": bool(speaker_array.hide)
-                    },
-                    "timestamp": int(time.time() * 1000)
-                }) + "\n")
-            # #endregion
             
             # Iteriere über alle Lautsprecher im Array
-            # #region agent log
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "A",
-                    "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                    "message": "Single surface calculation - before source loop",
-                    "data": {
-                        "surface_id": str(surface_id),
-                        "array_key": str(array_key),
-                        "source_indices_length": int(len(source_indices)),
-                        "source_polar_pattern_length": int(len(speaker_array.source_polar_pattern)),
-                        "source_indices": [int(x) for x in source_indices.tolist()],
-                        "source_polar_pattern": list(speaker_array.source_polar_pattern)
-                    },
-                    "timestamp": int(__import__('time').time() * 1000)
-                }) + "\n")
-            # #endregion
             
             for isrc in range(len(source_indices)):
                 speaker_name = speaker_array.source_polar_pattern[isrc]
-                # #region agent log
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "A",
-                        "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                        "message": "Single surface calculation - processing source",
-                        "data": {
-                            "surface_id": str(surface_id),
-                            "array_key": str(array_key),
-                            "isrc": int(isrc),
-                            "speaker_name": str(speaker_name),
-                            "source_level": float(source_level[isrc]) if hasattr(source_level, '__iter__') else float(source_level),
-                            "source_position_x": float(source_position_x[isrc]) if hasattr(source_position_x, '__iter__') else float(source_position_x),
-                            "source_position_y": float(source_position_y[isrc]) if hasattr(source_position_y, '__iter__') else float(source_position_y),
-                            "source_position_z": float(source_position_z[isrc]) if hasattr(source_position_z, '__iter__') else float(source_position_z),
-                            "source_azimuth_deg": float(np.degrees(source_azimuth[isrc])) if hasattr(source_azimuth, '__iter__') else float(np.degrees(source_azimuth)),
-                            "all_points_count": int(len(all_points)),
-                            "grid_points_count": int(n_grid_points),
-                            "additional_vertices_count": int(len(additional_vertices)) if additional_vertices is not None and additional_vertices.size > 0 else 0
-                        },
-                        "timestamp": int(__import__('time').time() * 1000)
-                    }) + "\n")
-                # #endregion
                 
                 # 🎯 OPTIMIERUNG: Berechne alle Punkte (Grid + additional_vertices) zusammen
                 source_pos = np.array([
@@ -2147,109 +1751,14 @@ class SoundFieldCalculator(ModuleBase):
                     if surface_grid._temp_additional_vertices_spl is not None and len(wave_additional) > 0:
                         surface_grid._temp_additional_vertices_spl += wave_additional
                     
-                    # #region agent log - Randpunkte nach Berechnung
-                    try:
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            import json, time as _t
-                            wave_magnitude = np.abs(wave)
-                            # Prüfe, ob Randpunkte Werte haben
-                            # Alle Punkte in surface_mask haben Werte (inkl. Randpunkte und Ecken)
-                            wave_at_mask = wave_magnitude.ravel()[surface_mask_flat]
-                            mask_nonzero = int(np.count_nonzero(wave_at_mask)) if wave_at_mask.size > 0 else 0
-                            mask_wave_min = float(np.min(wave_at_mask)) if wave_at_mask.size > 0 else None
-                            mask_wave_max = float(np.max(wave_at_mask)) if wave_at_mask.size > 0 else None
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "BOUNDARY_POINTS_CALC",
-                                "location": "SoundfieldCalculator._calculate_sound_field_for_surface_grid:after_wave",
-                                "message": "Randpunkte nach Wellenberechnung",
-                                "data": {
-                                    "surface_id": str(surface_id),
-                                    "wave_magnitude_min": float(np.min(wave_magnitude)),
-                                    "wave_magnitude_max": float(np.max(wave_magnitude)),
-                                    "wave_nonzero_count": int(np.count_nonzero(wave)),
-                                    "mask_points_count": int(np.count_nonzero(surface_mask_flat)),
-                                    "mask_points_with_values": mask_nonzero,
-                                    "mask_wave_min": mask_wave_min,
-                                    "mask_wave_max": mask_wave_max,
-                                    "includes_edge_and_corner_points": True
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
-                    # #region agent log
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json
-                        wave_magnitude = np.abs(wave)
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "A",
-                            "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                            "message": "Single surface calculation - after wave computation",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "wave_magnitude_min": float(np.min(wave_magnitude)),
-                                "wave_magnitude_max": float(np.max(wave_magnitude)),
-                                "wave_magnitude_mean": float(np.mean(wave_magnitude)),
-                                "wave_nonzero_count": int(np.count_nonzero(wave))
-                            },
-                            "timestamp": int(__import__('time').time() * 1000)
-                        }) + "\n")
-                    # #endregion
                     
-                    # #region agent log - Wave magnitude vor Akkumulation
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json
-                        wave_magnitude_before = np.abs(sound_field_p)
-                        wave_magnitude_new = np.abs(wave)
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "MUTE_DEBUG",
-                            "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                            "message": "Wave before accumulation",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "array_key": str(array_key),
-                                "isrc": int(isrc),
-                                "field_before_mean": float(np.mean(wave_magnitude_before[surface_mask])) if np.sum(surface_mask) > 0 else 0.0,
-                                "wave_new_mean": float(np.mean(wave_magnitude_new[surface_mask])) if np.sum(surface_mask) > 0 else 0.0,
-                                "wave_new_max": float(np.max(wave_magnitude_new[surface_mask])) if np.sum(surface_mask) > 0 else 0.0
-                            },
-                            "timestamp": int(time.time() * 1000)
-                        }) + "\n")
-                    # #endregion
                     
                     # AKKUMULATION (Interferenz-Überlagerung)
                     sound_field_p += wave
                     if capture_arrays and array_wave is not None:
                         array_wave += wave
                     
-                    # #region agent log - Wave magnitude nach Akkumulation
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json
-                        wave_magnitude_after = np.abs(sound_field_p)
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "MUTE_DEBUG",
-                            "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                            "message": "Wave after accumulation",
-                            "data": {
-                                "surface_id": str(surface_id),
-                                "array_key": str(array_key),
-                                "isrc": int(isrc),
-                                "field_after_mean": float(np.mean(wave_magnitude_after[surface_mask])) if np.sum(surface_mask) > 0 else 0.0,
-                                "field_after_max": float(np.max(wave_magnitude_after[surface_mask])) if np.sum(surface_mask) > 0 else 0.0
-                            },
-                            "timestamp": int(time.time() * 1000)
-                        }) + "\n")
-                    # #endregion
             
             if capture_arrays and array_wave is not None:
                 array_fields[array_key] = array_wave
@@ -2267,60 +1776,7 @@ class SoundFieldCalculator(ModuleBase):
             else:
                 surface_grid.additional_vertices_spl = None
         
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            import json
-            final_magnitude = np.abs(sound_field_p)
-            # Zähle aktive Arrays
-            active_array_count = sum(1 for arr in self.settings.speaker_arrays.values() if not (arr.mute or arr.hide))
-            # Berechne SPL in dB für Mask-Bereich
-            mask_mean_magnitude = float(np.mean(final_magnitude[surface_mask])) if np.sum(surface_mask) > 0 else 0.0
-            spl_db_mean = self.functions.mag2db(mask_mean_magnitude) if mask_mean_magnitude > 0 else -np.inf
-            
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "MUTE_DEBUG",
-                "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                "message": "Single surface - final calculation result with SPL",
-                "data": {
-                    "surface_id": str(surface_id),
-                    "active_array_count": int(active_array_count),
-                    "active_array_keys": [str(k) for k, arr in self.settings.speaker_arrays.items() if not (arr.mute or arr.hide)],
-                    "muted_array_keys": [str(k) for k, arr in self.settings.speaker_arrays.items() if arr.mute],
-                    "hidden_array_keys": [str(k) for k, arr in self.settings.speaker_arrays.items() if arr.hide],
-                    "final_magnitude_min": float(np.min(final_magnitude)),
-                    "final_magnitude_max": float(np.max(final_magnitude)),
-                    "final_magnitude_mean": float(np.mean(final_magnitude)),
-                    "mask_mean_magnitude": mask_mean_magnitude,
-                    "spl_db_mean": float(spl_db_mean) if np.isfinite(spl_db_mean) else None,
-                    "final_shape": list(sound_field_p.shape),
-                    "mask_points": int(np.sum(surface_mask))
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
         
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            import json
-            sound_field_magnitude = np.abs(sound_field_p)
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "A",
-                "location": "SoundfieldCalculator.py:_calculate_sound_field_for_surface_grid",
-                "message": "Single surface calculation - final result",
-                "data": {
-                    "surface_id": str(surface_id),
-                    "sound_field_magnitude_min": float(np.min(sound_field_magnitude)),
-                    "sound_field_magnitude_max": float(np.max(sound_field_magnitude)),
-                    "sound_field_magnitude_mean": float(np.mean(sound_field_magnitude)),
-                    "sound_field_nonzero_count": int(np.count_nonzero(sound_field_p))
-                },
-                "timestamp": int(time.time() * 1000)
-            }) + "\n")
-        # #endregion
         return sound_field_p, array_fields
     
 

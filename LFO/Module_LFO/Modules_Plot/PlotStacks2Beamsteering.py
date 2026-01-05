@@ -98,17 +98,14 @@ class StackDraw_Beamsteering:
                 }) + '\n')
             # #endregion
             
-            # Verwende get_position() und Figure-Größe um die Pixel-Größe der Axes zu berechnen
+            # Verwende get_window_extent() um die tatsächliche Pixel-Größe der Axes zu erhalten
+            # (wird nach canvas.draw() aufgerufen, daher sollte es korrekte Werte liefern)
+            # WICHTIG: get_window_extent() liefert die tatsächliche Pixel-Größe nach allen Layout-Änderungen,
+            # während get_position() nur relative Koordinaten (0-1) liefert, die nach subplots_adjust() nicht mehr korrekt sind
             try:
-                fig = self.ax.figure
-                dpi = fig.get_dpi()
-                fig_width_pixels = fig.get_figwidth() * dpi
-                fig_height_pixels = fig.get_figheight() * dpi
-                
-                # Hole die Position der Axes in Figure-Koordinaten (0-1)
-                pos = self.ax.get_position()
-                axes_width_pixels = pos.width * fig_width_pixels
-                axes_height_pixels = pos.height * fig_height_pixels
+                bbox = self.ax.get_window_extent()
+                axes_width_pixels = bbox.width
+                axes_height_pixels = bbox.height
                 
                 # #region agent log
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
@@ -116,22 +113,17 @@ class StackDraw_Beamsteering:
                         'sessionId': 'debug-session',
                         'runId': 'run1',
                         'hypothesisId': 'A',
-                        'location': 'PlotStacks2Beamsteering.py:88',
+                        'location': 'PlotStacks2Beamsteering.py:96',
                         'message': 'Beamsteering: Pixel-Größen berechnet',
                         'data': {
                             'axes_width_pixels': float(axes_width_pixels),
                             'axes_height_pixels': float(axes_height_pixels),
-                            'fig_width_pixels': float(fig_width_pixels),
-                            'fig_height_pixels': float(fig_height_pixels),
-                            'pos_width': float(pos.width),
-                            'pos_height': float(pos.height),
-                            'dpi': float(dpi),
-                            'method': 'get_position'
+                            'method': 'get_window_extent'
                         },
                         'timestamp': int(__import__('time').time() * 1000)
                     }) + '\n')
                 # #endregion
-            except Exception as e:
+            except:
                 # Fallback: Verwende Figure-Größe in Pixeln
                 fig = self.ax.figure
                 dpi = fig.get_dpi()
@@ -144,12 +136,11 @@ class StackDraw_Beamsteering:
                         'sessionId': 'debug-session',
                         'runId': 'run1',
                         'hypothesisId': 'A',
-                        'location': 'PlotStacks2Beamsteering.py:95',
+                        'location': 'PlotStacks2Beamsteering.py:103',
                         'message': 'Beamsteering: Fallback Pixel-Größen',
                         'data': {
                             'axes_width_pixels': float(axes_width_pixels),
-                            'axes_height_pixels': float(axes_height_pixels),
-                            'error': str(e)
+                            'axes_height_pixels': float(axes_height_pixels)
                         },
                         'timestamp': int(__import__('time').time() * 1000)
                     }) + '\n')
@@ -157,20 +148,17 @@ class StackDraw_Beamsteering:
             
             if axes_width_pixels > 0 and axes_height_pixels > 0 and x_range > 0 and y_range > 0:
                 # Berechne Daten-Einheiten pro Pixel
-                x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel
-                y_units_per_pixel = y_range / axes_height_pixels  # Meter pro Pixel
+                x_units_per_pixel = x_range / axes_width_pixels  # Meter pro Pixel (X)
+                y_units_per_pixel = y_range / axes_height_pixels  # Meter pro Pixel (Y)
                 
-                # Ziel: Lautsprecher sollen im Plot nicht verzerrt werden.
-                # D.h. das Seitenverhältnis (width : front_height) soll in Pixeln erhalten bleiben,
-                # auch wenn die Achsen unterschiedlich skaliert sind.
-                #
-                # width_pixels  = width / x_units_per_pixel
-                # height_pixels = scaled_front_height / y_units_per_pixel
-                # Für unverzerrte Darstellung gilt:
-                #   width_pixels / height_pixels = width / front_height
-                # => scaled_front_height = front_height * (y_units_per_pixel / x_units_per_pixel)
+                # Für unverzerrte Darstellung: Skaliere Höhe basierend auf Aspect-Ratio
+                # Gleiche Logik wie in Windowing-Plot
                 scale_factor = y_units_per_pixel / x_units_per_pixel if x_units_per_pixel > 0 else 1.0
                 scaled_front_height = front_height * scale_factor
+                
+                # Variante A: zusätzliche visuelle Skalierung der Lautsprecherhöhe (wie in Windowing)
+                visual_scale_factor = 1.6
+                scaled_front_height *= visual_scale_factor
                 
                 # #region agent log
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
@@ -184,6 +172,7 @@ class StackDraw_Beamsteering:
                             'x_units_per_pixel': float(x_units_per_pixel),
                             'y_units_per_pixel': float(y_units_per_pixel),
                             'scale_factor': float(scale_factor),
+                            'visual_scale_factor': float(visual_scale_factor),
                             'front_height_m': float(front_height),
                             'scaled_front_height_m': float(scaled_front_height)
                         },
@@ -220,6 +209,12 @@ class StackDraw_Beamsteering:
             # Bei cardio: exit_at_front = False → Frontansicht zeigt Body
             # Bei normal: exit_at_front = True → Frontansicht zeigt Exit-Face
             color = body_color_cardio if is_cardio else exit_color_front
+            # Berechne Pixel-Dimensionen für Verzerrungsprüfung
+            width_pixels = (width / x_range) * axes_width_pixels if x_range > 0 else 0
+            height_pixels = (scaled_front_height / y_range) * axes_height_pixels if y_range > 0 else 0
+            aspect_ratio_pixels = height_pixels / width_pixels if width_pixels > 0 else 0
+            aspect_ratio_real = front_height / width if width > 0 else 0
+            
             rect = patches.Rectangle(
                 (x, y),
                 width, 
@@ -236,14 +231,22 @@ class StackDraw_Beamsteering:
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'E',
-                    'location': 'PlotStacks2Beamsteering.py:127',
-                    'message': 'Beamsteering: Rechteck erstellt',
+                    'location': 'PlotStacks2Beamsteering.py:230',
+                    'message': 'Beamsteering: Rechteck erstellt - Verzerrungsprüfung',
                     'data': {
                         'x': float(x),
                         'y': float(y),
-                        'width': float(width),
-                        'scaled_front_height': float(scaled_front_height),
-                        'front_height_original': float(front_height)
+                        'width_m': float(width),
+                        'scaled_front_height_m': float(scaled_front_height),
+                        'front_height_original_m': float(front_height),
+                        'width_pixels': float(width_pixels),
+                        'height_pixels': float(height_pixels),
+                        'aspect_ratio_pixels': float(aspect_ratio_pixels),
+                        'aspect_ratio_real': float(aspect_ratio_real),
+                        'x_range': float(x_range),
+                        'y_range': float(y_range),
+                        'axes_width_pixels': float(axes_width_pixels),
+                        'axes_height_pixels': float(axes_height_pixels)
                     },
                     'timestamp': int(__import__('time').time() * 1000)
                 }) + '\n')

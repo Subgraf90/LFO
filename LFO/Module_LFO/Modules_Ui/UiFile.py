@@ -587,12 +587,38 @@ class UiFile:
             if hasattr(sources_instance, 'sources_dockWidget') and sources_instance.sources_dockWidget:
                 sources_instance.sources_dockWidget.raise_()
 
-            # 🎯 WICHTIG: Wähle immer das oberste Item nach dem Laden aus
+            # 🎯 WICHTIG: Wähle immer das erste Array nach dem Laden aus
             # (auch nach load_groups_structure, da sich die Struktur ändern kann)
-            if sources_tree.topLevelItemCount() > 0:
-                first_item = sources_tree.topLevelItem(0)
+            # Suche das erste Array-Item (nicht Gruppe) im Tree, egal ob Top-Level oder in einer Gruppe
+            def find_first_array_item():
+                """Findet das erste Array-Item im Tree (nicht Gruppe)"""
+                # Durchsuche Top-Level-Items
+                for i in range(sources_tree.topLevelItemCount()):
+                    item = sources_tree.topLevelItem(i)
+                    item_type = item.data(0, Qt.UserRole + 1)
+                    array_id = item.data(0, Qt.UserRole)
+                    
+                    # Wenn es ein Array ist (nicht Gruppe), gib es zurück
+                    if item_type != "group" and array_id is not None:
+                        return item
+                    
+                    # Wenn es eine Gruppe ist, durchsuche ihre Children
+                    if item_type == "group":
+                        for j in range(item.childCount()):
+                            child = item.child(j)
+                            child_array_id = child.data(0, Qt.UserRole)
+                            if child_array_id is not None:
+                                return child
+                return None
+            
+            first_array_item = find_first_array_item()
+            if first_array_item:
                 with QSignalBlocker(sources_tree):
-                    sources_tree.setCurrentItem(first_item)
+                    sources_tree.setCurrentItem(first_array_item)
+                    # Stelle sicher, dass Parent-Gruppe expandiert ist
+                    parent = first_array_item.parent()
+                    if parent:
+                        parent.setExpanded(True)
                 sources_instance.refresh_active_selection()
 
             # 🎯 WICHTIG: Aktualisiere Overlays nach dem Laden, um die neuen Lautsprecher zu plotten

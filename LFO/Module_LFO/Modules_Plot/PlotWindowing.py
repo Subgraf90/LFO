@@ -108,6 +108,28 @@ class WindowingPlot(QWidget):
         # Zeichne einmal, um sicherzustellen, dass get_window_extent() korrekte Werte liefert
         self.figure.canvas.draw()
         
+        # #region agent log
+        import json
+        bbox = self.ax.get_window_extent()
+        axes_width_pixels = bbox.width
+        axes_height_pixels = bbox.height
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'B',
+                'location': 'PlotWindowing.py:109',
+                'message': 'Windowing: Achsengrenzen und Pixel-Größe vor Stack-Zeichnung',
+                'data': {
+                    'xlim': list(self.ax.get_xlim()),
+                    'ylim': list(self.ax.get_ylim()),
+                    'axes_width_pixels': float(axes_width_pixels),
+                    'axes_height_pixels': float(axes_height_pixels)
+                },
+                'timestamp': int(__import__('time').time() * 1000)
+            }) + '\n')
+        # #endregion
+        
         # Zeichne Stacks NACH dem Setzen der Achsengrenzen (für korrekten Transform)
         self.plot_Stacks2Windowing(speaker_array_id)
         
@@ -372,7 +394,8 @@ class WindowingPlot(QWidget):
                 # Deaktiviere constrained_layout vollständig
                 self.ax.figure.set_constrained_layout(False)
                 # Passe die Plot-Ränder an Canvas-Größe an (Windowing-Plot)
-                self.ax.figure.subplots_adjust(left=0.15, right=0.95, top=0.90, bottom=0.15)
+                # Mehr Platz unten/links, damit Achsenbeschriftungen vollständig sichtbar sind
+                self.ax.figure.subplots_adjust(left=0.18, right=0.97, top=0.93, bottom=0.22)
             except Exception:
                 pass
             # Zeichne nur wenn Canvas vorhanden

@@ -111,12 +111,22 @@ class StackDraw_Windowing:
                 # front_height ist in Metern, muss aber in dB-Einheiten umgerechnet werden
                 # Um die gleiche visuelle Größe zu erreichen (gleiche Anzahl Pixel):
                 # front_height (Meter) / x_units_per_pixel = scaled_height (dB) / y_units_per_pixel
-                # scaled_height = front_height * (y_units_per_pixel / x_units_per_pixel)
+                # scaled_height_basis = front_height * (y_units_per_pixel / x_units_per_pixel)
                 scale_factor = y_units_per_pixel / x_units_per_pixel if x_units_per_pixel > 0 else 1.0
                 scaled_front_height = front_height * scale_factor
+
+                # Variante A: zusätzliche visuelle Skalierung der Lautsprecherhöhe
+                visual_scale_factor = 1.6
+                scaled_front_height *= visual_scale_factor
             else:
                 # Fallback wenn Größe nicht verfügbar
                 scaled_front_height = front_height
+            
+            # Berechne Pixel-Dimensionen für Verzerrungsprüfung
+            width_pixels = (width / x_range) * axes_width_pixels if x_range > 0 else 0
+            height_pixels = (scaled_front_height / y_range) * axes_height_pixels if y_range > 0 else 0
+            aspect_ratio_pixels = height_pixels / width_pixels if width_pixels > 0 else 0
+            aspect_ratio_real = front_height / width if width > 0 else 0
             
             # Zeichne nur das Rechteck (Frontansicht: width x height)
             # Farbe basierend auf cardio: cardio hat Exit-Face hinten (helleres Grau), normale vorne (mittelgrau)
@@ -133,7 +143,35 @@ class StackDraw_Windowing:
                 fc=color
             )
             self.ax.add_patch(rect)
-            self.left_positions.append(x)            
+            self.left_positions.append(x)
+            
+            # #region agent log
+            import json
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'PlotStacks2Windowing.py:135',
+                    'message': 'Windowing: Rechteck erstellt - Verzerrungsprüfung',
+                    'data': {
+                        'x': float(x),
+                        'y': float(y),
+                        'width_m': float(width),
+                        'scaled_front_height_dB': float(scaled_front_height),
+                        'front_height_original_m': float(front_height),
+                        'width_pixels': float(width_pixels),
+                        'height_pixels': float(height_pixels),
+                        'aspect_ratio_pixels': float(aspect_ratio_pixels),
+                        'aspect_ratio_real': float(aspect_ratio_real),
+                        'x_range': float(x_range),
+                        'y_range': float(y_range),
+                        'axes_width_pixels': float(axes_width_pixels),
+                        'axes_height_pixels': float(axes_height_pixels)
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+            # #endregion            
         except Exception as e:
             print(f"Fehler beim Zeichnen eines Lautsprechers: {str(e)}")
             import traceback

@@ -215,8 +215,7 @@ class SurfaceAnalyzer(ModuleBase):
             return normal, rms_error, plane_params
             
         except Exception as e:
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG SVD] Fehler bei SVD: {e}")
+            # Debug-Logging entfernt
             return None, None, None
     
     def _compute_pca_orientation(self, points: List[Dict[str, float]]) -> Dict[str, Any]:
@@ -404,8 +403,7 @@ class SurfaceAnalyzer(ModuleBase):
                 "eigenvals": eigenvals_norm.tolist()
             }
         except Exception as e:
-            if DEBUG_FLEXIBLE_GRID:
-                print(f"[DEBUG PCA] Fehler bei PCA-Analyse: {e}")
+            # Debug-Logging entfernt
             return {"vertical_score": 0.0, "dominant_axis": None}
     
     def _determine_orientation_ultra_robust(
@@ -706,39 +704,7 @@ class SurfaceAnalyzer(ModuleBase):
             # Berechne Normale aus SVD für SurfaceGeometry (wird intern bereits berechnet)
             svd_normal, _, _ = self._compute_robust_plane_normal_svd(points)
             
-            # #region agent log - Orientierungserkennung
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H1",
-                        "location": "SurfaceAnalyzer.analyze_surfaces:orientation_detection",
-                        "message": "Orientierungserkennung für Surface",
-                        "data": {
-                            "surface_id": str(surface_id),
-                            "name": str(name),
-                            "orientation": str(orientation),
-                            "dominant_axis": str(dominant_axis) if dominant_axis else None,
-                            "num_points": int(len(points)),
-                            "x_span": float(np.ptp(xs)) if len(xs) > 0 else 0.0,
-                            "y_span": float(np.ptp(ys)) if len(ys) > 0 else 0.0,
-                            "z_span": float(np.ptp(zs)) if len(zs) > 0 else 0.0,
-                            "x_min": float(min(xs)) if len(xs) > 0 else 0.0,
-                            "x_max": float(max(xs)) if len(xs) > 0 else 0.0,
-                            "y_min": float(min(ys)) if len(ys) > 0 else 0.0,
-                            "y_max": float(max(ys)) if len(ys) > 0 else 0.0,
-                            "z_min": float(min(zs)) if len(zs) > 0 else 0.0,
-                            "z_max": float(max(zs)) if len(zs) > 0 else 0.0,
-                            "has_plane_model": plane_model is not None,
-                            "has_normal": svd_normal is not None
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
+            # Debug-Logging entfernt
             
             # Speichere zusätzliche Informationen in geometry
             geometry = SurfaceGeometry(
@@ -929,23 +895,12 @@ class GridBuilder(ModuleBase):
             # Prüfe auf kleine Flächen
             if points_in_surface > 0 and points_in_surface < 3:
                 small_surfaces.append((geom, points_in_surface, mask))
-                print(f"[DEBUG Kleine Flächen] ⚠️  Surface '{geom.surface_id}' ({geom.name}): Nur {points_in_surface} Grid-Punkt(e) bei Resolution {resolution:.3f} m")
             
             surface_masks[geom.surface_id] = mask.flatten()  # Flach für BaseGrid
         
-        # 🎯 Adaptive Resolution für kleine Flächen
-        if small_surfaces:
-            print(f"[DEBUG Kleine Flächen] Gefunden: {len(small_surfaces)} kleine Flächen")
-            # Für jetzt: Warnung ausgeben
-            # Später: Adaptive Resolution implementieren (siehe TODO)
-            for geom, n_points, mask in small_surfaces:
-                # Berechne empfohlene Resolution
-                if geom.bbox:
-                    min_x, max_x, min_y, max_y = geom.bbox
-                    diagonal = np.sqrt((max_x - min_x)**2 + (max_y - min_y)**2)
-                    recommended_resolution = diagonal / 3.0  # Mindestens 3 Punkte
-                    recommended_resolution = min(recommended_resolution, resolution * 0.5)  # Nicht kleiner als halbe Basis-Resolution
-                    print(f"  └─ Empfohlene Resolution: {recommended_resolution:.3f} m (aktuell: {resolution:.3f} m, Diagonal: {diagonal:.3f} m)")
+        # 🎯 Adaptive Resolution für kleine Flächen (nur intern, ohne Logging)
+        # Hinweis: small_surfaces bleibt verfügbar, falls später eine adaptive
+        # Auflösung implementiert werden soll.
         
         return BaseGrid(
             points_3d=points_3d,
@@ -978,28 +933,6 @@ class GridBuilder(ModuleBase):
         if geometry.orientation == "vertical":
             # Vertikale Surfaces werden in build_single_surface_grid behandelt
             # Hier geben wir eine leere Maske zurück, da die Maske erst später mit Z_grid erstellt wird
-            # #region agent log - _create_surface_mask für vertikale Surfaces
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H1",
-                        "location": "GridBuilder._create_surface_mask:vertical",
-                        "message": "_create_surface_mask für vertikale Surfaces - leere Maske zurückgegeben",
-                        "data": {
-                            "surface_id": str(geometry.surface_id),
-                            "orientation": str(geometry.orientation),
-                            "mask_shape": list(X_grid.shape),
-                            "mask_size": int(X_grid.size),
-                            "empty_mask_returned": True
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             return np.zeros_like(X_grid, dtype=bool)
         
         # Normale (x,y)-Prüfung für planare/schräge Surfaces
@@ -1172,15 +1105,11 @@ class GridBuilder(ModuleBase):
                 # Jetzt: 2.0x Resolution (aktiviert alle Eckpunkte innerhalb des Polygons)
                 max_sq_dist = float((2.0 * base_res) ** 2)
             
-            # #region agent log - Vertex Coverage für Ecken prüfen
-            activated_vertices = []
-            outside_vertices = []
             try:
                 from matplotlib.path import Path
                 polygon_path = Path(np.column_stack([x_vertices, y_vertices]))
             except Exception:
                 polygon_path = None
-            # #endregion
             
             # 🎯 FIX: Prüfe ob x_flat/y_flat leer sind (z.B. bei sehr schmalen Grids)
             if x_flat.size == 0 or y_flat.size == 0:
@@ -1209,11 +1138,6 @@ class GridBuilder(ModuleBase):
                 if polygon_path is not None:
                     is_inside = polygon_path.contains_point((nearest_x, nearest_y))
                     if not is_inside:
-                        outside_vertices.append({
-                            "corner": (float(xv), float(yv)),
-                            "grid_point": (nearest_x, nearest_y),
-                            "distance": nearest_dist
-                        })
                         # 🎯 FIX: Aktiviere Grid-Punkte außerhalb des Polygons NICHT
                         continue
                 
@@ -1221,37 +1145,6 @@ class GridBuilder(ModuleBase):
                 # UND nur wenn er innerhalb des Polygons liegt
                 if not mask_flat[nearest_idx] and is_inside:
                     mask_flat[nearest_idx] = True
-                    activated_vertices.append({
-                        "corner": (float(xv), float(yv)),
-                        "grid_point": (nearest_x, nearest_y),
-                        "distance": nearest_dist,
-                        "is_inside_polygon": is_inside
-                    })
-            
-            # #region agent log - Vertex Coverage Ergebnisse
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "VERTEX_COVERAGE_ANALYSIS",
-                        "location": "FlexibleGridGenerator._ensure_vertex_coverage:vertex_activation",
-                        "message": "Vertex Coverage Aktivierung prüfen",
-                        "data": {
-                            "surface_id": str(getattr(geometry, "surface_id", "unknown")),
-                            "activated_vertices_count": len(activated_vertices),
-                            "outside_vertices_count": len(outside_vertices),
-                            "activated_vertices": activated_vertices,
-                            "outside_vertices": outside_vertices,
-                            "base_resolution": float(base_res) if 'base_res' in locals() else None,
-                            "max_sq_dist": float(max_sq_dist) if max_sq_dist is not None else None
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             return mask_flat.reshape(surface_mask_strict.shape)
         except Exception:
@@ -1406,9 +1299,7 @@ class GridBuilder(ModuleBase):
             # Sammle alle Boundary-Punkte entlang der Kanten
             edge_points = []
             
-            # #region agent log - Edge point generation analysis
             edge_generation_stats = []
-            # #endregion
             
             for i in range(n_vertices):
                 x1, y1 = px[i], py[i]
@@ -1419,29 +1310,6 @@ class GridBuilder(ModuleBase):
                 dy = y2 - y1
                 segment_len = math.hypot(dx, dy)
                 
-                # #region agent log - Edge analysis H1, H5
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H1_H5",
-                            "location": "FlexibleGridGenerator._add_edge_points_on_boundary:edge_start",
-                            "message": "Kanten-Analyse Start",
-                            "data": {
-                                "edge_index": i,
-                                "edge_start": (float(x1), float(y1)),
-                                "edge_end": (float(x2), float(y2)),
-                                "segment_len": float(segment_len),
-                                "point_spacing": float(point_spacing),
-                                "expected_points": int(np.ceil(segment_len / point_spacing)) + 1 if segment_len >= 1e-9 else 0
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 if segment_len < 1e-9:
                     # Degenerierte Kante überspringen
@@ -1449,10 +1317,8 @@ class GridBuilder(ModuleBase):
                 
                 # 🎯 FIX: Generiere Punkte mit exaktem Abstand point_spacing entlang der Kante
                 # Starte bei t=0 und füge Punkte hinzu, bis das Ende erreicht ist
-                # #region agent log - Per-edge point calculation (H1, H2, H3)
                 edge_points_before = len(edge_points)
                 point_positions = []
-                # #endregion
                 
                 # Generiere Punkte mit exaktem Abstand point_spacing
                 current_t = 0.0
@@ -1461,9 +1327,7 @@ class GridBuilder(ModuleBase):
                     y_edge = y1 + current_t * dy
                     edge_points.append((x_edge, y_edge))
                     
-                    # #region agent log - Point position tracking H2, H5
                     point_positions.append({"t": float(current_t), "x": float(x_edge), "y": float(y_edge)})
-                    # #endregion
                     
                     # Berechne nächsten t-Wert basierend auf point_spacing
                     if segment_len > 1e-9:
@@ -1483,11 +1347,8 @@ class GridBuilder(ModuleBase):
                     else:
                         break
                     
-                    # #region agent log - Point position tracking H2, H5
                     point_positions.append({"t": float(current_t), "x": float(x_edge), "y": float(y_edge)})
-                    # #endregion
                 
-                # #region agent log - Edge statistics (H1, H2, H3)
                 edge_points_after = len(edge_points)
                 points_generated = edge_points_after - edge_points_before
                 # Berechne tatsächliche Abstände zwischen Punkten
@@ -1525,51 +1386,11 @@ class GridBuilder(ModuleBase):
             unique_edge_points = []
             duplicates_removed = 0
             
-            # #region agent log - Before deduplication H3
-            points_before_dedup = len(edge_points)
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H3",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary:before_dedup",
-                        "message": "Vor Deduplizierung",
-                        "data": {
-                            "points_before_dedup": points_before_dedup,
-                            "tolerance": float(tolerance)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             for x, y in edge_points:
                 is_duplicate = False
                 for ex, ey in unique_edge_points:
                     if abs(x - ex) < tolerance and abs(y - ey) < tolerance:
                         is_duplicate = True
-                        # #region agent log - Duplicate found H3
-                        try:
-                            import json, time as _t
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "H3",
-                                    "location": "FlexibleGridGenerator._add_edge_points_on_boundary:duplicate_found",
-                                    "message": "Doppelter Punkt gefunden",
-                                    "data": {
-                                        "point": (float(x), float(y)),
-                                        "existing": (float(ex), float(ey)),
-                                        "distance": float(math.hypot(x - ex, y - ey))
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         break
                 if not is_duplicate:
                     unique_edge_points.append((x, y))
@@ -1578,7 +1399,6 @@ class GridBuilder(ModuleBase):
             
             edge_points = unique_edge_points
             
-            # #region agent log - After deduplication and final stats (H4)
             points_after_dedup = len(edge_points)
             
             # Berechne Abstände zwischen finalen Punkten (in Reihenfolge entlang Polygon)
@@ -1626,49 +1446,12 @@ class GridBuilder(ModuleBase):
                         dist = math.hypot(x2 - x1, y2 - y1)
                         final_distances.append(dist)
             
-            # Logge Zusammenfassung der Edge-Generierung
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "EDGE_POINT_DISTRIBUTION_ANALYSIS",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary:edge_generation",
-                        "message": "Randpunkt-Verteilung Analyse",
-                        "data": {
-                            "surface_id": str(getattr(geometry, "surface_id", "unknown")),
-                            "orientation": str(getattr(geometry, "orientation", "unknown")),
-                            "resolution": float(resolution),
-                            "point_spacing_target": float(point_spacing),
-                            "n_edges": len(edge_generation_stats),
-                            "points_before_dedup": points_before_dedup,
-                            "points_after_dedup": points_after_dedup,
-                            "duplicates_removed": duplicates_removed,
-                            "final_distances_after_dedup": final_distances if final_distances else [],
-                            "final_distances_stats": {
-                                "count": len(final_distances),
-                                "min": float(min(final_distances)) if final_distances else None,
-                                "max": float(max(final_distances)) if final_distances else None,
-                                "avg": float(np.mean(final_distances)) if final_distances else None,
-                                "std": float(np.std(final_distances)) if final_distances else None
-                            } if final_distances else {},
-                            "edge_statistics": edge_generation_stats
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             if not edge_points:
                 return surface_mask_strict, []
             
             # 🎯 NEUE LOGIK: Randpunkte werden direkt als additional_vertices verwendet
             # KEINE Mapping auf Grid-Punkte mehr
-            # #region agent log - Randpunkte generiert (ohne Grid-Mapping)
-            # (Logging entfernt - Randpunkt-Logik nicht mehr aktiv)
-            # #endregion
             
             # Rückgabe: Unveränderte Maske + Liste der Randpunkte
             return surface_mask_strict, edge_points
@@ -1826,93 +1609,15 @@ class GridBuilder(ModuleBase):
             
             edge_points = unique_edge_points
             
-            # #region agent log - After deduplication UV and final stats (H4)
             points_after_dedup = len(edge_points)
-            
-            # Logge Zusammenfassung der Edge-Generierung (UV)
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "EDGE_POINT_DISTRIBUTION_ANALYSIS_UV",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary_uv:edge_generation",
-                        "message": "Randpunkt-Verteilung Analyse (UV)",
-                        "data": {
-                            "resolution": float(resolution),
-                            "point_spacing_target": float(point_spacing),
-                            "n_edges": len(edge_generation_stats_uv),
-                            "points_before_dedup": points_before_dedup,
-                            "points_after_dedup": points_after_dedup,
-                            "duplicates_removed": duplicates_removed,
-                            "edge_statistics": edge_generation_stats_uv
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             if not edge_points:
                 return surface_mask_strict, []
             
             # 🎯 NEUE LOGIK: Randpunkte werden direkt als additional_vertices verwendet
             # KEINE Mapping auf Grid-Punkte mehr
-            # #region agent log - Randpunkte generiert (UV, ohne Grid-Mapping)
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "EDGE_POINTS_AS_VERTICES_UV",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary_uv:edge_points_generated",
-                        "message": "Randpunkte generiert (UV, direkt als Vertices, kein Grid-Mapping)",
-                        "data": {
-                            "n_edge_points_generated": len(edge_points),
-                            "points_before_dedup": points_before_dedup,
-                            "points_after_dedup": len(edge_points),
-                            "duplicates_removed": duplicates_removed,
-                            "resolution": float(resolution),
-                            "point_spacing": float(point_spacing)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            
             # Rückgabe: Unveränderte Maske + Liste der Randpunkte
             return surface_mask_strict, edge_points
-            
-            # #region agent log - Boundary-Punkte generiert und aktiviert (UV)
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "BOUNDARY_POINTS_CREATION",
-                        "location": "FlexibleGridGenerator._add_edge_points_on_boundary_uv",
-                        "message": "Randpunkte generiert und aktiviert (UV, lineare Verteilung)",
-                        "data": {
-                            "n_edge_points_generated": len(edge_points),
-                            "edge_points_activated": edge_points_activated,
-                            "points_before": points_activated_before,
-                            "points_after": points_activated_after,
-                            "resolution": float(resolution),
-                            "point_spacing": float(point_spacing),
-                            "max_distance_threshold": float(max_distance),
-                            "total_grid_points": int(U_grid.size)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            
-            return mask_flat.reshape(surface_mask_strict.shape)
         except Exception:
             # Rein heuristische Verbesserung – Fehler dürfen die Hauptlogik nicht stören
             return surface_mask_strict
@@ -2080,51 +1785,11 @@ class GridBuilder(ModuleBase):
         Returns:
             np.ndarray: Array von additional_vertices (Shape: (N, 3))
         """
-        # #region agent log - Eintritt _calculate_additional_vertices
-        try:
-            import json, time as _t
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H2",
-                    "location": "GridBuilder._calculate_additional_vertices:entry",
-                    "message": "Eintritt _calculate_additional_vertices",
-                    "data": {
-                        "surface_id": str(geometry.surface_id),
-                        "orientation": str(geometry.orientation),
-                        "resolution": float(resolution) if resolution is not None else None,
-                        "surface_points_count": len(geometry.points) if geometry.points else 0
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         additional_vertices = []
         surface_points = geometry.points or []
         
         if len(surface_points) < 3:
-            # #region agent log - Zu wenige Surface-Punkte
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H3",
-                        "location": "GridBuilder._calculate_additional_vertices:too_few_points",
-                        "message": "Zu wenige Surface-Punkte",
-                        "data": {
-                            "surface_id": str(geometry.surface_id),
-                            "surface_points_count": len(surface_points)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             return np.array([], dtype=float).reshape(0, 3)
         
         # Sammle alle Grid-Punkte für Duplikat-Prüfung
@@ -2425,26 +2090,6 @@ class GridBuilder(ModuleBase):
                     
                     boundary_edge_points.append([float(x), float(y), float(z)])
         
-        # #region agent log - Boundary edge points vor Duplikat-Prüfung
-        try:
-            import json, time as _t
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H3,H4",
-                    "location": "GridBuilder._calculate_additional_vertices:before_dedup",
-                    "message": "Boundary edge points vor Duplikat-Prüfung",
-                    "data": {
-                        "surface_id": str(geometry.surface_id),
-                        "boundary_edge_points_count": len(boundary_edge_points),
-                        "additional_vertices_corners_count": len(additional_vertices)
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         # 3. Duplikat-Prüfung und Zusammenführung
         dedup_tolerance = point_spacing * 0.05
@@ -2477,27 +2122,6 @@ class GridBuilder(ModuleBase):
             if not is_duplicate:
                 additional_vertices.append(edge_point)
         
-        # #region agent log - Ergebnis vor Rückgabe
-        try:
-            import json, time as _t
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H3,H4",
-                    "location": "GridBuilder._calculate_additional_vertices:before_return",
-                    "message": "Ergebnis vor Rückgabe",
-                    "data": {
-                        "surface_id": str(geometry.surface_id),
-                        "additional_vertices_count": len(additional_vertices),
-                        "boundary_edge_points_count": len(boundary_edge_points),
-                        "dedup_tolerance": float(dedup_tolerance)
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         return np.array(additional_vertices, dtype=float) if len(additional_vertices) > 0 else np.array([], dtype=float).reshape(0, 3)
     
@@ -2596,112 +2220,11 @@ class GridBuilder(ModuleBase):
                 # Erstelle 2D-Meshgrid in (u,v)-Ebene
                 U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
                 
-                # #region agent log - Grid-Größe für vertikale Surfaces (X-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H2",
-                            "location": "GridBuilder.build_single_surface_grid:vertical_xz_grid_created",
-                            "message": "Grid-Größe für vertikale Surface (X-Z-Wand) erstellt",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "orientation": "vertical",
-                                "wall_type": "xz",
-                                "u_axis_size": int(u_axis.size),
-                                "v_axis_size": int(v_axis.size),
-                                "U_grid_shape": list(U_grid.shape),
-                                "V_grid_shape": list(V_grid.shape),
-                                "u_min": float(u_min),
-                                "u_max": float(u_max),
-                                "v_min": float(v_min),
-                                "v_max": float(v_max),
-                                "y0": float(y0),
-                                "resolution": float(step)
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 # Transformiere zu (X, Y, Z) Koordinaten
                 X_grid = U_grid  # u = x
                 Y_grid = np.full_like(U_grid, y0, dtype=float)  # y = konstant
                 Z_grid = V_grid  # v = z
-                
-                # #region agent log - Koordinatentransformation Konsistenz-Check (X-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        # Prüfe Konsistenz: Original-Punkte vs. Grid-Koordinaten
-                        points_x = np.array([p.get('x', 0.0) for p in geometry.points], dtype=float)
-                        points_y = np.array([p.get('y', 0.0) for p in geometry.points], dtype=float)
-                        points_z = np.array([p.get('z', 0.0) for p in geometry.points], dtype=float)
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H2",
-                            "location": "GridBuilder.build_single_surface_grid:vertical_xz_transform_consistency",
-                            "message": "Koordinatentransformation Konsistenz-Check (X-Z-Wand)",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "transformation_type": "xz_wall_constant",
-                                "u_axis_min": float(u_min),
-                                "u_axis_max": float(u_max),
-                                "v_axis_min": float(v_min),
-                                "v_axis_max": float(v_max),
-                                "y0_constant": float(y0),
-                                "X_grid_min": float(X_grid.min()),
-                                "X_grid_max": float(X_grid.max()),
-                                "Y_grid_min": float(Y_grid.min()),
-                                "Y_grid_max": float(Y_grid.max()),
-                                "Z_grid_min": float(Z_grid.min()),
-                                "Z_grid_max": float(Z_grid.max()),
-                                "points_x_min": float(points_x.min()),
-                                "points_x_max": float(points_x.max()),
-                                "points_y_min": float(points_y.min()),
-                                "points_y_max": float(points_y.max()),
-                                "points_z_min": float(points_z.min()),
-                                "points_z_max": float(points_z.max()),
-                                "y0_matches_points": bool(np.allclose([y0], [points_y.mean()], atol=1e-6))
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
-                
-                # #region agent log - Koordinatentransformation (X-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H4",
-                            "location": "GridBuilder.build_single_surface_grid:vertical_xz_transform",
-                            "message": "Koordinatentransformation für vertikale Surface (X-Z-Wand)",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "X_grid_shape": list(X_grid.shape),
-                                "Y_grid_shape": list(Y_grid.shape),
-                                "Z_grid_shape": list(Z_grid.shape),
-                                "X_min": float(X_grid.min()),
-                                "X_max": float(X_grid.max()),
-                                "Y_min": float(Y_grid.min()),
-                                "Y_max": float(Y_grid.max()),
-                                "Z_min": float(Z_grid.min()),
-                                "Z_max": float(Z_grid.max()),
-                                "Y_constant": float(y0)
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 # sound_field_x und sound_field_y für Rückgabe (werden für Plot verwendet)
                 sound_field_x = u_axis  # x-Koordinaten
@@ -2734,112 +2257,13 @@ class GridBuilder(ModuleBase):
                 # Erstelle 2D-Meshgrid in (u,v)-Ebene
                 U_grid, V_grid = np.meshgrid(u_axis, v_axis, indexing='xy')
                 
-                # #region agent log - Grid-Größe für vertikale Surfaces (Y-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H2",
-                            "location": "GridBuilder.build_single_surface_grid:vertical_yz_grid_created",
-                            "message": "Grid-Größe für vertikale Surface (Y-Z-Wand) erstellt",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "orientation": "vertical",
-                                "wall_type": "yz",
-                                "u_axis_size": int(u_axis.size),
-                                "v_axis_size": int(v_axis.size),
-                                "U_grid_shape": list(U_grid.shape),
-                                "V_grid_shape": list(V_grid.shape),
-                                "u_min": float(u_min),
-                                "u_max": float(u_max),
-                                "v_min": float(v_min),
-                                "v_max": float(v_max),
-                                "x0": float(x0),
-                                "resolution": float(step)
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 # Transformiere zu (X, Y, Z) Koordinaten
                 X_grid = np.full_like(U_grid, x0, dtype=float)  # x = konstant
                 Y_grid = U_grid  # u = y
                 Z_grid = V_grid  # v = z
                 
-                # #region agent log - Koordinatentransformation Konsistenz-Check (Y-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        # Prüfe Konsistenz: Original-Punkte vs. Grid-Koordinaten
-                        points_x = np.array([p.get('x', 0.0) for p in geometry.points], dtype=float)
-                        points_y = np.array([p.get('y', 0.0) for p in geometry.points], dtype=float)
-                        points_z = np.array([p.get('z', 0.0) for p in geometry.points], dtype=float)
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H2",
-                            "location": "GridBuilder.build_single_surface_grid:vertical_yz_transform_consistency",
-                            "message": "Koordinatentransformation Konsistenz-Check (Y-Z-Wand)",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "transformation_type": "yz_wall_constant",
-                                "u_axis_min": float(u_min),
-                                "u_axis_max": float(u_max),
-                                "v_axis_min": float(v_min),
-                                "v_axis_max": float(v_max),
-                                "x0_constant": float(x0),
-                                "X_grid_min": float(X_grid.min()),
-                                "X_grid_max": float(X_grid.max()),
-                                "Y_grid_min": float(Y_grid.min()),
-                                "Y_grid_max": float(Y_grid.max()),
-                                "Z_grid_min": float(Z_grid.min()),
-                                "Z_grid_max": float(Z_grid.max()),
-                                "points_x_min": float(points_x.min()),
-                                "points_x_max": float(points_x.max()),
-                                "points_y_min": float(points_y.min()),
-                                "points_y_max": float(points_y.max()),
-                                "points_z_min": float(points_z.min()),
-                                "points_z_max": float(points_z.max()),
-                                "x0_matches_points": bool(np.allclose([x0], [points_x.mean()], atol=1e-6))
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
-                # #region agent log - Koordinatentransformation (Y-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "H4",
-                            "location": "GridBuilder.build_single_surface_grid:vertical_yz_transform",
-                            "message": "Koordinatentransformation für vertikale Surface (Y-Z-Wand)",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "X_grid_shape": list(X_grid.shape),
-                                "Y_grid_shape": list(Y_grid.shape),
-                                "Z_grid_shape": list(Z_grid.shape),
-                                "X_min": float(X_grid.min()),
-                                "X_max": float(X_grid.max()),
-                                "Y_min": float(Y_grid.min()),
-                                "Y_max": float(Y_grid.max()),
-                                "Z_min": float(Z_grid.min()),
-                                "Z_max": float(Z_grid.max()),
-                                "X_constant": float(x0)
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
                 # sound_field_x und sound_field_y für Rückgabe (werden für Plot verwendet)
                 sound_field_x = u_axis  # y-Koordinaten (als x für sound_field_x)
@@ -2928,7 +2352,7 @@ class GridBuilder(ModuleBase):
                                 if det_cov_yz > 1e-10:
                                     # Punkte sind besser verteilt in (y,z) → wechsle zu Y-Z-Wand
                                     should_switch_to_yz = True
-                                    print(f"  └─ ✅ Punkte besser verteilt in (y,z)-Ebene (det={det_cov_yz:.2e}) → wechsle zu Y-Z-Wand")
+                                    # Debug-Ausgabe entfernt
                         
                         if should_switch_to_yz:
                             # Wechsle zu Y-Z-Wand: X wird aus (y,z) interpoliert
@@ -3042,58 +2466,6 @@ class GridBuilder(ModuleBase):
             X_grid, Y_grid = np.meshgrid(sound_field_x, sound_field_y, indexing='xy')
             Z_grid = np.zeros_like(X_grid, dtype=float)
             
-            # #region agent log - Grid-Regularität prüfen
-            try:
-                import json, time as _t
-                # Prüfe Abstände in X- und Y-Richtung
-                x_diffs = np.diff(sound_field_x) if len(sound_field_x) > 1 else np.array([])
-                y_diffs = np.diff(sound_field_y) if len(sound_field_y) > 1 else np.array([])
-                
-                x_is_regular = True
-                y_is_regular = True
-                x_min_diff = float(np.min(x_diffs)) if x_diffs.size > 0 else 0.0
-                x_max_diff = float(np.max(x_diffs)) if x_diffs.size > 0 else 0.0
-                y_min_diff = float(np.min(y_diffs)) if y_diffs.size > 0 else 0.0
-                y_max_diff = float(np.max(y_diffs)) if y_diffs.size > 0 else 0.0
-                
-                # Prüfe ob alle Abstände gleich sind (mit Toleranz)
-                tolerance = resolution * 0.01  # 1% Toleranz
-                if x_diffs.size > 0:
-                    x_is_regular = np.allclose(x_diffs, x_diffs[0], atol=tolerance)
-                if y_diffs.size > 0:
-                    y_is_regular = np.allclose(y_diffs, y_diffs[0], atol=tolerance)
-                
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "GRID_REGULARITY",
-                        "location": "FlexibleGridGenerator.build_single_surface_grid:grid_regularity",
-                        "message": "Grid-Regularität prüfen",
-                        "data": {
-                            "surface_id": str(geometry.surface_id),
-                            "orientation": str(geometry.orientation),
-                            "x_axis_count": int(len(sound_field_x)),
-                            "y_axis_count": int(len(sound_field_y)),
-                            "x_is_regular": bool(x_is_regular),
-                            "y_is_regular": bool(y_is_regular),
-                            "x_min_diff": x_min_diff,
-                            "x_max_diff": x_max_diff,
-                            "y_min_diff": y_min_diff,
-                            "y_max_diff": y_max_diff,
-                            "x_mean_diff": float(np.mean(x_diffs)) if x_diffs.size > 0 else 0.0,
-                            "y_mean_diff": float(np.mean(y_diffs)) if y_diffs.size > 0 else 0.0,
-                            "x_std_diff": float(np.std(x_diffs)) if x_diffs.size > 0 else 0.0,
-                            "y_std_diff": float(np.std(y_diffs)) if y_diffs.size > 0 else 0.0,
-                            "base_resolution": float(resolution),
-                            "grid_is_uniform": bool(x_is_regular and y_is_regular),
-                            "grid_created_with_np_arange": True
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
         
         ny, nx = X_grid.shape
         
@@ -3122,44 +2494,6 @@ class GridBuilder(ModuleBase):
             else:
                 raise ValueError(f"Surface '{geometry.surface_id}': Unbekannter dominant_axis '{geometry.dominant_axis}'")
             
-            # #region agent log - Maske-Erstellung für vertikale Surface
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "H3",
-                        "location": "GridBuilder.build_single_surface_grid:vertical_mask_creation",
-                        "message": "Maske-Erstellung für vertikale Surface",
-                        "data": {
-                            "surface_id": str(geometry.surface_id),
-                            "dominant_axis": str(geometry.dominant_axis),
-                            "use_yz_wall": bool(use_yz_wall),
-                            "X_grid_shape": list(X_grid.shape),
-                            "Y_grid_shape": list(Y_grid.shape),
-                            "Z_grid_shape": list(Z_grid.shape),
-                            "X_grid_min": float(X_grid.min()),
-                            "X_grid_max": float(X_grid.max()),
-                            "Y_grid_min": float(Y_grid.min()),
-                            "Y_grid_max": float(Y_grid.max()),
-                            "Z_grid_min": float(Z_grid.min()),
-                            "Z_grid_max": float(Z_grid.max()),
-                            "x_span": float(x_span),
-                            "y_span": float(y_span),
-                            "z_span": float(z_span),
-                            "xs_min": float(xs.min()),
-                            "xs_max": float(xs.max()),
-                            "ys_min": float(ys.min()),
-                            "ys_max": float(ys.max()),
-                            "zs_min": float(zs.min()),
-                            "zs_max": float(zs.max())
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             if use_yz_wall:
                 # Y-Z-Wand: Maske in (y,z)-Ebene
@@ -3186,70 +2520,7 @@ class GridBuilder(ModuleBase):
                     geometry, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict
                 )
                 
-                # #region agent log - Maske-Ergebnis (Y-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        # Prüfe ob Maske-Punkte innerhalb der Surface-Bounding Box liegen
-                        mask_indices = np.where(surface_mask_strict)
-                        if len(mask_indices[0]) > 0:
-                            mask_y = Y_grid[mask_indices]
-                            mask_z = Z_grid[mask_indices]
-                            polygon_y = np.array([p.get("y", 0.0) for p in points], dtype=float)
-                            polygon_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H3",
-                                "location": "GridBuilder.build_single_surface_grid:vertical_mask_yz_result",
-                                "message": "Maske-Ergebnis für Y-Z-Wand",
-                                "data": {
-                                    "surface_id": str(geometry.surface_id),
-                                    "mask_points_count": int(np.count_nonzero(surface_mask_strict)),
-                                    "mask_y_min": float(mask_y.min()) if len(mask_y) > 0 else None,
-                                    "mask_y_max": float(mask_y.max()) if len(mask_y) > 0 else None,
-                                    "mask_z_min": float(mask_z.min()) if len(mask_z) > 0 else None,
-                                    "mask_z_max": float(mask_z.max()) if len(mask_z) > 0 else None,
-                                    "polygon_y_min": float(polygon_y.min()),
-                                    "polygon_y_max": float(polygon_y.max()),
-                                    "polygon_z_min": float(polygon_z.min()),
-                                    "polygon_z_max": float(polygon_z.max()),
-                                    "U_grid_min": float(U_grid.min()),
-                                    "U_grid_max": float(U_grid.max()),
-                                    "V_grid_min": float(V_grid.min()),
-                                    "V_grid_max": float(V_grid.max())
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
-                # #region agent log - Randpunkte bei Einzelsurface (Y-Z-Wand)
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        points_in_strict = int(np.count_nonzero(surface_mask_strict))
-                        points_in_dilated = int(np.count_nonzero(surface_mask))
-                        points_added = points_in_dilated - points_in_strict
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "single-surface-edge-points",
-                            "hypothesisId": "SINGLE_SURFACE_EDGE",
-                            "location": "FlexibleGridGenerator.build_single_surface_grid:vertical_yz",
-                            "message": "Randpunkte bei Einzelsurface (Y-Z-Wand)",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "points_in_strict_mask": points_in_strict,
-                                "points_in_dilated_mask": points_in_dilated,
-                                "edge_points_added": points_added,
-                                "has_edge_points": points_added > 0
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
             else:
                 # X-Z-Wand: Maske in (x,z)-Ebene
                 U_grid = X_grid  # u = x
@@ -3275,70 +2546,7 @@ class GridBuilder(ModuleBase):
                     geometry, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict
                 )
                 
-                # #region agent log - Maske-Ergebnis (X-Z-Wand)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        # Prüfe ob Maske-Punkte innerhalb der Surface-Bounding Box liegen
-                        mask_indices = np.where(surface_mask_strict)
-                        if len(mask_indices[0]) > 0:
-                            mask_x = X_grid[mask_indices]
-                            mask_z = Z_grid[mask_indices]
-                            polygon_x = np.array([p.get("x", 0.0) for p in points], dtype=float)
-                            polygon_z = np.array([p.get("z", 0.0) for p in points], dtype=float)
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H3",
-                                "location": "GridBuilder.build_single_surface_grid:vertical_mask_xz_result",
-                                "message": "Maske-Ergebnis für X-Z-Wand",
-                                "data": {
-                                    "surface_id": str(geometry.surface_id),
-                                    "mask_points_count": int(np.count_nonzero(surface_mask_strict)),
-                                    "mask_x_min": float(mask_x.min()) if len(mask_x) > 0 else None,
-                                    "mask_x_max": float(mask_x.max()) if len(mask_x) > 0 else None,
-                                    "mask_z_min": float(mask_z.min()) if len(mask_z) > 0 else None,
-                                    "mask_z_max": float(mask_z.max()) if len(mask_z) > 0 else None,
-                                    "polygon_x_min": float(polygon_x.min()),
-                                    "polygon_x_max": float(polygon_x.max()),
-                                    "polygon_z_min": float(polygon_z.min()),
-                                    "polygon_z_max": float(polygon_z.max()),
-                                    "U_grid_min": float(U_grid.min()),
-                                    "U_grid_max": float(U_grid.max()),
-                                    "V_grid_min": float(V_grid.min()),
-                                    "V_grid_max": float(V_grid.max())
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 
-                # #region agent log - Randpunkte bei Einzelsurface (X-Z-Wand)
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        import json, time as _t
-                        points_in_strict = int(np.count_nonzero(surface_mask_strict))
-                        points_in_dilated = int(np.count_nonzero(surface_mask))
-                        points_added = points_in_dilated - points_in_strict
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "single-surface-edge-points",
-                            "hypothesisId": "SINGLE_SURFACE_EDGE",
-                            "location": "FlexibleGridGenerator.build_single_surface_grid:vertical_xz",
-                            "message": "Randpunkte bei Einzelsurface (X-Z-Wand)",
-                            "data": {
-                                "surface_id": str(geometry.surface_id),
-                                "points_in_strict_mask": points_in_strict,
-                                "points_in_dilated_mask": points_in_dilated,
-                                "edge_points_added": points_added,
-                                "has_edge_points": points_added > 0
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
             
             # Z_grid ist bereits korrekt gesetzt (für X-Z-Wand: Z_grid = V_grid, für Y-Z-Wand: Z_grid = V_grid)
             # Keine Z-Interpolation nötig!
@@ -3366,83 +2574,11 @@ class GridBuilder(ModuleBase):
                 geometry, X_grid, Y_grid, Z_grid, surface_mask, surface_mask_strict
             )
             
-            # #region agent log - Randpunkte bei Einzelsurface (planar/sloped)
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    points_in_strict = int(np.count_nonzero(surface_mask_strict))
-                    points_in_dilated = int(np.count_nonzero(surface_mask))
-                    points_added = points_in_dilated - points_in_strict
-                    # Prüfe ob Randpunkte auf Surface-Begrenzungslinie oder darüber hinaus liegen
-                    edge_points_mask = surface_mask & ~surface_mask_strict
-                    edge_x = X_grid[edge_points_mask]
-                    edge_y = Y_grid[edge_points_mask]
-                    # Prüfe ob Edge-Punkte innerhalb oder außerhalb des Polygons liegen
-                    from matplotlib.path import Path
-                    poly_path = Path(np.column_stack((
-                        [float(p.get("x", 0.0)) for p in geometry.points],
-                        [float(p.get("y", 0.0)) for p in geometry.points]
-                    )))
-                    if edge_x.size > 0:
-                        edge_points_2d = np.column_stack((edge_x, edge_y))
-                        edge_inside = poly_path.contains_points(edge_points_2d)
-                        edge_outside_count = int(np.sum(~edge_inside))
-                        edge_on_boundary_count = int(np.sum(edge_inside))
-                    else:
-                        edge_outside_count = 0
-                        edge_on_boundary_count = 0
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "edge-points-analysis",
-                        "hypothesisId": "EDGE_POINTS_POSITION",
-                        "location": "FlexibleGridGenerator.build_single_surface_grid:planar",
-                        "message": "Randpunkte-Analyse Einzelsurface (planar/sloped)",
-                        "data": {
-                            "surface_id": str(geometry.surface_id),
-                            "points_in_strict_mask": points_in_strict,
-                            "points_in_dilated_mask": points_in_dilated,
-                            "edge_points_added": points_added,
-                            "has_edge_points": points_added > 0,
-                            "vertex_coverage_applied": True,
-                            "edge_points_outside_polygon": edge_outside_count,
-                            "edge_points_inside_polygon": edge_on_boundary_count,
-                            "edge_points_total": int(edge_x.size) if edge_x.size > 0 else 0,
-                            "edge_method": "dilate_mask_minimal_3x3"
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             # 🎯 DEBUG: Grid-Erweiterung (vor Z-Interpolation, damit total_grid_points verfügbar ist)
             total_grid_points = X_grid.size
             points_in_surface = np.count_nonzero(surface_mask)
             points_outside_surface = total_grid_points - points_in_surface
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    import json, time as _t
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "grid-analysis",
-                        "hypothesisId": "H1",
-                        "location": "FlexibleGridGenerator.build_single_surface_grid",
-                        "message": "Grid erstellt für Surface",
-                        "data": {
-                            "surface_id": str(geometry.surface_id),
-                            "orientation": str(geometry.orientation),
-                            "total_grid_points": int(total_grid_points),
-                            "points_in_surface": int(points_in_surface),
-                            "points_outside_surface": int(points_outside_surface),
-                            "grid_shape": list(X_grid.shape) if hasattr(X_grid, 'shape') else None,
-                            "resolution": float(resolution) if resolution else None
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             # 🎯 Z-INTERPOLATION: Für alle Punkte im Grid (auch außerhalb Surface)
             # Z-Werte linear interpolieren gemäß Plane-Model für erweiterte Punkte
@@ -3469,18 +2605,14 @@ class GridBuilder(ModuleBase):
                 surface_z = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
                 z_variation = bool(np.ptp(surface_z) > 1e-9)
                 
-                print(f"  └─ Surface-Punkte: {len(surface_points)}")
-                print(f"  └─ Z-Werte: min={surface_z.min():.3f}, max={surface_z.max():.3f}, span={surface_z.max()-surface_z.min():.3f}")
-                print(f"  └─ Z-Variation: {z_variation}")
-                print(f"  └─ X-Werte: min={surface_x.min():.3f}, max={surface_x.max():.3f}, span={surface_x.max()-surface_x.min():.3f}")
-                print(f"  └─ Y-Werte: min={surface_y.min():.3f}, max={surface_y.max():.3f}, span={surface_y.max()-surface_y.min():.3f}")
+                # Debug-Ausgaben entfernt
                 
                 if z_variation:
                     # 🎯 VERTIKALE SURFACES: Z_grid ist bereits korrekt gesetzt, überspringe Interpolation
                     if geometry.orientation == "vertical":
-                        # Z_grid wurde bereits beim Grid-Erstellen korrekt gesetzt (Z_grid = V_grid)
-                        # Keine Interpolation nötig!
-                        print(f"  └─ Z_grid bereits korrekt gesetzt für vertikale Surface (keine Interpolation nötig)")
+                        # Für vertikale Flächen wird Z_grid bereits beim Grid-Aufbau korrekt gesetzt.
+                        pass
+
                     elif geometry.orientation == "planar" or geometry.orientation == "sloped":
                         # Für planare/schräge Surfaces: Z-Werte hängen von beiden Koordinaten ab (u, v)
                         xs = surface_x
@@ -3526,9 +2658,7 @@ class GridBuilder(ModuleBase):
                                     z_interp_flat = interp_func(x_grid_flat)
                                     Z_grid = z_interp_flat.reshape(X_grid.shape)
                                     
-                                    print(f"  └─ Z-Werte (1D linear, gemittelt) interpoliert für ALLE {total_grid_points} Punkte (X-Z-Wand)")
-                                    print(f"  └─ Eindeutige x-Werte: {len(x_unique)} (von {len(surface_x)} Original-Punkten)")
-                                    print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
+                                    # Debug-Ausgaben entfernt
                             except Exception as e:
                                 raise RuntimeError(f"Surface '{geometry.surface_id}': Z-Interpolation (X-Z-Wand) fehlgeschlagen: {e}")
                             
@@ -3569,9 +2699,7 @@ class GridBuilder(ModuleBase):
                                     z_interp_flat = interp_func(y_grid_flat)
                                     Z_grid = z_interp_flat.reshape(X_grid.shape)
                                     
-                                    print(f"  └─ Z-Werte (1D linear, gemittelt) interpoliert für ALLE {total_grid_points} Punkte (Y-Z-Wand)")
-                                    print(f"  └─ Eindeutige y-Werte: {len(y_unique)} (von {len(surface_y)} Original-Punkten)")
-                                    print(f"  └─ Ergebnis: Z_grid min={Z_grid.min():.3f}, max={Z_grid.max():.3f}, span={Z_grid.max()-Z_grid.min():.3f}")
+                                    # Debug-Ausgaben entfernt
                             except Exception as e:
                                 raise RuntimeError(f"Surface '{geometry.surface_id}': Z-Interpolation (Y-Z-Wand) fehlgeschlagen: {e}")
                         else:
@@ -3594,7 +2722,7 @@ class GridBuilder(ModuleBase):
                             if np.isnan(Z_interp).any():
                                 raise ValueError("Z-Interpolation liefert NaN außerhalb des gültigen Polygons.")
                             Z_grid = Z_interp.reshape(X_grid.shape)
-                            print(f"  └─ Z-Werte linear interpoliert für ALLE {total_grid_points} Punkte (basierend auf Surface-Punkten)")
+                            # Debug-Ausgabe entfernt
                         except Exception as e:
                             raise RuntimeError(f"Z-Interpolation (linear) fehlgeschlagen: {e}")
                 else:
@@ -3604,7 +2732,7 @@ class GridBuilder(ModuleBase):
         
         # if PERF_ENABLED and t_orientation_start is not None:
         #     duration_ms = (time.perf_counter() - t_orientation_start) * 1000.0
-        #     print(
+        #     pass
         #         f"[PERF] GridBuilder.build_single_surface_grid.{geometry.orientation}: "
         #         f"{duration_ms:.2f} ms (surface={geometry.surface_id})"
         #     )
@@ -3614,30 +2742,6 @@ class GridBuilder(ModuleBase):
         if resolution is None:
             resolution = self.settings.resolution
         
-        # #region agent log - Aufruf _calculate_additional_vertices
-        try:
-            import json, time as _t
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "H1",
-                    "location": "GridBuilder.build_single_surface_grid:before_calculate_additional_vertices",
-                    "message": "Aufruf _calculate_additional_vertices",
-                    "data": {
-                        "surface_id": str(geometry.surface_id),
-                        "orientation": str(geometry.orientation),
-                        "resolution": float(resolution) if resolution is not None else None,
-                        "X_grid_shape": list(X_grid.shape),
-                        "Y_grid_shape": list(Y_grid.shape),
-                        "Z_grid_shape": list(Z_grid.shape),
-                        "surface_mask_active": int(np.count_nonzero(surface_mask)) if surface_mask is not None else 0
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         additional_vertices = self._calculate_additional_vertices(
             geometry, X_grid, Y_grid,         Z_grid, surface_mask, resolution
@@ -3740,8 +2844,6 @@ class CartesianTransformer(GridTransformer):
         if not geometries:
             return Z_grid
         
-        print(f"[DEBUG Z-Interpolation] Starte Z-Interpolation für {len(geometries)} Geometrien")
-        
         # Sammle Z-Beiträge von allen planaren/schrägen Surfaces
         z_contributions = {}
         z_counts = np.zeros_like(X_grid, dtype=float)
@@ -3772,7 +2874,6 @@ class CartesianTransformer(GridTransformer):
             # Verwende vektorisierte Funktion aus SurfaceGeometryCalculator
             Z_surface = _evaluate_plane_on_grid(geom.plane_model, X_grid, Y_grid)
             
-            # Debug: Zeige Plane-Model-Parameter
             mode = geom.plane_model.get('mode', 'unknown')
             points_in_polygon = int(np.sum(mask))
             z_values_in_polygon = Z_surface[mask]
@@ -3781,27 +2882,10 @@ class CartesianTransformer(GridTransformer):
             z_mean = float(z_values_in_polygon.mean()) if len(z_values_in_polygon) > 0 else 0.0
             z_non_zero = int(np.sum(np.abs(z_values_in_polygon) > 1e-6))
             
-            print(f"  [Z-Interp] Surface {geom.surface_id} ({geom.name}): mode={mode}, points_in_polygon={points_in_polygon}")
-            print(f"    Z-Werte: min={z_min:.3f}, max={z_max:.3f}, mean={z_mean:.3f}, non-zero={z_non_zero}/{points_in_polygon}")
-            if mode == 'y':
-                slope = geom.plane_model.get('slope', 0.0)
-                intercept = geom.plane_model.get('intercept', 0.0)
-                print(f"    Plane-Model: Z = {slope:.6f} * Y + {intercept:.6f}")
-                # Test: Berechne Z für einen Beispielpunkt
-                if points_in_polygon > 0:
-                    test_idx = np.where(mask)[0][0]
-                    test_y = Y_grid.flatten()[test_idx]
-                    test_z = Z_surface.flatten()[test_idx]
-                    expected_z = slope * test_y + intercept
-                    print(f"    Test-Punkt: Y={test_y:.2f}, Z={test_z:.3f}, expected={expected_z:.3f}, diff={abs(test_z-expected_z):.3f}")
-            
             # Speichere Beitrag (nur für Punkte innerhalb des Polygons)
             z_contributions[geom.surface_id] = (mask, Z_surface)
             z_counts[mask] += 1.0
             processed_surfaces += 1
-        
-        print(f"[DEBUG Z-Interpolation] Verarbeitet: {processed_surfaces} Surfaces")
-        print(f"  └─ Übersprungen: {skipped_vertical} vertikal, {skipped_no_model} ohne Model, {skipped_no_points} ohne Punkte")
         
         # Kombiniere Z-Werte - KEINE Mittelwert-Bildung mehr!
         # 🎯 LOGIK: Jede Surface setzt ihre Z-Werte direkt, ohne Mittelwert
@@ -3833,14 +2917,10 @@ class CartesianTransformer(GridTransformer):
                 if np.any(already_set):
                     points_overwritten += int(np.sum(already_set))
         
-        if points_overwritten > 0:
-            print(f"[DEBUG Z-Interpolation] ⚠️  {points_overwritten} Punkte wurden überschrieben (Überlappung)")
-        
-        # 🔍 DEBUG: Detaillierte Analyse für halbierte Z-Werte
+        # 🔍 Interne Analyse für halbierte Z-Werte (ohne Logging)
         points_with_overlap = int(np.sum(z_counts > 1.0))
         if points_with_overlap > 0:
-            print(f"[DEBUG Z-Interpolation] ⚠️  Überlappungen gefunden:")
-            print(f"  └─ Punkte mit Überlappung: {points_with_overlap} (durchschnittlich {np.mean(z_counts[z_counts > 1.0]):.2f} Surfaces)")
+            pass
             
             # Analysiere Beispiel-Punkte mit Überlappung
             overlap_mask = z_counts > 1.0
@@ -3857,13 +2937,13 @@ class CartesianTransformer(GridTransformer):
                     z_final = Z_grid[jj, ii]
                     n_surfaces = int(z_counts[jj, ii])
                     
-                    print(f"  └─ Beispiel [jj={jj},ii={ii}]: X={x_val:.2f}, Y={y_val:.2f}, Z_final={z_final:.3f}, N_Surfaces={n_surfaces}")
+                                # Debug-Ausgabe entfernt
                     
                     # Zeige Beiträge von jeder Surface
                     for surface_id, (mask, Z_surface) in z_contributions.items():
                         if mask[jj, ii]:
                             z_contrib = Z_surface[jj, ii]
-                            print(f"      └─ {surface_id}: Z_Beitrag={z_contrib:.3f}")
+                                # Debug-Ausgabe entfernt
         
         # Debug: Prüfe, ob Z-Werte halbiert werden könnten
         for surface_id, (mask, Z_surface) in z_contributions.items():
@@ -3882,11 +2962,9 @@ class CartesianTransformer(GridTransformer):
                     
                     if abs(z_from_surface) > 1e-6 and n_surfaces > 1:
                         expected_ratio = z_from_surface / n_surfaces
+                        # Debug-Ausgaben entfernt – nur interne Konsistenzprüfung
                         if abs(z_final - expected_ratio) < abs(z_final - z_from_surface) * 0.1:
-                            print(f"[DEBUG Z-Interpolation] ⚠️  HALBIERUNG VERDACHT:")
-                            print(f"  └─ Surface {surface_id}: Z_original={z_from_surface:.3f}, Z_final={z_final:.3f}, N_Surfaces={n_surfaces}")
-                            print(f"     └─ Verhältnis: {z_final/z_from_surface:.3f} (erwartet: {1.0/n_surfaces:.3f} bei Mittelwert)")
-                        break
+                            break
         
         # Debug: Statistiken
         valid_mask = np.abs(Z_grid) > 1e-6  # Punkte mit Z≠0
@@ -3894,9 +2972,7 @@ class CartesianTransformer(GridTransformer):
         z_non_zero = points_with_z
         z_range = (float(Z_grid[valid_mask].min()), float(Z_grid[valid_mask].max())) if np.any(valid_mask) else (0.0, 0.0)
         
-        print(f"[DEBUG Z-Interpolation] Ergebnis:")
-        print(f"  └─ Punkte mit Z-Wert (Z≠0): {points_with_z} ({points_with_z/X_grid.size*100:.1f}%)")
-        print(f"  └─ Z-Range: [{z_range[0]:.3f}, {z_range[1]:.3f}]")
+        # Ergebnis wird intern verwendet, ohne Logging-Ausgabe
         
         return Z_grid
     
@@ -4008,44 +3084,6 @@ class FlexibleGridGenerator(ModuleBase):
         # Analysiere Surfaces
         geometries = self.analyzer.analyze_surfaces(enabled_surfaces)
         
-        # #region agent log - Aktive Surfaces Analyse
-        try:
-            import json, time as _t
-            surface_stats = []
-            for geom in geometries:
-                points = getattr(geom, 'points', []) or []
-                xs = np.array([p.get('x', 0.0) for p in points], dtype=float) if points else np.array([])
-                ys = np.array([p.get('y', 0.0) for p in points], dtype=float) if points else np.array([])
-                zs = np.array([p.get('z', 0.0) for p in points], dtype=float) if points else np.array([])
-                x_span = float(np.ptp(xs)) if xs.size > 0 else 0.0
-                y_span = float(np.ptp(ys)) if ys.size > 0 else 0.0
-                z_span = float(np.ptp(zs)) if zs.size > 0 else 0.0
-                surface_stats.append({
-                    "surface_id": str(geom.surface_id),
-                    "orientation": str(getattr(geom, 'orientation', 'unknown')),
-                    "points_count": len(points),
-                    "x_span": x_span,
-                    "y_span": y_span,
-                    "z_span": z_span,
-                    "min_span": min(x_span, y_span, z_span) if all(s > 0 for s in [x_span, y_span, z_span]) else min([s for s in [x_span, y_span, z_span] if s > 0]) if any(s > 0 for s in [x_span, y_span, z_span]) else 0.0
-                })
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "SURFACE_ANALYSIS",
-                    "location": "FlexibleGridGenerator.generate_per_surface:active_surfaces",
-                    "message": "Aktive Surfaces Analyse",
-                    "data": {
-                        "total_surfaces": len(geometries),
-                        "resolution": float(resolution),
-                        "surfaces": surface_stats
-                    },
-                    "timestamp": int(_t.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         
         # Erstelle Grid für jede Surface
         surface_grids: Dict[str, SurfaceGrid] = {}
@@ -4093,28 +3131,9 @@ class FlexibleGridGenerator(ModuleBase):
                     except Exception as e:
                         error_type = type(e).__name__
                         error_message = str(e)
-                        print(f"⚠️  [FlexibleGridGenerator] Surface '{surface_id}' übersprungen (parallel, {error_type}): {e}")
-                        # #region agent log - Surface übersprungen (parallel)
-                        try:
-                            import json, time as _t
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "SURFACE_ANALYSIS",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:surface_skipped_parallel",
-                                    "message": "Surface übersprungen (parallel)",
-                                    "data": {
-                                        "surface_id": str(surface_id),
-                                        "error_type": error_type,
-                                        "error_message": error_message
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
+                        # Hinweis-Ausgabe entfernt
 
+            # Performance-Messung: Parallelaufbau der Single-Surface-Grids
             if PERF_ENABLED and t_parallel_start is not None:
                 duration_ms = (time.perf_counter() - t_parallel_start) * 1000.0
                 print(
@@ -4131,25 +3150,6 @@ class FlexibleGridGenerator(ModuleBase):
             entry = grid_results.get(geom.surface_id)
             if not entry:
                 # Wurde übersprungen oder ist fehlgeschlagen
-                # #region agent log - Surface übersprungen (kein Ergebnis)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "SURFACE_ANALYSIS",
-                            "location": "FlexibleGridGenerator.generate_per_surface:surface_skipped_no_result",
-                            "message": "Surface übersprungen (kein Ergebnis)",
-                            "data": {
-                                "surface_id": str(geom.surface_id),
-                                "reason": "no_entry_in_grid_results"
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 continue
             cache_key, result = entry
             # 🛠️ VORBEREITUNG: Für "sloped" Flächen plane_model aus Punkten ableiten, BEVOR Grid erstellt wird
@@ -4201,28 +3201,7 @@ class FlexibleGridGenerator(ModuleBase):
                 # Kein Fallback - nur die funktionierenden Surfaces werden verwendet
                 error_type = type(e).__name__
                 error_message = str(e)
-                # Immer Warnung ausgeben, wenn Surface übersprungen wird (auch ohne DEBUG_FLEXIBLE_GRID)
-                print(f"⚠️  [FlexibleGridGenerator] Surface '{geom.surface_id}' übersprungen ({error_type}): {e}")
-                # #region agent log - Surface übersprungen (Exception)
-                try:
-                    import json, time as _t
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "run1",
-                            "hypothesisId": "SURFACE_ANALYSIS",
-                            "location": "FlexibleGridGenerator.generate_per_surface:surface_skipped_exception",
-                            "message": "Surface übersprungen (Exception)",
-                            "data": {
-                                "surface_id": str(geom.surface_id),
-                                "error_type": error_type,
-                                "error_message": error_message
-                            },
-                            "timestamp": int(_t.time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion
+                # Surface wird übersprungen bei Fehlern
                 continue
             
             # 🛠️ KORREKTUR: Z-Koordinaten bei planaren/schrägen Flächen aus der Ebene berechnen
@@ -4307,40 +3286,6 @@ class FlexibleGridGenerator(ModuleBase):
                         Z_grid.ravel()   # Z-Koordinaten
                     ])  # Shape: (ny * nx, 3)
                     
-                    # #region agent log - Triangulation Input (vor additional_vertices)
-                    try:
-                        import json, time as _t
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "H5",
-                                "location": "FlexibleGridGenerator.generate_per_surface:triangulation_input",
-                                "message": "Triangulation Input-Koordinaten",
-                                "data": {
-                                    "surface_id": str(geom.surface_id),
-                                    "orientation": str(geom.orientation),
-                                    "dominant_axis": str(geom.dominant_axis) if hasattr(geom, 'dominant_axis') and geom.dominant_axis else None,
-                                    "all_vertices_shape": list(all_vertices.shape),
-                                    "all_vertices_x_min": float(all_vertices[:, 0].min()),
-                                    "all_vertices_x_max": float(all_vertices[:, 0].max()),
-                                    "all_vertices_y_min": float(all_vertices[:, 1].min()),
-                                    "all_vertices_y_max": float(all_vertices[:, 1].max()),
-                                    "all_vertices_z_min": float(all_vertices[:, 2].min()),
-                                    "all_vertices_z_max": float(all_vertices[:, 2].max()),
-                                    "X_grid_min": float(X_grid.min()),
-                                    "X_grid_max": float(X_grid.max()),
-                                    "Y_grid_min": float(Y_grid.min()),
-                                    "Y_grid_max": float(Y_grid.max()),
-                                    "Z_grid_min": float(Z_grid.min()),
-                                    "Z_grid_max": float(Z_grid.max()),
-                                    "mask_points_count": int(np.count_nonzero(mask_flat))
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     # 🎯 HINWEIS: additional_vertices werden jetzt bereits in build_single_surface_grid berechnet
                     # Die folgende Logik wurde nach _calculate_additional_vertices verschoben
@@ -4371,26 +3316,6 @@ class FlexibleGridGenerator(ModuleBase):
                     if additional_vertices_array.size > 0:
                         all_vertices = np.vstack([all_vertices, additional_vertices_array])
                         
-                        # #region agent log - Additional Vertices hinzugefügt (inkl. Randpunkte)
-                        try:
-                            import json, time as _t
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "ADDITIONAL_VERTICES_ADDED",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:additional_vertices_added",
-                                    "message": "Additional Vertices hinzugefügt (inkl. Randpunkte)",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "additional_vertices_count": int(additional_vertices_array.size // 3) if additional_vertices_array.size > 0 else 0,
-                                        "additional_vertices_shape": list(additional_vertices_array.shape) if additional_vertices_array.size > 0 else None
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                     
                     # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
                     base_vertex_count = X_grid.size
@@ -4512,81 +3437,7 @@ class FlexibleGridGenerator(ModuleBase):
                                     
                                     boundary_edge_points.append([float(x), float(y), float(z)])
                             
-                            # #region agent log - Vertikale Flächen: Randpunkte generiert mit Koordinatenprüfung
-                            try:
-                                import json, time as _t
-                                # Prüfe ob Randpunkte auf Surfacefläche liegen
-                                if len(boundary_edge_points) > 0:
-                                    boundary_array = np.array(boundary_edge_points)
-                                    sample_point = boundary_array[0] if len(boundary_array) > 0 else None
-                                    if sample_point is not None:
-                                        # Prüfe ob Punkt auf Surfacefläche liegt (für X-Z-Wand: Y sollte mit Original-Punkten übereinstimmen)
-                                        if is_xz_wall:
-                                            # Für X-Z-Wand: Prüfe ob Y-Wert korrekt ist
-                                            # Wenn schräg: Y sollte interpoliert sein
-                                            # Wenn konstant: Y sollte Mittelwert sein
-                                            expected_y = float(np.mean(ys)) if not is_slanted_wall else None
-                                            actual_y = float(sample_point[1])
-                                        else:
-                                            # Für Y-Z-Wand: Prüfe ob X-Wert korrekt ist
-                                            expected_x = float(np.mean(xs)) if not is_slanted_wall else None
-                                            actual_x = float(sample_point[0])
-                                
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "BOUNDARY_POINTS_COORDS",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:vertical_boundary_points_coords",
-                                        "message": "Randpunkte-Koordinaten für vertikale Flächen",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "boundary_points_count": len(boundary_edge_points),
-                                            "is_xz_wall": bool(is_xz_wall),
-                                            "is_slanted_wall": bool(is_slanted_wall),
-                                            "dominant_axis": str(geom.dominant_axis) if hasattr(geom, 'dominant_axis') and geom.dominant_axis else None,
-                                            "x_span": float(x_span),
-                                            "y_span": float(y_span),
-                                            "z_span": float(z_span),
-                                            "xs_mean": float(np.mean(xs)),
-                                            "ys_mean": float(np.mean(ys)),
-                                            "sample_boundary_point": boundary_edge_points[0] if len(boundary_edge_points) > 0 else None,
-                                            "original_points_x_range": [float(np.min(xs)), float(np.max(xs))],
-                                            "original_points_y_range": [float(np.min(ys)), float(np.max(ys))],
-                                            "original_points_z_range": [float(np.min(zs)), float(np.max(zs))]
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                             
-                            # #region agent log - Vertikale Flächen: Randpunkte generiert
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "VERTICAL_BOUNDARY_POINTS",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:vertical_boundary_points",
-                                        "message": "Vertikale Flächen: Randpunkte generiert",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "boundary_points_generated": len(boundary_edge_points),
-                                            "point_spacing": float(point_spacing),
-                                            "resolution": float(actual_resolution),
-                                            "dominant_axis": str(geom.dominant_axis) if hasattr(geom, 'dominant_axis') else None,
-                                            "is_xz_wall": is_xz_wall,
-                                            "n_vertices": n_vertices,
-                                            "polygon_u_range": [float(np.min(polygon_u)), float(np.max(polygon_u))] if len(polygon_u) > 0 else None,
-                                            "polygon_v_range": [float(np.min(polygon_v)), float(np.max(polygon_v))] if len(polygon_v) > 0 else None
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                         else:
                             # PLANARE/SCHRÄGE FLÄCHEN: Berechne in (x,y)-Koordinaten
                             polygon_x = np.array([p.get("x", 0.0) for p in surface_points_for_boundary], dtype=float)
@@ -4630,28 +3481,6 @@ class FlexibleGridGenerator(ModuleBase):
                     # boundary_points_added wird nicht mehr hier berechnet
                     boundary_points_added = 0  # Wird nicht mehr verwendet - nur für Kompatibilität
                     
-                    # #region agent log - additional_vertices vor zweiter Zuweisung
-                    try:
-                        import json, time as _t
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "OVERWRITE_TRACK",
-                                "location": "FlexibleGridGenerator.generate_per_surface:before_second_array_assignment",
-                                "message": "additional_vertices vor zweiter Zuweisung",
-                                "data": {
-                                    "surface_id": str(geom.surface_id),
-                                    "additional_vertices_is_array": isinstance(additional_vertices, np.ndarray),
-                                    "additional_vertices_count": int(len(additional_vertices)) if hasattr(additional_vertices, '__len__') else 0,
-                                    "additional_vertices_size": int(additional_vertices.size) if isinstance(additional_vertices, np.ndarray) else None,
-                                    "additional_vertices_shape": list(additional_vertices.shape) if isinstance(additional_vertices, np.ndarray) and additional_vertices.size > 0 else None
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     # 🎯 FIX: Entferne duplizierte Zuweisung - additional_vertices_array wurde bereits oben zugewiesen!
                     # Diese Zuweisung ist redundant und wird entfernt
@@ -4660,82 +3489,12 @@ class FlexibleGridGenerator(ModuleBase):
                     if len(additional_vertices_array) > 0:
                         all_vertices = np.vstack([all_vertices, additional_vertices_array])
                         
-                        # #region agent log - Additional Vertices hinzugefügt (inkl. Randpunkte)
-                        try:
-                            import json, time as _t
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "ADDITIONAL_VERTICES_ADDED",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:additional_vertices_added",
-                                    "message": "Additional Vertices hinzugefügt (inkl. Randpunkte)",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "orientation": str(geom.orientation),
-                                        "additional_vertices_count": len(additional_vertices),
-                                        "boundary_points_added": boundary_points_added,
-                                        "total_vertices_before": int(X_grid.size),
-                                        "total_vertices_after": int(len(all_vertices))
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                     
-                    # #region agent log - Neue Randpunktlogik: Prüfungen
-                    try:
-                        import json, time as _t
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "NEW_BOUNDARY_POINTS",
-                                "location": "FlexibleGridGenerator.generate_per_surface:new_boundary_points",
-                                "message": "Neue Randpunktlogik: Punkte auf Surface-Linie",
-                                "data": {
-                                    "surface_id": str(geom.surface_id),
-                                    "boundary_edge_points_generated": len(boundary_edge_points),
-                                    "boundary_points_added": boundary_points_added,
-                                    "point_spacing": float(point_spacing) if len(surface_points_for_boundary) >= 3 else None,
-                                    "resolution": float(actual_resolution),
-                                    "orientation": str(geom.orientation) if hasattr(geom, 'orientation') else None
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     # Speichere Offset für zusätzliche Vertices (alle Grid-Punkte kommen zuerst)
                     base_vertex_count = X_grid.size
                     additional_vertex_start_idx = base_vertex_count
                     
-                    # #region agent log - additional_vertices vor dritter Zuweisung
-                    try:
-                        import json, time as _t
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "OVERWRITE_TRACK",
-                                "location": "FlexibleGridGenerator.generate_per_surface:before_third_array_assignment",
-                                "message": "additional_vertices vor dritter Zuweisung",
-                                "data": {
-                                    "surface_id": str(geom.surface_id),
-                                    "additional_vertices_is_array": isinstance(additional_vertices, np.ndarray),
-                                    "additional_vertices_count": int(len(additional_vertices)) if hasattr(additional_vertices, '__len__') else 0,
-                                    "additional_vertices_size": int(additional_vertices.size) if isinstance(additional_vertices, np.ndarray) else None,
-                                    "additional_vertices_shape": list(additional_vertices.shape) if isinstance(additional_vertices, np.ndarray) and additional_vertices.size > 0 else None,
-                                    "additional_vertices_array_exists": 'additional_vertices_array' in locals(),
-                                    "additional_vertices_array_count": int(len(additional_vertices_array)) if 'additional_vertices_array' in locals() and hasattr(additional_vertices_array, '__len__') else None
-                                },
-                                "timestamp": int(_t.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     # 🎯 FIX: Entferne duplizierte Zuweisung - additional_vertices_array wurde bereits oben zugewiesen!
                     # Diese Zuweisung ist redundant und wird entfernt
@@ -4758,28 +3517,6 @@ class FlexibleGridGenerator(ModuleBase):
                             # Füge aktive Grid-Punkte hinzu
                             active_mask_indices = np.where(mask_flat)[0]
                             active_strict_mask_indices = np.where(mask_strict_flat)[0]
-                            # #region agent log - Mask analysis H1, H2, H3
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "H1_H2_H3",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:mask_analysis",
-                                        "message": "Mask-Analyse für Triangulation",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "mask_flat_count": int(len(active_mask_indices)),
-                                            "mask_strict_flat_count": int(len(active_strict_mask_indices)),
-                                            "extended_points_count": int(len(active_mask_indices) - len(active_strict_mask_indices)),
-                                            "total_grid_points": int(X_grid.size)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                             grid_vertices_count = 0
                             for idx in active_mask_indices:
                                 if idx < len(all_vertices):
@@ -4797,29 +3534,6 @@ class FlexibleGridGenerator(ModuleBase):
                                         valid_vertex_indices.append(idx)
                                         boundary_vertices_count += 1
                             
-                            # #region agent log - Triangulation input points
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "TRIANGULATION_INPUT",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:triangulation_input",
-                                        "message": "Triangulation Input: Grid + Boundary points",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "grid_vertices_count": grid_vertices_count,
-                                            "boundary_vertices_count": boundary_vertices_count,
-                                            "total_valid_vertices": len(valid_vertices_list),
-                                            "total_all_vertices": len(all_vertices),
-                                            "additional_vertices_count": len(additional_vertices_array)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                             
                             if len(valid_vertices_list) >= 3:
                                 valid_vertices_array = np.array(valid_vertices_list, dtype=float)
@@ -4919,29 +3633,6 @@ class FlexibleGridGenerator(ModuleBase):
                                                 if centroid_in_polygon or has_strict_vertex or all_vertices_in_extended:
                                                     valid_triangles.append((v1_old, v2_old, v3_old))
                                         
-                                        # #region agent log - Triangle filtering summary H1, H2, H3
-                                        try:
-                                            import json, time as _t
-                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                                f.write(json.dumps({
-                                                    "sessionId": "debug-session",
-                                                    "runId": "run1",
-                                                    "hypothesisId": "H1_H2_H3",
-                                                    "location": "FlexibleGridGenerator.generate_per_surface:triangle_filtering",
-                                                    "message": "Dreieck-Filterung Zusammenfassung",
-                                                    "data": {
-                                                        "surface_id": str(geom.surface_id),
-                                                        "total_triangles": int(len(triangles_delaunay)),
-                                                        "valid_triangles": int(len(valid_triangles)),
-                                                        "triangles_filtered_out": triangles_filtered_out,
-                                                        "triangles_with_extended_vertices": triangles_with_extended_vertices,
-                                                        "triangles_with_strict_vertices": triangles_with_strict_vertices
-                                                    },
-                                                    "timestamp": int(_t.time() * 1000)
-                                                }) + "\n")
-                                        except Exception:
-                                            pass
-                                        # #endregion
                                     except Exception:
                                         # Fallback: Verwende alle Delaunay-Dreiecke
                                         for tri_idx in triangles_delaunay:
@@ -4962,46 +3653,9 @@ class FlexibleGridGenerator(ModuleBase):
                                     for v1, v2, v3 in valid_triangles:
                                         faces_list.extend([3, int(v1), int(v2), int(v3)])
                                     
-                                    # #region agent log - Delaunay-Triangulation erfolgreich
-                                    try:
-                                        import json, time as _t
-                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "run1",
-                                                "hypothesisId": "DELAUNAY_TRIANGULATION_SUCCESS",
-                                                "location": "FlexibleGridGenerator.generate_per_surface:delaunay_triangulation",
-                                                "message": "Delaunay-Triangulation erfolgreich",
-                                                "data": {
-                                                    "surface_id": str(geom.surface_id),
-                                                    "valid_vertices_count": len(valid_vertices_list),
-                                                    "triangles_count": len(valid_triangles),
-                                                    "orientation": str(geom.orientation)
-                                                },
-                                                "timestamp": int(_t.time() * 1000)
-                                            }) + "\n")
-                                    except Exception:
-                                        pass
-                                    # #endregion
                         except Exception as e:
-                            # Bei Fehler: Logge und werfe Exception
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "DELAUNAY_TRIANGULATION_FAILED",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:delaunay_triangulation",
-                                        "message": f"Delaunay-Triangulation fehlgeschlagen: {str(e)}",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "error": str(e)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
+                            # Bei Fehler: werfe Exception
+                            raise
                     
                     # 🎯 ALTE PROJEKTIONSLOGIK ENTFERNT - Ersetzt durch direkte Randpunkt-Berechnung oben (vor Triangulation)
                     # Die alte Projektionslogik (Dilatation + Projektion von boundary_indices) wurde entfernt
@@ -5332,27 +3986,6 @@ class FlexibleGridGenerator(ModuleBase):
                                                             edge_to_edge_triangles += 1
                                                             vertex_indices_in_faces_set.add(int(last_edge_idx))
                             
-                            # #region agent log - Rand-zu-Rand Triangulation
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "EDGE_TO_EDGE_TRIANGULATION",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:edge_to_edge_triangulation",
-                                        "message": "Rand-zu-Rand Triangulation",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "edge_vertices_count": len(edge_vertices_list),
-                                            "edge_to_edge_triangles": edge_to_edge_triangles,
-                                            "orientation": str(geom.orientation)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                     
                     if len(faces_list) > 0:
                         # 🎯 OPTIMIERUNG: Nur Vertices innerhalb der Maske verwenden
@@ -5375,30 +4008,6 @@ class FlexibleGridGenerator(ModuleBase):
                         active_mask_indices = np.where(mask_flat)[0]
                         active_not_in_faces = [idx for idx in active_mask_indices if idx not in vertex_indices_in_faces_set]
                         
-                        # #region agent log - Randpunkte in Triangulation prüfen
-                        try:
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                import json, time as _t
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "BOUNDARY_IN_TRIANGULATION",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:triangulation_vertices",
-                                    "message": "Randpunkte in Triangulation prüfen",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "active_points_total": int(len(active_mask_indices)),
-                                        "active_points_in_faces": int(len(active_mask_indices) - len(active_not_in_faces)),
-                                        "active_points_not_in_faces": int(len(active_not_in_faces)),
-                                        "vertices_in_faces_before": int(len(vertex_indices_in_faces)),
-                                        "mask_flat_active": int(np.count_nonzero(mask_flat)),
-                                        "mask_strict_active": int(np.count_nonzero(mask_strict_flat))
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
                         # 🎯 OPTIMIERT: Erstelle Faces für isolierte aktive Punkte nur wenn nötig
                         # Verbinde isolierte Punkte (Randpunkte) explizit mit benachbarten Punkten
@@ -5456,27 +4065,6 @@ class FlexibleGridGenerator(ModuleBase):
                                     faces_created_for_isolated += 1
                                     isolated_added_to_vertices += 1
                         
-                        # #region agent log - Faces für isolierte Punkte
-                        try:
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                import json, time as _t
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "BOUNDARY_FACES_CREATED",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:isolated_faces",
-                                    "message": "Faces für isolierte Punkte erstellt",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "isolated_points_found": int(len(active_not_in_faces)),
-                                        "faces_created": int(faces_created_for_isolated),
-                                        "isolated_added_to_vertices": int(isolated_added_to_vertices)
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
                         # 🎯 WICHTIG: Füge ALLE aktiven Masken-Punkte hinzu (inkl. Randpunkte)
                         # Dies stellt sicher, dass alle Punkte als Vertices erstellt werden, auch wenn sie nicht in Faces sind
@@ -5496,90 +4084,6 @@ class FlexibleGridGenerator(ModuleBase):
                         
                         # Prüfe, ob alle aktiven Masken-Punkte jetzt in vertex_indices_in_faces_set sind
                         missing_indices = [idx for idx in active_mask_indices if idx not in vertex_indices_in_faces_set]
-                        
-                        # #region agent log - Finale Vertex-Prüfung
-                        try:
-                            import json, time as _t
-                            # 🎯 ALTE PROJEKTIONSLOGIK ENTFERNT: boundary_indices existiert nicht mehr
-                            # Randpunkte werden jetzt direkt berechnet und als additional_vertices hinzugefügt
-                            boundary_in_vertices = 0  # Nicht mehr relevant, da boundary_indices entfernt wurde
-                            
-                            # 🎯 PRÜFUNG 1: Werden Randpunkte für Calc verwendet (Maske)?
-                            # Randpunkte sind als additional_vertices hinzugefügt, nicht in mask_flat
-                            # Sie werden für Berechnung verwendet, wenn sie in Triangulation sind
-                            boundary_points_in_calc = boundary_points_added  # Anzahl hinzugefügter Randpunkte
-                            
-                            # 🎯 PRÜFUNG 2: Werden Randpunkte für Triangulation verwendet?
-                            # Prüfe welche Randpunkte (als additional_vertices) in Triangulation verwendet werden
-                            edge_vertices_start_idx = corner_vertices_count if 'corner_vertices_count' in locals() else len(surface_points) if len(surface_points) > 0 else 0
-                            edge_vertices_count = len(additional_vertices) - edge_vertices_start_idx if len(additional_vertices) > edge_vertices_start_idx else 0
-                            edge_vertices_in_faces = 0
-                            boundary_points_in_triangulation = 0
-                            if edge_vertices_count > 0:
-                                for i in range(edge_vertices_start_idx, len(additional_vertices)):
-                                    edge_vertex_idx = additional_vertex_start_idx + i
-                                    if edge_vertex_idx in vertex_indices_in_faces_set:
-                                        edge_vertices_in_faces += 1
-                                        # Prüfe ob dieser Vertex ein Randpunkt ist (nicht Ecke)
-                                        if i >= edge_vertices_start_idx:
-                                            boundary_points_in_triangulation += 1
-                            
-                            # 🎯 PRÜFUNG 3: Plot der Randvertices
-                            # Randpunkte sollten in triangulated_vertices enthalten sein für Plot
-                            boundary_points_in_plot = boundary_points_in_triangulation  # Für Plot müssen sie in Triangulation sein
-                            
-                            # #region agent log - Neue Randpunktlogik: Prüfungen (Calc, Triangulation, Plot)
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "BOUNDARY_POINTS_CHECKS",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:boundary_points_checks",
-                                        "message": "Prüfungen: Randpunkte für Calc, Triangulation, Plot",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "boundary_points_added": boundary_points_added,
-                                            "boundary_points_in_calc": boundary_points_in_calc,
-                                            "boundary_points_in_triangulation": boundary_points_in_triangulation,
-                                            "boundary_points_in_plot": boundary_points_in_plot,
-                                            "calc_check_passed": boundary_points_in_calc > 0,
-                                            "triangulation_check_passed": boundary_points_in_triangulation > 0,
-                                            "plot_check_passed": boundary_points_in_plot > 0,
-                                            "all_checks_passed": (boundary_points_in_calc > 0 and boundary_points_in_triangulation > 0 and boundary_points_in_plot > 0),
-                                            "edge_vertices_count": edge_vertices_count,
-                                            "edge_vertices_in_faces": edge_vertices_in_faces
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
-                            
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "BOUNDARY_VERTICES_FINAL",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:final_vertices",
-                                    "message": "Finale Vertex-Prüfung vor Mapping",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "active_mask_count": int(len(active_mask_indices)),
-                                        "vertex_indices_count": int(len(vertex_indices_in_faces_set)),
-                                        "missing_indices_count": int(len(missing_indices)),
-                                        "additional_vertices_count": int(len(additional_vertices)),
-                                        "edge_vertices_count": edge_vertices_count,
-                                        "edge_vertices_in_faces": edge_vertices_in_faces,
-                                        "all_edge_vertices_in_faces": edge_vertices_in_faces == edge_vertices_count if edge_vertices_count > 0 else True,
-                                        "boundary_in_vertices_count": boundary_in_vertices
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
                         all_vertex_indices = np.array(sorted(vertex_indices_in_faces_set), dtype=np.int64)
                         
@@ -5642,30 +4146,6 @@ class FlexibleGridGenerator(ModuleBase):
                             triangulated_vertices = np.array([], dtype=float).reshape(0, 3)
                             vertex_source_indices_pre_dedup = []
                         
-                        # #region agent log - Randpunkte in finalen triangulated_vertices
-                        try:
-                            import json, time as _t
-                            # 🎯 ALTE PROJEKTIONSLOGIK ENTFERNT: boundary_indices existiert nicht mehr
-                            # Randpunkte werden jetzt direkt berechnet und als additional_vertices hinzugefügt
-                            boundary_in_triangulated = 0  # Nicht mehr relevant, da boundary_indices entfernt wurde
-                            
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "BOUNDARY_IN_TRIANGULATED",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:boundary_in_triangulated",
-                                    "message": "Randpunkte in finalen triangulated_vertices",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "boundary_in_triangulated_count": boundary_in_triangulated,
-                                        "triangulated_vertices_count": int(len(triangulated_vertices)) if triangulated_vertices is not None and triangulated_vertices.size > 0 else 0
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
                         # Mappe Face-Indizes auf neue Vertex-Indizes
                         faces_list_mapped = []
@@ -5692,157 +4172,13 @@ class FlexibleGridGenerator(ModuleBase):
                             triangulated_faces = np.array(faces_list_mapped, dtype=np.int64)
                             triangulated_success = True
                             
-                            # #region agent log - Finale Triangulation Koordinaten-Vergleich
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    # Vergleiche triangulierte Vertices mit Original-Polygon-Punkten
-                                    if triangulated_vertices is not None and triangulated_vertices.size > 0:
-                                        orig_points = np.array([[p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0)] for p in (geom.points or [])], dtype=float)
-                                        if len(orig_points) > 0:
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "run1",
-                                                "hypothesisId": "H5",
-                                                "location": "FlexibleGridGenerator.generate_per_surface:triangulation_final_coords",
-                                                "message": "Finale Triangulation Koordinaten-Vergleich",
-                                                "data": {
-                                                    "surface_id": str(geom.surface_id),
-                                                    "orientation": str(geom.orientation),
-                                                    "dominant_axis": str(geom.dominant_axis) if hasattr(geom, 'dominant_axis') and geom.dominant_axis else None,
-                                                    "triangulated_vertices_count": int(len(triangulated_vertices)),
-                                                    "triangulated_vertices_x_min": float(triangulated_vertices[:, 0].min()),
-                                                    "triangulated_vertices_x_max": float(triangulated_vertices[:, 0].max()),
-                                                    "triangulated_vertices_y_min": float(triangulated_vertices[:, 1].min()),
-                                                    "triangulated_vertices_y_max": float(triangulated_vertices[:, 1].max()),
-                                                    "triangulated_vertices_z_min": float(triangulated_vertices[:, 2].min()),
-                                                    "triangulated_vertices_z_max": float(triangulated_vertices[:, 2].max()),
-                                                    "original_points_count": int(len(orig_points)),
-                                                    "original_points_x_min": float(orig_points[:, 0].min()),
-                                                    "original_points_x_max": float(orig_points[:, 0].max()),
-                                                    "original_points_y_min": float(orig_points[:, 1].min()),
-                                                    "original_points_y_max": float(orig_points[:, 1].max()),
-                                                    "original_points_z_min": float(orig_points[:, 2].min()),
-                                                    "original_points_z_max": float(orig_points[:, 2].max()),
-                                                    "triangulated_faces_count": int(len(triangulated_faces) // 4) if triangulated_faces is not None else 0
-                                                },
-                                                "timestamp": int(_t.time() * 1000)
-                                            }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                         else:
                             # Keine Faces erstellt - Triangulation fehlgeschlagen
                             triangulated_faces = np.array([], dtype=np.int64)
                             triangulated_success = False
-                            # #region agent log - Triangulation fehlgeschlagen (keine Faces)
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "TRIANGULATION_FAILED_NO_FACES",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:triangulation_no_faces",
-                                        "message": "Triangulation fehlgeschlagen - keine Faces erstellt",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "total_grid_points": int(X_grid.size),
-                                            "active_mask_points": int(np.count_nonzero(mask_flat)),
-                                            "active_strict_mask_points": int(np.count_nonzero(mask_strict_flat)),
-                                            "total_quads_checked": int((ny - 1) * (nx - 1)),
-                                            "active_quads": active_quads,
-                                            "partial_quads": partial_quads,
-                                            "faces_list_length": int(len(faces_list)),
-                                            "faces_list_mapped_length": int(len(faces_list_mapped)),
-                                            "missing_indices_count": missing_indices_count,
-                                            "old_to_new_index_size": int(len(old_to_new_index)),
-                                            "additional_vertices_count": int(len(additional_vertices)) if len(additional_vertices) > 0 else 0
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                         
-                        # #region agent log - Triangulation Statistiken
-                        try:
-                            import json, time as _t
-                            total_faces = len(faces_list_mapped) // 4
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "TRIANGULATION_STATISTICS",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:triangulation_statistics",
-                                    "message": "Triangulation Statistiken",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "total_faces": total_faces,
-                                        "active_quads": active_quads,
-                                        "partial_quads": partial_quads,
-                                        "corner_vertex_triangles": corner_vertex_triangles,
-                                        "edge_to_corner_triangles": edge_corner_connections if 'edge_corner_connections' in locals() else 0,
-                                        "isolated_point_triangles": faces_created_for_isolated,
-                                        "filtered_out": filtered_out,
-                                        "additional_vertices_count": int(len(additional_vertices)) if len(additional_vertices) > 0 else 0
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
-                        # #region agent log - Finale Vertex-Anzahl-Prüfung
-                        try:
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                import json, time as _t
-                                final_vertex_count = int(len(triangulated_vertices))
-                                mask_active_count = int(np.count_nonzero(mask_flat))
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "BOUNDARY_VERTICES_COUNT",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:triangulation_final",
-                                    "message": "Finale Vertex-Anzahl-Prüfung",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "final_vertex_count": final_vertex_count,
-                                        "mask_active_count": mask_active_count,
-                                        "vertex_indices_count": int(len(all_vertex_indices)),
-                                        "match": final_vertex_count == mask_active_count
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
-                        # #region agent log
-                        try:
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                import json, time as _t
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "grid-analysis-v2",
-                                    "hypothesisId": "H1",
-                                    "location": "FlexibleGridGenerator.generate_per_surface:triangulation",
-                                    "message": "Triangulation erfolgreich - Grid erstellt",
-                                    "data": {
-                                        "surface_id": str(geom.surface_id),
-                                        "orientation": str(geom.orientation),
-                                        "total_grid_points": int(X_grid.size),
-                                        "grid_shape": list(X_grid.shape),
-                                        "n_triangulated_vertices": int(len(triangulated_vertices)),
-                                        "n_triangulated_faces": int(len(triangulated_faces) // 4) if triangulated_faces.ndim == 1 else int(len(triangulated_faces)),
-                                        "points_in_mask": int(np.count_nonzero(mask_flat)),
-                                        "resolution": float(actual_resolution)
-                                    },
-                                    "timestamp": int(_t.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
                         n_faces = len(faces_list_mapped) // 4  # 4 Elemente pro Face: [n, v1, v2, v3]
                         n_vertices_used = len(all_vertex_indices)  # Anzahl der tatsächlich verwendeten Vertices
@@ -5856,57 +4192,6 @@ class FlexibleGridGenerator(ModuleBase):
                         # 🎯 DEDUPLIKATION: Entferne doppelte Vertices
                         vertices_before_dedup = int(len(triangulated_vertices)) if triangulated_vertices is not None and triangulated_vertices.size > 0 else 0
                         
-                        # #region agent log - Vertex overlap before deduplication H5, H6, H7
-                        try:
-                            import json, time as _t
-                            if vertices_before_dedup > 0:
-                                verts = np.asarray(triangulated_vertices, dtype=float)
-                                # Prüfe Überlappungen mit kleinerer Toleranz (1% der Resolution)
-                                tol_check = float(actual_resolution * 0.01) if actual_resolution > 0 else 1e-3
-                                quant_check = np.round(verts / tol_check) * tol_check
-                                from collections import defaultdict
-                                groups_check: dict[tuple[float, float, float], list[int]] = defaultdict(list)
-                                for idx_v, (qx, qy, qz) in enumerate(quant_check):
-                                    groups_check[(float(qx), float(qy), float(qz))].append(int(idx_v))
-                                
-                                overlap_positions_before = sum(1 for idx_list in groups_check.values() if len(idx_list) > 1)
-                                max_dist_before = 0.0
-                                example_overlaps = []
-                                for (qx, qy, qz), idx_list in groups_check.items():
-                                    if len(idx_list) > 1:
-                                        local_verts = verts[idx_list]
-                                        for i in range(len(local_verts)):
-                                            for j in range(i + 1, len(local_verts)):
-                                                d = float(np.linalg.norm(local_verts[i] - local_verts[j]))
-                                                if d > max_dist_before:
-                                                    max_dist_before = d
-                                        if len(example_overlaps) < 3:
-                                            example_overlaps.append({
-                                                "position": [float(qx), float(qy), float(qz)],
-                                                "vertex_count": len(idx_list),
-                                                "max_distance": float(max([np.linalg.norm(verts[idx_list[i]] - verts[idx_list[j]]) for i in range(len(idx_list)) for j in range(i+1, len(idx_list))])) if len(idx_list) > 1 else 0.0
-                                            })
-                                
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "H5_H6_H7",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:overlap_before_dedup",
-                                        "message": "Vertex-Überlappung vor Deduplizierung",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "vertices_before_dedup": vertices_before_dedup,
-                                            "overlap_positions": overlap_positions_before,
-                                            "max_distance_between_overlaps": float(max_dist_before),
-                                            "check_tolerance": float(tol_check),
-                                            "example_overlaps": example_overlaps[:3]
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         
                         # 🎯 OPTIMIERUNG: Speichere Vertex-Positionen vor Deduplizierung für Mapping
                         vertices_before_dedup_array = triangulated_vertices.copy() if triangulated_vertices.size > 0 else np.array([], dtype=float).reshape(0, 3)
@@ -5959,81 +4244,7 @@ class FlexibleGridGenerator(ModuleBase):
                             else:
                                 vertex_source_indices = None
                             
-                            # #region agent log - Deduplizierung Ergebnisse
-                            try:
-                                import json, time as _t
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "DEDUPLICATION_ANALYSIS",
-                                        "location": "FlexibleGridGenerator.generate_per_surface:deduplication",
-                                        "message": "Deduplizierung Ergebnisse",
-                                        "data": {
-                                            "surface_id": str(geom.surface_id),
-                                            "vertices_before_dedup": vertices_before_dedup,
-                                            "vertices_after_dedup": vertices_after_dedup,
-                                            "vertices_removed": vertices_removed,
-                                            "deduplication_tolerance": float(actual_resolution * 0.05) if actual_resolution > 0 else 0.0,
-                                            "resolution": float(actual_resolution)
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                             
-                            # #region agent log - Vertex overlap after deduplication H5, H6, H7
-                            try:
-                                import json, time as _t
-                                if vertices_after_dedup > 0:
-                                    verts_after = np.asarray(triangulated_vertices, dtype=float)
-                                    # Prüfe Überlappungen mit kleinerer Toleranz (1% der Resolution)
-                                    tol_check = float(actual_resolution * 0.01) if actual_resolution > 0 else 1e-3
-                                    quant_check = np.round(verts_after / tol_check) * tol_check
-                                    from collections import defaultdict
-                                    groups_check: dict[tuple[float, float, float], list[int]] = defaultdict(list)
-                                    for idx_v, (qx, qy, qz) in enumerate(quant_check):
-                                        groups_check[(float(qx), float(qy), float(qz))].append(int(idx_v))
-                                    
-                                    overlap_positions_after = sum(1 for idx_list in groups_check.values() if len(idx_list) > 1)
-                                    max_dist_after = 0.0
-                                    example_overlaps_after = []
-                                    for (qx, qy, qz), idx_list in groups_check.items():
-                                        if len(idx_list) > 1:
-                                            local_verts = verts_after[idx_list]
-                                            for i in range(len(local_verts)):
-                                                for j in range(i + 1, len(local_verts)):
-                                                    d = float(np.linalg.norm(local_verts[i] - local_verts[j]))
-                                                    if d > max_dist_after:
-                                                        max_dist_after = d
-                                            if len(example_overlaps_after) < 3:
-                                                example_overlaps_after.append({
-                                                    "position": [float(qx), float(qy), float(qz)],
-                                                    "vertex_count": len(idx_list),
-                                                    "max_distance": float(max([np.linalg.norm(verts_after[idx_list[i]] - verts_after[idx_list[j]]) for i in range(len(idx_list)) for j in range(i+1, len(idx_list))])) if len(idx_list) > 1 else 0.0
-                                                })
-                                    
-                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                        f.write(json.dumps({
-                                            "sessionId": "debug-session",
-                                            "runId": "run1",
-                                            "hypothesisId": "H5_H6_H7",
-                                            "location": "FlexibleGridGenerator.generate_per_surface:overlap_after_dedup",
-                                            "message": "Vertex-Überlappung nach Deduplizierung",
-                                            "data": {
-                                                "surface_id": str(geom.surface_id),
-                                                "vertices_after_dedup": vertices_after_dedup,
-                                                "overlap_positions": overlap_positions_after,
-                                                "max_distance_between_overlaps": float(max_dist_after),
-                                                "check_tolerance": float(tol_check),
-                                                "example_overlaps": example_overlaps_after[:3]
-                                        },
-                                        "timestamp": int(_t.time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
                         except Exception as dedupe_error:
                             # Bei Fehler: Original-Vertices/Faces behalten
                             pass
@@ -6042,108 +4253,6 @@ class FlexibleGridGenerator(ModuleBase):
                 traceback.print_exc()
                 triangulated_success = False
             
-            # #region agent log - Triangulation Coverage prüfen
-            try:
-                import json, time as _t
-                edge_vertices_in_triangulation = 0
-                total_vertices_in_triangulation = 0
-                edge_detection_success = False
-                edge_detection_error = None
-                min_dist_to_edge = None
-                max_dist_to_edge = None
-                mean_dist_to_edge = None
-                if triangulated_success and triangulated_vertices is not None and triangulated_vertices.size > 0:
-                    total_vertices_in_triangulation = len(triangulated_vertices)
-                    # Prüfe, ob Vertices auf dem Rand in der Triangulation sind
-                    surface_points = geom.points or []
-                    if len(surface_points) >= 3:
-                        try:
-                            if geom.orientation == "vertical":
-                                # Vertikale Flächen: (u,v) Koordinaten
-                                xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                                ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                                zs = np.array([p.get("z", 0.0) for p in surface_points], dtype=float)
-                                if hasattr(geom, 'dominant_axis') and geom.dominant_axis:
-                                    if geom.dominant_axis == "yz":
-                                        polygon_2d = np.column_stack([ys, zs])
-                                        vertex_coords_2d = triangulated_vertices[:, [1, 2]]
-                                    else:  # xz
-                                        polygon_2d = np.column_stack([xs, zs])
-                                        vertex_coords_2d = triangulated_vertices[:, [0, 2]]
-                                else:
-                                    # Fallback: verwende xz
-                                    polygon_2d = np.column_stack([xs, zs])
-                                    vertex_coords_2d = triangulated_vertices[:, [0, 2]]
-                            else:
-                                # Planare/sloped: (x,y) Koordinaten
-                                xs = np.array([p.get("x", 0.0) for p in surface_points], dtype=float)
-                                ys = np.array([p.get("y", 0.0) for p in surface_points], dtype=float)
-                                polygon_2d = np.column_stack([xs, ys])
-                                vertex_coords_2d = triangulated_vertices[:, :2]
-                            
-                            if polygon_2d.size > 0 and len(polygon_2d) >= 3:
-                                # Prüfe Vertices nahe dem Polygon-Rand
-                                edge_distance_threshold = actual_resolution * 1.2  # Erhöht für bessere Erkennung
-                                n_edges = len(polygon_2d)
-                                edge_vertex_mask = np.zeros(len(vertex_coords_2d), dtype=bool)
-                                distances_to_edge = []
-                                for i in range(n_edges):
-                                    p1 = polygon_2d[i]
-                                    p2 = polygon_2d[(i + 1) % n_edges]
-                                    edge_vec = p2 - p1
-                                    edge_len = np.linalg.norm(edge_vec)
-                                    if edge_len > 1e-9:
-                                        edge_vec_norm = edge_vec / edge_len
-                                        for j, v_coord in enumerate(vertex_coords_2d):
-                                            if not edge_vertex_mask[j]:  # Noch nicht als Rand erkannt
-                                                v_to_p1 = v_coord - p1
-                                                t = np.clip(np.dot(v_to_p1, edge_vec_norm), 0.0, edge_len)
-                                                closest_point_on_edge = p1 + t * edge_vec_norm
-                                                dist_to_edge = np.linalg.norm(v_coord - closest_point_on_edge)
-                                                distances_to_edge.append(dist_to_edge)
-                                                if dist_to_edge <= edge_distance_threshold:
-                                                    edge_vertex_mask[j] = True
-                                
-                                edge_vertices_in_triangulation = int(np.count_nonzero(edge_vertex_mask))
-                                if len(distances_to_edge) > 0:
-                                    min_dist_to_edge = float(np.min(distances_to_edge))
-                                    max_dist_to_edge = float(np.max(distances_to_edge))
-                                    mean_dist_to_edge = float(np.mean(distances_to_edge))
-                                edge_detection_success = True
-                        except Exception as e:
-                            edge_detection_error = str(type(e).__name__) + ": " + str(e)
-                    else:
-                        edge_detection_error = f"too_few_points_{len(surface_points)}"
-                
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "TRIANGULATION_COVERAGE",
-                        "location": "FlexibleGridGenerator.generate_per_surface:triangulation_coverage",
-                        "message": "Triangulation Coverage prüfen",
-                        "data": {
-                            "surface_id": str(geom.surface_id),
-                            "triangulated_success": triangulated_success,
-                            "total_vertices_in_triangulation": total_vertices_in_triangulation,
-                            "edge_vertices_in_triangulation": edge_vertices_in_triangulation,
-                            "triangulation_extends_to_edge": edge_vertices_in_triangulation > 0,
-                            "mask_active_points": int(np.count_nonzero(surface_mask)),
-                            "triangulation_uses_all_mask_points": total_vertices_in_triangulation >= int(np.count_nonzero(surface_mask)),
-                            "edge_detection_success": edge_detection_success,
-                            "edge_detection_error": edge_detection_error,
-                            "surface_orientation": str(geom.orientation) if hasattr(geom, 'orientation') else None,
-                            "dominant_axis": str(geom.dominant_axis) if hasattr(geom, 'dominant_axis') and geom.dominant_axis else None,
-                            "min_dist_to_edge": min_dist_to_edge,
-                            "max_dist_to_edge": max_dist_to_edge,
-                            "mean_dist_to_edge": mean_dist_to_edge,
-                            "resolution": float(actual_resolution)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception as e:
-                pass
-            # #endregion
             
             # Speichere additional_vertices (wenn vorhanden)
             # 🎯 FIX: Verwende additional_vertices_array statt additional_vertices, da additional_vertices_array bereits als numpy-Array erstellt wurde
@@ -6174,33 +4283,6 @@ class FlexibleGridGenerator(ModuleBase):
             else:
                 vertex_source_indices_final = None
             
-            # #region agent log - Surface Grid Statistiken
-            grid_points_count = int(np.sum(surface_mask)) if surface_mask.size > 0 else 0
-            additional_vertices_count = int(additional_vertices_final.size // 3) if additional_vertices_final is not None and additional_vertices_final.size > 0 else 0
-            try:
-                import json, time as _t
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "SURFACE_ANALYSIS",
-                        "location": "FlexibleGridGenerator.generate_per_surface:surface_grid_created",
-                        "message": "Surface Grid erstellt",
-                        "data": {
-                            "surface_id": str(geom.surface_id),
-                            "orientation": str(getattr(geom, 'orientation', 'unknown')),
-                            "grid_points_count": grid_points_count,
-                            "additional_vertices_count": additional_vertices_count,
-                            "total_points_count": grid_points_count + additional_vertices_count,
-                            "X_grid_shape": list(X_grid.shape) if X_grid.size > 0 else None,
-                            "Y_grid_shape": list(Y_grid.shape) if Y_grid.size > 0 else None,
-                            "resolution": float(actual_resolution)
-                        },
-                        "timestamp": int(_t.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             
             surface_grid = SurfaceGrid(
                 surface_id=geom.surface_id,
@@ -6264,18 +4346,7 @@ class FlexibleGridGenerator(ModuleBase):
                             if len(example_positions) < 3:
                                 example_positions.append((qx, qy, qz))
 
-                        if overlap_positions > 0:
-                            print(
-                                "[DEBUG VertexOverlap] Surface "
-                                f"'{geom.surface_id}': {overlap_positions} 3D-Positionen "
-                                f"mit mehreren Vertices (max. Distanz innerhalb Gruppe="
-                                f"{max_local_span:.3f} m)."
-                            )
-                            for pos in example_positions:
-                                print(
-                                    f"  └─ Beispiel-Position: X={pos[0]:.3f}, "
-                                    f"Y={pos[1]:.3f}, Z={pos[2]:.3f}"
-                                )
+                        # Vertex-Overlap-Analyse (Debug-Logging entfernt)
             except Exception:
                 # Reiner Debug-Helper – darf die Hauptlogik nicht beeinflussen
                 pass
