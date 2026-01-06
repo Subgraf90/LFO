@@ -218,6 +218,9 @@ class LRUCache:
             # Schätze Memory-Größe des neuen Wertes
             value_memory_mb = estimate_memory_size(value)
             
+            # Aktuelle Memory-Nutzung für Berechnungen
+            current_memory = self._stats.memory_usage_mb
+            
             if key in self._cache:
                 # Update existing entry
                 old_memory = self._memory_cache.get(key, 0.0)
@@ -225,9 +228,9 @@ class LRUCache:
                 self._memory_cache[key] = value_memory_mb
                 # Aktualisiere Memory-Statistik
                 self._stats.memory_usage_mb += (value_memory_mb - old_memory)
+                self._stats.size = len(self._cache)
             else:
                 # New entry: check limits
-                current_memory = self._stats.memory_usage_mb
                 
                 # 🎯 STRATEGIE: Memory-Limit nur für Monitoring, nicht für Eviction
                 # Bei großen Surface-Anzahlen sollen wichtige Surfaces nicht gelöscht werden
@@ -260,15 +263,15 @@ class LRUCache:
                         current_memory -= oldest_memory
                         self._stats.evictions += 1
                         self._stats.memory_evictions += 1
-            
-            # Füge neuen Eintrag hinzu
-            current_time = time.time()
-            self._cache[key] = value
-            self._memory_cache[key] = value_memory_mb
-            self._last_access_times[key] = current_time
-            self._creation_times[key] = current_time
-            self._stats.memory_usage_mb = current_memory + value_memory_mb
-            self._stats.size = len(self._cache)
+                
+                # Füge neuen Eintrag hinzu
+                current_time = time.time()
+                self._cache[key] = value
+                self._memory_cache[key] = value_memory_mb
+                self._last_access_times[key] = current_time
+                self._creation_times[key] = current_time
+                self._stats.memory_usage_mb = current_memory + value_memory_mb
+                self._stats.size = len(self._cache)
     
     def remove(self, key: Any) -> bool:
         """Entfernt einen Eintrag aus dem Cache"""
@@ -570,7 +573,7 @@ class CacheManager:
                 if predicate(key)
             ]
             for key in keys_to_remove:
-                cache.remove(key)
+                cache._remove_entry(key)  # Verwende _remove_entry direkt, da Lock bereits gehalten wird
             return len(keys_to_remove)
     
     def get_cache_stats(self, cache_type: Optional[CacheType] = None) -> Dict[str, Any]:

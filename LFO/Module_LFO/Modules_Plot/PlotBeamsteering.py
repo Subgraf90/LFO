@@ -16,6 +16,8 @@ class BeamsteeringPlot(QWidget):
         self.figure = Figure(figsize=(width, height), dpi=dpi)
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111)
+        # Zweite Y-Achse für Lautsprecher mit aspect='equal'
+        self.ax_speakers = None  # Wird in beamsteering_plot() erstellt
         self.container = container
         self.figure.tight_layout()
         
@@ -36,6 +38,23 @@ class BeamsteeringPlot(QWidget):
 
     def beamsteering_plot(self, speaker_array_id):
         self.ax.clear()  # Löschen des vorherigen Plots
+        
+        # Entferne alte zweite Y-Achse falls vorhanden
+        if self.ax_speakers is not None:
+            try:
+                # Entferne alle Patches von der alten Achse
+                if self.ax_speakers.patches:
+                    for patch in list(self.ax_speakers.patches):
+                        try:
+                            patch.remove()
+                        except:
+                            pass
+                    self.ax_speakers.patches.clear()
+                # Entferne die Achse selbst
+                self.ax_speakers.remove()
+            except:
+                pass
+            self.ax_speakers = None
         
         speaker_array = self.settings.get_speaker_array(speaker_array_id)
 
@@ -78,6 +97,24 @@ class BeamsteeringPlot(QWidget):
         if y_values.size:
             y_min = float(np.min(y_values))
             y_max = float(np.max(y_values))
+            # #region agent log - Daten-Grenzen
+            import json
+            import time
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'PlotBeamsteering.py:98',
+                    'message': 'Y-Daten-Grenzen vor Limit-Berechnung',
+                    'data': {
+                        'y_min_data': y_min,
+                        'y_max_data': y_max,
+                        'y_range_data': y_max - y_min
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
             # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
             current_ylim = self.ax.get_ylim()
             if abs(current_ylim[0] - y_min) > 0.01 or abs(current_ylim[1] - y_max) > 0.01:
@@ -85,9 +122,78 @@ class BeamsteeringPlot(QWidget):
                 y_min_visible, y_max_visible = current_ylim
                 y_ticks, step = self._calculate_metric_ticks(y_min_visible, y_max_visible)
             else:
-                # Nicht gezoomt - verwende Daten-Grenzen (exakt, ohne Padding)
-                y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
-                self.ax.set_ylim(y_min, y_max)
+                # Nicht gezoomt - verwende Daten-Grenzen
+                # WICHTIG: Zentriere Y-Limits bei Y=0, damit sie mit ax_speakers synchronisiert sind
+                # ABER: Stelle sicher, dass alle Daten enthalten sind (nicht abgeschnitten)
+                y_center = 0.0  # Zentriere bei Y=0
+                # Berechne die maximale Abweichung von Y=0 in beide Richtungen
+                max_abs_positive = max(abs(y_max), 0.0) if y_max > 0 else 0.0
+                max_abs_negative = max(abs(y_min), 0.0) if y_min < 0 else 0.0
+                # Verwende die größere Abweichung für symmetrische Limits
+                max_abs_deviation = max(max_abs_positive, max_abs_negative)
+                # Falls keine Daten vorhanden sind, verwende einen Standard-Wert
+                if max_abs_deviation == 0:
+                    max_abs_deviation = 1.0
+                # Setze symmetrische Limits um Y=0, die alle Daten enthalten
+                y_min_centered = -max_abs_deviation
+                y_max_centered = max_abs_deviation
+                # Stelle sicher, dass die ursprünglichen Daten-Grenzen enthalten sind
+                y_min_centered = min(y_min_centered, y_min)
+                y_max_centered = max(y_max_centered, y_max)
+                # #region agent log - Vor _calculate_metric_ticks
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'A',
+                        'location': 'PlotBeamsteering.py:125',
+                        'message': 'Y-Limits vor _calculate_metric_ticks',
+                        'data': {
+                            'y_min_centered': y_min_centered,
+                            'y_max_centered': y_max_centered,
+                            'y_range_centered': y_max_centered - y_min_centered,
+                            'max_abs_deviation': max_abs_deviation,
+                            'max_abs_positive': max_abs_positive,
+                            'max_abs_negative': max_abs_negative
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                y_ticks, step = self._calculate_metric_ticks(y_min_centered, y_max_centered)
+                # #region agent log - Nach _calculate_metric_ticks
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'C',
+                        'location': 'PlotBeamsteering.py:127',
+                        'message': 'Y-Limits nach _calculate_metric_ticks',
+                        'data': {
+                            'y_ticks': [float(t) for t in y_ticks],
+                            'step': float(step),
+                            'y_min_centered': y_min_centered,
+                            'y_max_centered': y_max_centered
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                self.ax.set_ylim(y_min_centered, y_max_centered)
+                # #region agent log - Nach set_ylim
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'A',
+                        'location': 'PlotBeamsteering.py:129',
+                        'message': 'Y-Limits nach set_ylim (initial)',
+                        'data': {
+                            'ax_ylim_after_set': list(self.ax.get_ylim()),
+                            'y_min_centered': y_min_centered,
+                            'y_max_centered': y_max_centered
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
             self.ax.set_yticks(y_ticks)
             # Formatierung auf eine Nachkommastelle
             self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
@@ -109,9 +215,99 @@ class BeamsteeringPlot(QWidget):
         # Layout-Anpassungen für konsistente Größe (muss VOR Stack-Zeichnung sein!)
         self._apply_layout()
         
+        # Erstelle zweite Y-Achse für Lautsprecher mit aspect='equal'
+        # Diese teilt sich die X-Achse mit der Hauptachse
+        self.ax_speakers = self.ax.twinx()
+        # Synchronisiere X-Limits mit Hauptachse (muss VOR set_aspect gesetzt werden)
+        xlim = self.ax.get_xlim()
+        self.ax_speakers.set_xlim(xlim)
+        
+        # Berechne Y-Limits basierend auf X-Limits für aspect='equal'
+        # Ziel: Y=0 soll immer in der Mitte oder am unteren Rand sein
+        # Für aspect='equal' müssen Y-Limits so gesetzt werden, dass das Aspect-Ratio 1:1 ist
+        x_range = xlim[1] - xlim[0]
+        # Verwende die gleiche Range für Y, zentriert bei 0
+        # Dies stellt sicher, dass Y=0 immer die gleiche Position hat, unabhängig von X
+        y_range = x_range  # Gleiche Range für 1:1 Aspect-Ratio
+        y_center = 0.0  # Zentriert bei 0
+        y_min = y_center - y_range / 2
+        y_max = y_center + y_range / 2
+        self.ax_speakers.set_ylim(y_min, y_max)
+        
+        # Setze aspect='equal' für unverzerrte Lautsprecher-Darstellung
+        # WICHTIG: Verwende adjustable='datalim' für twinned Axes (adjustable='box' ist nicht erlaubt)
+        # Die Y-Limits werden basierend auf den Daten angepasst, um das 1:1 Aspect-Ratio zu erreichen
+        # #region agent log - Y-Limits vor set_aspect
+        import json
+        import time
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'D',
+                'location': 'PlotBeamsteering.py:152',
+                'message': 'Y-Limits vor set_aspect',
+                'data': {
+                    'ax_speakers_ylim_before': list(self.ax_speakers.get_ylim()),
+                    'ax_speakers_xlim': list(self.ax_speakers.get_xlim())
+                },
+                'timestamp': int(time.time() * 1000)
+            }) + '\n')
+        # #endregion
+        self.ax_speakers.set_aspect('equal', adjustable='datalim')
+        # Y-Achse der zweiten Achse unsichtbar machen (wird nur für aspect='equal' verwendet)
+        self.ax_speakers.set_yticks([])
+        self.ax_speakers.spines['right'].set_visible(False)
+        self.ax_speakers.spines['top'].set_visible(False)
+        self.ax_speakers.spines['left'].set_visible(False)
+        self.ax_speakers.spines['bottom'].set_visible(False)
+        
         # Zeichne einmal, um sicherzustellen, dass get_window_extent() korrekte Werte liefert
         # (nach _apply_layout(), damit subplots_adjust() bereits angewendet wurde)
         self.figure.canvas.draw()
+        
+        # #region agent log - Y-Limits nach set_aspect und draw
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'D',
+                'location': 'PlotBeamsteering.py:170',
+                'message': 'Y-Limits nach set_aspect und draw',
+                'data': {
+                    'ax_speakers_ylim_after': list(self.ax_speakers.get_ylim()),
+                    'ax_speakers_xlim': list(self.ax_speakers.get_xlim())
+                },
+                'timestamp': int(time.time() * 1000)
+            }) + '\n')
+        # #endregion
+        
+        # WICHTIG: Nach dem Zeichnen die Y-Limits nochmal setzen, damit Y=0 zentriert bleibt
+        # set_aspect('equal') kann die Y-Limits ändern, daher müssen wir sie zurücksetzen
+        xlim_after = self.ax_speakers.get_xlim()
+        x_range_after = xlim_after[1] - xlim_after[0]
+        y_range_after = x_range_after  # Gleiche Range für 1:1 Aspect-Ratio
+        y_center = 0.0
+        y_min_after = y_center - y_range_after / 2
+        y_max_after = y_center + y_range_after / 2
+        self.ax_speakers.set_ylim(y_min_after, y_max_after)
+        # #region agent log - Y-Limits nach manueller Setzung
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'D',
+                'location': 'PlotBeamsteering.py:180',
+                'message': 'Y-Limits nach manueller Setzung',
+                'data': {
+                    'ax_speakers_ylim_final': list(self.ax_speakers.get_ylim()),
+                    'y_min_after': float(y_min_after),
+                    'y_max_after': float(y_max_after),
+                    'y_center': float(y_center)
+                },
+                'timestamp': int(time.time() * 1000)
+            }) + '\n')
+        # #endregion
         
         # #region agent log
         import json
@@ -136,10 +332,239 @@ class BeamsteeringPlot(QWidget):
         # #endregion
         
         # Zeichne Stacks NACH Layout-Anpassung (für korrekte Pixel-Größe)
+        # Verwende ax_speakers für Lautsprecher-Darstellung
         self.plot_Stacks2Beamsteering(speaker_array_id)
         
+        # #region agent log - Vor _adjust_ylim_for_speakers
+        import json
+        import time
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'B',
+                'location': 'PlotBeamsteering.py:269',
+                'message': 'Y-Limits vor _adjust_ylim_for_speakers',
+                'data': {
+                    'ax_ylim_before_adjust': list(self.ax.get_ylim()),
+                    'ax_speakers_ylim_before_adjust': list(self.ax_speakers.get_ylim()) if self.ax_speakers is not None else None
+                },
+                'timestamp': int(time.time() * 1000)
+            }) + '\n')
+        # #endregion
         # Passe Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden
         self._adjust_ylim_for_speakers()
+        # #region agent log - Nach _adjust_ylim_for_speakers
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'B',
+                'location': 'PlotBeamsteering.py:272',
+                'message': 'Y-Limits nach _adjust_ylim_for_speakers',
+                'data': {
+                    'ax_ylim_after_adjust': list(self.ax.get_ylim()),
+                    'ax_speakers_ylim_after_adjust': list(self.ax_speakers.get_ylim()) if self.ax_speakers is not None else None
+                },
+                'timestamp': int(time.time() * 1000)
+            }) + '\n')
+        # #endregion
+        
+        # WICHTIG: Stelle sicher, dass die Hauptachse bei Y=0 zentriert bleibt
+        # _adjust_ylim_for_speakers() könnte die Y-Limits geändert haben
+        # ABER: Stelle sicher, dass alle Daten noch enthalten sind
+        current_ax_ylim = self.ax.get_ylim()
+        ax_y_range = current_ax_ylim[1] - current_ax_ylim[0]
+        ax_y_center = (current_ax_ylim[0] + current_ax_ylim[1]) / 2
+        
+        # Hole die ursprünglichen Daten-Grenzen
+        y_values = self._concatenate_arrays(
+            self._to_float_array(speaker_array.source_position_y),
+            self._to_float_array(speaker_array.virtual_source_position_y)
+        )
+        if y_values.size:
+            y_min_data = float(np.min(y_values))
+            y_max_data = float(np.max(y_values))
+        else:
+            y_min_data = current_ax_ylim[0]
+            y_max_data = current_ax_ylim[1]
+        
+        # Prüfe ob Y=0 zentriert ist (Toleranz: 0.1)
+        # #region agent log - Vor finaler Zentrierung
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'A',
+                'location': 'PlotBeamsteering.py:393',
+                'message': 'Vor finaler Zentrierung',
+                'data': {
+                    'current_ax_ylim': list(current_ax_ylim),
+                    'ax_y_center': float(ax_y_center),
+                    'y_min_data': float(y_min_data),
+                    'y_max_data': float(y_max_data),
+                    'needs_centering': bool(abs(ax_y_center - 0.0) > 0.1)
+                },
+                'timestamp': int(time.time() * 1000)
+            }) + '\n')
+        # #endregion
+        if abs(ax_y_center - 0.0) > 0.1:
+            # Zentriere bei Y=0, aber stelle sicher, dass alle Daten enthalten sind
+            max_abs_deviation = max(abs(y_min_data), abs(y_max_data))
+            if max_abs_deviation == 0:
+                max_abs_deviation = 1.0
+            # Setze symmetrische Limits um Y=0
+            y_min_centered = -max_abs_deviation
+            y_max_centered = max_abs_deviation
+            # Stelle sicher, dass die Daten-Grenzen enthalten sind
+            y_min_centered = min(y_min_centered, y_min_data)
+            y_max_centered = max(y_max_centered, y_max_data)
+            # #region agent log - Vor _calculate_metric_ticks in finaler Zentrierung
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'PlotBeamsteering.py:404',
+                    'message': 'Finale Zentrierung: Vor _calculate_metric_ticks',
+                    'data': {
+                        'max_abs_deviation': float(max_abs_deviation),
+                        'y_min_centered': float(y_min_centered),
+                        'y_max_centered': float(y_max_centered),
+                        'y_range_centered': float(y_max_centered - y_min_centered)
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
+            y_ticks, step = self._calculate_metric_ticks(y_min_centered, y_max_centered)
+            self.ax.set_ylim(y_min_centered, y_max_centered)
+            self.ax.set_yticks(y_ticks)
+            self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
+            # #region agent log - Nach finaler Zentrierung
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'PlotBeamsteering.py:410',
+                    'message': 'Nach finaler Zentrierung',
+                    'data': {
+                        'ax_ylim_final': list(self.ax.get_ylim()),
+                        'y_ticks': [float(t) for t in y_ticks],
+                        'y_min_centered': float(y_min_centered),
+                        'y_max_centered': float(y_max_centered)
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
+        
+        # WICHTIG: Nach dem Zeichnen die Y-Limits der zweiten Achse nochmal setzen,
+        # damit Y=0 zentriert bleibt (set_aspect kann die Limits ändern)
+        if self.ax_speakers is not None:
+            xlim_final = self.ax_speakers.get_xlim()
+            x_range_final = xlim_final[1] - xlim_final[0]
+            y_range_final = x_range_final  # Gleiche Range für 1:1 Aspect-Ratio
+            y_center = 0.0
+            y_min_final = y_center - y_range_final / 2
+            y_max_final = y_center + y_range_final / 2
+            self.ax_speakers.set_ylim(y_min_final, y_max_final)
+            # Setze aspect='equal' erneut mit adjustable='datalim' (für twinned Axes erforderlich)
+            self.ax_speakers.set_aspect('equal', adjustable='datalim')
+        
+        # WICHTIG: Zeichne nochmal, damit set_aspect angewendet wird, dann setze Y-Limits erneut
+        self.figure.canvas.draw()
+        
+        # WICHTIG: Nach dem finalen draw() die Y-Limits nochmal setzen, damit Y=0 zentriert bleibt
+        # set_aspect('equal') kann die Y-Limits nach draw() ändern
+        if self.ax_speakers is not None:
+            xlim_very_final = self.ax_speakers.get_xlim()
+            x_range_very_final = xlim_very_final[1] - xlim_very_final[0]
+            y_range_very_final = x_range_very_final  # Gleiche Range für 1:1 Aspect-Ratio
+            y_center = 0.0
+            y_min_very_final = y_center - y_range_very_final / 2
+            y_max_very_final = y_center + y_range_very_final / 2
+            self.ax_speakers.set_ylim(y_min_very_final, y_max_very_final)
+            # #region agent log - Y-Limits nach finalem draw und Setzung + Achsen-Differenz
+            import json
+            import time
+            import matplotlib.patches as patches
+            import matplotlib.transforms as transforms
+            patch_positions_final = []
+            for patch in self.ax_speakers.patches:
+                if isinstance(patch, patches.Rectangle):
+                    patch_positions_final.append({
+                        'y': float(patch.get_y()),
+                        'x': float(patch.get_x()),
+                        'height': float(patch.get_height()),
+                        'width': float(patch.get_width())
+                    })
+            # Berechne Differenz zwischen den beiden Y-Achsen
+            ax_ylim = self.ax.get_ylim()
+            ax_speakers_ylim = self.ax_speakers.get_ylim()
+            ax_y_range = ax_ylim[1] - ax_ylim[0]
+            ax_speakers_y_range = ax_speakers_ylim[1] - ax_speakers_ylim[0]
+            
+            # Y=0 in beiden Achsen-Koordinaten
+            y_zero_in_ax_speakers = 0.0
+            y_zero_in_ax = 0.0  # Sollte auch 0 sein, aber prüfe die tatsächliche Position
+            
+            # Normalisierte Position von Y=0 in beiden Achsen (0.0 = unten, 1.0 = oben)
+            y_zero_normalized_ax_speakers = (y_zero_in_ax_speakers - ax_speakers_ylim[0]) / ax_speakers_y_range if ax_speakers_y_range > 0 else 0.5
+            y_zero_normalized_ax = (y_zero_in_ax - ax_ylim[0]) / ax_y_range if ax_y_range > 0 else 0.5
+            
+            # Differenz in normalisierten Koordinaten (sollte 0 sein, wenn beide bei Y=0 zentriert sind)
+            y_zero_diff_normalized = y_zero_normalized_ax_speakers - y_zero_normalized_ax
+            
+            # Transform-Koordinaten: Wie wird Y=0 von ax_speakers in ax transformiert?
+            # Verwende matplotlib Transform, um die visuelle Position zu berechnen
+            try:
+                # Transform von ax_speakers Daten-Koordinaten zu ax Daten-Koordinaten
+                # Da beide die gleiche X-Achse teilen, müssen wir nur die Y-Koordinaten transformieren
+                # Für twinx(): Die X-Koordinaten sind gleich, aber Y-Koordinaten sind unterschiedlich
+                # Die visuelle Position hängt von den Y-Limits ab
+                
+                # Berechne die visuelle Position von Y=0 in beiden Achsen
+                # In normalisierten Koordinaten (0-1): 0 = unten, 1 = oben
+                # ax_speakers: Y=0 ist bei normalisierter Position = (0 - (-13.5135)) / (13.5135 - (-13.5135)) = 13.5135 / 27.027 = 0.5
+                # ax: Y=0 ist bei normalisierter Position = (0 - ax_ylim[0]) / ax_y_range
+                
+                # Die visuelle Position ist gleich, wenn beide Achsen die gleiche normale Position für Y=0 haben
+                visual_y_zero_ax_speakers = y_zero_normalized_ax_speakers
+                visual_y_zero_ax = y_zero_normalized_ax
+                visual_y_zero_diff = visual_y_zero_ax_speakers - visual_y_zero_ax
+            except Exception as e:
+                visual_y_zero_diff = None
+            
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'G',
+                    'location': 'PlotBeamsteering.py:220',
+                    'message': 'Y-Achsen-Differenz-Analyse',
+                    'data': {
+                        'ax_ylim': list(ax_ylim),
+                        'ax_speakers_ylim': list(ax_speakers_ylim),
+                        'ax_y_range': float(ax_y_range),
+                        'ax_speakers_y_range': float(ax_speakers_y_range),
+                        'y_zero_analysis': {
+                            'y_zero_in_ax': float(y_zero_in_ax),
+                            'y_zero_in_ax_speakers': float(y_zero_in_ax_speakers),
+                            'y_zero_normalized_ax': float(y_zero_normalized_ax),
+                            'y_zero_normalized_ax_speakers': float(y_zero_normalized_ax_speakers),
+                            'y_zero_diff_normalized': float(y_zero_diff_normalized),
+                            'visual_y_zero_diff': float(visual_y_zero_diff) if visual_y_zero_diff is not None else None
+                        },
+                        'ax_ylim_center': float((ax_ylim[0] + ax_ylim[1]) / 2),
+                        'ax_speakers_ylim_center': float((ax_speakers_ylim[0] + ax_speakers_ylim[1]) / 2),
+                        'ax_ylim_offset_from_zero': float(0.0 - (ax_ylim[0] + ax_ylim[1]) / 2),
+                        'ax_speakers_ylim_offset_from_zero': float(0.0 - (ax_speakers_ylim[0] + ax_speakers_ylim[1]) / 2),
+                        'patch_positions': patch_positions_final[:3] if len(patch_positions_final) > 3 else patch_positions_final,  # Nur erste 3 für Übersicht
+                        'num_patches': len(self.ax_speakers.patches)
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
         
         self.canvas.draw_idle()
 
@@ -154,9 +579,23 @@ class BeamsteeringPlot(QWidget):
                 print("Warnung: speaker_array ist nicht initialisiert")
                 return
 
-            # Vorhandene Patches entfernen
+            # Vorhandene Patches entfernen (von beiden Achsen)
+            # WICHTIG: Entferne Patches VOR dem Zeichnen, um doppelte Darstellung zu vermeiden
             if self.ax.patches:
+                for patch in list(self.ax.patches):  # Liste kopieren, da wir während Iteration entfernen
+                    try:
+                        patch.remove()
+                    except:
+                        pass
                 self.ax.patches.clear()
+            if self.ax_speakers is not None:
+                if self.ax_speakers.patches:
+                    for patch in list(self.ax_speakers.patches):  # Liste kopieren, da wir während Iteration entfernen
+                        try:
+                            patch.remove()
+                        except:
+                            pass
+                    self.ax_speakers.patches.clear()
 
             # Sammle Cabinet-Daten für dieses Array
             array_cabinets = []
@@ -177,6 +616,30 @@ class BeamsteeringPlot(QWidget):
                     continue
 
             if len(array_cabinets) > 0:
+                # Verwende ax_speakers für Lautsprecher-Darstellung (mit aspect='equal')
+                # Falls ax_speakers noch nicht erstellt wurde, verwende Hauptachse als Fallback
+                speaker_ax = self.ax_speakers if self.ax_speakers is not None else self.ax
+                # #region agent log - Welche Achse wird verwendet
+                import json
+                import time
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'E',
+                        'location': 'PlotBeamsteering.py:302',
+                        'message': 'Welche Achse wird verwendet',
+                        'data': {
+                            'ax_speakers_is_none': self.ax_speakers is None,
+                            'speaker_ax_id': str(id(speaker_ax)),
+                            'ax_id': str(id(self.ax)),
+                            'ax_speakers_id': str(id(self.ax_speakers)) if self.ax_speakers is not None else None,
+                            'speaker_ax_ylim': list(speaker_ax.get_ylim()) if hasattr(speaker_ax, 'get_ylim') else None,
+                            'ax_ylim': list(self.ax.get_ylim()) if hasattr(self.ax, 'get_ylim') else None
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
                 stack_drawer = StackDraw_Beamsteering(
                     speaker_array.source_polar_pattern,
                     speaker_array.source_position_x,
@@ -184,13 +647,116 @@ class BeamsteeringPlot(QWidget):
                     speaker_array.source_azimuth,
                     self.settings.width,
                     self.settings.length,
-                    self.ax,
+                    speaker_ax,  # Verwende zweite Y-Achse für Lautsprecher
                     cabinet_data=array_cabinets
                 )
                 
-                # Zeichne jeden Stack
+                # WICHTIG: Vor dem Zeichnen Y-Offsets auslesen
+                # Berechne für jeden Stack den Y-Offset (Differenz zwischen base_y und 0)
+                y_offsets = []
+                # #region agent log - Y-Offsets vor dem Zeichnen
+                import json
+                import time
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'PlotBeamsteering.py:283',
+                        'message': 'Y-Offsets vor dem Zeichnen',
+                        'data': {
+                            'num_stacks': len(array_cabinets),
+                            'source_position_y': [float(y) for y in speaker_array.source_position_y[:len(array_cabinets)]] if hasattr(speaker_array, 'source_position_y') else []
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                for isrc in range(len(array_cabinets)):
+                    if isrc < len(speaker_array.source_position_y):
+                        base_y = float(speaker_array.source_position_y[isrc])
+                        y_offset = base_y - 0.0  # Offset von base_y zu Y=0
+                        y_offsets.append(y_offset)
+                    else:
+                        y_offsets.append(0.0)
+                
+                # Zeichne jeden Stack (wird bei Y=0 gezeichnet)
                 for isrc in range(len(array_cabinets)):
                     stack_drawer.draw_stack(isrc)
+                
+                # WICHTIG: Nach dem Zeichnen Y-Offsets auf Y-Position anwenden
+                # Verschiebe alle Patches, damit sie bei Y=0 bleiben
+                if self.ax_speakers is not None:
+                    import matplotlib.patches as patches
+                    # #region agent log - Y-Limits vor Korrektur
+                    import json
+                    import time
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            'sessionId': 'debug-session',
+                            'runId': 'run1',
+                            'hypothesisId': 'C',
+                            'location': 'PlotBeamsteering.py:298',
+                            'message': 'Y-Limits vor Korrektur',
+                            'data': {
+                                'ax_speakers_ylim': list(self.ax_speakers.get_ylim()),
+                                'ax_speakers_xlim': list(self.ax_speakers.get_xlim()),
+                                'num_patches': len(self.ax_speakers.patches)
+                            },
+                            'timestamp': int(time.time() * 1000)
+                        }) + '\n')
+                    # #endregion
+                    patch_index = 0
+                    patch_positions_before = []
+                    patch_positions_after = []
+                    for isrc in range(len(array_cabinets)):
+                        # Zähle die Patches für diesen Stack (kann mehrere sein, wenn mehrere Cabinets)
+                        cabinet = array_cabinets[isrc]
+                        if isinstance(cabinet, list):
+                            num_cabinets = len(cabinet)
+                        else:
+                            num_cabinets = 1
+                        
+                        # Verschiebe jedes Patch dieses Stacks
+                        for _ in range(num_cabinets):
+                            if patch_index < len(self.ax_speakers.patches):
+                                patch = self.ax_speakers.patches[patch_index]
+                                if isinstance(patch, patches.Rectangle):
+                                    # Stelle sicher, dass das Patch bei Y=0 ist
+                                    # Der Offset wurde bereits beim Zeichnen berücksichtigt (y=0.0)
+                                    # Aber falls sich die Position geändert hat, korrigieren wir sie
+                                    current_y = patch.get_y()
+                                    patch_positions_before.append({
+                                        'isrc': isrc,
+                                        'patch_index': patch_index,
+                                        'y_before': float(current_y),
+                                        'x': float(patch.get_x()),
+                                        'width': float(patch.get_width()),
+                                        'height': float(patch.get_height())
+                                    })
+                                    if abs(current_y - 0.0) > 0.001:  # Toleranz für Rundungsfehler
+                                        patch.set_y(0.0)
+                                    patch_positions_after.append({
+                                        'isrc': isrc,
+                                        'patch_index': patch_index,
+                                        'y_after': float(patch.get_y())
+                                    })
+                                patch_index += 1
+                    # #region agent log - Patch-Positionen nach Korrektur
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            'sessionId': 'debug-session',
+                            'runId': 'run1',
+                            'hypothesisId': 'C',
+                            'location': 'PlotBeamsteering.py:330',
+                            'message': 'Patch-Positionen nach Korrektur',
+                            'data': {
+                                'positions_before': patch_positions_before,
+                                'positions_after': patch_positions_after,
+                                'ax_speakers_ylim_after': list(self.ax_speakers.get_ylim())
+                            },
+                            'timestamp': int(time.time() * 1000)
+                        }) + '\n')
+                    # #endregion
             else:
                 print("Keine gültigen Cabinet-Daten gefunden")
 
@@ -312,6 +878,20 @@ class BeamsteeringPlot(QWidget):
             self._updating_ticks = True
             x_min, x_max = ax.get_xlim()
             
+            # Synchronisiere X-Limits der zweiten Y-Achse und passe Y-Limits für aspect='equal' an
+            if self.ax_speakers is not None:
+                self.ax_speakers.set_xlim(x_min, x_max)
+                # Berechne Y-Limits basierend auf X-Limits für aspect='equal'
+                # Y=0 soll immer zentriert bleiben
+                x_range = x_max - x_min
+                y_range = x_range  # Gleiche Range für 1:1 Aspect-Ratio
+                y_center = 0.0  # Zentriert bei 0
+                y_min_speakers = y_center - y_range / 2
+                y_max_speakers = y_center + y_range / 2
+                self.ax_speakers.set_ylim(y_min_speakers, y_max_speakers)
+                # Setze aspect='equal' erneut mit adjustable='datalim' (für twinned Axes erforderlich)
+                self.ax_speakers.set_aspect('equal', adjustable='datalim')
+            
             # Berechne neue Ticks basierend auf sichtbarem Bereich
             # Die Schrittweite wird automatisch feiner bei kleinerem Bereich (Zoom-in)
             # und gröber bei größerem Bereich (Zoom-out)
@@ -398,29 +978,125 @@ class BeamsteeringPlot(QWidget):
         """Passt Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden"""
         try:
             import matplotlib.patches as patches
-            current_ylim = self.ax.get_ylim()
+            # Prüfe Patches auf der zweiten Y-Achse (Lautsprecher)
+            speaker_ax = self.ax_speakers if self.ax_speakers is not None else self.ax
             
-            # Finde maximale Y-Position + Höhe aller gezeichneten Rechtecke (Lautsprecher)
-            max_y = current_ylim[1]
-            for patch in self.ax.patches:
+            # Finde maximale Höhe aller gezeichneten Rechtecke (Lautsprecher)
+            # Da Lautsprecher bei Y=0 positioniert sind, suchen wir die maximale Höhe
+            max_height = 0.0
+            for patch in speaker_ax.patches:
                 if isinstance(patch, patches.Rectangle):
-                    patch_y = patch.get_y()
                     patch_height = patch.get_height()
-                    max_y = max(max_y, patch_y + patch_height)
+                    max_height = max(max_height, patch_height)
             
-            # Füge 0.1m Padding oberhalb der Lautsprecher hinzu
+            # Füge Padding hinzu (oberhalb und unterhalb von Y=0)
             padding = 0.1
-            max_y_with_padding = max_y + padding
+            max_y_with_padding = max_height / 2 + padding  # Obere Hälfte + Padding
+            min_y_with_padding = -max_height / 2 - padding  # Untere Hälfte + Padding
             
-            # Erweitere Y-Achsen-Grenze nur nach oben, wenn nötig
-            if max_y_with_padding > current_ylim[1]:
+            # Für die zweite Y-Achse mit aspect='equal': Berechne Y-Limits basierend auf X-Limits
+            if self.ax_speakers is not None:
+                xlim = self.ax.get_xlim()
+                x_range = xlim[1] - xlim[0]
+                
+                # Stelle sicher, dass die Y-Range groß genug ist für alle Lautsprecher
+                required_y_range = max_height + 2 * padding
+                # Verwende das Maximum aus X-Range (für 1:1 Aspect) und erforderlicher Höhe
+                y_range = max(x_range, required_y_range)
+                
+                # Zentriere bei Y=0
+                y_center = 0.0
+                y_min = y_center - y_range / 2
+                y_max = y_center + y_range / 2
+                
+                # Setze Y-Limits der zweiten Achse
+                self.ax_speakers.set_ylim(y_min, y_max)
+                # Synchronisiere X-Limits
+                self.ax_speakers.set_xlim(xlim)
+                # Setze aspect='equal' erneut mit adjustable='datalim' (für twinned Axes erforderlich)
+                self.ax_speakers.set_aspect('equal', adjustable='datalim')
+            
+            # Hauptachse: Passe Y-Limits an, damit Lautsprecher nicht abgeschnitten werden
+            current_ylim = self.ax.get_ylim()
+            # #region agent log - Vor Anpassung Hauptachse
+            import json
+            import time
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'B',
+                    'location': 'PlotBeamsteering.py:968',
+                    'message': '_adjust_ylim_for_speakers: Vor Anpassung Hauptachse',
+                    'data': {
+                        'max_height': float(max_height),
+                        'padding': float(padding),
+                        'max_y_with_padding': float(max_y_with_padding),
+                        'min_y_with_padding': float(min_y_with_padding),
+                        'current_ylim': list(current_ylim),
+                        'needs_adjustment': bool(max_y_with_padding > current_ylim[1] or min_y_with_padding < current_ylim[0])
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
+            if max_y_with_padding > current_ylim[1] or min_y_with_padding < current_ylim[0]:
                 # Berechne neue Ticks für erweiterte Grenze
-                y_min = current_ylim[0]
-                y_ticks, step = self._calculate_metric_ticks(y_min, max_y_with_padding)
-                self.ax.set_ylim(y_min, max_y_with_padding)
+                y_min = min(current_ylim[0], min_y_with_padding)
+                y_max = max(current_ylim[1], max_y_with_padding)
+                # #region agent log - Vor _calculate_metric_ticks in _adjust
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'PlotBeamsteering.py:973',
+                        'message': '_adjust_ylim_for_speakers: Vor _calculate_metric_ticks',
+                        'data': {
+                            'y_min_before_ticks': float(y_min),
+                            'y_max_before_ticks': float(y_max),
+                            'y_range_before_ticks': float(y_max - y_min)
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
+                # #region agent log - Nach _calculate_metric_ticks in _adjust
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'PlotBeamsteering.py:976',
+                        'message': '_adjust_ylim_for_speakers: Nach _calculate_metric_ticks',
+                        'data': {
+                            'y_ticks': [float(t) for t in y_ticks],
+                            'step': float(step),
+                            'y_min': float(y_min),
+                            'y_max': float(y_max)
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                self.ax.set_ylim(y_min, y_max)
                 self.ax.set_yticks(y_ticks)
                 # Formatierung auf eine Nachkommastelle
                 self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
+                # #region agent log - Nach set_ylim in _adjust
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'PlotBeamsteering.py:980',
+                        'message': '_adjust_ylim_for_speakers: Nach set_ylim',
+                        'data': {
+                            'ax_ylim_after_set': list(self.ax.get_ylim()),
+                            'y_min': float(y_min),
+                            'y_max': float(y_max)
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
         except Exception:
             # Bei Fehler nichts ändern
             pass

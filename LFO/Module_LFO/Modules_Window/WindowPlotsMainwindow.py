@@ -499,12 +499,34 @@ class DrawPlotsMainwindow(ModuleBase):
         """Setzt nur den SPL-Plot auf eine leere Darstellung."""
         plotter = self._get_current_spl_plotter()
         if plotter is not None:
+            # 🎯 FIX: Entferne ALLE SPL-Daten aus Container, damit update_overlays() weiß, dass keine SPL-Daten vorhanden sind
+            # Dies verhindert, dass alte SPL-Daten wieder angezeigt werden
+            if hasattr(self.container, 'calculation_spl') and isinstance(self.container.calculation_spl, dict):
+                # Entferne alle SPL-bezogenen Daten
+                self.container.calculation_spl.pop('sound_field_p', None)
+                self.container.calculation_spl.pop('sound_field_x', None)
+                self.container.calculation_spl.pop('sound_field_y', None)
+                # Entferne auch surface_grids und surface_results, damit keine alten Daten verwendet werden
+                if 'surface_grids' in self.container.calculation_spl:
+                    self.container.calculation_spl['surface_grids'].clear()
+                if 'surface_results' in self.container.calculation_spl:
+                    self.container.calculation_spl['surface_results'].clear()
+            
             plotter.initialize_empty_scene(preserve_camera=preserve_camera)
+            # 🎯 FIX: Stelle sicher, dass der Plotter gerendert wird, damit die entfernten Actors wirklich verschwinden
+            if hasattr(plotter, 'render'):
+                plotter.render()
+            
             # Aktualisiere Overlays (ohne graue Flächen für enabled Surfaces)
             plotter.update_overlays(self.settings, self.container)
             # Erstelle graue Flächen für enabled Surfaces (nur im leeren Plot)
             if hasattr(plotter, 'overlay_surfaces'):
                 plotter.overlay_surfaces.draw_surfaces(self.settings, self.container, create_empty_plot_surfaces=True)
+            
+            # 🎯 FIX: Render nochmal, damit alle Änderungen sichtbar werden
+            if hasattr(plotter, 'render'):
+                plotter.render()
+            
             self.colorbar_canvas.draw()
             # Prüfe ob "SPL over time" aktiv ist
             plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
@@ -516,11 +538,52 @@ class DrawPlotsMainwindow(ModuleBase):
                 plotter.update_time_control(False, self._time_frames_per_period + 1, self._time_frame_index, 0.2)
 
     def show_empty_axes(self):
-        """Setzt X- und Y-Achsen-Plots zurück."""
-        self.draw_spl_plot_xaxis.initialize_empty_plots()
-        self.matplotlib_canvas_xaxis.draw()
-        self.draw_spl_plot_yaxis.initialize_empty_plots()
-        self.matplotlib_canvas_yaxis.draw()
+        """Setzt die X- und Y-Achsen-Plots auf eine leere Darstellung."""
+        # 🎯 FIX: Lösche alte Daten aus calculation_axes, damit keine -200 dB Linien mehr geplottet werden
+        # Behalte aber Snapshots bei (falls vorhanden)
+        if hasattr(self.container, 'calculation_axes') and isinstance(self.container.calculation_axes, dict):
+            # Setze aktuelle_simulation auf leere Daten mit show_in_plot=False
+            self.container.calculation_axes["aktuelle_simulation"] = {
+                "x_data_xaxis": [],
+                "y_data_xaxis": [],
+                "x_data_yaxis": [],
+                "y_data_yaxis": [],
+                "show_in_plot": False,
+                "color": "#6A5ACD",
+                "segment_boundaries_xaxis": [],
+                "segment_boundaries_yaxis": []
+            }
+        
+        # 🎯 FIX: Prüfe ob Snapshots vorhanden sind - wenn ja, plotte diese statt leere Plots
+        calculation_axes = self.container.calculation_axes
+        has_snapshots = False
+        if isinstance(calculation_axes, dict):
+            # Prüfe ob Snapshots vorhanden sind (alle Keys außer "aktuelle_simulation")
+            snapshot_keys = [k for k in calculation_axes.keys() if k != "aktuelle_simulation"]
+            for key in snapshot_keys:
+                snapshot_data = calculation_axes.get(key, {})
+                if isinstance(snapshot_data, dict) and snapshot_data.get("show_in_plot", False):
+                    # Prüfe ob tatsächlich Daten vorhanden sind
+                    has_x_data = ('x_data_xaxis' in snapshot_data and 'y_data_xaxis' in snapshot_data and
+                                 len(snapshot_data.get('x_data_xaxis', [])) > 0 and
+                                 len(snapshot_data.get('y_data_xaxis', [])) > 0)
+                    has_y_data = ('x_data_yaxis' in snapshot_data and 'y_data_yaxis' in snapshot_data and
+                                 len(snapshot_data.get('x_data_yaxis', [])) > 0 and
+                                 len(snapshot_data.get('y_data_yaxis', [])) > 0)
+                    if has_x_data or has_y_data:
+                        has_snapshots = True
+                        break
+        
+        if has_snapshots:
+            # Snapshots vorhanden → plotte diese (plot_xaxis/plot_yaxis prüfen selbst, ob Daten vorhanden sind)
+            self.plot_xaxis()
+            self.plot_yaxis()
+        else:
+            # Keine Snapshots → zeige leere Plots
+            self.draw_spl_plot_xaxis.initialize_empty_plots()
+            self.matplotlib_canvas_xaxis.draw()
+            self.draw_spl_plot_yaxis.initialize_empty_plots()
+            self.matplotlib_canvas_yaxis.draw()
 
     def show_empty_polar(self):
         """Setzt den Polar-Plot zurück."""
@@ -1101,24 +1164,74 @@ class DrawPlotsMainwindow(ModuleBase):
         return self.draw_spl_plotter
 
     def plot_xaxis(self):
-        # Aufrufen der plot_xaxis Methode von DrawSPLPlot_Xaxis
+        # 🎯 FIX: Prüfe ob Snapshots vorhanden sind, bevor geprüft wird ob alle Sources muted sind
+        # Snapshots sollen auch angezeigt werden, wenn alle Lautsprecher muted sind
         calculation_axes = self.container.calculation_axes
-        aktuelle_simulation = calculation_axes.get("aktuelle_simulation", {})
-        show_in_plot = aktuelle_simulation.get("show_in_plot", False)
-        x_data = aktuelle_simulation.get("x_data_xaxis", [])
-        y_data = aktuelle_simulation.get("y_data_xaxis", [])
+        has_snapshots = False
+        if isinstance(calculation_axes, dict):
+            # Prüfe ob Snapshots vorhanden sind (alle Keys außer "aktuelle_simulation")
+            snapshot_keys = [k for k in calculation_axes.keys() if k != "aktuelle_simulation"]
+            for key in snapshot_keys:
+                snapshot_data = calculation_axes.get(key, {})
+                if isinstance(snapshot_data, dict) and snapshot_data.get("show_in_plot", False):
+                    # Prüfe ob tatsächlich Daten vorhanden sind
+                    if ('x_data_xaxis' in snapshot_data and 'y_data_xaxis' in snapshot_data and
+                        len(snapshot_data.get('x_data_xaxis', [])) > 0 and
+                        len(snapshot_data.get('y_data_xaxis', [])) > 0):
+                        has_snapshots = True
+                        break
+        
+        # Wenn keine Snapshots vorhanden sind, prüfe ob alle Sources muted sind
+        if not has_snapshots:
+            has_active_sources = any(
+                not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values()
+            ) if hasattr(self.settings, 'speaker_arrays') and self.settings.speaker_arrays else False
+            
+            if not has_active_sources:
+                # Alle Sources sind hidden/muted und keine Snapshots → zeige Empty Plot
+                self.draw_spl_plot_xaxis.initialize_empty_plots()
+                self.matplotlib_canvas_xaxis.draw()
+                return
+        
+        # Aufrufen der plot_xaxis Methode von DrawSPLPlot_Xaxis
+        # (plot_xaxis() prüft selbst, ob Daten vorhanden sind)
         self.draw_spl_plot_xaxis.plot_xaxis(calculation_axes)
 
         # Aktualisieren des Plots
         self.matplotlib_canvas_xaxis.draw()
 
     def plot_yaxis(self):
-        # Aufrufen der plot_yaxis Methode von DrawSPLPlot_Yaxis
+        # 🎯 FIX: Prüfe ob Snapshots vorhanden sind, bevor geprüft wird ob alle Sources muted sind
+        # Snapshots sollen auch angezeigt werden, wenn alle Lautsprecher muted sind
         calculation_axes = self.container.calculation_axes
-        aktuelle_simulation = calculation_axes.get("aktuelle_simulation", {})
-        show_in_plot = aktuelle_simulation.get("show_in_plot", False)
-        x_data = aktuelle_simulation.get("x_data_yaxis", [])
-        y_data = aktuelle_simulation.get("y_data_yaxis", [])
+        has_snapshots = False
+        if isinstance(calculation_axes, dict):
+            # Prüfe ob Snapshots vorhanden sind (alle Keys außer "aktuelle_simulation")
+            snapshot_keys = [k for k in calculation_axes.keys() if k != "aktuelle_simulation"]
+            for key in snapshot_keys:
+                snapshot_data = calculation_axes.get(key, {})
+                if isinstance(snapshot_data, dict) and snapshot_data.get("show_in_plot", False):
+                    # Prüfe ob tatsächlich Daten vorhanden sind
+                    if ('x_data_yaxis' in snapshot_data and 'y_data_yaxis' in snapshot_data and
+                        len(snapshot_data.get('x_data_yaxis', [])) > 0 and
+                        len(snapshot_data.get('y_data_yaxis', [])) > 0):
+                        has_snapshots = True
+                        break
+        
+        # Wenn keine Snapshots vorhanden sind, prüfe ob alle Sources muted sind
+        if not has_snapshots:
+            has_active_sources = any(
+                not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values()
+            ) if hasattr(self.settings, 'speaker_arrays') and self.settings.speaker_arrays else False
+            
+            if not has_active_sources:
+                # Alle Sources sind hidden/muted und keine Snapshots → zeige Empty Plot
+                self.draw_spl_plot_yaxis.initialize_empty_plots()
+                self.matplotlib_canvas_yaxis.draw()
+                return
+        
+        # Aufrufen der plot_yaxis Methode von DrawSPLPlot_Yaxis
+        # (plot_yaxis() prüft selbst, ob Daten vorhanden sind)
         self.draw_spl_plot_yaxis.plot_yaxis(calculation_axes)
 
         # Aktualisieren des Plots
@@ -1180,16 +1293,9 @@ class DrawPlotsMainwindow(ModuleBase):
             y_new_min = y_center - (y_center - y_min) * scale_factor
             y_new_max = y_center + (y_max - y_center) * scale_factor
 
-            print(f"[DEBUG WindowPlotsMainwindow] zoom() aufgerufen: ax={ax}, x={x_new_min:.3f} bis {x_new_max:.3f}, y={y_new_min:.3f} bis {y_new_max:.3f}")
-
             # Prüfe ob es X- oder Y-Achsen-Plot ist
             is_xaxis = ax == self.matplotlib_canvas_xaxis.ax
             is_yaxis = ax == self.matplotlib_canvas_yaxis.ax
-            
-            if is_xaxis:
-                print(f"[DEBUG WindowPlotsMainwindow] X-Achsen-Plot erkannt")
-            elif is_yaxis:
-                print(f"[DEBUG WindowPlotsMainwindow] Y-Achsen-Plot erkannt")
 
             # Setze neue Grenzen
             ax.set_xlim(x_new_min, x_new_max)  # Horizontale Grenzen
@@ -1197,17 +1303,13 @@ class DrawPlotsMainwindow(ModuleBase):
 
             # Manuell Callbacks aufrufen, da Matplotlib sie manchmal nicht automatisch auslöst
             if is_xaxis and hasattr(self.draw_spl_plot_xaxis, '_on_xlim_changed'):
-                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_xlim_changed manuell auf")
                 self.draw_spl_plot_xaxis._on_xlim_changed(ax)
             if is_xaxis and hasattr(self.draw_spl_plot_xaxis, '_on_ylim_changed'):
-                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_ylim_changed manuell auf")
                 self.draw_spl_plot_xaxis._on_ylim_changed(ax)
             
             if is_yaxis and hasattr(self.draw_spl_plot_yaxis, '_on_xlim_changed'):
-                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_xlim_changed manuell auf")
                 self.draw_spl_plot_yaxis._on_xlim_changed(ax)
             if is_yaxis and hasattr(self.draw_spl_plot_yaxis, '_on_ylim_changed'):
-                print(f"[DEBUG WindowPlotsMainwindow] Rufe _on_ylim_changed manuell auf")
                 self.draw_spl_plot_yaxis._on_ylim_changed(ax)
 
             ax.figure.canvas.draw_idle()
@@ -1327,8 +1429,6 @@ class DrawPlotsMainwindow(ModuleBase):
             y_new_min = y_min - dy
             y_new_max = y_max - dy
             
-            print(f"[DEBUG WindowPlotsMainwindow] pan() aufgerufen: ax={ax}, x={x_new_min:.3f} bis {x_new_max:.3f}, y={y_new_min:.3f} bis {y_new_max:.3f}")
-            
             ax.set_xlim(x_new_min, x_new_max)
             ax.set_ylim(y_new_min, y_new_max)
             
@@ -1444,7 +1544,7 @@ class DrawPlotsMainwindow(ModuleBase):
 
     def _camera_debug(self, message: str) -> None:
         if self._camera_debug_enabled:
-            print(f"[CAM DEBUG][Window] {message}")
+            pass
 
     def _resolve_camera_debug_flag(self) -> bool:
         env_value = os.environ.get("LFO_DEBUG_CAMERA")
@@ -1465,18 +1565,15 @@ class DrawPlotsMainwindow(ModuleBase):
 
     def _debug_splitter_top(self, pos, index):
         """Debug-Ausgabe für horizontal_splitter_top (SPLPlot und YAxis)"""
-        sizes = self.horizontal_splitter_top.sizes()
-        print(f"🔧 DEBUG horizontal_splitter_top: setSizes({sizes})  # SPLPlot und YAxis")
+        pass
     
     def _debug_splitter_vertical(self, pos, index):
         """Debug-Ausgabe für vertical_splitter (Oberer und unterer Bereich)"""
-        sizes = self.vertical_splitter.sizes()
-        print(f"🔧 DEBUG vertical_splitter: setSizes({sizes})  # Oberer und unterer Bereich")
+        pass
     
     def _debug_splitter_bottom(self, pos, index):
         """Debug-Ausgabe für horizontal_splitter_bottom (XAxis und PolarPattern)"""
-        sizes = self.horizontal_splitter_bottom.sizes()
-        print(f"🔧 DEBUG horizontal_splitter_bottom: setSizes({sizes})  # XAxis und PolarPattern")
+        pass
 
     def _setup_mouse_position_tracking(self):
         """Richtet Mouse-Move-Events für alle Plots ein, um Mausposition anzuzeigen"""
@@ -1589,8 +1686,8 @@ class DrawPlotsMainwindow(ModuleBase):
                 text = f"Polar:\nAngle: {angle_deg:.1f}°\nSPL: -- dB"
             
             self._update_mouse_position(text)
-        except Exception as e:
-            print(f"[DEBUG] Fehler in _on_mouse_move_polar: {e}")
+        except Exception:
+            pass
 
     def _get_spl_from_xaxis_plot(self, x_pos):
         """Holt SPL-Wert aus X-Achsen-Plot durch Interpolation"""
@@ -1753,10 +1850,7 @@ class DrawPlotsMainwindow(ModuleBase):
                         return float(spl_value)
             
             return None
-        except Exception as e:
-            print(f"[DEBUG] Fehler in _get_spl_from_polar_plot: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
             return None
 
     def _get_spl_from_3d_plot(self, x_pos, y_pos):
@@ -1806,8 +1900,7 @@ class DrawPlotsMainwindow(ModuleBase):
                     return float(spl_db)
             
             return None
-        except Exception as e:
-            print(f"[DEBUG] Fehler in _get_spl_from_3d_plot: {e}")
+        except Exception:
             return None
 
     def _update_mouse_position(self, text):

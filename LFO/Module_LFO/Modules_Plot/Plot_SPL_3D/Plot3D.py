@@ -524,6 +524,40 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                         except Exception:
                             pass
                     self._group_actors.clear()
+                
+                # 🎯 FIX: Entferne ALLE SPL-bezogenen Actors direkt aus dem Plotter
+                # (auch solche, die nicht in den internen Dictionaries gespeichert sind)
+                if renderer is not None and hasattr(renderer, 'actors'):
+                    actors_to_remove = []
+                    for actor_name in list(renderer.actors.keys()):
+                        # Entferne alle SPL-bezogenen Actors
+                        # Prüfe auf alle möglichen Actor-Namen-Patterns
+                        if (actor_name == self.SURFACE_NAME or 
+                            actor_name == self.FLOOR_NAME or
+                            actor_name.startswith('spl_surface_tex_') or
+                            actor_name.startswith('spl_surface_group_') or
+                            actor_name.startswith('spl_surface_tri_') or
+                            actor_name.startswith('spl_surface_gridtri_') or
+                            actor_name.startswith('vertical_spl_') or
+                            actor_name.startswith(f'{self.SURFACE_NAME}_group_') or
+                            actor_name.startswith(f'{self.SURFACE_NAME}_tri_') or
+                            actor_name.startswith(f'{self.SURFACE_NAME}_tex_') or
+                            actor_name.startswith(f'{self.SURFACE_NAME}_gridtri_')):
+                            actors_to_remove.append(actor_name)
+                    
+                    for actor_name in actors_to_remove:
+                        try:
+                            self.plotter.remove_actor(actor_name)
+                        except Exception:
+                            pass
+                    
+                    # 🎯 FIX: Stelle sicher, dass auch alle vertical SPL-Actors entfernt werden
+                    # (auch wenn _clear_vertical_spl_surfaces() bereits aufgerufen wurde)
+                    if hasattr(self, '_clear_vertical_spl_surfaces'):
+                        try:
+                            self._clear_vertical_spl_surfaces()
+                        except Exception:
+                            pass
 
             # SPL-interne Zustände zurücksetzen
             self.has_data = False
@@ -705,30 +739,42 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
                 # Prüfe ob SPL-Daten vorhanden sind, um zu entscheiden ob enabled Surfaces gezeichnet werden sollen
                 create_empty_plot_surfaces = False
                 try:
+                    # 🎯 FIX: Prüfe zuerst, ob alle Lautsprecher muted/hidden sind
+                    # Wenn ja, sollten keine SPL-Daten angezeigt werden
+                    has_active_sources = False
+                    speaker_arrays = getattr(settings, 'speaker_arrays', {})
+                    if isinstance(speaker_arrays, dict) and speaker_arrays:
+                        has_active_sources = any(
+                            not (getattr(arr, 'mute', False) or getattr(arr, 'hide', False))
+                            for arr in speaker_arrays.values()
+                        )
+                    
                     # Prüfe ob SPL-Daten vorhanden sind (gleiche Logik wie in draw_surfaces)
                     # WICHTIG: Die entscheidende Prüfung ist sound_field_p, nicht nur ob Texture-Actors existieren
                     has_spl_data = False
                     
-                    # 🎯 ZUERST: Prüfe container.calculation_spl (entscheidende Prüfung)
-                    # Dies ist die zuverlässigste Methode, um zu prüfen ob echte SPL-Daten vorhanden sind
-                    if container is not None and hasattr(container, 'calculation_spl'):
-                        calc_spl = container.calculation_spl
-                        if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
-                            has_spl_data = True
-                    
-                    # Nur wenn sound_field_p nicht vorhanden ist, prüfe auf Actors
-                    # (Texture-Actors können auch im leeren Plot existieren als leere Texturen)
-                    if not has_spl_data:
-                        if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
-                            spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
-                            spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
-                            # Prüfe nur auf spl_surface und spl_floor, nicht auf Texture-Actors
-                            # (Texture-Actors können leer sein)
-                            if spl_surface_actor is not None or spl_floor_actor is not None:
+                    # Nur wenn aktive Sources vorhanden sind, prüfe auf SPL-Daten
+                    if has_active_sources:
+                        # 🎯 ZUERST: Prüfe container.calculation_spl (entscheidende Prüfung)
+                        # Dies ist die zuverlässigste Methode, um zu prüfen ob echte SPL-Daten vorhanden sind
+                        if container is not None and hasattr(container, 'calculation_spl'):
+                            calc_spl = container.calculation_spl
+                            if isinstance(calc_spl, dict) and calc_spl.get('sound_field_p') is not None:
                                 has_spl_data = True
+                        
+                        # Nur wenn sound_field_p nicht vorhanden ist, prüfe auf Actors
+                        # (Texture-Actors können auch im leeren Plot existieren als leere Texturen)
+                        if not has_spl_data:
+                            if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                                spl_surface_actor = self.plotter.renderer.actors.get('spl_surface')
+                                spl_floor_actor = self.plotter.renderer.actors.get('spl_floor')
+                                # Prüfe nur auf spl_surface und spl_floor, nicht auf Texture-Actors
+                                # (Texture-Actors können leer sein)
+                                if spl_surface_actor is not None or spl_floor_actor is not None:
+                                    has_spl_data = True
                     
-                    # Wenn keine SPL-Daten vorhanden sind, zeichne enabled Surfaces für leeren Plot
-                    if not has_spl_data:
+                    # Wenn keine aktiven Sources ODER keine SPL-Daten vorhanden sind, zeichne enabled Surfaces für leeren Plot
+                    if not has_active_sources or not has_spl_data:
                         create_empty_plot_surfaces = True
                 except Exception:
                     import traceback

@@ -4437,10 +4437,10 @@ class Sources(ModuleBase, QObject):
             }) + "\n")
         # #endregion
         
-        # 🎯 FIX: update_speaker_overlays() aufrufen, damit der Plot aktualisiert wird
-        # Die Signatur-Vergleichung in update_overlays() erkennt die Hide-Status-Änderung
-        # und zeichnet nur die betroffenen Arrays neu
-        self.update_speaker_overlays()
+        # 🎯 OPTIMIERUNG: update_speaker_overlays() NICHT hier aufrufen, da update_speaker_array_calculations()
+        # bereits alle notwendigen Updates durchführt (inkl. update_overlays() via plot_spl())
+        # Dies verhindert doppelte Aufrufe von update_overlays()
+        # self.update_speaker_overlays()  # ENTFERNT: Wird bereits durch update_speaker_array_calculations() aufgerufen
         
         # 🎯 FIX: Erzwinge Neuberechnung der Positionen, indem der Hash gelöscht wird
         # Das stellt sicher, dass calculate_stack_center() aufgerufen wird und die Gehäusegröße berücksichtigt

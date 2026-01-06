@@ -425,7 +425,19 @@ class MainWindow(QtWidgets.QMainWindow):
             plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
             is_fem_mode = bool(getattr(self.settings, 'spl_plot_fem', False))
             
-            if plot_mode == "SPL plot" and is_fem_mode:
+            # 🎯 OPTIMIERUNG: Prüfe ob alle Sources hidden/muted sind, bevor calculate_spl()/calculate_fdtd() zur Task-Liste hinzugefügt wird
+            # Dies verhindert unnötige Aufrufe von calculate_spl()/calculate_fdtd()
+            has_active_sources = any(
+                not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values()
+            ) if hasattr(self.settings, 'speaker_arrays') and self.settings.speaker_arrays else False
+            
+            if not has_active_sources:
+                # Alle Sources sind hidden/muted → zeige Empty Plot statt Berechnung
+                def _clear_spl_manual():
+                    self._set_spl_show_flag(False)
+                    self.draw_plots.show_empty_spl()
+                tasks.append(("Clearing SPL plot", _clear_spl_manual))
+            elif plot_mode == "SPL plot" and is_fem_mode:
                 # "SPL plot" + FEM: Nur FEM-Analyse
                 tasks.append(("Calculating FEM", lambda: self.calculate_spl(
                     show_progress=True,
@@ -793,34 +805,45 @@ class MainWindow(QtWidgets.QMainWindow):
 
                     fem_calculated = False
 
+                    # 🎯 OPTIMIERUNG: Prüfe ob alle Sources hidden/muted sind, bevor calculate_spl() zur Task-Liste hinzugefügt wird
+                    # Dies verhindert unnötige Aufrufe von calculate_spl()
+                    has_active_sources = any(
+                        not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values()
+                    ) if hasattr(self.settings, 'speaker_arrays') and self.settings.speaker_arrays else False
+
                     # Automatische Berechnung: Prüfe Plot-Modus
                     plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
 
                     if update_soundfield:
-                        # Automatische Berechnung basierend auf aktivem Plot-Modus
-                        if plot_mode == "SPL plot" and is_fem_mode:
-                            # "SPL plot" + FEM: Nur FEM-Analyse
-                            tasks.append(("Calculating FEM", lambda: self.calculate_spl(
-                                show_progress=True,
-                                update_plot=True,
-                                update_axisplots=False,
-                                update_polarplots=False,
-                            )))
-                            fem_calculated = True
-                        elif plot_mode == "SPL over time":
-                            # "SPL over time": Nur FDTD-Analyse (unabhängig von FEM-Modus)
-                            tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
-                                show_progress=True,
-                                update_plot=True,
-                            )))
+                        # 🎯 OPTIMIERUNG: Nur calculate_spl() aufrufen, wenn aktive Sources vorhanden sind
+                        if not has_active_sources:
+                            # Alle Sources sind hidden/muted → zeige Empty Plot statt Berechnung
+                            tasks.append(("Clearing SPL plot", _clear_spl))
                         else:
-                            # Normale SPL-Berechnung (ohne FEM)
-                            tasks.append(("Calculating SPL", lambda: self.calculate_spl(
-                                show_progress=True,
-                                update_plot=True,
-                                update_axisplots=False,
-                                update_polarplots=False,
-                            )))
+                            # Automatische Berechnung basierend auf aktivem Plot-Modus
+                            if plot_mode == "SPL plot" and is_fem_mode:
+                                # "SPL plot" + FEM: Nur FEM-Analyse
+                                tasks.append(("Calculating FEM", lambda: self.calculate_spl(
+                                    show_progress=True,
+                                    update_plot=True,
+                                    update_axisplots=False,
+                                    update_polarplots=False,
+                                )))
+                                fem_calculated = True
+                            elif plot_mode == "SPL over time":
+                                # "SPL over time": Nur FDTD-Analyse (unabhängig von FEM-Modus)
+                                tasks.append(("Calculating FDTD", lambda: self.calculate_fdtd(
+                                    show_progress=True,
+                                    update_plot=True,
+                                )))
+                            else:
+                                # Normale SPL-Berechnung (ohne FEM)
+                                tasks.append(("Calculating SPL", lambda: self.calculate_spl(
+                                    show_progress=True,
+                                    update_plot=True,
+                                    update_axisplots=False,
+                                    update_polarplots=False,
+                                )))
                     elif skipped_fem_run:
                         pass
                     else:
@@ -1008,6 +1031,17 @@ class MainWindow(QtWidgets.QMainWindow):
             msg.exec_()
             return
         
+        # 🎯 OPTIMIERUNG: Prüfe ob alle Sources hidden/muted sind, bevor Berechnung startet
+        has_active_sources = any(
+            not (arr.mute or arr.hide) for arr in speaker_arrays.values()
+        )
+        
+        if not has_active_sources:
+            # Alle Sources sind hidden/muted → zeige Empty Plot
+            if update_plot:
+                self.draw_plots.show_empty_spl()
+            return
+        
         # Erstelle FDTD-Calculator (unabhängig von FEM)
         calculator = SoundFieldCalculatorFDTD(
             self.settings,
@@ -1099,6 +1133,35 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         if not include_x and not include_y:
             self._set_axes_show_flag(False)
+            return
+
+        # 🎯 OPTIMIERUNG: Prüfe ob alle Sources hidden/muted sind, bevor Berechnung startet
+        # Dies verhindert unnötige Berechnungen und -200 dB Linien in den Plots
+        has_active_sources = any(
+            not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values()
+        ) if hasattr(self.settings, 'speaker_arrays') and self.settings.speaker_arrays else False
+        
+        if not has_active_sources:
+            # Alle Sources sind hidden/muted → setze aktuelle_simulation auf leer
+            self._set_axes_show_flag(False)
+            # 🎯 FIX: Lösche alte Daten aus calculation_axes, damit keine -200 dB Linien mehr geplottet werden
+            # Behalte aber Snapshots bei (falls vorhanden)
+            if hasattr(self.container, 'calculation_axes') and isinstance(self.container.calculation_axes, dict):
+                # Setze aktuelle_simulation auf leere Daten mit show_in_plot=False
+                # Snapshots bleiben erhalten
+                self.container.calculation_axes["aktuelle_simulation"] = {
+                    "x_data_xaxis": [],
+                    "y_data_xaxis": [],
+                    "x_data_yaxis": [],
+                    "y_data_yaxis": [],
+                    "show_in_plot": False,
+                    "color": "#6A5ACD",
+                    "segment_boundaries_xaxis": [],
+                    "segment_boundaries_yaxis": []
+                }
+            if update_plot:
+                # show_empty_axes() prüft selbst, ob Snapshots vorhanden sind und zeigt diese an
+                self.draw_plots.show_empty_axes()
             return
 
         performed = False

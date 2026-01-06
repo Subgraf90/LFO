@@ -87,16 +87,50 @@ class StackDraw_Beamsteering:
             base_x = float(self.source_position_x[isrc])
             base_y = float(self.source_position_y[isrc])
             
+            # Berechne Y-Offset: Differenz zwischen aktueller Y-Position und 0
+            # Dieser Offset wird verwendet, um die Lautsprecher immer bei Y=0 zu zeichnen
+            y_offset = base_y - 0.0  # Offset von base_y zu Y=0
+            
+            # #region agent log - Position vor dem Zeichnen
+            import json
+            import time
+            # Prüfe ob self.ax die Hauptachse oder ax_speakers ist
+            ax_id = id(self.ax)
+            ax_is_twin = hasattr(self.ax, 'is_twin') and self.ax.is_twin
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'PlotStacks2Beamsteering.py:88',
+                    'message': 'Position vor dem Zeichnen',
+                    'data': {
+                        'isrc': int(isrc),
+                        'base_x': float(base_x),
+                        'base_y': float(base_y),
+                        'y_offset': float(y_offset),
+                        'x_offset_cabinet': float(x_offset),
+                        'ax_type': str(type(self.ax).__name__),
+                        'ax_id': str(ax_id),
+                        'ax_is_twin': bool(ax_is_twin),
+                        'ax_ylim': list(self.ax.get_ylim()) if hasattr(self.ax, 'get_ylim') else None
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
+            
             # x_offset ist bereits zentriert (Mittelpunkt des Stacks = 0)
             # Positioniere den Lautsprecher so, dass der Stack-Mittelpunkt auf base_x liegt
             # x_offset gibt die Position der linken Kante des Lautsprechers relativ zum Stack-Mittelpunkt an
             x = base_x + x_offset
-            y = base_y
+            # WICHTIG: Lautsprecher werden immer bei Y=0 positioniert (unabhängig von base_y)
+            # Der y_offset wird nach dem Zeichnen angewendet, um die Position zu korrigieren
+            y = 0.0
 
             # Berechne Transform für unverzerrte Lautsprecher-Darstellung
             # Die Lautsprecher haben Dimensionen in Metern (width x height)
             # Beide Achsen sind in Metern
-            # Um die Lautsprecher unverzerrt zu halten, müssen wir die Höhe basierend auf dem Aspect-Ratio skalieren
+            # WICHTIG: Verwende die Limits der Achse, auf der gezeichnet wird (ax_speakers)
             xlim = self.ax.get_xlim()
             ylim = self.ax.get_ylim()
             x_range = xlim[1] - xlim[0]
@@ -223,6 +257,31 @@ class StackDraw_Beamsteering:
                 fc=color
             )
             self.ax.add_patch(rect)
+            
+            # #region agent log - Position nach dem Zeichnen
+            import json
+            import time
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'PlotStacks2Beamsteering.py:231',
+                    'message': 'Position nach dem Zeichnen',
+                    'data': {
+                        'isrc': int(isrc),
+                        'x': float(x),
+                        'y': float(y),
+                        'rect_x': float(rect.get_x()),
+                        'rect_y': float(rect.get_y()),
+                        'rect_width': float(rect.get_width()),
+                        'rect_height': float(rect.get_height()),
+                        'ax_ylim': list(self.ax.get_ylim()) if hasattr(self.ax, 'get_ylim') else None,
+                        'ax_xlim': list(self.ax.get_xlim()) if hasattr(self.ax, 'get_xlim') else None
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }) + '\n')
+            # #endregion
             
             # #region agent log - Finale Abmessungen beim Zeichnen
             import json
