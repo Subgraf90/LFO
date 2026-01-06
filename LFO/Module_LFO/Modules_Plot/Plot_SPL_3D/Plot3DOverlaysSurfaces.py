@@ -275,9 +275,20 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             if len(points) < 3:
                 continue
             
+            # 🎯 NEU: Prüfe ob Surface als "empty" markiert ist (inkompatibel bei Snapshot)
+            is_empty_surface = False
+            if container is not None and hasattr(container, 'calculation_spl'):
+                calc_spl = container.calculation_spl
+                if isinstance(calc_spl, dict):
+                    surface_grids = calc_spl.get('surface_grids', {})
+                    if isinstance(surface_grids, dict) and surface_id in surface_grids:
+                        grid_data = surface_grids[surface_id]
+                        if isinstance(grid_data, dict):
+                            is_empty_surface = grid_data.get('is_empty', False)
+            
             # 🎯 VALIDIERUNG: Prüfe ob enabled Surface für SPL-Berechnung verwendet werden kann
             is_valid_for_spl = True
-            if enabled and surface_obj is not None:
+            if enabled and surface_obj is not None and not is_empty_surface:
                 try:
                     validation_result = validate_and_optimize_surface(
                         surface_obj,
@@ -355,10 +366,10 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         inactive_surface_ids.append(str(surface_id))
                         inactive_surface_enabled.append(False)
                 else:
-                    # 🎯 Enabled Surface: Prüfe ob gültig für SPL
+                    # 🎯 Enabled Surface: Prüfe ob gültig für SPL oder als "empty" markiert
                     
-                    if not is_valid_for_spl:
-                        # Ungültige enabled Surface: grau hinterlegen, aber Rahmen trotzdem zeichnen
+                    if is_empty_surface or not is_valid_for_spl:
+                        # Ungültige oder leere enabled Surface: grau hinterlegen, aber Rahmen trotzdem zeichnen
                         invalid_enabled_points_list.append(closed_coords_array)
                         invalid_enabled_faces_list.append(n_points)
                         invalid_enabled_lines_list.append(n_points)

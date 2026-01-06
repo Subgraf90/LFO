@@ -4,6 +4,7 @@ from matplotlib.ticker import MultipleLocator
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
+from PyQt5.QtCore import Qt
 from Module_LFO.Modules_Init.ModuleBase import ModuleBase  # Importieren der Modulebase mit enthaltenem MihiAssi
 from Module_LFO.Modules_Plot.PlotStacks2Windowing import StackDraw_Windowing
 
@@ -21,7 +22,6 @@ class WindowingPlot(QWidget):
         # Zoom-Callback-Verwaltung
         self._zoom_callback_connected = False
         self._updating_ticks = False
-        self._y_locator_step = None
         
         layout = QVBoxLayout()
         layout.addWidget(self.canvas)
@@ -32,6 +32,9 @@ class WindowingPlot(QWidget):
         
         # Verbinde Zoom-Callbacks für adaptive Achsenbeschriftung
         self._connect_zoom_callbacks()
+        
+        # Verbinde Resize-Event für automatische Anpassung
+        self.canvas.mpl_connect('resize_event', self._on_canvas_resize)
 
 
     def windowing_plot(self, windowing, speaker_array_id):
@@ -43,6 +46,8 @@ class WindowingPlot(QWidget):
             self.ax.set_title("Kein gültiges SpeakerArray gefunden")
             self.canvas.draw()
             return
+        
+        self.plot_Stacks2Windowing(speaker_array_id)
 
         if not isinstance(windowing, dict):
             windowing = {}
@@ -67,17 +72,18 @@ class WindowingPlot(QWidget):
         if x_values:
             x_min = min(x_values)
             x_max = max(x_values)
-            # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
-            current_xlim = self.ax.get_xlim()
-            if abs(current_xlim[0] - x_min) > 0.01 or abs(current_xlim[1] - x_max) > 0.01:
-                # Bereits gezoomt - verwende sichtbare Grenzen
-                x_min_visible, x_max_visible = current_xlim
-                x_ticks, step = self._calculate_metric_ticks(x_min_visible, x_max_visible)
+            x_range = max(x_max - x_min, 0)
+            x_step = self._select_metric_tick_step(x_range)
+            # Mehr Padding links und rechts für mehr Luft
+            if x_range == 0:
+                x_padding = max(0.5, x_step * 0.5)
+                x_min -= x_padding
+                x_max += x_padding
             else:
-                # Nicht gezoomt - verwende Daten-Grenzen (exakt, ohne Padding)
-                x_ticks, step = self._calculate_metric_ticks(x_min, x_max)
-                self.ax.set_xlim(x_min, x_max)
-            self.ax.set_xticks(x_ticks)
+                # Mehr Padding (5% der Range) für mehr Luft links und rechts
+                x_padding = x_range * 0.05
+            self.ax.set_xlim(x_min - x_padding, x_max + x_padding)
+            self.ax.xaxis.set_major_locator(MultipleLocator(x_step))
 
         y_values = []
         y_values.extend(np.atleast_1d(window_restriction_db).tolist())
@@ -90,59 +96,48 @@ class WindowingPlot(QWidget):
         if y_values:
             y_min = min(y_values)
             y_max = max(y_values)
-            # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
-            current_ylim = self.ax.get_ylim()
-            if abs(current_ylim[0] - y_min) > 0.01 or abs(current_ylim[1] - y_max) > 0.01:
-                # Bereits gezoomt - verwende sichtbare Grenzen
-                y_min_visible, y_max_visible = current_ylim
-                self._update_spl_ticks(y_min_visible, y_max_visible)
+            
+            # Berücksichtige Lautsprecher-Stacks: Finde minimale Y-Position aller Patches
+            min_patch_y = float('inf')
+            for patch in self.ax.patches:
+                if hasattr(patch, 'get_y'):
+                    patch_y = patch.get_y()
+                    if hasattr(patch, 'get_height'):
+                        patch_height = patch.get_height()
+                        # Rechtecke gehen von patch_y nach unten (patch_y - height)
+                        min_patch_y = min(min_patch_y, patch_y - patch_height)
+                    else:
+                        min_patch_y = min(min_patch_y, patch_y)
+            
+            # Verwende das Minimum aus Daten und Patches
+            if min_patch_y != float('inf'):
+                y_min = min(y_min, min_patch_y)
+            
+            y_range = max(y_max - y_min, 0)
+            y_step = self._select_db_tick_step(y_range)
+            # Minimales Padding für Y-Achse - Höhe reduzieren, aber sicherstellen dass Patches sichtbar sind
+            if y_range == 0:
+                y_padding = max(0.5, y_step * 0.1)
+                y_min -= y_padding
+                y_max += y_padding
             else:
-                # Nicht gezoomt - verwende Daten-Grenzen (exakt, ohne Padding)
-                self.ax.set_ylim(y_min, y_max)
-                self._update_spl_ticks(y_min, y_max)
+                # Sehr minimales Padding (nur 2% der Range) um Höhe zu minimieren
+                y_padding = max(y_range * 0.02, 0.1)  # Mindestens 0.1 für kleine Ranges
+            self.ax.set_ylim(y_min - y_padding, y_max + y_padding)
+            self.ax.yaxis.set_major_locator(MultipleLocator(y_step))
 
-        # KEIN axis('equal') - Achsen können unterschiedlich skaliert sein
-        # Lautsprecher werden durch Transform in StackDraw_Windowing unverzerrt dargestellt
-        # Plot hat feste Breite und Höhe (800x220 Pixel) durch setFixedWidth/setFixedHeight in UiSourceManagement.py
+        # Setze aspect='equal' für gleichmäßige Skalierung (1:1 Verhältnis)
+        self.ax.set_aspect('equal', adjustable='box')
         
-        # WICHTIG: Layout-Anpassungen VOR dem Zeichnen der Stacks, damit Pixel-Größe korrekt ist
-        self.ax.grid(color='k', linestyle='-', linewidth=0.4)
+        self.ax.grid(color='k', linestyle='-', linewidth=0.3)
         self.ax.set_xlabel("Arc width [m]", fontsize=6)
         self.ax.set_ylabel("Windowfunction [dB]", fontsize=6)
         self.ax.tick_params(axis='both', which='both', labelsize=6)
         
-        # Layout-Anpassungen für konsistente Größe (muss VOR Stack-Zeichnung sein!)
+        # Layout-Anpassungen für konsistente Größe und um Achsenbeschriftungen nicht abzuschneiden
         self._apply_layout()
         
-        # Zeichne einmal, um sicherzustellen, dass get_window_extent() korrekte Werte liefert
-        # (nach _apply_layout(), damit subplots_adjust() bereits angewendet wurde)
-        self.figure.canvas.draw()
-        
-        # #region agent log
-        import json
-        bbox = self.ax.get_window_extent()
-        axes_width_pixels = bbox.width
-        axes_height_pixels = bbox.height
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'B',
-                'location': 'PlotWindowing.py:109',
-                'message': 'Windowing: Achsengrenzen und Pixel-Größe nach Layout-Anpassung, vor Stack-Zeichnung',
-                'data': {
-                    'xlim': list(self.ax.get_xlim()),
-                    'ylim': list(self.ax.get_ylim()),
-                    'axes_width_pixels': float(axes_width_pixels),
-                    'axes_height_pixels': float(axes_height_pixels)
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-        # #endregion
-        
-        # Zeichne Stacks NACH Layout-Anpassung (für korrekte Pixel-Größe)
-        self.plot_Stacks2Windowing(speaker_array_id)
-        
+        # Aktualisieren Sie die Darstellung
         self.canvas.draw_idle()
         
 
@@ -161,7 +156,7 @@ class WindowingPlot(QWidget):
             y_data = speaker_array.source_position_x[i]
             x_data = speaker_array.window_restriction
             gain = speaker_array.source_lp_zero[i]
-            self.ax.plot([y_data, y_data], [x_data, gain], linestyle='dotted', color='red', marker='o', markersize=3, markeredgecolor='red', markerfacecolor='red')
+            self.ax.plot([y_data, y_data], [x_data, gain], linestyle='dotted', color='red')
             
         self.canvas.draw_idle()
 
@@ -220,105 +215,42 @@ class WindowingPlot(QWidget):
             import traceback
             print(traceback.format_exc())
 
-    def _calculate_metric_ticks(self, min_val, max_val):
-        """
-        Berechnet intelligente Ticks für metrische Achsen basierend auf dem Bereich.
-        Ziel: 4-8 Ticks für optimale Lesbarkeit mit passender Schrittweite.
-        
-        Args:
-            min_val: Minimum-Wert der Achse
-            max_val: Maximum-Wert der Achse
-            
-        Returns:
-            tuple: (ticks_list, step) - Liste der Tick-Positionen und verwendete Schrittweite
-        """
-        range_val = max_val - min_val
-        
-        if range_val <= 0:
-            # Fallback für ungültige Bereiche
-            return [min_val, max_val], 1.0
-        
-        # Ziel: 4-8 Ticks für optimale Lesbarkeit
-        # Berechne optimale Schrittweite basierend auf dem Bereich
-        ideal_num_ticks = 6  # Ziel: ~6 Ticks
-        rough_step = range_val / ideal_num_ticks
-        
-        # Wähle passende Schrittweite aus einer Liste von "schönen" Werten
-        # Sortiert von klein nach groß
-        nice_steps = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
-        
-        # Finde die passende Schrittweite (nächstgrößere oder gleichgroße)
-        step = nice_steps[0]
-        for nice_step in nice_steps:
-            if nice_step >= rough_step:
-                step = nice_step
-                break
-        else:
-            # Falls alle zu klein sind, verwende die größte
-            step = nice_steps[-1]
-        
-        # Für sehr kleine Bereiche: verwende noch feinere Auflösung
-        if range_val < 1.0:
-            fine_steps = [0.05, 0.1, 0.2, 0.5]
-            for fine_step in fine_steps:
-                if fine_step >= rough_step:
-                    step = fine_step
-                    break
-        
-        # Generiere Ticks
-        # Runde min_val nach unten auf das nächste Vielfache von step
-        import math
-        start_tick = math.floor(min_val / step) * step
-        # Stelle sicher, dass start_tick <= min_val
-        if start_tick > min_val:
-            start_tick -= step
-        
-        # Runde max_val nach oben auf das nächste Vielfache von step
-        end_tick = math.ceil(max_val / step) * step
-        # Stelle sicher, dass end_tick >= max_val
-        if end_tick < max_val:
-            end_tick += step
-        
-        # Erstelle Tick-Liste
-        ticks = []
-        current = start_tick
-        tolerance = step * 0.001  # Kleine Toleranz für Rundungsfehler
-        while current <= end_tick + tolerance:
-            if min_val - tolerance <= current <= max_val + tolerance:
-                ticks.append(current)
-            current += step
-        
-        # Stelle sicher, dass min und max enthalten sind (falls sie nicht schon als Ticks vorhanden sind)
-        if len(ticks) == 0:
-            ticks = [min_val, max_val]
-        else:
-            if abs(ticks[0] - min_val) > tolerance:
-                ticks.insert(0, min_val)
-            if abs(ticks[-1] - max_val) > tolerance:
-                ticks.append(max_val)
-        
-        # Entferne Duplikate und sortiere
-        ticks = sorted(list(set(ticks)))
-        
-        return ticks, step
+    def _select_metric_tick_step(self, value_range):
+        # Dynamische Schrittweite für metrische Achsen (1, 2, 5, 10, 20 m)
+        thresholds = [
+            (80, 20),
+            (40, 10),
+            (20, 5),
+            (10, 2),
+        ]
+        for threshold, step in thresholds:
+            if value_range > threshold:
+                return step
+        return 1
+
+    def _select_db_tick_step(self, value_range):
+        # Dynamische Schrittweite für dB-Achsen (3, 6, 10 dB)
+        if value_range > 35:
+            return 10
+        if value_range > 20:
+            return 6
+        return 3
     
-    def _set_y_locator(self, step):
-        """Setzt den Y-Achsen-Locator für dB-Ticks"""
-        if step != self._y_locator_step:
-            self.ax.yaxis.set_major_locator(MultipleLocator(step))
-            self._y_locator_step = step
-    
-    def _update_spl_ticks(self, y_min, y_max):
-        """Aktualisiert SPL-Ticks basierend auf sichtbarem Bereich"""
-        y_range = y_max - y_min
-        # Ziel: 4-7 Ticks für optimale Lesbarkeit
-        if y_range > 35:
-            step = 10  # z.B. -60 bis 0 (60 dB) → 7 Ticks oder -40 bis 0 (40 dB) → 5 Ticks
-        elif y_range > 20:
-            step = 6   # z.B. -24 bis 0 (24 dB) → 5 Ticks
-        else:
-            step = 3   # z.B. -12 bis 0 (12 dB) → 5 Ticks
-        self._set_y_locator(step)
+    def _apply_layout(self):
+        """Wendet Layout-Einstellungen konsistent an - passt sich der Fenstergröße an"""
+        if hasattr(self.ax, 'figure'):
+            try:
+                # Deaktiviere constrained_layout vollständig
+                self.ax.figure.set_constrained_layout(False)
+                # Passe die Plot-Ränder an Canvas-Größe an (wie bei X/Y-Axis Plots)
+                # Mehr Platz für Achsenbeschriftungen: left größer, bottom größer
+                # Mehr Luft links und rechts: left kleiner, right kleiner
+                self.ax.figure.subplots_adjust(left=0.12, right=0.92, top=0.90, bottom=0.20)
+            except Exception:
+                pass
+            # Zeichne nur wenn Canvas vorhanden
+            if hasattr(self.ax.figure, 'canvas'):
+                self.ax.figure.canvas.draw_idle()
     
     def _connect_zoom_callbacks(self):
         """Verbindet Callbacks für Zoom-Events, um Achsenbeschriftung dynamisch anzupassen"""
@@ -328,7 +260,7 @@ class WindowingPlot(QWidget):
         try:
             # Callback für X-Achsen-Zoom (metrische Achse)
             self.ax.callbacks.connect('xlim_changed', self._on_xlim_changed)
-            # Callback für Y-Achsen-Zoom (SPL dB)
+            # Callback für Y-Achsen-Zoom (dB)
             self.ax.callbacks.connect('ylim_changed', self._on_ylim_changed)
             self._zoom_callback_connected = True
         except Exception as e:
@@ -352,9 +284,30 @@ class WindowingPlot(QWidget):
             # Berechne neue Ticks basierend auf sichtbarem Bereich
             # Die Schrittweite wird automatisch feiner bei kleinerem Bereich (Zoom-in)
             # und gröber bei größerem Bereich (Zoom-out)
-            x_ticks, step = self._calculate_metric_ticks(x_min, x_max)
+            x_range = x_max - x_min
+            x_step = self._select_metric_tick_step(x_range)
+            ax.xaxis.set_major_locator(MultipleLocator(x_step))
             
-            ax.set_xticks(x_ticks)
+            # Für aspect='equal': Passe Y-Limits an X-Limits an
+            y_min, y_max = ax.get_ylim()
+            y_range = y_max - y_min
+            
+            # Verwende die größere Range für beide Achsen
+            max_range = max(x_range, y_range)
+            
+            # Zentriere beide Achsen um ihre Mitte
+            x_center = (x_min + x_max) / 2
+            y_center = (y_min + y_max) / 2
+            
+            # Setze Limits für equal aspect
+            x_min_equal = x_center - max_range / 2
+            x_max_equal = x_center + max_range / 2
+            y_min_equal = y_center - max_range / 2
+            y_max_equal = y_center + max_range / 2
+            
+            ax.set_xlim(x_min_equal, x_max_equal)
+            ax.set_ylim(y_min_equal, y_max_equal)
+            ax.set_aspect('equal', adjustable='box')
             
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
@@ -377,9 +330,35 @@ class WindowingPlot(QWidget):
         
         try:
             self._updating_ticks = True
+            x_min, x_max = ax.get_xlim()
             y_min, y_max = ax.get_ylim()
+            
+            # Für aspect='equal': Passe X-Limits an Y-Limits an
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            
+            # Verwende die größere Range für beide Achsen
+            max_range = max(x_range, y_range)
+            
+            # Zentriere beide Achsen um ihre Mitte
+            x_center = (x_min + x_max) / 2
+            y_center = (y_min + y_max) / 2
+            
+            # Setze Limits für equal aspect
+            x_min_equal = x_center - max_range / 2
+            x_max_equal = x_center + max_range / 2
+            y_min_equal = y_center - max_range / 2
+            y_max_equal = y_center + max_range / 2
+            
+            ax.set_xlim(x_min_equal, x_max_equal)
+            ax.set_ylim(y_min_equal, y_max_equal)
+            ax.set_aspect('equal', adjustable='box')
+            
             # Berechne neue SPL-Ticks basierend auf sichtbarem Bereich
-            self._update_spl_ticks(y_min, y_max)
+            y_range_new = y_max_equal - y_min_equal
+            y_step = self._select_db_tick_step(y_range_new)
+            ax.yaxis.set_major_locator(MultipleLocator(y_step))
+            
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
                 ax.figure.canvas.draw_idle()
@@ -390,17 +369,28 @@ class WindowingPlot(QWidget):
         finally:
             self._updating_ticks = False
     
-    def _apply_layout(self):
-        """Wendet Layout-Einstellungen konsistent an"""
-        if hasattr(self.ax, 'figure'):
-            try:
-                # Deaktiviere constrained_layout vollständig
-                self.ax.figure.set_constrained_layout(False)
-                # Passe die Plot-Ränder an Canvas-Größe an (Windowing-Plot)
-                # Mehr Platz unten/links, damit Achsenbeschriftungen vollständig sichtbar sind
-                self.ax.figure.subplots_adjust(left=0.18, right=0.97, top=0.93, bottom=0.22)
-            except Exception:
-                pass
-            # Zeichne nur wenn Canvas vorhanden
-            if hasattr(self.ax.figure, 'canvas'):
-                self.ax.figure.canvas.draw_idle()
+    def resizeEvent(self, event):
+        """Wird aufgerufen, wenn sich die Widget-Größe ändert"""
+        super().resizeEvent(event)
+        try:
+            # Passe Figure-Größe an Widget-Größe an
+            width_inch = event.size().width() / self.figure.dpi
+            height_inch = event.size().height() / self.figure.dpi
+            self.figure.set_size_inches(width_inch, height_inch)
+            # Passe Layout an neue Größe an
+            self._apply_layout()
+            # Stelle sicher, dass aspect='equal' beibehalten wird
+            self.ax.set_aspect('equal', adjustable='box')
+            self.canvas.draw_idle()
+        except Exception:
+            pass
+    
+    def _on_canvas_resize(self, event):
+        """Wird aufgerufen, wenn sich die Canvas-Größe ändert"""
+        try:
+            # Passe Layout an neue Größe an
+            self._apply_layout()
+            # Stelle sicher, dass aspect='equal' beibehalten wird
+            self.ax.set_aspect('equal', adjustable='box')
+        except Exception:
+            pass

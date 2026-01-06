@@ -669,6 +669,13 @@ class SPL3DPlotRenderer:
                 
                 if isinstance(surface_grids_data, dict) and surface_id in surface_grids_data:
                     grid_data = surface_grids_data[surface_id]
+                    
+                    # 🎯 NEU: Prüfe ob Surface als "empty" markiert ist (inkompatibel bei Snapshot)
+                    is_empty = grid_data.get('is_empty', False) if isinstance(grid_data, dict) else False
+                    if is_empty:
+                        # Surface ist inkompatibel → überspringe Rendering (wird als graue Fläche in draw_surfaces gezeichnet)
+                        continue
+                    
                     # 🎯 IDENTISCHE BEHANDLUNG: Planare und vertikale Flächen verwenden beide Triangulation
                     orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else ""
                     
@@ -861,6 +868,21 @@ class SPL3DPlotRenderer:
                             else:
                                 additional_vertices_spl_db = None
                             
+                            # 🎯 Lade additional_vertices-Koordinaten für Gradient-Modus
+                            additional_vertices_coords = None
+                            if additional_vertices_spl_db is not None:
+                                additional_vertices_list = grid_data.get('additional_vertices')
+                                if additional_vertices_list is not None:
+                                    try:
+                                        additional_vertices_coords = np.array(additional_vertices_list, dtype=float)
+                                        if additional_vertices_coords.ndim != 2 or additional_vertices_coords.shape[1] != 3:
+                                            additional_vertices_coords = None
+                                        elif len(additional_vertices_coords) != len(additional_vertices_spl_db):
+                                            # Anzahl stimmt nicht überein - ignoriere
+                                            additional_vertices_coords = None
+                                    except Exception:
+                                        additional_vertices_coords = None
+                            
                             if is_step_mode:
                                 # ===========================
                                 # COLOR-STEP → NEAREST NEIGHBOUR
@@ -937,109 +959,257 @@ class SPL3DPlotRenderer:
                                             raise ValueError(f"Surface '{surface_id}': Griddata(nearest) liefert keine gültigen Werte")
                             else:
                                 # ===========================
-                                # GRADIENT → BILINEARE INTERPOLATION
+                                # GRADIENT → BILINEARE INTERPOLATION ODER LINEAR MIT RANDPUNKTEN
                                 # ===========================
-                                try:
-                                    # Stelle sicher, dass Xg/Yg als reguläres Grid interpretiert werden können
-                                    Xg_arr = np.asarray(Xg)
-                                    Yg_arr = np.asarray(Yg)
-                                    if Xg_arr.ndim != 2 or Yg_arr.ndim != 2:
-                                        raise ValueError("X_grid/Y_grid sind nicht 2D - bilineare Interpolation nicht möglich")
-
-                                    # Extrahiere eindeutige sortierte Achsen
-                                    x_axis = np.unique(Xg_arr[0, :])
-                                    y_axis = np.unique(Yg_arr[:, 0])
-                                    if x_axis.size < 2 or y_axis.size < 2:
-                                        raise ValueError("Zu wenige Grid-Punkte für bilineare Interpolation")
-
-                                    # Gitterabstände (angenommen äquidistant)
-                                    dx = np.diff(x_axis).mean()
-                                    dy = np.diff(y_axis).mean()
-                                    if dx == 0.0 or dy == 0.0:
-                                        raise ValueError("dx/dy = 0 in Grid - bilineare Interpolation nicht möglich")
-
-                                    # Vertex-Koordinaten (x_v, y_v)
-                                    vx = triangulated_vertices[:, 0]
-                                    vy = triangulated_vertices[:, 1]
-
-                                    # Indizes im Gridraum (Gleitkomma)
-                                    ix_float = (vx - x_axis[0]) / dx
-                                    iy_float = (vy - y_axis[0]) / dy
-
-                                    # Unteres Gitterfeld (i0,j0) und Abstand (tx, ty) im Feld
-                                    nx = x_axis.size
-                                    ny = y_axis.size
-
-                                    i0 = np.floor(ix_float).astype(int)
-                                    j0 = np.floor(iy_float).astype(int)
-
-                                    # Clipping auf gültigen Bereich [0, nx-2] / [0, ny-2]
-                                    i0 = np.clip(i0, 0, nx - 2)
-                                    j0 = np.clip(j0, 0, ny - 2)
-
-                                    tx = ix_float - i0
-                                    ty = iy_float - j0
-                                    tx = np.clip(tx, 0.0, 1.0)
-                                    ty = np.clip(ty, 0.0, 1.0)
-
-                                    # Vier Nachbarn pro Vertex
-                                    i1 = i0 + 1
-                                    j1 = j0 + 1
-
-                                    # Indizes in 2D-Arrays
-                                    v00 = spl_values_2d[j0, i0]
-                                    v10 = spl_values_2d[j0, i1]
-                                    v01 = spl_values_2d[j1, i0]
-                                    v11 = spl_values_2d[j1, i1]
-
-                                    # Bilineare Interpolation
-                                    spl_at_verts = (
-                                        (1 - tx) * (1 - ty) * v00
-                                        + tx * (1 - ty) * v10
-                                        + (1 - tx) * ty * v01
-                                        + tx * ty * v11
-                                    )
-
-                                    # Maske anwenden (Punkte außerhalb der Surface -> NaN)
-                                    if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
-                                        mask_flat = surface_mask.ravel().astype(bool)
-                                        # Erzeuge Zellmaske im gleichen Verfahren wie oben: nur Zellen mit allen 4 Punkten
-                                        cell_mask = (
-                                            mask_flat.reshape(Yg_arr.shape)[j0, i0]
-                                            & mask_flat.reshape(Yg_arr.shape)[j0, i1]
-                                            & mask_flat.reshape(Yg_arr.shape)[j1, i0]
-                                            & mask_flat.reshape(Yg_arr.shape)[j1, i1]
+                                # 🎯 FIX: Wenn additional_vertices vorhanden sind, verwende griddata mit linear
+                                # statt bilinearer Interpolation, um Randpunkte einzubeziehen
+                                if additional_vertices_coords is not None and additional_vertices_spl_db is not None:
+                                    # Verwende scipy.interpolate.griddata mit linear für unregelmäßige Datenpunkte
+                                    try:
+                                        from scipy.interpolate import griddata
+                                        
+                                        # Kombiniere Grid-Punkte und Randpunkte
+                                        points_grid = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                        values_grid = spl_values_2d.ravel()
+                                        
+                                        # Filtere Grid-Punkte nach surface_mask
+                                        if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                            mask_flat = surface_mask.ravel().astype(bool)
+                                            if np.any(mask_flat):
+                                                points_grid = points_grid[mask_flat]
+                                                values_grid = values_grid[mask_flat]
+                                        
+                                        # Kombiniere mit Randpunkten
+                                        points_combined = np.vstack([
+                                            points_grid,
+                                            additional_vertices_coords[:, :2]  # Nur X, Y für 2D-Interpolation
+                                        ])
+                                        values_combined = np.concatenate([
+                                            values_grid,
+                                            additional_vertices_spl_db
+                                        ])
+                                        
+                                        # Interpoliere auf Vertex-Koordinaten
+                                        points_new = triangulated_vertices[:, :2]
+                                        spl_at_verts = griddata(
+                                            points_combined,
+                                            values_combined,
+                                            points_new,
+                                            method='linear',
+                                            fill_value=np.nan,
                                         )
-                                        spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
+                                        
+                                        valid_mask = np.isfinite(spl_at_verts)
+                                        if not np.any(valid_mask):
+                                            raise ValueError(
+                                                f"Surface '{surface_id}': Linear-Interpolation mit Randpunkten liefert keine gültigen Werte"
+                                            )
+                                    except Exception as e:
+                                        # Fallback auf bilineare Interpolation ohne Randpunkte
+                                        try:
+                                            # Stelle sicher, dass Xg/Yg als reguläres Grid interpretiert werden können
+                                            Xg_arr = np.asarray(Xg)
+                                            Yg_arr = np.asarray(Yg)
+                                            if Xg_arr.ndim != 2 or Yg_arr.ndim != 2:
+                                                raise ValueError("X_grid/Y_grid sind nicht 2D - bilineare Interpolation nicht möglich")
 
-                                    valid_mask = np.isfinite(spl_at_verts)
-                                    if not np.any(valid_mask):
-                                        raise ValueError(
-                                            f"Surface '{surface_id}': Bilineare Interpolation liefert keine gültigen Werte"
+                                            # Extrahiere eindeutige sortierte Achsen
+                                            x_axis = np.unique(Xg_arr[0, :])
+                                            y_axis = np.unique(Yg_arr[:, 0])
+                                            if x_axis.size < 2 or y_axis.size < 2:
+                                                raise ValueError("Zu wenige Grid-Punkte für bilineare Interpolation")
+
+                                            # Gitterabstände (angenommen äquidistant)
+                                            dx = np.diff(x_axis).mean()
+                                            dy = np.diff(y_axis).mean()
+                                            if dx == 0.0 or dy == 0.0:
+                                                raise ValueError("dx/dy = 0 in Grid - bilineare Interpolation nicht möglich")
+
+                                            # Vertex-Koordinaten (x_v, y_v)
+                                            vx = triangulated_vertices[:, 0]
+                                            vy = triangulated_vertices[:, 1]
+
+                                            # Indizes im Gridraum (Gleitkomma)
+                                            ix_float = (vx - x_axis[0]) / dx
+                                            iy_float = (vy - y_axis[0]) / dy
+
+                                            # Unteres Gitterfeld (i0,j0) und Abstand (tx, ty) im Feld
+                                            nx = x_axis.size
+                                            ny = y_axis.size
+
+                                            i0 = np.floor(ix_float).astype(int)
+                                            j0 = np.floor(iy_float).astype(int)
+
+                                            # Clipping auf gültigen Bereich [0, nx-2] / [0, ny-2]
+                                            i0 = np.clip(i0, 0, nx - 2)
+                                            j0 = np.clip(j0, 0, ny - 2)
+
+                                            tx = ix_float - i0
+                                            ty = iy_float - j0
+                                            tx = np.clip(tx, 0.0, 1.0)
+                                            ty = np.clip(ty, 0.0, 1.0)
+
+                                            # Vier Nachbarn pro Vertex
+                                            i1 = i0 + 1
+                                            j1 = j0 + 1
+
+                                            # Indizes in 2D-Arrays
+                                            v00 = spl_values_2d[j0, i0]
+                                            v10 = spl_values_2d[j0, i1]
+                                            v01 = spl_values_2d[j1, i0]
+                                            v11 = spl_values_2d[j1, i1]
+
+                                            # Bilineare Interpolation
+                                            spl_at_verts = (
+                                                (1 - tx) * (1 - ty) * v00
+                                                + tx * (1 - ty) * v10
+                                                + (1 - tx) * ty * v01
+                                                + tx * ty * v11
+                                            )
+
+                                            # Maske anwenden (Punkte außerhalb der Surface -> NaN)
+                                            if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
+                                                mask_flat = surface_mask.ravel().astype(bool)
+                                                # Erzeuge Zellmaske im gleichen Verfahren wie oben: nur Zellen mit allen 4 Punkten
+                                                cell_mask = (
+                                                    mask_flat.reshape(Yg_arr.shape)[j0, i0]
+                                                    & mask_flat.reshape(Yg_arr.shape)[j0, i1]
+                                                    & mask_flat.reshape(Yg_arr.shape)[j1, i0]
+                                                    & mask_flat.reshape(Yg_arr.shape)[j1, i1]
+                                                )
+                                                spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
+
+                                            valid_mask = np.isfinite(spl_at_verts)
+                                            if not np.any(valid_mask):
+                                                raise ValueError(
+                                                    f"Surface '{surface_id}': Bilineare Interpolation liefert keine gültigen Werte"
+                                                )
+                                        except Exception:
+                                            # Letzter Fallback: Nearest-Neighbour
+                                            from scipy.interpolate import griddata
+                                            points_new = triangulated_vertices[:, :2]
+                                            points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                            values_orig = spl_values_2d.ravel()
+                                            if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                                mask_flat = surface_mask.ravel().astype(bool)
+                                                if np.any(mask_flat):
+                                                    points_orig = points_orig[mask_flat]
+                                                    values_orig = values_orig[mask_flat]
+                                            spl_at_verts = griddata(
+                                                points_orig,
+                                                values_orig,
+                                                points_new,
+                                                method='nearest',
+                                                fill_value=np.nan,
+                                            )
+                                            valid_mask = np.isfinite(spl_at_verts)
+                                            if not np.any(valid_mask):
+                                                raise ValueError(
+                                                    f"Surface '{surface_id}': Fallback-Nearest liefert keine gültigen Werte"
+                                                )
+                                else:
+                                    # Standard bilineare Interpolation ohne Randpunkte
+                                    try:
+                                        # Stelle sicher, dass Xg/Yg als reguläres Grid interpretiert werden können
+                                        Xg_arr = np.asarray(Xg)
+                                        Yg_arr = np.asarray(Yg)
+                                        if Xg_arr.ndim != 2 or Yg_arr.ndim != 2:
+                                            raise ValueError("X_grid/Y_grid sind nicht 2D - bilineare Interpolation nicht möglich")
+
+                                        # Extrahiere eindeutige sortierte Achsen
+                                        x_axis = np.unique(Xg_arr[0, :])
+                                        y_axis = np.unique(Yg_arr[:, 0])
+                                        if x_axis.size < 2 or y_axis.size < 2:
+                                            raise ValueError("Zu wenige Grid-Punkte für bilineare Interpolation")
+
+                                        # Gitterabstände (angenommen äquidistant)
+                                        dx = np.diff(x_axis).mean()
+                                        dy = np.diff(y_axis).mean()
+                                        if dx == 0.0 or dy == 0.0:
+                                            raise ValueError("dx/dy = 0 in Grid - bilineare Interpolation nicht möglich")
+
+                                        # Vertex-Koordinaten (x_v, y_v)
+                                        vx = triangulated_vertices[:, 0]
+                                        vy = triangulated_vertices[:, 1]
+
+                                        # Indizes im Gridraum (Gleitkomma)
+                                        ix_float = (vx - x_axis[0]) / dx
+                                        iy_float = (vy - y_axis[0]) / dy
+
+                                        # Unteres Gitterfeld (i0,j0) und Abstand (tx, ty) im Feld
+                                        nx = x_axis.size
+                                        ny = y_axis.size
+
+                                        i0 = np.floor(ix_float).astype(int)
+                                        j0 = np.floor(iy_float).astype(int)
+
+                                        # Clipping auf gültigen Bereich [0, nx-2] / [0, ny-2]
+                                        i0 = np.clip(i0, 0, nx - 2)
+                                        j0 = np.clip(j0, 0, ny - 2)
+
+                                        tx = ix_float - i0
+                                        ty = iy_float - j0
+                                        tx = np.clip(tx, 0.0, 1.0)
+                                        ty = np.clip(ty, 0.0, 1.0)
+
+                                        # Vier Nachbarn pro Vertex
+                                        i1 = i0 + 1
+                                        j1 = j0 + 1
+
+                                        # Indizes in 2D-Arrays
+                                        v00 = spl_values_2d[j0, i0]
+                                        v10 = spl_values_2d[j0, i1]
+                                        v01 = spl_values_2d[j1, i0]
+                                        v11 = spl_values_2d[j1, i1]
+
+                                        # Bilineare Interpolation
+                                        spl_at_verts = (
+                                            (1 - tx) * (1 - ty) * v00
+                                            + tx * (1 - ty) * v10
+                                            + (1 - tx) * ty * v01
+                                            + tx * ty * v11
                                         )
-                                except Exception:
-                                    # Fallback: Wenn bilinear scheitert, nutze Nearest-Neighbour (wie im Step-Modus)
-                                    from scipy.interpolate import griddata
-                                    points_new = triangulated_vertices[:, :2]
-                                    points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
-                                    values_orig = spl_values_2d.ravel()
-                                    if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
-                                        mask_flat = surface_mask.ravel().astype(bool)
-                                        if np.any(mask_flat):
-                                            points_orig = points_orig[mask_flat]
-                                            values_orig = values_orig[mask_flat]
-                                    spl_at_verts = griddata(
-                                        points_orig,
-                                        values_orig,
-                                        points_new,
-                                        method='nearest',
-                                        fill_value=np.nan,
-                                    )
-                                    valid_mask = np.isfinite(spl_at_verts)
-                                    if not np.any(valid_mask):
-                                        raise ValueError(
-                                            f"Surface '{surface_id}': Fallback-Nearest liefert keine gültigen Werte"
+
+                                        # Maske anwenden (Punkte außerhalb der Surface -> NaN)
+                                        if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
+                                            mask_flat = surface_mask.ravel().astype(bool)
+                                            # Erzeuge Zellmaske im gleichen Verfahren wie oben: nur Zellen mit allen 4 Punkten
+                                            cell_mask = (
+                                                mask_flat.reshape(Yg_arr.shape)[j0, i0]
+                                                & mask_flat.reshape(Yg_arr.shape)[j0, i1]
+                                                & mask_flat.reshape(Yg_arr.shape)[j1, i0]
+                                                & mask_flat.reshape(Yg_arr.shape)[j1, i1]
+                                            )
+                                            spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
+
+                                        valid_mask = np.isfinite(spl_at_verts)
+                                        if not np.any(valid_mask):
+                                            raise ValueError(
+                                                f"Surface '{surface_id}': Bilineare Interpolation liefert keine gültigen Werte"
+                                            )
+                                    except Exception:
+                                        # Fallback: Wenn bilinear scheitert, nutze Nearest-Neighbour (wie im Step-Modus)
+                                        from scipy.interpolate import griddata
+                                        points_new = triangulated_vertices[:, :2]
+                                        points_orig = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                        values_orig = spl_values_2d.ravel()
+                                        if surface_mask.size == Xg.size and surface_mask.shape == Xg.shape:
+                                            mask_flat = surface_mask.ravel().astype(bool)
+                                            if np.any(mask_flat):
+                                                points_orig = points_orig[mask_flat]
+                                                values_orig = values_orig[mask_flat]
+                                        spl_at_verts = griddata(
+                                            points_orig,
+                                            values_orig,
+                                            points_new,
+                                            method='nearest',
+                                            fill_value=np.nan,
                                         )
+                                        valid_mask = np.isfinite(spl_at_verts)
+                                        if not np.any(valid_mask):
+                                            raise ValueError(
+                                                f"Surface '{surface_id}': Fallback-Nearest liefert keine gültigen Werte"
+                                            )
                             
                             # 🎯 DEBUG: Prüfe, wie viele Vertices gültige Daten haben
                             
@@ -1271,6 +1441,10 @@ class SPL3DPlotRenderer:
 
         camera_state = self._camera_state or self._capture_camera()
 
+        # Prüfe ob Phase-Modus aktiv ist
+        plot_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+        phase_mode = plot_mode == 'Phase alignment'
+
         surface_overrides: dict[str, dict[str, np.ndarray]] = {}
         calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
         surface_grids_data = {}
@@ -1278,6 +1452,28 @@ class SPL3DPlotRenderer:
         if isinstance(calc_spl, dict):
             surface_grids_data = calc_spl.get("surface_grids", {}) or {}
             surface_results_data = calc_spl.get("surface_results", {}) or {}
+
+        # 🎯 FIX: Hole globale Phase-Daten für Phase-Modus
+        global_phase_data = None
+        global_phase_x = None
+        global_phase_y = None
+        if phase_mode and isinstance(calc_spl, dict):
+            phase_diff = calc_spl.get('sound_field_phase_diff')
+            phase_x = calc_spl.get('sound_field_x')
+            phase_y = calc_spl.get('sound_field_y')
+            if phase_diff is not None and phase_x is not None and phase_y is not None:
+                try:
+                    global_phase_data = np.asarray(phase_diff, dtype=float)
+                    global_phase_x = np.asarray(phase_x, dtype=float)
+                    global_phase_y = np.asarray(phase_y, dtype=float)
+                    # Stelle sicher, dass global_phase_data 2D ist
+                    if global_phase_data.ndim == 1 and len(global_phase_x) > 0 and len(global_phase_y) > 0:
+                        try:
+                            global_phase_data = global_phase_data.reshape(len(global_phase_y), len(global_phase_x))
+                        except Exception:
+                            global_phase_data = None
+                except Exception:
+                    global_phase_data = None
 
         if isinstance(surface_grids_data, dict) and surface_grids_data and isinstance(surface_results_data, dict) and surface_results_data:
             orientations_found = {}
@@ -1350,7 +1546,36 @@ class SPL3DPlotRenderer:
                     if sound_field_p_complex.size == 0 and not has_additional_vertices_spl:
                         continue
 
-                    if sound_field_p_complex.shape != Xg.shape:
+                    # 🎯 FIX: Im Phase-Modus verwende Phase-Daten statt Druck-Daten
+                    surface_values = None
+                    use_phase_data = False
+                    if phase_mode and global_phase_data is not None:
+                        # Interpoliere Phase-Daten von globalem Grid auf Surface-Grid
+                        from scipy.interpolate import griddata
+                        # Erstelle Quell-Grid (globales Grid)
+                        X_global, Y_global = np.meshgrid(global_phase_x, global_phase_y)
+                        points_source = np.column_stack([X_global.ravel(), Y_global.ravel()])
+                        values_source = global_phase_data.ravel()
+                        
+                        # Ziel-Punkte auf Surface-Grid
+                        points_target = np.column_stack([Xg.ravel(), Yg.ravel()])
+                        
+                        # Interpoliere Phase-Daten
+                        try:
+                            phase_values_interp = griddata(
+                                points_source, values_source, points_target,
+                                method='linear', fill_value=np.nan
+                            )
+                            phase_values_2d = phase_values_interp.reshape(Xg.shape)
+                            # Verwende Phase-Daten statt Druck-Daten
+                            surface_values = np.nan_to_num(phase_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
+                            use_phase_data = True
+                        except Exception:
+                            # Falls Interpolation fehlschlägt, verwende Standard-Pfad
+                            pass
+
+                    # 🎯 FIX: Im Phase-Modus überspringe Shape-Prüfung für sound_field_p_complex
+                    if not use_phase_data and sound_field_p_complex.shape != Xg.shape:
                         # Prüfe ob es Gruppen-Grid-Daten gibt (für Gruppen-Surfaces)
                         group_X_grid = result_data.get('group_X_grid')
                         group_Y_grid = result_data.get('group_Y_grid')
@@ -1402,7 +1627,14 @@ class SPL3DPlotRenderer:
                     
                     # 🎯 FIX: Für Surfaces mit 0 Grid-Punkten aber mit additional_vertices_spl
                     # erstelle surface_overrides mit Dummy-Daten (als Marker, da Triangulation aus surface_grids_data kommt)
-                    if sound_field_p_complex.size == 0:
+                    if use_phase_data and surface_values is not None:
+                        # Verwende interpolierte Phase-Daten (Phase-Modus)
+                        surface_overrides[sid] = {
+                            "source_x": np.asarray(gx, dtype=float),
+                            "source_y": np.asarray(gy, dtype=float),
+                            "values": surface_values,  # Phase-Daten in Grad
+                        }
+                    elif sound_field_p_complex.size == 0:
                         # Surface hat keine Grid-Punkte, aber additional_vertices_spl ist vorhanden
                         # Erstelle Dummy-Daten als Marker (die eigentliche Triangulation kommt aus surface_grids_data)
                         surface_overrides[sid] = {
@@ -1489,12 +1721,79 @@ class SPL3DPlotRenderer:
             # Verwende feste Colorbar-Parameter (keine dynamische Skalierung)
             plot_values = pressure
         elif phase_mode:
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    pressure_arr = np.asarray(pressure)
+                    valid_before = pressure_arr[np.isfinite(pressure_arr)]
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "C",
+                        "location": "Plot3DSPL.py:update_spl_plot:phase_mode_before",
+                        "message": "Phase-Modus: Vor Verarbeitung",
+                        "data": {
+                            "pressure_shape": list(pressure_arr.shape),
+                            "pressure_size": pressure_arr.size,
+                            "valid_count_before": len(valid_before),
+                            "pressure_min": float(np.nanmin(valid_before)) if len(valid_before) > 0 else None,
+                            "pressure_max": float(np.nanmax(valid_before)) if len(valid_before) > 0 else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # 🎯 FIX: Für Phase-Modus behalte NaN-Werte (nicht auf 0 setzen)
+            # NaN bedeutet "keine gültigen Daten" und sollte transparent dargestellt werden
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
                 if not has_surface_overrides:
                     return
-            phase_values = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
+            # Behalte NaN-Werte für Phase-Daten (werden später beim Rendering transparent dargestellt)
+            phase_values = np.where(np.isfinite(pressure), pressure, np.nan)
+            # Setze nur inf/neginf auf 0, aber behalte NaN
+            phase_values = np.where(np.isinf(phase_values), 0.0, phase_values)
             plot_values = phase_values
+            
+            # #region agent log
+            try:
+                valid_phase = phase_values[np.isfinite(phase_values)]
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "C",
+                        "location": "Plot3DSPL.py:update_spl_plot:phase_mode_after",
+                        "message": "Phase-Modus: Nach Verarbeitung",
+                        "data": {
+                            "phase_values_shape": list(phase_values.shape),
+                            "valid_count_after": len(valid_phase),
+                            "phase_min": float(np.nanmin(valid_phase)) if len(valid_phase) > 0 else None,
+                            "phase_max": float(np.nanmax(valid_phase)) if len(valid_phase) > 0 else None,
+                            "phase_mean": float(np.nanmean(valid_phase)) if len(valid_phase) > 0 else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # 🎯 DEBUG: Ausgabe der Phase-Daten-Statistik
+            if getattr(self.settings, "fem_debug_logging", True):
+                try:
+                    if len(valid_phase) > 0:
+                        phase_min = float(np.nanmin(valid_phase))
+                        phase_max = float(np.nanmax(valid_phase))
+                        phase_mean = float(np.nanmean(valid_phase))
+                        print(f"[Phase Plot] Phase-Daten: min={phase_min:.2f}°, max={phase_max:.2f}°, mean={phase_mean:.2f}°, valid={len(valid_phase)}/{phase_values.size}")
+                    else:
+                        print(f"[Phase Plot] Keine gültigen Phase-Daten (alle NaN)")
+                except Exception as e:
+                    print(f"[Phase Plot] Fehler bei Debug-Ausgabe: {e}")
         else:
             pressure_2d = np.nan_to_num(np.abs(pressure), nan=0.0, posinf=0.0, neginf=0.0)
             pressure_2d = np.clip(pressure_2d, 1e-12, None)
@@ -1534,6 +1833,35 @@ class SPL3DPlotRenderer:
         cbar_step = colorbar_params['step']
         tick_step = colorbar_params['tick_step']
         self.colorbar_manager.set_override(colorbar_params)
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                valid_plot = plot_values[np.isfinite(plot_values)] if hasattr(plot_values, '__len__') else np.array([])
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "D",
+                    "location": "Plot3DSPL.py:update_spl_plot:colorbar_params",
+                    "message": "Colorbar-Parameter gesetzt",
+                    "data": {
+                        "phase_mode": phase_mode,
+                        "cbar_min": cbar_min,
+                        "cbar_max": cbar_max,
+                        "cbar_step": cbar_step,
+                        "tick_step": tick_step,
+                        "plot_values_shape": list(plot_values.shape) if hasattr(plot_values, 'shape') else None,
+                        "plot_values_valid_count": len(valid_plot),
+                        "plot_values_min": float(np.nanmin(valid_plot)) if len(valid_plot) > 0 else None,
+                        "plot_values_max": float(np.nanmax(valid_plot)) if len(valid_plot) > 0 else None
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
         # 🎯 WICHTIG: Speichere ursprüngliche Berechnungs-Werte für PyVista sample-Modus VOR Clipping!
         # Clipping ändert die Werte und sollte nur für Visualisierung erfolgen, nicht für Sampling
@@ -1559,7 +1887,59 @@ class SPL3DPlotRenderer:
         if time_mode:
             plot_values = np.clip(plot_values, cbar_min, cbar_max)
         elif phase_mode:
-            plot_values = np.clip(plot_values, cbar_min, cbar_max)
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                valid_before_clip = plot_values[np.isfinite(plot_values)]
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "E",
+                        "location": "Plot3DSPL.py:update_spl_plot:clip_before",
+                        "message": "Vor Clipping",
+                        "data": {
+                            "cbar_min": cbar_min,
+                            "cbar_max": cbar_max,
+                            "plot_values_min": float(np.nanmin(valid_before_clip)) if len(valid_before_clip) > 0 else None,
+                            "plot_values_max": float(np.nanmax(valid_before_clip)) if len(valid_before_clip) > 0 else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # 🎯 FIX: Für Phase-Modus behalte NaN-Werte beim Clipping
+            # Clip nur gültige Werte, behalte NaN
+            valid_mask = np.isfinite(plot_values)
+            if np.any(valid_mask):
+                plot_values_clipped = np.clip(plot_values[valid_mask], cbar_min, cbar_max)
+                plot_values = plot_values.copy()
+                plot_values[valid_mask] = plot_values_clipped
+            # NaN-Werte bleiben NaN (werden transparent dargestellt)
+            
+            # #region agent log
+            try:
+                valid_after_clip = plot_values[np.isfinite(plot_values)]
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "E",
+                        "location": "Plot3DSPL.py:update_spl_plot:clip_after",
+                        "message": "Nach Clipping",
+                        "data": {
+                            "plot_values_min": float(np.nanmin(valid_after_clip)) if len(valid_after_clip) > 0 else None,
+                            "plot_values_max": float(np.nanmax(valid_after_clip)) if len(valid_after_clip) > 0 else None,
+                            "clipped_count": len(valid_before_clip) - len(valid_after_clip) if len(valid_before_clip) > 0 else 0
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
         else:
             plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
         

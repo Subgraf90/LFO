@@ -622,9 +622,9 @@ class SnapshotWidget:
         has_spl_data = False
         import numpy as np
         
-        # 🎯 NEU: Prüfe Surface-Kompatibilität und lade nur kompatible Surface-SPL-Daten
-        compatible_surface_ids = set()
-        incompatible_surface_ids = []
+        # 🎯 NEU: Prüfe Surface-Kompatibilität für jedes Surface einzeln
+        # Speichere für jedes Surface, ob es kompatibel ist oder nicht
+        surface_compatibility = {}  # surface_id -> {'is_compatible': bool, 'reason': str}
         if 'surface_geometries' in snapshot_data:
             # Prüfe welche Surfaces noch vorhanden sind und die gleiche Geometrie haben
             snapshot_geometries = snapshot_data['surface_geometries']
@@ -635,8 +635,8 @@ class SnapshotWidget:
                     # Prüfe ob Surface noch vorhanden ist
                     surface = surface_definitions.get(surface_id)
                     if not surface:
-                        incompatible_surface_ids.append((surface_id, "nicht mehr vorhanden"))
-                        continue  # Surface nicht mehr vorhanden
+                        surface_compatibility[surface_id] = {'is_compatible': False, 'reason': "nicht mehr vorhanden"}
+                        continue
                     
                     # 🎯 NEU: Prüfe ob Surface enabled und nicht hidden ist
                     is_enabled = True
@@ -649,11 +649,11 @@ class SnapshotWidget:
                         is_hidden = bool(getattr(surface, 'hidden', False))
                     
                     if not is_enabled:
-                        incompatible_surface_ids.append((surface_id, "disabled"))
+                        surface_compatibility[surface_id] = {'is_compatible': False, 'reason': "disabled"}
                         continue  # Surface ist disabled → nicht plotten
                     
                     if is_hidden:
-                        incompatible_surface_ids.append((surface_id, "hidden"))
+                        surface_compatibility[surface_id] = {'is_compatible': False, 'reason': "hidden"}
                         continue  # Surface ist hidden → nicht plotten
                     
                     # Hole aktuelle Surface-Punkte
@@ -663,8 +663,8 @@ class SnapshotWidget:
                         current_points = getattr(surface, 'points', [])
                     
                     if not current_points:
-                        incompatible_surface_ids.append((surface_id, "keine Punkte vorhanden"))
-                        continue  # Keine Punkte vorhanden
+                        surface_compatibility[surface_id] = {'is_compatible': False, 'reason': "keine Punkte vorhanden"}
+                        continue
                     
                     # Normalisiere aktuelle Punkte für Vergleich
                     normalized_current = []
@@ -684,7 +684,10 @@ class SnapshotWidget:
                     
                     # Vergleiche Geometrien
                     if len(normalized_current) != len(snapshot_points):
-                        incompatible_surface_ids.append((surface_id, f"Anzahl Punkte geändert: {len(normalized_current)} != {len(snapshot_points)}"))
+                        surface_compatibility[surface_id] = {
+                            'is_compatible': False, 
+                            'reason': f"Anzahl Punkte geändert: {len(normalized_current)} != {len(snapshot_points)}"
+                        }
                         continue
                     
                     geometries_match = True
@@ -696,14 +699,9 @@ class SnapshotWidget:
                             break
                     
                     if geometries_match:
-                        compatible_surface_ids.add(surface_id)
+                        surface_compatibility[surface_id] = {'is_compatible': True, 'reason': None}
                     else:
-                        incompatible_surface_ids.append((surface_id, "Geometrie geändert"))
-                
-                if incompatible_surface_ids:
-                    pass  # Debug-Ausgabe entfernt
-                    if len(incompatible_surface_ids) > 5:
-                        print(f"  ... und {len(incompatible_surface_ids) - 5} weitere")
+                        surface_compatibility[surface_id] = {'is_compatible': False, 'reason': "Geometrie geändert"}
         
         # Lade globale SPL-Daten (falls vorhanden)
         if 'spl_field_data' in snapshot_data and snapshot_data['spl_field_data']:
@@ -744,13 +742,16 @@ class SnapshotWidget:
         # 🎯 WICHTIG: Lade Surface-Daten NUR wenn surface_geometries vorhanden ist
         # (bei alten Snapshots ohne Geometrie-Validierung werden keine Surface-Daten geladen)
         if 'surface_geometries' in snapshot_data:
-            # Lade nur kompatible Surface-Grids aus dem Snapshot
+            # Lade Surface-Grids aus dem Snapshot - auch inkompatible werden geladen, aber als "empty" markiert
             if 'surface_grids' in snapshot_data:
                 snapshot_surface_grids = snapshot_data['surface_grids']
                 if isinstance(snapshot_surface_grids, dict):
                     for surface_id, grid_data in snapshot_surface_grids.items():
-                        if surface_id in compatible_surface_ids:
-                            # Konvertiere Listen zurück zu NumPy-Arrays
+                        # Prüfe Kompatibilität für dieses Surface
+                        compat_info = surface_compatibility.get(surface_id, {'is_compatible': False, 'reason': "nicht geprüft"})
+                        
+                        if compat_info['is_compatible']:
+                            # Kompatibles Surface: Lade Daten normal
                             restored_grid = copy.deepcopy(grid_data)
                             for key in ['X_grid', 'Y_grid', 'Z_grid', 'sound_field_x', 'sound_field_y']:
                                 if key in restored_grid and isinstance(restored_grid[key], list):
@@ -758,15 +759,45 @@ class SnapshotWidget:
                             if 'surface_mask' in restored_grid and isinstance(restored_grid['surface_mask'], list):
                                 restored_grid['surface_mask'] = np.array(restored_grid['surface_mask'], dtype=bool)
                             self.container.calculation_spl['surface_grids'][surface_id] = restored_grid
-                        # Surface nicht kompatibel → nicht laden (wird nicht geplottet)
+                        else:
+                            # Inkompatibles Surface: Erstelle leeres Grid mit Flag für graue Anzeige
+                            # Prüfe ob Surface aktuell enabled und nicht hidden ist
+                            surface = surface_definitions.get(surface_id) if isinstance(surface_definitions, dict) else None
+                            if surface:
+                                is_enabled = True
+                                is_hidden = False
+                                if isinstance(surface, dict):
+                                    is_enabled = bool(surface.get('enabled', True))
+                                    is_hidden = bool(surface.get('hidden', False))
+                                else:
+                                    is_enabled = bool(getattr(surface, 'enabled', True))
+                                    is_hidden = bool(getattr(surface, 'hidden', False))
+                                
+                                # Nur wenn Surface enabled und nicht hidden ist, erstelle leeres Grid
+                                if is_enabled and not is_hidden:
+                                    # Erstelle leeres Grid mit Flag für graue Anzeige
+                                    empty_grid = {
+                                        'X_grid': np.array([], dtype=float),
+                                        'Y_grid': np.array([], dtype=float),
+                                        'Z_grid': np.array([], dtype=float),
+                                        'sound_field_x': np.array([], dtype=float),
+                                        'sound_field_y': np.array([], dtype=float),
+                                        'is_empty': True,  # Flag für graue Anzeige
+                                        'is_incompatible': True,  # Flag für Inkompatibilität
+                                        'incompatibility_reason': compat_info.get('reason', 'unbekannt')
+                                    }
+                                    self.container.calculation_spl['surface_grids'][surface_id] = empty_grid
             
-            # Lade nur kompatible Surface-Results aus dem Snapshot
+            # Lade Surface-Results aus dem Snapshot - auch inkompatible werden geladen, aber als "empty" markiert
             if 'surface_results' in snapshot_data:
                 snapshot_surface_results = snapshot_data['surface_results']
                 if isinstance(snapshot_surface_results, dict):
                     for surface_id, result_data in snapshot_surface_results.items():
-                        if surface_id in compatible_surface_ids:
-                            # Konvertiere Listen zurück zu NumPy-Arrays
+                        # Prüfe Kompatibilität für dieses Surface
+                        compat_info = surface_compatibility.get(surface_id, {'is_compatible': False, 'reason': "nicht geprüft"})
+                        
+                        if compat_info['is_compatible']:
+                            # Kompatibles Surface: Lade Daten normal
                             restored_result = copy.deepcopy(result_data)
                             if isinstance(restored_result, dict):
                                 for key, value in restored_result.items():
@@ -778,13 +809,39 @@ class SnapshotWidget:
                                             # Bleibt als Liste wenn Konvertierung fehlschlägt
                                             pass
                             self.container.calculation_spl['surface_results'][surface_id] = restored_result
-                        # Surface nicht kompatibel → nicht laden (wird nicht geplottet)
+                        else:
+                            # Inkompatibles Surface: Erstelle leeres Result mit Flag
+                            # Prüfe ob Surface aktuell enabled und nicht hidden ist
+                            surface_definitions_check = getattr(self.settings, 'surface_definitions', {})
+                            surface = surface_definitions_check.get(surface_id) if isinstance(surface_definitions_check, dict) else None
+                            if surface:
+                                is_enabled = True
+                                is_hidden = False
+                                if isinstance(surface, dict):
+                                    is_enabled = bool(surface.get('enabled', True))
+                                    is_hidden = bool(surface.get('hidden', False))
+                                else:
+                                    is_enabled = bool(getattr(surface, 'enabled', True))
+                                    is_hidden = bool(getattr(surface, 'hidden', False))
+                                
+                                # Nur wenn Surface enabled und nicht hidden ist, erstelle leeres Result
+                                if is_enabled and not is_hidden:
+                                    empty_result = {
+                                        'is_empty': True,  # Flag für graue Anzeige
+                                        'is_incompatible': True,  # Flag für Inkompatibilität
+                                        'incompatibility_reason': compat_info.get('reason', 'unbekannt')
+                                    }
+                                    self.container.calculation_spl['surface_results'][surface_id] = empty_result
             
-            if compatible_surface_ids:
+            # Prüfe ob mindestens eine kompatible Surface vorhanden ist
+            compatible_count = sum(1 for info in surface_compatibility.values() if info.get('is_compatible', False))
+            if compatible_count > 0:
                 has_spl_data = True  # Mindestens eine kompatible Surface vorhanden
             elif 'surface_grids' in snapshot_data or 'surface_results' in snapshot_data:
                 # Snapshot hatte Surface-Daten, aber keine sind kompatibel
-                print(f"[Snapshot] Keine kompatiblen Surfaces gefunden (Geometrie geändert oder entfernt)")
+                # Trotzdem has_spl_data auf True setzen, wenn inkompatible Surfaces als empty geladen wurden
+                if self.container.calculation_spl.get('surface_grids') or self.container.calculation_spl.get('surface_results'):
+                    has_spl_data = True
         else:
             # Keine surface_geometries im Snapshot → alte Snapshot-Version ohne Validierung
             # Lade KEINE Surface-Daten, um Fehl-Plots zu vermeiden

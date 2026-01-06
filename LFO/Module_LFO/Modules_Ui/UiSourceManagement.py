@@ -6272,6 +6272,18 @@ class Sources(ModuleBase, QObject):
             # Setze den X-Wert für alle Quellen im Array
             speaker_array.source_position_x = np.full(speaker_array.number_of_sources, new_x, dtype=float)
             
+            # 🎯 FIX: Bei Flown-Arrays: Cache löschen, damit Lautsprecher neu erstellt werden
+            configuration = getattr(speaker_array, 'configuration', '').lower()
+            if configuration == 'flown':
+                array_id = getattr(speaker_array, 'id', selected_array_id)
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    if hasattr(self.main_window.draw_plots.draw_spl_plotter, 'overlay_speakers'):
+                        self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+                        # Setze die Signatur zurück, damit die Änderung erkannt wird
+                        if hasattr(self.main_window.draw_plots.draw_spl_plotter, '_last_overlay_signatures'):
+                            if 'speakers' in self.main_window.draw_plots.draw_spl_plotter._last_overlay_signatures:
+                                self.main_window.draw_plots.draw_spl_plotter._last_overlay_signatures['speakers'] = None
+            
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
             # 🚀 OPTIMIERUNG: Wenn autocalc aktiv ist, wird speaker_position_calculator auch in update_speaker_array_calculations() aufgerufen

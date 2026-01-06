@@ -621,7 +621,16 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             if previous:
                 prev_speakers_sig = previous.get('speakers')
                 curr_speakers_sig = signatures.get('speakers')
-                if prev_speakers_sig and curr_speakers_sig:
+                # 🎯 FIX: Wenn prev_speakers_sig None ist (z.B. nach Cache-Löschung), 
+                # müssen alle Arrays neu gezeichnet werden
+                if prev_speakers_sig is None and curr_speakers_sig:
+                    # Wenn die vorherige Signatur None ist, müssen alle Arrays neu gezeichnet werden
+                    if isinstance(curr_speakers_sig, (list, tuple)):
+                        for entry in curr_speakers_sig:
+                            if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                                array_name = str(entry[0])
+                                affected_array_ids_for_speakers.add(array_name)
+                elif prev_speakers_sig and curr_speakers_sig:
                     # 🎯 FIX: Vergleiche die gesamte Signatur für jedes Array, nicht nur hide-Status
                     # So erkennen wir auch Parameter-Änderungen (z.B. Position)
                     prev_sig_dict = {}

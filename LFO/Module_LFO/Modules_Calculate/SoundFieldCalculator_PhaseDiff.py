@@ -24,9 +24,33 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         )
 
         if not array_fields:
-            phase_diff = []
+            # 🎯 FIX: Erstelle leeres Array mit richtiger Form statt leerer Liste
+            if sound_field_x is not None and sound_field_y is not None:
+                try:
+                    nx = len(sound_field_x) if hasattr(sound_field_x, '__len__') else 0
+                    ny = len(sound_field_y) if hasattr(sound_field_y, '__len__') else 0
+                    if nx > 0 and ny > 0:
+                        phase_diff = np.full((ny, nx), np.nan, dtype=float)
+                        print(f"[Phase Calc] Keine Arrays vorhanden, erstelle leeres Array: shape=({ny}, {nx})")
+                    else:
+                        phase_diff = np.array([], dtype=float)
+                        print(f"[Phase Calc] Keine Arrays vorhanden, leeres Array (nx={nx}, ny={ny})")
+                except Exception as e:
+                    phase_diff = np.array([], dtype=float)
+                    print(f"[Phase Calc] Fehler beim Erstellen des leeren Arrays: {e}")
+            else:
+                phase_diff = np.array([], dtype=float)
+                print(f"[Phase Calc] Keine Koordinaten vorhanden")
         else:
             phase_diff = self._compute_phase_differences(array_fields)
+            # 🎯 DEBUG: Ausgabe der berechneten Phase-Daten
+            valid_phase = phase_diff[np.isfinite(phase_diff)]
+            if len(valid_phase) > 0:
+                print(f"[Phase Calc] Phase-Daten berechnet: shape={phase_diff.shape}, "
+                      f"min={np.nanmin(valid_phase):.2f}°, max={np.nanmax(valid_phase):.2f}°, "
+                      f"mean={np.nanmean(valid_phase):.2f}°, valid={len(valid_phase)}/{phase_diff.size}")
+            else:
+                print(f"[Phase Calc] Phase-Daten berechnet, aber alle NaN: shape={phase_diff.shape}")
 
         # 🎯 Speichere Phase-Diff-Daten
         self.calculation_spl["sound_field_phase_diff"] = (
@@ -34,6 +58,35 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         )
         self.calculation_spl["sound_field_x"] = sound_field_x
         self.calculation_spl["sound_field_y"] = sound_field_y
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            phase_diff_arr = np.asarray(phase_diff) if isinstance(phase_diff, (list, np.ndarray)) else np.array([])
+            valid_phase = phase_diff_arr[np.isfinite(phase_diff_arr)] if phase_diff_arr.size > 0 else np.array([])
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "B",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:save",
+                    "message": "Phase-Daten gespeichert",
+                    "data": {
+                        "phase_diff_type": type(phase_diff).__name__,
+                        "phase_diff_shape": list(phase_diff_arr.shape) if phase_diff_arr.size > 0 else [],
+                        "phase_diff_size": phase_diff_arr.size if phase_diff_arr.size > 0 else 0,
+                        "valid_count": len(valid_phase),
+                        "sound_field_x_len": len(sound_field_x) if sound_field_x is not None else 0,
+                        "sound_field_y_len": len(sound_field_y) if sound_field_y is not None else 0,
+                        "min_deg": float(np.nanmin(valid_phase)) if len(valid_phase) > 0 else None,
+                        "max_deg": float(np.nanmax(valid_phase)) if len(valid_phase) > 0 else None
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         
         # 🎯 WICHTIG: Surface-Daten (Z_grid, surface_mask, surface_meshes, etc.)
         # werden bereits in _calculate_sound_field_complex gespeichert (Zeilen 710-736)
@@ -49,6 +102,27 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         return phase_diff, sound_field_x, sound_field_y
 
     def _compute_phase_differences(self, array_fields: dict) -> np.ndarray:
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:_compute_phase_differences:entry",
+                    "message": "Berechne Phasendifferenzen",
+                    "data": {
+                        "num_arrays": len(array_fields),
+                        "array_keys": list(array_fields.keys())
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         arrays = [field for field in array_fields.values() if field is not None]
         if not arrays:
             return np.array([])
@@ -84,6 +158,31 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
             where=weight_sum > 0,
         )
         phase_diff_deg = np.degrees(phase_diff_rad)
+        
+        # #region agent log
+        try:
+            valid_phase = phase_diff_deg[np.isfinite(phase_diff_deg)]
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:_compute_phase_differences:exit",
+                    "message": "Phasendifferenzen berechnet",
+                    "data": {
+                        "shape": list(phase_diff_deg.shape),
+                        "valid_count": len(valid_phase),
+                        "total_count": phase_diff_deg.size,
+                        "min_deg": float(np.nanmin(valid_phase)) if len(valid_phase) > 0 else None,
+                        "max_deg": float(np.nanmax(valid_phase)) if len(valid_phase) > 0 else None,
+                        "mean_deg": float(np.nanmean(valid_phase)) if len(valid_phase) > 0 else None
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         return phase_diff_deg
 
 

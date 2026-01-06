@@ -361,10 +361,6 @@ class DrawPlotsMainwindow(ModuleBase):
             self.plot_mode_context_group.addAction(action)
             action.toggled.connect(partial(self._handle_plot_mode_change, mode))
             self.plot_mode_menu_actions[mode] = action
-        self.plot_mode_menu.addSeparator()
-        self.time_alignment_action = self.plot_mode_menu.addAction("Time alignment")
-        self.time_alignment_action.setIcon(QtGui.QIcon.fromTheme("view-time-line"))
-        self.time_alignment_action.triggered.connect(self._handle_time_alignment_action)
 
         self.menu_mode_actions = {}
         ui = getattr(self.main_window, 'ui', None)
@@ -400,18 +396,6 @@ class DrawPlotsMainwindow(ModuleBase):
         setattr(self.settings, 'spl_plot_mode', initial_mode)
         self._sync_plot_mode_actions(initial_mode)
         self._update_plot_mode_availability()
-
-    def _handle_time_alignment_action(self):
-        """Kontextmenü-Aktion für schnelle Umschaltung in den Time-Alignment-Modus."""
-        if not self._is_mode_allowed("SPL over time"):
-            QtWidgets.QToolTip.showText(
-                QtGui.QCursor.pos(),
-                "Time alignment nur im FEM-SPL-Modus verfügbar.",
-            )
-            return
-        setattr(self.settings, 'spl_plot_mode', "SPL over time")
-        self._sync_plot_mode_actions("SPL over time")
-        self.plot_spl(self.settings, None, update_axes=False, reset_camera=False)
 
     def _is_mode_allowed(self, mode: str) -> bool:
         fem_active = bool(getattr(self.settings, 'spl_plot_fem', False))
@@ -1046,6 +1030,8 @@ class DrawPlotsMainwindow(ModuleBase):
         # #region agent log
         try:
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                sound_field_values_arr = np.asarray(sound_field_values) if hasattr(sound_field_values, '__len__') else None
+                valid_values = sound_field_values_arr[np.isfinite(sound_field_values_arr)] if sound_field_values_arr is not None and sound_field_values_arr.size > 0 else np.array([])
                 f.write(json.dumps({
                     "sessionId": "debug-session",
                     "runId": "run1",
@@ -1053,9 +1039,15 @@ class DrawPlotsMainwindow(ModuleBase):
                     "location": "WindowPlotsMainwindow.py:plot_spl:calling_update_spl_plot",
                     "message": "Calling update_spl_plot",
                     "data": {
+                        "plot_mode": plot_mode,
+                        "field_key": field_key,
                         "sound_field_x_shape": np.array(sound_field_x).shape if hasattr(sound_field_x, '__len__') else None,
                         "sound_field_y_shape": np.array(sound_field_y).shape if hasattr(sound_field_y, '__len__') else None,
-                        "sound_field_values_shape": np.array(sound_field_values).shape if hasattr(sound_field_values, '__len__') else None,
+                        "sound_field_values_shape": sound_field_values_arr.shape if sound_field_values_arr is not None else None,
+                        "sound_field_values_type": type(sound_field_values).__name__,
+                        "valid_count": len(valid_values),
+                        "min_value": float(np.nanmin(valid_values)) if len(valid_values) > 0 else None,
+                        "max_value": float(np.nanmax(valid_values)) if len(valid_values) > 0 else None,
                         "colorization_mode": self.settings.colorization_mode
                     },
                     "timestamp": int(time_module.time() * 1000)
@@ -1117,20 +1109,29 @@ class DrawPlotsMainwindow(ModuleBase):
         calc_spl = getattr(self.container, 'calculation_spl', {})
         if not isinstance(calc_spl, dict):
             return False
-        if self._is_empty_data(calc_spl.get('sound_field_p')):
+        
+        # 🎯 FIX: Prüfe ob sound_field_p vorhanden ist (auch wenn leer)
+        # Wenn nicht vorhanden, können wir keine Phase-Daten berechnen
+        if calc_spl.get('sound_field_p') is None:
             return False
 
         active_arrays = [
             arr for arr in self.settings.speaker_arrays.values()
             if not getattr(arr, 'mute', False) and not getattr(arr, 'hide', False)
         ]
-        if len(active_arrays) == 0:
+        # 🎯 FIX: Berechne Phase-Daten auch wenn keine aktiven Arrays vorhanden sind
+        # (dann wird ein leeres Array mit richtiger Form erstellt)
+        
+        try:
+            calculator = SoundFieldCalculatorPhaseDiff(self.settings, self.container.data, calc_spl)
+            calculator.set_data_container(self.container)
+            calculator.calculate_phase_alignment()
+            return True
+        except Exception as e:
+            print(f"Fehler bei Phase-Alignment-Berechnung: {e}")
+            import traceback
+            print(traceback.format_exc())
             return False
-
-        calculator = SoundFieldCalculatorPhaseDiff(self.settings, self.container.data, calc_spl)
-        calculator.set_data_container(self.container)
-        calculator.calculate_phase_alignment()
-        return True
 
     def _is_empty_data(self, sound_field_p, allow_all_zero: bool = False):
         """Prüft ob sound_field_p nur NaN oder Nullen enthält"""
@@ -1361,11 +1362,11 @@ class DrawPlotsMainwindow(ModuleBase):
                     self.main_window.plot_spl(update_axes=False)
                 return
         
+        # 🎯 FIX: Für Phase-Modus berechne Phase-Daten, aber rufe plot_spl() immer auf
+        # Die Validierung erfolgt dann in plot_spl() selbst
         if selection == "Phase alignment" and isinstance(calc_spl, dict):
-            has_data = self._calculate_phase_alignment_field()
-            if not has_data:
-                self.show_empty_spl()
-                return
+            # Versuche Phase-Daten zu berechnen, auch wenn es fehlschlägt
+            self._calculate_phase_alignment_field()
 
         if not isinstance(calc_spl, dict):
             plotter = self._get_current_spl_plotter()
