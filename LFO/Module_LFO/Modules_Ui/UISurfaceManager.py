@@ -3817,7 +3817,72 @@ class UISurfaceManager(ModuleBase):
                         "timestamp": int(time_module.time() * 1000)
                     }) + "\n")
                 # #endregion
-                points[point_index][coord_name] = value
+                # 🎯 FIX: Prüfe ob dieser Punkt von anderen Surfaces verwendet wird
+                # Wenn ja, erstelle eine Kopie, damit andere Surfaces unverändert bleiben
+                point = points[point_index]
+                point_id_before = id(point)
+                
+                # Prüfe ob Punkt von anderen Surfaces verwendet wird
+                surface_store = self.settings.surface_definitions if hasattr(self.settings, 'surface_definitions') else {}
+                point_is_shared = False
+                
+                if surface_store:
+                    for other_surface_id, other_surface in surface_store.items():
+                        if other_surface_id == surface_id:
+                            continue
+                        other_points = other_surface.points if isinstance(other_surface, SurfaceDefinition) else other_surface.get('points', [])
+                        for other_point in other_points:
+                            if other_point is point:
+                                point_is_shared = True
+                                break
+                        if point_is_shared:
+                            break
+                
+                # #region agent log
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1",
+                        "location": "UISurfaceManager.py:_on_point_editor_finished:check_shared",
+                        "message": "Checking if point is shared in _on_point_editor_finished",
+                        "data": {
+                            "surface_id": str(surface_id),
+                            "point_index": int(point_index),
+                            "coord_name": str(coord_name),
+                            "point_is_shared": point_is_shared,
+                            "point_id": point_id_before
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+                # #endregion
+                
+                if point_is_shared:
+                    # Punkt wird von anderen Surfaces verwendet → erstelle Kopie
+                    point = point.copy()
+                    points[point_index] = point
+                    
+                    # #region agent log
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H1",
+                            "location": "UISurfaceManager.py:_on_point_editor_finished:copy_created",
+                            "message": "Point copy created in _on_point_editor_finished",
+                            "data": {
+                                "surface_id": str(surface_id),
+                                "point_index": int(point_index),
+                                "old_point_id": point_id_before,
+                                "new_point_id": id(point)
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                    # #endregion
+                
+                point[coord_name] = value
                 
                 # Aktualisiere Anzeige
                 formatted = f"{value:.2f}"

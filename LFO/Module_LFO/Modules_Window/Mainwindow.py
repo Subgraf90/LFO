@@ -217,38 +217,39 @@ class Ui_MainWindow(object):
         self.menuSettings.addAction(self.actionSettings_window)
         self.menuSettings.addSeparator()
         self.menuSettings.addAction(self.actionReset_to_Factory_Settings)
-        self.menuWindow.addAction(self.actionSurface_Window)
+        
+        # Window-Menü: Neue Struktur
+        self.menuWindow.addAction(self.actionSpeakerSpecs_Window)  # Source
+        self.menuWindow.addAction(self.actionSurface_Window)  # Surface
         self.menuWindow.addSeparator()
-        self.menuWindow.addAction(self.actionSpeakerSpecs_Window)
+        self.menuWindow.addAction(self.actionCourves_Window)  # Snapshot
+        self.menuWindow.addAction(self.actionImpulse_Window)  # Impulse
         self.menuWindow.addSeparator()
-        self.menuWindow.addAction(self.actionCourves_Window)
-        self.menuWindow.addAction(self.actionImpulse_Window)
+        self.menuWindow.addAction(self.actionSourceLayout_Window)  # Source Parameter
         self.menuWindow.addSeparator()
-        self.menuWindow.addAction(self.actionSourceLayout_Window)
-        self.menuWindow.addAction(self.actionSurface_Window)
-        self.menuCalculation.addAction(self.actionPlotMode_SPL)
-        self.menuCalculation.addAction(self.actionPlotMode_Phase)
-        self.menuCalculation.addAction(self.actionPlotMode_Time)
-
-        # Füge neue Actions für die View-Kontrolle hinzu
+        
+        # Füge Actions für die View-Kontrolle hinzu
         self.actionFocus_SPL = QtWidgets.QAction(MainWindow)
         self.actionFocus_SPL.setObjectName("actionFocus_SPL")
-        self.actionFocus_Yaxis = QtWidgets.QAction(MainWindow)
-        self.actionFocus_Yaxis.setObjectName("actionFocus_Yaxis")
         self.actionFocus_Xaxis = QtWidgets.QAction(MainWindow)
         self.actionFocus_Xaxis.setObjectName("actionFocus_Xaxis")
+        self.actionFocus_Yaxis = QtWidgets.QAction(MainWindow)
+        self.actionFocus_Yaxis.setObjectName("actionFocus_Yaxis")
         self.actionFocus_Polar = QtWidgets.QAction(MainWindow)
         self.actionFocus_Polar.setObjectName("actionFocus_Polar")
         self.actionDefault_View = QtWidgets.QAction(MainWindow)
         self.actionDefault_View.setObjectName("actionDefault_View")
         
-        # Füge die Actions zum Window-Menü hinzu
-        self.menuWindow.addSeparator()
-        self.menuWindow.addAction(self.actionFocus_SPL)
-        self.menuWindow.addAction(self.actionFocus_Yaxis)
-        self.menuWindow.addAction(self.actionFocus_Xaxis)
-        self.menuWindow.addAction(self.actionFocus_Polar)
-        self.menuWindow.addAction(self.actionDefault_View)
+        # Füge die View-Actions zum Window-Menü hinzu
+        self.menuWindow.addAction(self.actionFocus_SPL)  # SPL View
+        self.menuWindow.addAction(self.actionFocus_Xaxis)  # X-Axis View
+        self.menuWindow.addAction(self.actionFocus_Yaxis)  # Y-Axis View
+        self.menuWindow.addAction(self.actionFocus_Polar)  # Polar View
+        self.menuWindow.addAction(self.actionDefault_View)  # Default View
+        
+        self.menuCalculation.addAction(self.actionPlotMode_SPL)
+        self.menuCalculation.addAction(self.actionPlotMode_Phase)
+        self.menuCalculation.addAction(self.actionPlotMode_Time)
 
         # Neue Action für Manage Speaker
         self.actionManage_Speaker = QtWidgets.QAction(MainWindow)
@@ -295,7 +296,7 @@ class Ui_MainWindow(object):
         self.actionCourves_Window.setShortcut(QtGui.QKeySequence("Ctrl+Alt+C"))
         self.actionImpulse_Window.setText(_translate("MainWindow", "Impulse"))
         self.actionImpulse_Window.setShortcut(QtGui.QKeySequence("Ctrl+Alt+I"))
-        self.actionSourceLayout_Window.setText(_translate("MainWindow", "Source Layout"))
+        self.actionSourceLayout_Window.setText(_translate("MainWindow", "Source Parameter"))
         self.actionSourceLayout_Window.setShortcut(QtGui.QKeySequence("Ctrl+Alt+L"))
         self.actionSurface_Window.setText(_translate("MainWindow", "Surface"))
         self.actionSurface_Window.setShortcut(QtGui.QKeySequence("Ctrl+Alt+P"))
@@ -305,14 +306,14 @@ class Ui_MainWindow(object):
         self.actionPlotMode_Phase.setText(_translate("MainWindow", "Phase alignment"))
         self.actionPlotMode_Time.setText(_translate("MainWindow", "SPL over time"))
 
-        # Setze die Texte und Shortcuts für die neuen Actions
-        self.actionFocus_SPL.setText(_translate("MainWindow", "Focus SPL"))
+        # Setze die Texte und Shortcuts für die View-Actions
+        self.actionFocus_SPL.setText(_translate("MainWindow", "SPL View"))
         self.actionFocus_SPL.setShortcut(_translate("MainWindow", "Ctrl+1"))
-        self.actionFocus_Yaxis.setText(_translate("MainWindow", "Focus Yaxis"))
-        self.actionFocus_Yaxis.setShortcut(_translate("MainWindow", "Ctrl+2"))
-        self.actionFocus_Xaxis.setText(_translate("MainWindow", "Focus Xaxis"))
+        self.actionFocus_Xaxis.setText(_translate("MainWindow", "X-Axis View"))
         self.actionFocus_Xaxis.setShortcut(_translate("MainWindow", "Ctrl+3"))
-        self.actionFocus_Polar.setText(_translate("MainWindow", "Focus Polar"))
+        self.actionFocus_Yaxis.setText(_translate("MainWindow", "Y-Axis View"))
+        self.actionFocus_Yaxis.setShortcut(_translate("MainWindow", "Ctrl+2"))
+        self.actionFocus_Polar.setText(_translate("MainWindow", "Polar View"))
         self.actionFocus_Polar.setShortcut(_translate("MainWindow", "Ctrl+4"))
         self.actionDefault_View.setText(_translate("MainWindow", "Default View"))
         self.actionDefault_View.setShortcut(_translate("MainWindow", "Ctrl+5"))

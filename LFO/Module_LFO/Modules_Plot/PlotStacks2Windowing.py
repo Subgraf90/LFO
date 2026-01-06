@@ -53,8 +53,14 @@ class StackDraw_Windowing:
         """Zeichnet einen einzelnen Lautsprecher aus dem Stack"""
         try:
             
-            width = float(cabinet.get('width', 1.35))
-            depth = float(cabinet.get('depth', 0.72))
+            width = float(cabinet.get('width', 0))
+            if width <= 0:
+                return
+            
+            frontheight = float(cabinet.get('front_height', 0))
+            if frontheight <= 0:
+                return
+            
             is_cardio = bool(cabinet.get('cardio', False))
             x_offset = float(cabinet.get('x_offset', 0.0))
             
@@ -67,12 +73,14 @@ class StackDraw_Windowing:
             y = base_y
             
             # Zeichne nur das Rechteck
+            # Normal: dunkle Fläche ist vorne (sichtbar) → dunkel
+            # Cardio: helle Fläche/Body ist vorne (sichtbar) → hell
             rect = patches.Rectangle(
-                (x, y - depth),  # Position ist (x, window_restriction - depth)
+                (x, y - frontheight),  # Position ist (x, window_restriction - frontheight)
                 width, 
-                depth, 
+                frontheight, 
                 ec='black',
-                fc='#909090' if is_cardio else '#C5C5C5'
+                fc='#C5C5C5' if is_cardio else '#909090'
             )
             self.ax.add_patch(rect)
             self.left_positions.append(x - width/2)            

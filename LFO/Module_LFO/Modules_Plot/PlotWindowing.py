@@ -24,9 +24,13 @@ class WindowingPlot(QWidget):
         self._updating_ticks = False
         
         layout = QVBoxLayout()
-        layout.addWidget(self.canvas)
+        layout.setContentsMargins(0, 0, 0, 0)  # Keine Margins für maximale Ausnutzung
+        layout.setSpacing(0)  # Kein Spacing
+        layout.addWidget(self.canvas, 1)  # Stretch-Faktor 1 für Expansion
         self.setLayout(layout)
 
+        # Canvas soll auch expandieren
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(300, 200)
         
@@ -115,24 +119,35 @@ class WindowingPlot(QWidget):
             
             y_range = max(y_max - y_min, 0)
             y_step = self._select_db_tick_step(y_range)
-            # Minimales Padding für Y-Achse - Höhe reduzieren, aber sicherstellen dass Patches sichtbar sind
+            # Padding für Y-Achse: Mehr Platz oben für letzte Daten (saubere Darstellung)
             if y_range == 0:
-                y_padding = max(0.5, y_step * 0.1)
-                y_min -= y_padding
-                y_max += y_padding
+                y_padding_bottom = max(0.5, y_step * 0.1)
+                y_padding_top = max(0.5, y_step * 0.1)
+                y_min -= y_padding_bottom
+                y_max += y_padding_top
             else:
-                # Sehr minimales Padding (nur 2% der Range) um Höhe zu minimieren
-                y_padding = max(y_range * 0.02, 0.1)  # Mindestens 0.1 für kleine Ranges
-            self.ax.set_ylim(y_min - y_padding, y_max + y_padding)
+                # Unten: Minimales Padding (2% der Range)
+                y_padding_bottom = max(y_range * 0.02, 0.1)  # Mindestens 0.1 für kleine Ranges
+                # Oben: Mehr Padding (8% der Range) für saubere Darstellung der letzten Daten
+                y_padding_top = max(y_range * 0.08, 0.2)  # Mindestens 0.2 für kleine Ranges
+                y_min -= y_padding_bottom
+                y_max += y_padding_top
+            self.ax.set_ylim(y_min, y_max)
             self.ax.yaxis.set_major_locator(MultipleLocator(y_step))
 
         # Setze aspect='equal' für gleichmäßige Skalierung (1:1 Verhältnis)
         self.ax.set_aspect('equal', adjustable='box')
         
         self.ax.grid(color='k', linestyle='-', linewidth=0.3)
-        self.ax.set_xlabel("Arc width [m]", fontsize=6)
-        self.ax.set_ylabel("Windowfunction [dB]", fontsize=6)
+        self.ax.set_xlabel("[m]", fontsize=6)
+        self.ax.set_ylabel("[dB]", fontsize=6)
         self.ax.tick_params(axis='both', which='both', labelsize=6)
+        
+        # Zeichne gestrichelte horizontale Linie bei window_restriction
+        window_restriction = getattr(speaker_array, 'window_restriction', None)
+        if window_restriction is not None:
+            x_min, x_max = self.ax.get_xlim()
+            self.ax.axhline(y=window_restriction, color='gray', linestyle='--', linewidth=0.8)
         
         # Layout-Anpassungen für konsistente Größe und um Achsenbeschriftungen nicht abzuschneiden
         self._apply_layout()
@@ -242,10 +257,11 @@ class WindowingPlot(QWidget):
             try:
                 # Deaktiviere constrained_layout vollständig
                 self.ax.figure.set_constrained_layout(False)
-                # Passe die Plot-Ränder an Canvas-Größe an (wie bei X/Y-Axis Plots)
-                # Mehr Platz für Achsenbeschriftungen: left größer, bottom größer
-                # Mehr Luft links und rechts: left kleiner, right kleiner
-                self.ax.figure.subplots_adjust(left=0.12, right=0.92, top=0.90, bottom=0.20)
+                # Optimierte Ränder für saubere Darstellung: Mehr Platz oben und unten
+                # left: Platz für Y-Achsenbeschriftung
+                # bottom: Platz für X-Achsenbeschriftung
+                # top und bottom: Mehr Platz für saubere Darstellung
+                self.ax.figure.subplots_adjust(left=0.12, right=0.98, top=0.95, bottom=0.18)
             except Exception:
                 pass
             # Zeichne nur wenn Canvas vorhanden

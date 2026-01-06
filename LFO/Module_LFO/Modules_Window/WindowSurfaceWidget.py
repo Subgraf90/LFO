@@ -1308,6 +1308,27 @@ class SurfaceDockWidget(QDockWidget):
             self._on_surface_geometry_changed(self.current_surface_id)
 
     def _handle_point_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        # #region agent log - Function entry
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "ENTRY",
+                    "location": "WindowSurfaceWidget.py:_handle_point_item_changed:entry",
+                    "message": "FUNCTION CALLED",
+                    "data": {
+                        "column": int(column),
+                        "loading_points": self._loading_points
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception as e:
+            pass
+        # #endregion
+        
         if self._loading_points:
             return
 
@@ -1346,7 +1367,22 @@ class SurfaceDockWidget(QDockWidget):
 
         coords = points[index]
         previous_coords = coords.copy()
-
+        
+        # 🎯 FIX: Prüfe ob dieser Punkt von anderen Surfaces verwendet wird
+        # Wenn ja, erstelle eine Kopie, damit andere Surfaces unverändert bleiben
+        current_surface_id = self.current_surface_id
+        if current_surface_id is None:
+            if hasattr(surface, 'id'):
+                current_surface_id = surface.id
+            elif isinstance(surface, dict):
+                current_surface_id = surface.get('id')
+        
+        point_is_shared = self._is_point_used_by_other_surfaces(
+            current_surface_id, 
+            coords, 
+            index
+        )
+        
         # #region agent log
         import json
         import time as time_module
@@ -1355,7 +1391,74 @@ class SurfaceDockWidget(QDockWidget):
                 "sessionId": "debug-session",
                 "runId": "run1",
                 "hypothesisId": "H1",
-                "location": "WindowSurfaceWidget.py:_handle_point_item_changed:1275",
+                "location": "WindowSurfaceWidget.py:_handle_point_item_changed:before_copy",
+                "message": "Checking if point is shared",
+                "data": {
+                    "surface_id": str(current_surface_id) if current_surface_id else None,
+                    "point_index": int(index),
+                    "column": int(column),
+                    "point_is_shared": point_is_shared,
+                    "point_id": id(coords),  # Objekt-ID für Debugging
+                    "point_coords": {"x": coords.get('x'), "y": coords.get('y'), "z": coords.get('z')}
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
+        
+        if point_is_shared:
+            # Punkt wird von anderen Surfaces verwendet → erstelle Kopie
+            old_coords_id = id(coords)
+            coords = coords.copy()
+            points[index] = coords
+            
+            # #region agent log
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H2",
+                    "location": "WindowSurfaceWidget.py:_handle_point_item_changed:copy_created",
+                    "message": "Point copy created",
+                    "data": {
+                        "surface_id": str(current_surface_id) if current_surface_id else None,
+                        "point_index": int(index),
+                        "old_point_id": old_coords_id,
+                        "new_point_id": id(coords),
+                        "points_list_id": id(points),
+                        "points_index_id": id(points[index]),
+                        "point_coords": {"x": coords.get('x'), "y": coords.get('y'), "z": coords.get('z')}
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+            # #endregion
+            
+            # #region agent log - Verify copy was stored
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H2",
+                    "location": "WindowSurfaceWidget.py:_handle_point_item_changed:verify_copy_stored",
+                    "message": "Verifying copy was stored in points list",
+                    "data": {
+                        "surface_id": str(current_surface_id) if current_surface_id else None,
+                        "point_index": int(index),
+                        "coords_id": id(coords),
+                        "points_index_id": id(points[index]),
+                        "are_same": coords is points[index],
+                        "points_length": len(points)
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+            # #endregion
+
+        # #region agent log
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H1",
+                "location": "WindowSurfaceWidget.py:_handle_point_item_changed:after_copy",
                 "message": "Surface point position changed - ABSOLUTE value",
                 "data": {
                     "surface_id": getattr(surface, 'id', None) if hasattr(surface, 'id') else None,
@@ -1363,12 +1466,35 @@ class SurfaceDockWidget(QDockWidget):
                     "column": int(column),
                     "old_value": float(previous_coords.get('x' if column == 1 else 'y' if column == 2 else 'z', 0.0)),
                     "new_value": float(value) if value is not None else None,
-                    "is_absolute": True
+                    "is_absolute": True,
+                    "point_is_shared": point_is_shared,
+                    "point_id": id(coords)
                 },
                 "timestamp": int(time_module.time() * 1000)
             }) + "\n")
         # #endregion
 
+        # #region agent log - Before modifying coords
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H2",
+                "location": "WindowSurfaceWidget.py:_handle_point_item_changed:before_modify",
+                "message": "Before modifying coords",
+                "data": {
+                    "surface_id": str(current_surface_id) if current_surface_id else None,
+                    "point_index": int(index),
+                    "column": int(column),
+                    "coords_id": id(coords),
+                    "points_index_id": id(points[index]),
+                    "are_same": coords is points[index],
+                    "value": float(value) if value is not None else None
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
+        
         if column == 1:
             coords["x"] = value
             item.setText(1, f"{value:.2f}")
@@ -1379,8 +1505,56 @@ class SurfaceDockWidget(QDockWidget):
             coords["z"] = value
             item.setText(3, self._format_z_value(value))
             if value is not None and all_zero_before and not math.isclose(value, 0.0, abs_tol=1e-9):
+                # #region agent log - Before _clear_other_z_values
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H3",
+                        "location": "WindowSurfaceWidget.py:_handle_point_item_changed:before_clear_z",
+                        "message": "Before calling _clear_other_z_values",
+                        "data": {
+                            "surface_id": str(current_surface_id) if current_surface_id else None,
+                            "keep_index": int(index)
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+                # #endregion
                 self._clear_other_z_values(surface, index)
+            # #region agent log - Before _try_auto_complete_surface_z
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H3",
+                    "location": "WindowSurfaceWidget.py:_handle_point_item_changed:before_auto_complete",
+                    "message": "Before calling _try_auto_complete_surface_z",
+                    "data": {
+                        "surface_id": str(current_surface_id) if current_surface_id else None
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+            # #endregion
             self._try_auto_complete_surface_z(surface)
+        
+        # #region agent log - Before _enforce_surface_planarity
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H3",
+                "location": "WindowSurfaceWidget.py:_handle_point_item_changed:before_enforce_planarity",
+                "message": "Before calling _enforce_surface_planarity",
+                "data": {
+                    "surface_id": str(current_surface_id) if current_surface_id else None,
+                    "coords_id": id(coords),
+                    "points_index_id": id(points[index]),
+                    "coords_value": {"x": coords.get('x'), "y": coords.get('y'), "z": coords.get('z')}
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
+        
         if not self._enforce_surface_planarity(surface):
             if column == 3:
                 # Keine planare Fläche möglich → übrige Z-Werte zurücksetzen, Eingabe beibehalten
@@ -1536,10 +1710,89 @@ class SurfaceDockWidget(QDockWidget):
         if model is None:
             return False
 
+        # 🎯 FIX: Hole Surface-ID für Punkt-Prüfung
+        current_surface_id = self.current_surface_id
+        if current_surface_id is None:
+            if hasattr(surface, 'id'):
+                current_surface_id = surface.id
+            elif isinstance(surface, dict):
+                current_surface_id = surface.get('id')
+        
+        # #region agent log - _enforce_surface_planarity entry
+        import json
+        import time as time_module
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H3",
+                "location": "WindowSurfaceWidget.py:_enforce_surface_planarity:entry",
+                "message": "_enforce_surface_planarity called",
+                "data": {
+                    "surface_id": str(current_surface_id) if current_surface_id else None,
+                    "points_count": len(points),
+                    "points_ids": [id(p) for p in points]
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
+        
         previous_loading = self._loading_points
         self._loading_points = True
         try:
             for idx, point in enumerate(points):
+                point_id_before = id(point)
+                
+                # 🎯 FIX: Prüfe ob Punkt von anderen Surfaces verwendet wird
+                point_is_shared = self._is_point_used_by_other_surfaces(
+                    current_surface_id,
+                    point,
+                    idx
+                )
+                
+                # #region agent log - Point processing in _enforce_surface_planarity
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H3",
+                        "location": "WindowSurfaceWidget.py:_enforce_surface_planarity:point_check",
+                        "message": "Checking point in _enforce_surface_planarity",
+                        "data": {
+                            "surface_id": str(current_surface_id) if current_surface_id else None,
+                            "point_index": int(idx),
+                            "point_id": point_id_before,
+                            "point_is_shared": point_is_shared,
+                            "points_index_id": id(points[idx])
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+                # #endregion
+                
+                if point_is_shared:
+                    # Punkt wird von anderen Surfaces verwendet → erstelle Kopie
+                    point = point.copy()
+                    points[idx] = point
+                    
+                    # #region agent log - Copy created in _enforce_surface_planarity
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H3",
+                            "location": "WindowSurfaceWidget.py:_enforce_surface_planarity:copy_created",
+                            "message": "Copy created in _enforce_surface_planarity",
+                            "data": {
+                                "surface_id": str(current_surface_id) if current_surface_id else None,
+                                "point_index": int(idx),
+                                "old_point_id": point_id_before,
+                                "new_point_id": id(point),
+                                "points_index_id": id(points[idx])
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                    # #endregion
+                
                 numeric_x = float(self._coerce_numeric(point.get("x")) or 0.0)
                 numeric_y = float(self._coerce_numeric(point.get("y")) or 0.0)
                 new_z = evaluate_surface_plane(
@@ -1547,12 +1800,51 @@ class SurfaceDockWidget(QDockWidget):
                     numeric_x,
                     numeric_y,
                 )
+                
+                # #region agent log - Before modifying z in _enforce_surface_planarity
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H3",
+                        "location": "WindowSurfaceWidget.py:_enforce_surface_planarity:before_modify_z",
+                        "message": "Before modifying z in _enforce_surface_planarity",
+                        "data": {
+                            "surface_id": str(current_surface_id) if current_surface_id else None,
+                            "point_index": int(idx),
+                            "point_id": id(point),
+                            "points_index_id": id(points[idx]),
+                            "are_same": point is points[idx],
+                            "old_z": point.get('z'),
+                            "new_z": new_z
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+                # #endregion
+                
                 point["z"] = new_z
                 item = self.points_tree.topLevelItem(idx)
                 if item is not None:
                     item.setText(3, f"{new_z:.2f}")
         finally:
             self._loading_points = previous_loading
+            
+            # #region agent log - _enforce_surface_planarity exit
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H3",
+                    "location": "WindowSurfaceWidget.py:_enforce_surface_planarity:exit",
+                    "message": "_enforce_surface_planarity finished",
+                    "data": {
+                        "surface_id": str(current_surface_id) if current_surface_id else None,
+                        "points_count": len(points),
+                        "points_ids": [id(p) for p in points]
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+            # #endregion
 
         return True
 
@@ -1592,6 +1884,237 @@ class SurfaceDockWidget(QDockWidget):
             {"x": 0, "y": 0, "z": 0.0},
             {"x": 0, "y": 0, "z": 0.0},
         ]
+
+    def _is_point_used_by_other_surfaces(
+        self, 
+        current_surface_id: Optional[str], 
+        point: SurfacePoint, 
+        point_index: int
+    ) -> bool:
+        """
+        Prüft, ob ein Punkt von anderen Surfaces verwendet wird.
+        
+        Diese Funktion prüft, ob derselbe Punkt-Objekt (dieselbe Referenz) 
+        auch in anderen Surfaces verwendet wird. Wenn ja, sollte eine Kopie 
+        erstellt werden, bevor der Punkt geändert wird.
+        
+        WICHTIG: Diese Funktion prüft auch auf identische Koordinaten,
+        da beim Import Punkte möglicherweise kopiert werden, aber dieselbe
+        Position haben.
+        
+        Args:
+            current_surface_id: ID des aktuellen Surfaces
+            point: Der zu prüfende Punkt (Dictionary)
+            point_index: Index des Punktes im aktuellen Surface
+        
+        Returns:
+            True wenn der Punkt von anderen Surfaces verwendet wird, sonst False
+        """
+        # #region agent log - _is_point_used_by_other_surfaces entry
+        import json
+        import time as time_module
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H1",
+                "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:entry",
+                "message": "_is_point_used_by_other_surfaces called",
+                "data": {
+                    "current_surface_id": str(current_surface_id) if current_surface_id else None,
+                    "point_index": int(point_index),
+                    "point_id": id(point),
+                    "point_coords": {"x": point.get('x'), "y": point.get('y'), "z": point.get('z')}
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
+        
+        if current_surface_id is None:
+            # #region agent log - No surface ID
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H4",
+                    "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:no_surface_id",
+                    "message": "current_surface_id is None",
+                    "data": {},
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+            # #endregion
+            return False
+        
+        surface_store = self._get_surface_store()
+        if not surface_store:
+            return False
+        
+        point_id = id(point)  # Objekt-ID für Debugging
+        point_x = float(point.get('x', 0.0))
+        point_y = float(point.get('y', 0.0))
+        point_z = point.get('z')
+        if point_z is not None:
+            point_z = float(point_z)
+        
+        # Toleranz für Koordinatenvergleiche (1mm)
+        tolerance = 1e-3
+        
+        # #region agent log - Surface store info
+        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                "sessionId": "debug-session",
+                "runId": "run1",
+                "hypothesisId": "H4",
+                "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:surface_store",
+                "message": "Surface store info",
+                "data": {
+                    "current_surface_id": str(current_surface_id),
+                    "surface_store_keys": list(surface_store.keys()),
+                    "surface_count": len(surface_store)
+                },
+                "timestamp": int(time_module.time() * 1000)
+            }) + "\n")
+        # #endregion
+        
+        # Prüfe alle anderen Surfaces
+        for surface_id, other_surface in surface_store.items():
+            if surface_id == current_surface_id:
+                continue
+            
+            other_points = self._surface_points(other_surface)
+            if not other_points:
+                continue
+            
+            # Prüfe jeden Punkt im anderen Surface
+            for idx, other_point in enumerate(other_points):
+                # #region agent log - Comparing points
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H1",
+                        "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:comparing",
+                        "message": "Comparing points",
+                        "data": {
+                            "current_surface_id": str(current_surface_id),
+                            "other_surface_id": str(surface_id),
+                            "point_index": int(point_index),
+                            "other_point_index": int(idx),
+                            "point_id": point_id,
+                            "other_point_id": id(other_point),
+                            "are_same_reference": other_point is point,
+                            "point_coords": {"x": point_x, "y": point_y, "z": point_z},
+                            "other_coords": {"x": other_point.get('x'), "y": other_point.get('y'), "z": other_point.get('z')}
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+                # #endregion
+                
+                # 🎯 WICHTIG: Prüfe zuerst ob es dieselbe Objekt-Referenz ist
+                # Das ist der häufigste Fall wenn Punkte zwischen Surfaces geteilt werden
+                if other_point is point:
+                    # Gefunden! Derselbe Punkt wird von einem anderen Surface verwendet
+                    # #region agent log
+                    try:
+                        import json
+                        import time as time_module
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H1",
+                                "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:found_shared_by_reference",
+                                "message": "Shared point found by reference",
+                                "data": {
+                                    "current_surface_id": str(current_surface_id),
+                                    "other_surface_id": str(surface_id),
+                                    "point_index": int(point_index),
+                                    "other_point_index": int(idx),
+                                    "point_id": point_id,
+                                    "other_point_id": id(other_point),
+                                    "point_coords": {"x": point.get('x'), "y": point.get('y'), "z": point.get('z')}
+                                },
+                                "timestamp": int(time_module.time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    return True
+                
+                # 🎯 FALLBACK: Prüfe auch auf identische Koordinaten
+                # Dies ist notwendig, wenn Punkte beim Import kopiert wurden,
+                # aber dennoch als "geteilt" behandelt werden sollen
+                other_x = float(other_point.get('x', 0.0))
+                other_y = float(other_point.get('y', 0.0))
+                other_z = other_point.get('z')
+                if other_z is not None:
+                    other_z = float(other_z)
+                
+                # Vergleiche Koordinaten mit Toleranz
+                if (abs(point_x - other_x) < tolerance and 
+                    abs(point_y - other_y) < tolerance):
+                    # X und Y identisch - prüfe Z
+                    if point_z is None and other_z is None:
+                        # Alle Koordinaten identisch (X, Y, beide Z=None)
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H1",
+                                    "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:found_shared_by_coords",
+                                    "message": "Shared point found by coordinates",
+                                    "data": {
+                                        "current_surface_id": str(current_surface_id),
+                                        "other_surface_id": str(surface_id),
+                                        "point_index": int(point_index),
+                                        "other_point_index": int(idx),
+                                        "point_id": point_id,
+                                        "other_point_id": id(other_point),
+                                        "point_coords": {"x": point_x, "y": point_y, "z": point_z},
+                                        "other_coords": {"x": other_x, "y": other_y, "z": other_z}
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        return True
+                    elif point_z is not None and other_z is not None:
+                        if abs(point_z - other_z) < tolerance:
+                            # Alle Koordinaten identisch
+                            # #region agent log
+                            try:
+                                import json
+                                import time as time_module
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H1",
+                                        "location": "WindowSurfaceWidget.py:_is_point_used_by_other_surfaces:found_shared_by_coords",
+                                        "message": "Shared point found by coordinates",
+                                        "data": {
+                                            "current_surface_id": str(current_surface_id),
+                                            "other_surface_id": str(surface_id),
+                                            "point_index": int(point_index),
+                                            "other_point_index": int(idx),
+                                            "point_id": point_id,
+                                            "other_point_id": id(other_point),
+                                            "point_coords": {"x": point_x, "y": point_y, "z": point_z},
+                                            "other_coords": {"x": other_x, "y": other_y, "z": other_z}
+                                        },
+                                        "timestamp": int(time_module.time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion
+                            return True
+        
+        return False
 
     # ---- geometry helpers -------------------------------------------
 
@@ -1690,12 +2213,34 @@ class SurfaceDockWidget(QDockWidget):
 
     def _clear_other_z_values(self, surface: SurfaceRecord, keep_index: int) -> None:
         points = self._surface_points(surface)
+        
+        # 🎯 FIX: Hole Surface-ID für Punkt-Prüfung
+        current_surface_id = self.current_surface_id
+        if current_surface_id is None:
+            if hasattr(surface, 'id'):
+                current_surface_id = surface.id
+            elif isinstance(surface, dict):
+                current_surface_id = surface.get('id')
+        
         previous_loading = self._loading_points
         self._loading_points = True
         try:
             for idx, point in enumerate(points):
                 if idx == keep_index:
                     continue
+                
+                # 🎯 FIX: Prüfe ob Punkt von anderen Surfaces verwendet wird
+                point_is_shared = self._is_point_used_by_other_surfaces(
+                    current_surface_id,
+                    point,
+                    idx
+                )
+                
+                if point_is_shared:
+                    # Punkt wird von anderen Surfaces verwendet → erstelle Kopie
+                    point = point.copy()
+                    points[idx] = point
+                
                 point["z"] = None
                 item = self.points_tree.topLevelItem(idx)
                 if item is not None:
@@ -1721,6 +2266,27 @@ class SurfaceDockWidget(QDockWidget):
 
         missing_index = missing_indices[0]
         missing_point = points[missing_index]
+        
+        # 🎯 FIX: Hole Surface-ID für Punkt-Prüfung
+        current_surface_id = self.current_surface_id
+        if current_surface_id is None:
+            if hasattr(surface, 'id'):
+                current_surface_id = surface.id
+            elif isinstance(surface, dict):
+                current_surface_id = surface.get('id')
+        
+        # 🎯 FIX: Prüfe ob Punkt von anderen Surfaces verwendet wird
+        point_is_shared = self._is_point_used_by_other_surfaces(
+            current_surface_id,
+            missing_point,
+            missing_index
+        )
+        
+        if point_is_shared:
+            # Punkt wird von anderen Surfaces verwendet → erstelle Kopie
+            missing_point = missing_point.copy()
+            points[missing_index] = missing_point
+        
         new_z = evaluate_surface_plane(
             model,
             float(self._coerce_numeric(missing_point.get("x")) or 0.0),

@@ -775,6 +775,35 @@ class SoundFieldCalculator(ModuleBase):
                     # Speichere Ergebnis in surface_results_buffers
                     if sound_field_p_surface is not None and surface_id in surface_results_buffers:
                         surface_results_buffers[surface_id] = sound_field_p_surface
+                    # 🎯 FIX: Kombiniere array_fields von allen Surfaces für Phase-Berechnung
+                    if capture_arrays and array_fields is not None and isinstance(array_fields_surface, dict):
+                        for array_key, array_wave in array_fields_surface.items():
+                            if array_key not in array_fields:
+                                # Erstelle neues Array mit der richtigen Form (kombiniertes Grid)
+                                array_fields[array_key] = np.zeros((len(sound_field_y), len(sound_field_x)), dtype=complex)
+                            # Interpoliere array_wave vom Surface-Grid auf das kombinierte Grid
+                            # Für jetzt: Addiere einfach die Werte (vereinfachte Version)
+                            # TODO: Eigentliche Interpolation wäre besser, aber für Phase-Berechnung reicht Summe
+                            if array_wave is not None and array_wave.size > 0:
+                                # Finde die Positionen im kombinierten Grid
+                                # Vereinfachte Version: Addiere direkt wenn Shapes übereinstimmen
+                                if array_wave.shape == array_fields[array_key].shape:
+                                    array_fields[array_key] += array_wave
+                                else:
+                                    # Interpoliere vom Surface-Grid auf kombiniertes Grid
+                                    from scipy.interpolate import griddata
+                                    Xg_surface = surface_grids_dict[surface_id].X_grid
+                                    Yg_surface = surface_grids_dict[surface_id].Y_grid
+                                    if Xg_surface.size > 0 and Yg_surface.size > 0:
+                                        points_source = np.column_stack([Xg_surface.ravel(), Yg_surface.ravel()])
+                                        values_source = array_wave.ravel()
+                                        X_combined, Y_combined = np.meshgrid(sound_field_x, sound_field_y)
+                                        points_target = np.column_stack([X_combined.ravel(), Y_combined.ravel()])
+                                        values_interp = griddata(
+                                            points_source, values_source, points_target,
+                                            method='linear', fill_value=0.0
+                                        )
+                                        array_fields[array_key] += values_interp.reshape(array_fields[array_key].shape)
                 except Exception as e:
                     # Fehler in der Surface-Berechnung sollen den Hauptpfad nicht stoppen
                     print(f"⚠️  [SoundFieldCalculator] Fehler bei Berechnung für Surface '{surface_id}': {e}")

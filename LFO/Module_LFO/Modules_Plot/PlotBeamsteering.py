@@ -24,9 +24,13 @@ class BeamsteeringPlot(QWidget):
         self._updating_ticks = False
         
         layout = QVBoxLayout()
-        layout.addWidget(self.canvas)
+        layout.setContentsMargins(0, 0, 0, 0)  # Keine Margins für maximale Ausnutzung
+        layout.setSpacing(0)  # Kein Spacing
+        layout.addWidget(self.canvas, 1)  # Stretch-Faktor 1 für Expansion
         self.setLayout(layout)
 
+        # Canvas soll auch expandieren
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(300, 200)
         
@@ -46,6 +50,12 @@ class BeamsteeringPlot(QWidget):
             self.ax.set_title("Kein gültiges SpeakerArray gefunden")
             self.canvas.draw_idle()
             return
+        
+        # Layout-Anpassungen für konsistente Größe (muss VOR Stack-Zeichnung sein!)
+        self._apply_layout()
+        
+        # Zeichne Stacks ZUERST (wie Windowing), damit Y-Limits die Patches berücksichtigen können
+        self.plot_Stacks2Beamsteering(speaker_array_id)
         
         # Extrahieren der Lautsprecherpositionen
         source_position_y = self._to_float_array(speaker_array.source_position_y)
@@ -77,10 +87,31 @@ class BeamsteeringPlot(QWidget):
                 x_ticks, step = self._calculate_metric_ticks(x_min, x_max)
                 self.ax.set_xlim(x_min, x_max)
             self.ax.set_xticks(x_ticks)
+            # Formatierung auf eine Nachkommastelle
+            self.ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
 
         if y_values.size:
             y_min = float(np.min(y_values))
             y_max = float(np.max(y_values))
+            
+            # Berücksichtige Lautsprecher-Stacks: Finde minimale und maximale Y-Position aller Patches (wie Windowing)
+            min_patch_y = float('inf')
+            max_patch_y = -float('inf')
+            import matplotlib.patches as patches
+            for patch in self.ax.patches:
+                if isinstance(patch, patches.Rectangle):
+                    patch_y = patch.get_y()
+                    patch_height = patch.get_height()
+                    # Rechtecke gehen von patch_y nach oben (patch_y + height)
+                    min_patch_y = min(min_patch_y, patch_y)
+                    max_patch_y = max(max_patch_y, patch_y + patch_height)
+            
+            # Verwende das Minimum/Maximum aus Daten und Patches
+            if min_patch_y != float('inf'):
+                y_min = min(y_min, min_patch_y)
+            if max_patch_y != -float('inf'):
+                y_max = max(y_max, max_patch_y)
+            
             # Prüfe ob bereits gezoomt wurde - verwende dann die aktuellen Grenzen
             current_ylim = self.ax.get_ylim()
             if abs(current_ylim[0] - y_min) > 0.01 or abs(current_ylim[1] - y_max) > 0.01:
@@ -88,13 +119,22 @@ class BeamsteeringPlot(QWidget):
                 y_min_visible, y_max_visible = current_ylim
                 y_ticks, step = self._calculate_metric_ticks(y_min_visible, y_max_visible)
             else:
-                # Nicht gezoomt - verwende Daten-Grenzen mit Padding
-                y_range_data = y_max - y_min
-                padding = max(y_range_data * 0.1, 0.1)  # 10% Padding oder mindestens 0.1m
-                y_min_with_padding = y_min - padding
-                y_max_with_padding = y_max + padding
-                y_ticks, step = self._calculate_metric_ticks(y_min_with_padding, y_max_with_padding)
-                self.ax.set_ylim(y_min_with_padding, y_max_with_padding)
+                # Nicht gezoomt - verwende Daten-Grenzen mit Padding (identisch zu Windowing-Plot)
+                y_range = max(y_max - y_min, 0)
+                if y_range == 0:
+                    y_padding_bottom = 0.1
+                    y_padding_top = 0.1
+                    y_min -= y_padding_bottom
+                    y_max += y_padding_top
+                else:
+                    # Unten: Minimales Padding (2% der Range) - reduziert für minimale Plothöhe
+                    y_padding_bottom = max(y_range * 0.02, 0.1)  # Mindestens 0.1 für kleine Ranges
+                    # Oben: Minimales Padding (2% der Range) - reduziert für minimale Plothöhe
+                    y_padding_top = max(y_range * 0.02, 0.1)  # Mindestens 0.1 für kleine Ranges
+                    y_min -= y_padding_bottom
+                    y_max += y_padding_top
+                y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
+                self.ax.set_ylim(y_min, y_max)
             self.ax.set_yticks(y_ticks)
             # Formatierung auf eine Nachkommastelle
             self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
@@ -102,27 +142,11 @@ class BeamsteeringPlot(QWidget):
         # Setze aspect='equal' für gleichmäßige Skalierung (1:1 Verhältnis)
         self.ax.set_aspect('equal', adjustable='box')
 
-        # Finale Plot-Einstellungen
-        self.ax.grid(color='k', linestyle='-', linewidth=0.4)
-        self.ax.set_ylabel("Virtual position [m]", fontsize=6)
-        self.ax.set_xlabel("Arc width [m]", fontsize=6)
+        # Finale Plot-Einstellungen (identisch zu Windowing-Plot)
+        self.ax.grid(color='k', linestyle='-', linewidth=0.3)
+        self.ax.set_ylabel("[m]", fontsize=6)
+        self.ax.set_xlabel("[m]", fontsize=6)
         self.ax.tick_params(axis='both', which='both', labelsize=6)
-        
-        # Layout-Anpassungen für konsistente Größe (muss VOR Stack-Zeichnung sein!)
-        self._apply_layout()
-        
-        # Zeichne einmal, um sicherzustellen, dass get_window_extent() korrekte Werte liefert
-        # (nach _apply_layout(), damit subplots_adjust() bereits angewendet wurde)
-        self.figure.canvas.draw()
-        
-        # Zeichne Stacks NACH Layout-Anpassung (für korrekte Pixel-Größe)
-        self.plot_Stacks2Beamsteering(speaker_array_id)
-        
-        # Passe Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden
-        self._adjust_ylim_for_speakers()
-        
-        # Stelle sicher, dass aspect='equal' nach _adjust_ylim_for_speakers() wieder gesetzt wird
-        self.ax.set_aspect('equal', adjustable='box')
         
         self.canvas.draw_idle()
 
@@ -423,9 +447,11 @@ class BeamsteeringPlot(QWidget):
             try:
                 # Deaktiviere constrained_layout vollständig
                 self.ax.figure.set_constrained_layout(False)
-                # Passe die Plot-Ränder an Canvas-Größe an (wie bei X/Y-Axis Plots)
-                # Mehr Platz für Achsenbeschriftungen: left größer, bottom größer
-                self.ax.figure.subplots_adjust(left=0.15, right=0.95, top=0.90, bottom=0.20)
+                # Optimierte Ränder für saubere Darstellung: Mehr Platz oben und unten
+                # left: Platz für Y-Achsenbeschriftung
+                # bottom: Platz für X-Achsenbeschriftung
+                # top und bottom: Mehr Platz für saubere Darstellung
+                self.ax.figure.subplots_adjust(left=0.12, right=0.98, top=0.95, bottom=0.18)
             except Exception:
                 pass
             # Zeichne nur wenn Canvas vorhanden
@@ -451,83 +477,6 @@ class BeamsteeringPlot(QWidget):
         if not valid:
             return np.array([], dtype=float)
         return np.concatenate(valid)
-
-    def _adjust_ylim_for_speakers(self):
-        """Passt Y-Achsen-Grenzen an, damit Lautsprecher nicht abgeschnitten werden"""
-        try:
-            import matplotlib.patches as patches
-            
-            # Finde minimale und maximale Y-Positionen aller gezeichneten Rechtecke (Lautsprecher)
-            max_y_position = -float('inf')
-            min_y_position = float('inf')
-            
-            for patch in self.ax.patches:
-                if isinstance(patch, patches.Rectangle):
-                    patch_height = patch.get_height()
-                    patch_y = patch.get_y()
-                    # Rechtecke gehen von patch_y nach oben (patch_y + height)
-                    max_y_position = max(max_y_position, patch_y + patch_height)
-                    min_y_position = min(min_y_position, patch_y)
-            
-            if max_y_position != -float('inf') and min_y_position != float('inf'):
-                # Füge minimales Padding hinzu
-                padding = 0.1
-                
-                # Erweitere Limits falls nötig
-                current_ylim = self.ax.get_ylim()
-                y_min = current_ylim[0]
-                y_max = current_ylim[1]
-                
-                if max_y_position + padding > y_max:
-                    y_max = max_y_position + padding
-                if min_y_position - padding < y_min:
-                    y_min = min_y_position - padding
-                
-                # Für aspect='equal': Passe beide Achsen an
-                current_xlim = self.ax.get_xlim()
-                x_range = current_xlim[1] - current_xlim[0]
-                y_range = y_max - y_min
-                
-                # Verwende die größere Range für beide Achsen
-                max_range = max(x_range, y_range)
-                
-                # Zentriere beide Achsen um ihre Mitte
-                x_center = (current_xlim[0] + current_xlim[1]) / 2
-                y_center = (y_min + y_max) / 2
-                
-                # Setze Limits für equal aspect
-                x_min_equal = x_center - max_range / 2
-                x_max_equal = x_center + max_range / 2
-                y_min_equal = y_center - max_range / 2
-                y_max_equal = y_center + max_range / 2
-                
-                # Stelle sicher, dass alle Patches enthalten sind
-                if max_y_position + padding > y_max_equal:
-                    y_max_equal = max_y_position + padding
-                    # Passe X-Limits entsprechend an
-                    y_range_new = y_max_equal - y_min_equal
-                    x_center = (current_xlim[0] + current_xlim[1]) / 2
-                    x_min_equal = x_center - y_range_new / 2
-                    x_max_equal = x_center + y_range_new / 2
-                
-                if min_y_position - padding < y_min_equal:
-                    y_min_equal = min_y_position - padding
-                    # Passe X-Limits entsprechend an
-                    y_range_new = y_max_equal - y_min_equal
-                    x_center = (current_xlim[0] + current_xlim[1]) / 2
-                    x_min_equal = x_center - y_range_new / 2
-                    x_max_equal = x_center + y_range_new / 2
-                
-                self.ax.set_xlim(x_min_equal, x_max_equal)
-                self.ax.set_ylim(y_min_equal, y_max_equal)
-                
-                # Aktualisiere Ticks
-                y_ticks, step = self._calculate_metric_ticks(y_min_equal, y_max_equal)
-                self.ax.set_yticks(y_ticks)
-                self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
-        except Exception:
-            # Bei Fehler nichts ändern
-            pass
 
     @classmethod
     def _normalize_cabinet_entries(cls, cabinet):

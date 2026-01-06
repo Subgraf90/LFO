@@ -865,6 +865,29 @@ class DrawPlotsMainwindow(ModuleBase):
         else:
             field_key = 'sound_field_p'
         
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "G",
+                    "location": "WindowPlotsMainwindow.py:plot_spl:mode_detection",
+                    "message": "Plot-Modus erkannt",
+                    "data": {
+                        "plot_mode": plot_mode,
+                        "field_key": field_key,
+                        "time_mode_enabled": time_mode_enabled,
+                        "is_phase_mode": plot_mode == "Phase alignment"
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         draw_spl_plotter = self._get_current_spl_plotter()
 
         if not self.container.calculation_spl.get("show_in_plot", True):
@@ -889,29 +912,116 @@ class DrawPlotsMainwindow(ModuleBase):
         if plot_mode == "Phase alignment":
             if not isinstance(calc_spl, dict):
                 calc_spl = {}
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                phase_diff_before = calc_spl.get('sound_field_phase_diff')
+                phase_shape_before = None
+                phase_valid_before = None
+                if phase_diff_before is not None:
+                    try:
+                        if isinstance(phase_diff_before, list):
+                            phase_array = np.array(phase_diff_before)
+                        else:
+                            phase_array = phase_diff_before
+                        phase_shape_before = list(phase_array.shape) if hasattr(phase_array, 'shape') else None
+                        phase_valid_before = int(np.sum(~np.isnan(phase_array))) if hasattr(phase_array, 'shape') else None
+                    except Exception:
+                        pass
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "J3",
+                        "location": "WindowPlotsMainwindow.py:plot_spl:phase_data_check",
+                        "message": "Phase-Daten-Prüfung in plot_spl",
+                        "data": {
+                            "has_phase_diff": "sound_field_phase_diff" in calc_spl,
+                            "phase_shape": phase_shape_before,
+                            "phase_valid_count": phase_valid_before,
+                            "is_empty": self._is_empty_data(calc_spl.get('sound_field_phase_diff'), allow_all_zero=True) if "sound_field_phase_diff" in calc_spl else True
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             if self._is_empty_data(calc_spl.get('sound_field_phase_diff'), allow_all_zero=True):
                 if not self._calculate_phase_alignment_field():
                     calc_spl['sound_field_phase_diff'] = []
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                phase_diff_after = calc_spl.get('sound_field_phase_diff')
+                phase_shape_after = None
+                phase_valid_after = None
+                if phase_diff_after is not None:
+                    try:
+                        if isinstance(phase_diff_after, list):
+                            phase_array = np.array(phase_diff_after)
+                        else:
+                            phase_array = phase_diff_after
+                        phase_shape_after = list(phase_array.shape) if hasattr(phase_array, 'shape') else None
+                        phase_valid_after = int(np.sum(~np.isnan(phase_array))) if hasattr(phase_array, 'shape') else None
+                    except Exception:
+                        pass
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "J4",
+                        "location": "WindowPlotsMainwindow.py:plot_spl:phase_data_after_check",
+                        "message": "Phase-Daten nach Prüfung in plot_spl",
+                        "data": {
+                            "has_phase_diff": "sound_field_phase_diff" in calc_spl,
+                            "phase_shape": phase_shape_after,
+                            "phase_valid_count": phase_valid_after
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
         # Prüfe ob gültige Daten vorhanden sind (nicht nur NaN)
         time_snapshot = None
         if time_mode_enabled:
             time_snapshot = self._compute_time_mode_field()
             has_data = time_snapshot is not None
         else:
-            has_data = (
-                isinstance(calc_spl, dict) and
-                len(calc_spl) > 0 and
-                'sound_field_x' in calc_spl and
-                'sound_field_y' in calc_spl and
-                field_key in calc_spl and
-                calc_spl.get('sound_field_x') is not None and
-                calc_spl.get('sound_field_y') is not None and
-                calc_spl.get(field_key) is not None and
-                len(calc_spl.get('sound_field_x', [])) > 0 and
-                len(calc_spl.get('sound_field_y', [])) > 0 and
-                len(calc_spl.get(field_key, [])) > 0 and
-                not self._is_empty_data(calc_spl[field_key], allow_all_zero=allow_zero_phase)
-            )
+            # 🎯 FIX: Für Phase-Modus prüfe nur ob Daten vorhanden sind, nicht ob sie gültig sind
+            # Phase-Daten können alle NaN sein (z.B. wenn keine Arrays vorhanden sind), sollten aber trotzdem verwendet werden
+            if plot_mode == "Phase alignment":
+                has_data = (
+                    isinstance(calc_spl, dict) and
+                    len(calc_spl) > 0 and
+                    'sound_field_x' in calc_spl and
+                    'sound_field_y' in calc_spl and
+                    field_key in calc_spl and
+                    calc_spl.get('sound_field_x') is not None and
+                    calc_spl.get('sound_field_y') is not None and
+                    calc_spl.get(field_key) is not None and
+                    len(calc_spl.get('sound_field_x', [])) > 0 and
+                    len(calc_spl.get('sound_field_y', [])) > 0 and
+                    len(calc_spl.get(field_key, [])) > 0
+                    # Für Phase-Modus prüfen wir NICHT ob Daten leer sind (können alle NaN sein)
+                )
+            else:
+                has_data = (
+                    isinstance(calc_spl, dict) and
+                    len(calc_spl) > 0 and
+                    'sound_field_x' in calc_spl and
+                    'sound_field_y' in calc_spl and
+                    field_key in calc_spl and
+                    calc_spl.get('sound_field_x') is not None and
+                    calc_spl.get('sound_field_y') is not None and
+                    calc_spl.get(field_key) is not None and
+                    len(calc_spl.get('sound_field_x', [])) > 0 and
+                    len(calc_spl.get('sound_field_y', [])) > 0 and
+                    len(calc_spl.get(field_key, [])) > 0 and
+                    not self._is_empty_data(calc_spl[field_key], allow_all_zero=allow_zero_phase)
+                )
         
         # 🎯 WICHTIG: Prüfe auch ob surface_grids_data vorhanden ist (für vertikale Flächen)
         # Auch wenn globale Daten leer sind, sollten wir plotten, wenn einzelne Surfaces Daten haben
@@ -1365,8 +1475,69 @@ class DrawPlotsMainwindow(ModuleBase):
         # 🎯 FIX: Für Phase-Modus berechne Phase-Daten, aber rufe plot_spl() immer auf
         # Die Validierung erfolgt dann in plot_spl() selbst
         if selection == "Phase alignment" and isinstance(calc_spl, dict):
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "J1",
+                        "location": "WindowPlotsMainwindow.py:on_plot_mode_changed:phase_mode_selected",
+                        "message": "Phase-Modus ausgewählt - VOR Berechnung",
+                        "data": {
+                            "selection": selection,
+                            "calc_spl_is_dict": isinstance(calc_spl, dict),
+                            "has_phase_diff_before": "sound_field_phase_diff" in calc_spl if isinstance(calc_spl, dict) else False,
+                            "phase_diff_type": type(calc_spl.get("sound_field_phase_diff")).__name__ if isinstance(calc_spl, dict) and "sound_field_phase_diff" in calc_spl else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # Versuche Phase-Daten zu berechnen, auch wenn es fehlschlägt
-            self._calculate_phase_alignment_field()
+            calc_result = self._calculate_phase_alignment_field()
+            # Aktualisiere calc_spl nach Berechnung (kann sich geändert haben)
+            calc_spl = getattr(self.container, 'calculation_spl', None)
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                import numpy as np
+                phase_diff = calc_spl.get("sound_field_phase_diff") if isinstance(calc_spl, dict) else None
+                phase_shape = None
+                phase_valid_count = None
+                if phase_diff is not None:
+                    try:
+                        if isinstance(phase_diff, list):
+                            phase_array = np.array(phase_diff)
+                        else:
+                            phase_array = phase_diff
+                        phase_shape = list(phase_array.shape) if hasattr(phase_array, 'shape') else None
+                        phase_valid_count = int(np.sum(~np.isnan(phase_array))) if hasattr(phase_array, 'shape') else None
+                    except Exception:
+                        pass
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "J2",
+                        "location": "WindowPlotsMainwindow.py:on_plot_mode_changed:phase_calc_result",
+                        "message": "Phase-Berechnung abgeschlossen - NACH Berechnung",
+                        "data": {
+                            "calc_result": calc_result,
+                            "has_phase_diff_after": "sound_field_phase_diff" in calc_spl if isinstance(calc_spl, dict) else False,
+                            "phase_diff_type": type(phase_diff).__name__ if phase_diff is not None else None,
+                            "phase_shape": phase_shape,
+                            "phase_valid_count": phase_valid_count
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
         if not isinstance(calc_spl, dict):
             plotter = self._get_current_spl_plotter()

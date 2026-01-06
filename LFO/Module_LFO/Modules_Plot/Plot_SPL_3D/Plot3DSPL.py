@@ -429,6 +429,15 @@ class SPL3DPlotRenderer:
         # Aktive Surfaces ermitteln
         surface_definitions = getattr(self.settings, "surface_definitions", {}) or {}
         
+        # 🎯 NEU: Prüfe welche Surfaces als "empty" markiert sind (inkompatibel bei Snapshot)
+        calc_spl = getattr(self.container, "calculation_spl", {}) if hasattr(self, "container") else {}
+        surface_grids_data = calc_spl.get("surface_grids", {}) or {} if isinstance(calc_spl, dict) else {}
+        empty_surface_ids = set()
+        if isinstance(surface_grids_data, dict):
+            for sid, grid_data in surface_grids_data.items():
+                if isinstance(grid_data, dict) and grid_data.get('is_empty', False):
+                    empty_surface_ids.add(sid)
+        
         # 🎯 NEU: Erstelle Mapping von group_id zu Gruppen-Status für schnellen Zugriff
         surface_groups = getattr(self.settings, 'surface_groups', {})
         group_status: dict[str, dict[str, bool]] = {}  # group_id -> {'enabled': bool, 'hidden': bool}
@@ -473,6 +482,10 @@ class SPL3DPlotRenderer:
                     elif not group_enabled:
                         enabled = False
                 
+                # 🎯 NEU: Überspringe Surfaces, die als "empty" markiert sind (inkompatibel)
+                if str(surface_id) in empty_surface_ids:
+                    continue  # Surface ist inkompatibel → nicht zu enabled_surfaces hinzufügen
+                
                 if enabled and not hidden and len(points) >= 3:
                     enabled_surfaces.append((str(surface_id), points, surface_obj))
                     
@@ -480,7 +493,9 @@ class SPL3DPlotRenderer:
         
 
         # Nicht mehr benötigte Actors entfernen
+        # 🎯 NEU: Entferne auch Surfaces mit is_empty=True aus active_ids, damit ihre Actors entfernt werden
         active_ids = {sid for sid, _, _ in enabled_surfaces}
+        active_ids = active_ids - empty_surface_ids  # Entferne empty Surfaces aus active_ids
         
         # Entferne alte Texture-Actors (falls noch vorhanden)
         if hasattr(self, "_surface_texture_actors") and isinstance(self._surface_texture_actors, dict):
@@ -660,6 +675,33 @@ class SPL3DPlotRenderer:
                 sy = override.get("source_y", np.array([]))
                 vals = override.get("values", np.array([]))
                 override_used_here = True
+                
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    vals_valid = vals[np.isfinite(vals)] if vals.size > 0 else np.array([])
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "K3",
+                            "location": "Plot3DSPL.py:_render_surfaces:surface_override_used",
+                            "message": "Surface Override verwendet",
+                            "data": {
+                                "surface_id": surface_id,
+                                "phase_mode": phase_mode,
+                                "vals_shape": list(vals.shape) if vals.size > 0 else None,
+                                "vals_valid_count": len(vals_valid),
+                                "vals_min": float(np.nanmin(vals_valid)) if len(vals_valid) > 0 else None,
+                                "vals_max": float(np.nanmax(vals_valid)) if len(vals_valid) > 0 else None,
+                                "vals_mean": float(np.nanmean(vals_valid)) if len(vals_valid) > 0 else None
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
 
                 # 🎯 PRIORITÄT 1: Prüfe ob triangulierte Daten verfügbar sind
                 use_triangulation = False
@@ -756,13 +798,28 @@ class SPL3DPlotRenderer:
                                 else:
                                     surface_orientation = grid_data.get("orientation", "").lower() if isinstance(grid_data, dict) else None
                             
-                            # Konvertiere zu SPL in dB
-                            if time_mode:
+                            # 🎯 FIX: Für Phase-Modus verwende Phase-Daten aus Surface-Overrides, nicht aus sound_field_p_complex
+                            # Die Surface-Overrides enthalten bereits die korrekt interpolierten Phase-Daten
+                            if phase_mode and override_used_here and vals.size > 0:
+                                # Verwende Phase-Daten aus Surface-Overrides
+                                # Stelle sicher, dass vals die richtige Shape hat
+                                if vals.shape == Xg.shape:
+                                    spl_values_2d = vals.copy()
+                                elif vals.size == Xg.size:
+                                    spl_values_2d = vals.reshape(Xg.shape)
+                                else:
+                                    # Fallback: Verwende np.angle wenn Shape nicht passt
+                                    spl_values_2d = np.angle(sound_field_p_complex)
+                                    spl_values_2d = np.where(np.isinf(spl_values_2d), 0.0, spl_values_2d)
+                                    # Behalte NaN-Werte für transparente Darstellung
+                            elif time_mode:
                                 spl_values_2d = np.real(sound_field_p_complex)
                                 spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
                             elif phase_mode:
+                                # Fallback: Wenn keine Overrides vorhanden sind, verwende np.angle
                                 spl_values_2d = np.angle(sound_field_p_complex)
-                                spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
+                                spl_values_2d = np.where(np.isinf(spl_values_2d), 0.0, spl_values_2d)
+                                # Behalte NaN-Werte für transparente Darstellung
                             else:
                                 pressure_magnitude = np.abs(sound_field_p_complex)
                                 pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
@@ -851,13 +908,49 @@ class SPL3DPlotRenderer:
                             if additional_vertices_spl_list is not None:
                                 try:
                                     additional_vertices_spl = np.array(additional_vertices_spl_list, dtype=complex)
-                                    # Konvertiere zu SPL in dB (wie für Grid-Punkte)
-                                    if time_mode:
+                                    # 🎯 FIX: Für Phase-Modus verwende Phase-Daten aus Surface-Overrides
+                                    # Für additional_vertices müssen wir interpolieren, da sie nicht in Overrides sind
+                                    if phase_mode and override_used_here and vals.size > 0:
+                                        # Interpoliere Phase-Daten von Grid auf additional_vertices
+                                        from scipy.interpolate import griddata
+                                        if Xg.size > 0 and Yg.size > 0 and vals.size > 0:
+                                            # Erstelle Quell-Punkte (Grid-Koordinaten)
+                                            Xg_flat = Xg.ravel()
+                                            Yg_flat = Yg.ravel()
+                                            vals_flat = vals.ravel()
+                                            points_source = np.column_stack([Xg_flat, Yg_flat])
+                                            values_source = vals_flat
+                                            
+                                            # Ziel-Punkte (additional_vertices X/Y-Koordinaten)
+                                            additional_vertices_coords_temp = grid_data.get('additional_vertices')
+                                            if additional_vertices_coords_temp is not None:
+                                                try:
+                                                    additional_vertices_coords_temp = np.array(additional_vertices_coords_temp, dtype=float)
+                                                    if additional_vertices_coords_temp.ndim == 2 and additional_vertices_coords_temp.shape[1] >= 2:
+                                                        points_target = additional_vertices_coords_temp[:, :2]  # Nur X, Y
+                                                        # Interpoliere Phase-Daten
+                                                        additional_vertices_spl_db = griddata(
+                                                            points_source, values_source, points_target,
+                                                            method='linear', fill_value=np.nan
+                                                        )
+                                                        # Setze nur inf auf 0, behalte NaN
+                                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                                    else:
+                                                        additional_vertices_spl_db = None
+                                                except Exception:
+                                                    additional_vertices_spl_db = None
+                                            else:
+                                                additional_vertices_spl_db = None
+                                        else:
+                                            additional_vertices_spl_db = None
+                                    elif time_mode:
                                         additional_vertices_spl_db = np.real(additional_vertices_spl)
                                         additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
                                     elif phase_mode:
+                                        # Fallback: Wenn keine Overrides vorhanden sind, verwende np.angle
                                         additional_vertices_spl_db = np.angle(additional_vertices_spl)
-                                        additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                        # Behalte NaN-Werte für transparente Darstellung
                                     else:
                                         pressure_magnitude_add = np.abs(additional_vertices_spl)
                                         pressure_magnitude_add = np.clip(pressure_magnitude_add, 1e-12, None)
@@ -1000,6 +1093,41 @@ class SPL3DPlotRenderer:
                                         )
                                         
                                         valid_mask = np.isfinite(spl_at_verts)
+                                        
+                                        # #region agent log
+                                        try:
+                                            import json
+                                            import time as time_module
+                                            nan_count = np.sum(~valid_mask)
+                                            nan_indices = np.where(~valid_mask)[0]
+                                            nan_vertices = triangulated_vertices[nan_indices] if len(nan_indices) > 0 else None
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "L1",
+                                                    "location": "Plot3DSPL.py:_render_surfaces:gradient_interpolation_result",
+                                                    "message": "Gradient-Interpolation Ergebnis",
+                                                    "data": {
+                                                        "surface_id": surface_id,
+                                                        "phase_mode": phase_mode,
+                                                        "n_vertices": n_vertices,
+                                                        "valid_count": np.sum(valid_mask),
+                                                        "nan_count": nan_count,
+                                                        "has_additional_vertices": additional_vertices_coords is not None,
+                                                        "additional_vertices_count": len(additional_vertices_coords) if additional_vertices_coords is not None else 0,
+                                                        "grid_points_count": len(points_grid),
+                                                        "combined_points_count": len(points_combined),
+                                                        "nan_vertices_sample": nan_vertices[:5].tolist() if nan_vertices is not None and len(nan_vertices) > 0 else None,
+                                                        "grid_x_range": [float(np.min(points_grid[:, 0])), float(np.max(points_grid[:, 0]))] if len(points_grid) > 0 else None,
+                                                        "grid_y_range": [float(np.min(points_grid[:, 1])), float(np.max(points_grid[:, 1]))] if len(points_grid) > 0 else None
+                                                    },
+                                                    "timestamp": int(time_module.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
+                                        
                                         if not np.any(valid_mask):
                                             raise ValueError(
                                                 f"Surface '{surface_id}': Linear-Interpolation mit Randpunkten liefert keine gültigen Werte"
@@ -1060,12 +1188,56 @@ class SPL3DPlotRenderer:
                                             v11 = spl_values_2d[j1, i1]
 
                                             # Bilineare Interpolation
-                                            spl_at_verts = (
-                                                (1 - tx) * (1 - ty) * v00
-                                                + tx * (1 - ty) * v10
-                                                + (1 - tx) * ty * v01
-                                                + tx * ty * v11
-                                            )
+                                            # 🎯 FIX: Für Phase-Modus behandle NaN-Werte in Grid-Werten korrekt
+                                            # Wenn einer der vier Nachbarn NaN ist, sollte das Ergebnis auch NaN sein (nicht 0)
+                                            if phase_mode:
+                                                # Prüfe welche Nachbarn gültig sind
+                                                valid_00 = np.isfinite(v00)
+                                                valid_10 = np.isfinite(v10)
+                                                valid_01 = np.isfinite(v01)
+                                                valid_11 = np.isfinite(v11)
+                                                
+                                                # Berechne Interpolation nur für gültige Nachbarn
+                                                spl_at_verts = np.full(n_vertices, np.nan, dtype=float)
+                                                for v_idx in range(n_vertices):
+                                                    if valid_00[v_idx] and valid_10[v_idx] and valid_01[v_idx] and valid_11[v_idx]:
+                                                        # Alle Nachbarn gültig → bilineare Interpolation
+                                                        spl_at_verts[v_idx] = (
+                                                            (1 - tx[v_idx]) * (1 - ty[v_idx]) * v00[v_idx]
+                                                            + tx[v_idx] * (1 - ty[v_idx]) * v10[v_idx]
+                                                            + (1 - tx[v_idx]) * ty[v_idx] * v01[v_idx]
+                                                            + tx[v_idx] * ty[v_idx] * v11[v_idx]
+                                                        )
+                                                    elif valid_00[v_idx] or valid_10[v_idx] or valid_01[v_idx] or valid_11[v_idx]:
+                                                        # Mindestens ein Nachbar gültig → verwende nearest neighbour
+                                                        valid_vals = []
+                                                        valid_weights = []
+                                                        if valid_00[v_idx]:
+                                                            valid_vals.append(v00[v_idx])
+                                                            valid_weights.append((1 - tx[v_idx]) * (1 - ty[v_idx]))
+                                                        if valid_10[v_idx]:
+                                                            valid_vals.append(v10[v_idx])
+                                                            valid_weights.append(tx[v_idx] * (1 - ty[v_idx]))
+                                                        if valid_01[v_idx]:
+                                                            valid_vals.append(v01[v_idx])
+                                                            valid_weights.append((1 - tx[v_idx]) * ty[v_idx])
+                                                        if valid_11[v_idx]:
+                                                            valid_vals.append(v11[v_idx])
+                                                            valid_weights.append(tx[v_idx] * ty[v_idx])
+                                                        if valid_vals:
+                                                            # Gewichtete Mittelung der gültigen Nachbarn
+                                                            weights_sum = sum(valid_weights)
+                                                            if weights_sum > 0:
+                                                                spl_at_verts[v_idx] = sum(v * w for v, w in zip(valid_vals, valid_weights)) / weights_sum
+                                                    # Sonst bleibt NaN
+                                            else:
+                                                # Standard bilineare Interpolation (für SPL-Modus)
+                                                spl_at_verts = (
+                                                    (1 - tx) * (1 - ty) * v00
+                                                    + tx * (1 - ty) * v10
+                                                    + (1 - tx) * ty * v01
+                                                    + tx * ty * v11
+                                                )
 
                                             # Maske anwenden (Punkte außerhalb der Surface -> NaN)
                                             if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
@@ -1080,6 +1252,40 @@ class SPL3DPlotRenderer:
                                                 spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
 
                                             valid_mask = np.isfinite(spl_at_verts)
+                                            
+                                            # #region agent log
+                                            try:
+                                                import json
+                                                import time as time_module
+                                                nan_count = np.sum(~valid_mask)
+                                                nan_indices = np.where(~valid_mask)[0]
+                                                nan_vertices = triangulated_vertices[nan_indices] if len(nan_indices) > 0 else None
+                                                valid_vertices = triangulated_vertices[valid_mask] if np.any(valid_mask) else None
+                                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                    f.write(json.dumps({
+                                                        "sessionId": "debug-session",
+                                                        "runId": "run1",
+                                                        "hypothesisId": "L2",
+                                                        "location": "Plot3DSPL.py:_render_surfaces:bilinear_interpolation_result",
+                                                        "message": "Bilineare Interpolation Ergebnis",
+                                                        "data": {
+                                                            "surface_id": surface_id,
+                                                            "phase_mode": phase_mode,
+                                                            "n_vertices": n_vertices,
+                                                            "valid_count": np.sum(valid_mask),
+                                                            "nan_count": nan_count,
+                                                            "x_axis_range": [float(x_axis[0]), float(x_axis[-1])] if len(x_axis) > 0 else None,
+                                                            "y_axis_range": [float(y_axis[0]), float(y_axis[-1])] if len(y_axis) > 0 else None,
+                                                            "nan_vertices_sample": nan_vertices[:5].tolist() if nan_vertices is not None and len(nan_vertices) > 0 else None,
+                                                            "valid_vertices_sample": valid_vertices[:5].tolist() if valid_vertices is not None and len(valid_vertices) > 0 else None,
+                                                            "spl_values_2d_nan_count": np.sum(~np.isfinite(spl_values_2d)) if spl_values_2d.size > 0 else 0
+                                                        },
+                                                        "timestamp": int(time_module.time() * 1000)
+                                                    }) + "\n")
+                                            except Exception:
+                                                pass
+                                            # #endregion
+                                            
                                             if not np.any(valid_mask):
                                                 raise ValueError(
                                                     f"Surface '{surface_id}': Bilineare Interpolation liefert keine gültigen Werte"
@@ -1567,8 +1773,11 @@ class SPL3DPlotRenderer:
                                 method='linear', fill_value=np.nan
                             )
                             phase_values_2d = phase_values_interp.reshape(Xg.shape)
-                            # Verwende Phase-Daten statt Druck-Daten
-                            surface_values = np.nan_to_num(phase_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
+                            # 🎯 FIX: Für Phase-Modus behalte NaN-Werte (nicht auf 0.0 setzen)
+                            # NaN-Werte werden transparent dargestellt, 0.0 würde als 0° angezeigt werden
+                            # Setze nur inf/neginf auf 0, aber behalte NaN
+                            phase_values_2d = np.where(np.isinf(phase_values_2d), 0.0, phase_values_2d)
+                            surface_values = phase_values_2d  # Behalte NaN-Werte für transparente Darstellung
                             use_phase_data = True
                         except Exception:
                             # Falls Interpolation fehlschlägt, verwende Standard-Pfad
@@ -1629,6 +1838,31 @@ class SPL3DPlotRenderer:
                     # erstelle surface_overrides mit Dummy-Daten (als Marker, da Triangulation aus surface_grids_data kommt)
                     if use_phase_data and surface_values is not None:
                         # Verwende interpolierte Phase-Daten (Phase-Modus)
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            surface_values_valid = surface_values[np.isfinite(surface_values)] if surface_values.size > 0 else np.array([])
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "K2",
+                                    "location": "Plot3DSPL.py:update_spl_plot:surface_phase_override",
+                                    "message": "Surface Phase-Override erstellt",
+                                    "data": {
+                                        "surface_id": sid,
+                                        "surface_values_shape": list(surface_values.shape),
+                                        "surface_values_valid_count": len(surface_values_valid),
+                                        "surface_values_min": float(np.nanmin(surface_values_valid)) if len(surface_values_valid) > 0 else None,
+                                        "surface_values_max": float(np.nanmax(surface_values_valid)) if len(surface_values_valid) > 0 else None,
+                                        "surface_values_mean": float(np.nanmean(surface_values_valid)) if len(surface_values_valid) > 0 else None
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         surface_overrides[sid] = {
                             "source_x": np.asarray(gx, dtype=float),
                             "source_y": np.asarray(gy, dtype=float),
@@ -1679,6 +1913,37 @@ class SPL3DPlotRenderer:
 
         try:
             pressure = np.asarray(sound_field_pressure, dtype=float)
+            
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                plot_mode_check = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+                phase_mode_check = plot_mode_check == 'Phase alignment'
+                pressure_valid = pressure[np.isfinite(pressure)] if pressure.size > 0 else np.array([])
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "K1",
+                        "location": "Plot3DSPL.py:update_spl_plot:pressure_loaded",
+                        "message": "Pressure-Daten geladen (können Phase-Daten sein)",
+                        "data": {
+                            "phase_mode": phase_mode_check,
+                            "pressure_shape": list(pressure.shape) if pressure.size > 0 else None,
+                            "pressure_size": pressure.size,
+                            "pressure_valid_count": len(pressure_valid),
+                            "pressure_min": float(np.nanmin(pressure_valid)) if len(pressure_valid) > 0 else None,
+                            "pressure_max": float(np.nanmax(pressure_valid)) if len(pressure_valid) > 0 else None,
+                            "pressure_mean": float(np.nanmean(pressure_valid)) if len(pressure_valid) > 0 else None,
+                            "x_len": len(x),
+                            "y_len": len(y)
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
         except Exception as e:  # noqa: BLE001
             

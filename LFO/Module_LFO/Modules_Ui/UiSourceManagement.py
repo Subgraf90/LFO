@@ -1366,10 +1366,9 @@ class Sources(ModuleBase, QObject):
         # OPTIMIERUNG: Plot nur erstellen, wenn er noch nicht existiert
         if self.windowing_plot is None:
             self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
-            # Feste Breite und Höhe, um Verzerrung der Lautsprecher zu vermeiden
-            self.windowing_plot.setFixedWidth(800)
-            self.windowing_plot.setFixedHeight(220)
-            self.windowing_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            # Flexible Größe für dynamische Anpassung
+            self.windowing_plot.setMinimumSize(400, 200)
+            self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         else:
             # Plot existiert bereits - prüfe ob er noch gültig ist
             try:
@@ -1380,9 +1379,8 @@ class Sources(ModuleBase, QObject):
             except RuntimeError:
                 # Objekt wurde gelöscht - erstelle neuen Plot
                 self.windowing_plot = WindowingPlot(windowing_tab, settings=self.settings, container=self.container)
-                self.windowing_plot.setFixedWidth(800)
-                self.windowing_plot.setFixedHeight(220)
-                self.windowing_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.windowing_plot.setMinimumSize(400, 200)
+                self.windowing_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Setze feste Breite für linke Seite (konsistent mit Speaker Setup)
         left_widget.setFixedWidth(250)
@@ -1483,10 +1481,9 @@ class Sources(ModuleBase, QObject):
         # OPTIMIERUNG: Plot nur erstellen, wenn er noch nicht existiert
         if self.beamsteering_plot is None:
                 self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
-                # Feste Breite und Höhe, um Verzerrung der Lautsprecher zu vermeiden
-                self.beamsteering_plot.setFixedWidth(800)
-                self.beamsteering_plot.setFixedHeight(220)
-                self.beamsteering_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                # Flexible Größe für dynamische Anpassung - aspect='equal' verhindert Verzerrung
+                self.beamsteering_plot.setMinimumSize(400, 200)
+                self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         else:
             # Plot existiert bereits - prüfe ob er noch gültig ist
             try:
@@ -1497,9 +1494,8 @@ class Sources(ModuleBase, QObject):
             except RuntimeError:
                 # Objekt wurde gelöscht - erstelle neuen Plot
                 self.beamsteering_plot = BeamsteeringPlot(beamsteering_tab, settings=self.settings, container=self.container)
-                self.beamsteering_plot.setFixedWidth(800)
-                self.beamsteering_plot.setFixedHeight(220)
-                self.beamsteering_plot.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.beamsteering_plot.setMinimumSize(400, 200)
+                self.beamsteering_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Setze feste Breite für linke Seite (konsistent mit Speaker Setup)
         left_widget.setFixedWidth(250)
@@ -6819,8 +6815,8 @@ class Sources(ModuleBase, QObject):
             "Manual": "",
             "Pointed Arc": "",
             "Circular Arc": "",
-            "Spiral Arc": "Ausgangslage 180° / 0.32. Entspricht ca. 90° Öffnungswinkel",
-            "Eliptical Arc": "Ausgangslage 180° / 0.32. Entspricht ca. 90° Öffnungswinkel",
+            "Spiral Arc": "",
+            "Eliptical Arc": "",
             "Linear": ""
         }
         self.Label_ArcInfo.setText(info_texts.get(arc_shape, ""))

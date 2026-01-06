@@ -75,13 +75,19 @@ class SurfaceDefinition:
 
     @classmethod
     def from_dict(cls, surface_id: str, data: Dict[str, Any]) -> "SurfaceDefinition":
+        # 🎯 FIX: Kopiere Punkte richtig, damit Dictionary-Objekte nicht geteilt werden
+        import copy
+        points_data = data.get("points", [])
+        # Erstelle tiefe Kopie der Punkte-Liste, damit Dictionary-Objekte nicht geteilt werden
+        points = [copy.deepcopy(p) if isinstance(p, dict) else p for p in points_data]
+        
         return cls(
             surface_id=surface_id,
             name=str(data.get("name", surface_id)),
             enabled=bool(data.get("enabled", False)),
             hidden=bool(data.get("hidden", False)),
             locked=bool(data.get("locked", False)),
-            points=list(data.get("points", [])),
+            points=points,
             plane_model=data.get("plane_model"),
             color=data.get("color"),
             group_id=data.get("group_id") or data.get("group_name"),

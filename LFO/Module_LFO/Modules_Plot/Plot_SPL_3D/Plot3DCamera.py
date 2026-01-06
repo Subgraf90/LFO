@@ -279,6 +279,160 @@ class SPL3DCameraController:
         except Exception:
             pass
 
+    def _zoom_to_enabled_surfaces(self, view_type: str = 'top') -> None:
+        """
+        Zoomt auf alle eingeblendeten (enabled und nicht-hidden) Surfaces.
+        
+        Args:
+            view_type: Die Ansicht ('top', 'side_x', 'side_y')
+        """
+        try:
+            # Hole Surface-Definitionen aus Settings
+            surface_definitions = getattr(self.settings, 'surface_definitions', {})
+            if not isinstance(surface_definitions, dict):
+                # Keine Surfaces vorhanden → Fallback auf Standard-Zoom
+                self._maximize_camera_view()
+                return
+            
+            # Hole Gruppen-Status
+            surface_groups = getattr(self.settings, 'surface_groups', {})
+            group_status: dict[str, dict[str, bool]] = {}
+            if isinstance(surface_groups, dict):
+                for group_id, group_data in surface_groups.items():
+                    if hasattr(group_data, 'enabled'):
+                        group_status[group_id] = {
+                            'enabled': bool(group_data.enabled),
+                            'hidden': bool(getattr(group_data, 'hidden', False))
+                        }
+                    elif isinstance(group_data, dict):
+                        group_status[group_id] = {
+                            'enabled': bool(group_data.get('enabled', True)),
+                            'hidden': bool(group_data.get('hidden', False))
+                        }
+            
+            # Sammle alle enabled und nicht-hidden Surfaces
+            enabled_surfaces_points = []
+            for surface_id, surface_def in surface_definitions.items():
+                if isinstance(surface_def, dict):
+                    enabled = bool(surface_def.get("enabled", False))
+                    hidden = bool(surface_def.get("hidden", False))
+                    points = surface_def.get("points", []) or []
+                    group_id = surface_def.get('group_id') or surface_def.get('group_name')
+                else:
+                    enabled = bool(getattr(surface_def, "enabled", False))
+                    hidden = bool(getattr(surface_def, "hidden", False))
+                    points = getattr(surface_def, "points", []) or []
+                    group_id = getattr(surface_def, 'group_id', None)
+                
+                # Berücksichtige Gruppen-Status
+                if group_id and group_id in group_status:
+                    group_enabled = group_status[group_id]['enabled']
+                    group_hidden = group_status[group_id]['hidden']
+                    if group_hidden:
+                        hidden = True
+                    elif not group_enabled:
+                        enabled = False
+                
+                if enabled and not hidden and len(points) >= 3:
+                    enabled_surfaces_points.extend(points)
+            
+            # Wenn keine enabled Surfaces vorhanden → Fallback auf Standard-Zoom
+            if not enabled_surfaces_points:
+                self._maximize_camera_view()
+                return
+            
+            # Berechne Bounds aller enabled Surfaces
+            x_coords = [float(p.get('x', 0.0)) if isinstance(p, dict) else float(getattr(p, 'x', 0.0)) for p in enabled_surfaces_points]
+            y_coords = [float(p.get('y', 0.0)) if isinstance(p, dict) else float(getattr(p, 'y', 0.0)) for p in enabled_surfaces_points]
+            z_coords = [float(p.get('z', 0.0)) if isinstance(p, dict) else float(getattr(p, 'z', 0.0)) for p in enabled_surfaces_points]
+            
+            if not x_coords or not y_coords:
+                self._maximize_camera_view()
+                return
+            
+            min_x, max_x = min(x_coords), max(x_coords)
+            min_y, max_y = min(y_coords), max(y_coords)
+            min_z, max_z = min(z_coords), max(z_coords)
+            
+            # Berechne Center und Extent basierend auf der Ansicht
+            center_x = (min_x + max_x) / 2.0
+            center_y = (min_y + max_y) / 2.0
+            center_z = (min_z + max_z) / 2.0
+            
+            # Setze Bounds im Plotter und zoome darauf
+            if hasattr(self.plotter, 'camera') and self.plotter.camera is not None:
+                cam = self.plotter.camera
+                
+                # Bestimme die relevanten Extents basierend auf der Ansicht
+                if view_type == 'top':
+                    # Draufsicht: XY-Ebene
+                    width = abs(max_x - min_x) if max_x != min_x else 1.0
+                    height = abs(max_y - min_y) if max_y != min_y else 1.0
+                    max_extent = max(width, height)
+                    distance = max(max_extent * 1.0, 20.0)
+                    cam.position = (center_x, center_y, center_z + distance)
+                    cam.focal_point = (center_x, center_y, center_z)
+                    cam.up = (0, 1, 0)
+                elif view_type == 'side_x':
+                    # Seitenansicht von links: YZ-Ebene
+                    height = abs(max_y - min_y) if max_y != min_y else 1.0
+                    depth = abs(max_z - min_z) if max_z != min_z else 1.0
+                    max_extent = max(height, depth)
+                    distance = max(max_extent * 1.0, 20.0)
+                    cam.position = (center_x - distance, center_y, center_z)
+                    cam.focal_point = (center_x, center_y, center_z)
+                    cam.up = (0, 0, 1)
+                elif view_type == 'side_y':
+                    # Seitenansicht von rechts: XZ-Ebene
+                    width = abs(max_x - min_x) if max_x != min_x else 1.0
+                    depth = abs(max_z - min_z) if max_z != min_z else 1.0
+                    max_extent = max(width, depth)
+                    distance = max(max_extent * 1.0, 20.0)
+                    cam.position = (center_x, center_y - distance, center_z)
+                    cam.focal_point = (center_x, center_y, center_z)
+                    cam.up = (0, 0, 1)
+                else:
+                    # Unbekannte Ansicht → Fallback
+                    self._maximize_camera_view()
+                    return
+                
+                # Aktiviere Parallelprojektion für konsistente Zoom-Steuerung
+                if hasattr(cam, "parallel_projection"):
+                    cam.parallel_projection = True
+                
+                # Setze den Zoom basierend auf den Bounds
+                if getattr(cam, 'parallel_projection', False):
+                    if hasattr(cam, 'parallel_scale'):
+                        # Für eine fast widget-füllende Darstellung
+                        scale = max_extent * 0.56
+                        cam.parallel_scale = scale
+                else:
+                    if hasattr(cam, 'view_angle'):
+                        visible_extent = max_extent * 1.1
+                        angle = 2.0 * math.atan(visible_extent / (2.0 * distance)) * 180.0 / math.pi
+                        angle = max(30.0, min(60.0, angle))
+                        cam.view_angle = angle
+                
+                # Reset Clipping Range
+                if hasattr(cam, 'ResetClippingRange'):
+                    try:
+                        cam.ResetClippingRange()
+                    except Exception:
+                        pass
+                
+                # Verhindere, dass render() direkt danach einen alten Kamera-State wiederherstellt
+                if hasattr(self, '_skip_next_render_restore'):
+                    self._skip_next_render_restore = True
+                # Render, um die Änderungen anzuzeigen
+                if hasattr(self, 'render'):
+                    self.render()
+                # Nach dem Rendern den aktuellen Kamera-State als neuen Referenzzustand speichern
+                if hasattr(self, '_camera_state'):
+                    self._camera_state = self._capture_camera()
+        except Exception:
+            # Bei Fehler → Fallback auf Standard-Zoom
+            self._maximize_camera_view()
+
     def _zoom_to_default_surface(self) -> None:
         """Stellt den Zoom auf das Default-Surface ein."""
         try:
@@ -405,38 +559,29 @@ class SPL3DCameraController:
             pass
 
     def set_view_top(self) -> None:
-        """Setzt die Kamera auf Draufsicht (Top)."""
+        """Setzt die Kamera auf Draufsicht (Top) und zoomt auf eingeblendete Surfaces."""
         try:
             self.plotter.view_xy()
             self.plotter.reset_camera()
-            self._maximize_camera_view()
-            self._skip_next_render_restore = True
-            self.render()
-            self._skip_next_render_restore = False
+            self._zoom_to_enabled_surfaces('top')
         except Exception:
             pass
 
     def set_view_side_y(self) -> None:
-        """Setzt die Kamera auf Seitenansicht (Y-Achse)."""
+        """Setzt die Kamera auf Seitenansicht (Y-Achse) und zoomt auf eingeblendete Surfaces."""
         try:
             self.plotter.view_xz()
             self.plotter.reset_camera()
-            self._maximize_camera_view()
-            self._skip_next_render_restore = True
-            self.render()
-            self._skip_next_render_restore = False
+            self._zoom_to_enabled_surfaces('side_y')
         except Exception:
             pass
 
     def set_view_side_x(self) -> None:
-        """Setzt die Kamera auf Seitenansicht (X-Achse)."""
+        """Setzt die Kamera auf Seitenansicht (X-Achse) und zoomt auf eingeblendete Surfaces."""
         try:
             self.plotter.view_yz()
             self.plotter.reset_camera()
-            self._maximize_camera_view()
-            self._skip_next_render_restore = True
-            self.render()
-            self._skip_next_render_restore = False
+            self._zoom_to_enabled_surfaces('side_x')
         except Exception:
             pass
 

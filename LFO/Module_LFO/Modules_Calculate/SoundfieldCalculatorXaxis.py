@@ -370,6 +370,7 @@ class SoundFieldCalculatorXaxis(ModuleBase):
         sound_field_p_calc = self.functions.mag2db(sound_field_p)
 
         # Prüfen, ob das Ergebnis verwertbar ist
+        
         # Wenn keine aktive Quelle beteiligt war, bleibt das Feld numerisch 0 (vor dB-Umrechnung -inf)
         # Wir prüfen konservativ auf eine sehr kleine Varianz nach dB-Umrechnung
         is_meaningful_curve = np.isfinite(sound_field_p_calc).any()

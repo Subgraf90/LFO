@@ -78,6 +78,18 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         bool(group_data.get('hidden', False))
                     )
         
+        # 🎯 NEU: Prüfe welche Surfaces als "empty" markiert sind (inkompatibel bei Snapshot)
+        # Dies muss in die Signatur aufgenommen werden, damit sich die Signatur ändert, wenn Surfaces inkompatibel werden
+        empty_surface_ids_for_signature = set()
+        if container is not None and hasattr(container, 'calculation_spl'):
+            calc_spl = container.calculation_spl
+            if isinstance(calc_spl, dict):
+                surface_grids = calc_spl.get('surface_grids', {})
+                if isinstance(surface_grids, dict):
+                    for sid, grid_data in surface_grids.items():
+                        if isinstance(grid_data, dict) and grid_data.get('is_empty', False):
+                            empty_surface_ids_for_signature.add(str(sid))
+        
         surfaces_signature: List[tuple] = []
         for surface_id in sorted(surface_definitions.keys()):
             surface_def = surface_definitions[surface_id]
@@ -102,6 +114,9 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 elif not group_enabled:
                     effective_enabled = False
             
+            # 🎯 NEU: Berücksichtige is_empty-Status in Signatur
+            is_empty_for_signature = str(surface_id) in empty_surface_ids_for_signature
+            
             points_tuple = []
             for point in points:
                 try:
@@ -116,7 +131,8 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 str(surface_id),
                 effective_enabled,
                 effective_hidden,
-                tuple(points_tuple)
+                tuple(points_tuple),
+                is_empty_for_signature  # 🎯 NEU: Füge is_empty-Status zur Signatur hinzu
             ))
         t_sig_end = time.perf_counter() if DEBUG_OVERLAY_PERF else None
         
@@ -148,10 +164,26 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         
         signature_tuple = (tuple(surfaces_signature), active_surface_id, highlight_ids_tuple, has_spl_data_for_signature)
         
+        # 🎯 NEU: Prüfe ob inkompatible Surfaces vorhanden sind (müssen immer gerendert werden)
+        has_incompatible_surfaces = False
+        if container is not None and hasattr(container, 'calculation_spl'):
+            calc_spl = container.calculation_spl
+            if isinstance(calc_spl, dict):
+                surface_grids = calc_spl.get('surface_grids', {})
+                if isinstance(surface_grids, dict):
+                    has_incompatible_surfaces = any(
+                        isinstance(grid_data, dict) and grid_data.get('is_empty', False)
+                        for grid_data in surface_grids.values()
+                    )
+        
         signature_changed = True
         if self._last_surfaces_state is not None and not create_empty_plot_surfaces:
-            # Prüfe ob Signatur-Struktur übereinstimmt (4-Tupel wie in _compute_overlay_signatures)
+            # Prüfe ob Signatur-Struktur übereinstimmt (4-Tupel oder 5-Tupel mit is_empty)
             if len(self._last_surfaces_state) == 4:
+                # Alte Signatur-Struktur (4-Tupel ohne is_empty) - behandle als geändert, damit neue Signatur verwendet wird
+                signature_changed = True
+            elif len(self._last_surfaces_state) == 4 and len(signature_tuple) == 4:
+                # Beide haben 4 Elemente - normale Vergleichslogik
                 last_surfaces_tuple, last_active_id, last_highlight_ids, last_has_spl = self._last_surfaces_state
                 last_ids_set = set(str(sid) for sid in last_highlight_ids) if isinstance(last_highlight_ids, (list, tuple, set)) else set()
                 # Prüfe ob sich Surface-Definitionen ODER Highlight-IDs geändert haben
@@ -167,6 +199,10 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                 pass
             elif self._last_surfaces_state == signature_tuple:
                 signature_changed = False
+        
+        # 🎯 NEU: Wenn inkompatible Surfaces vorhanden sind, immer neu zeichnen (auch wenn Signatur gleich ist)
+        if has_incompatible_surfaces:
+            signature_changed = True
         
         # 🎯 WICHTIG: Auch wenn sich nur die Highlight-IDs geändert haben, müssen wir neu zeichnen
         # (damit disabled Surfaces rot umrandet werden, wenn sie angeklickt werden)
@@ -277,14 +313,77 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
             
             # 🎯 NEU: Prüfe ob Surface als "empty" markiert ist (inkompatibel bei Snapshot)
             is_empty_surface = False
+            # #region agent log
+            import json
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    log_entry = {
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'F',
+                        'location': 'Plot3DOverlaysSurfaces.py:278',
+                        'message': 'Starting is_empty_surface check',
+                        'data': {
+                            'surface_id': surface_id,
+                            'has_container': container is not None,
+                            'has_calc_spl': hasattr(container, 'calculation_spl') if container else False
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }
+                    f.write(json.dumps(log_entry) + '\n')
+            except Exception:
+                pass
+            # #endregion
             if container is not None and hasattr(container, 'calculation_spl'):
                 calc_spl = container.calculation_spl
                 if isinstance(calc_spl, dict):
                     surface_grids = calc_spl.get('surface_grids', {})
+                    # #region agent log
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            log_entry = {
+                                'sessionId': 'debug-session',
+                                'runId': 'run1',
+                                'hypothesisId': 'F',
+                                'location': 'Plot3DOverlaysSurfaces.py:283',
+                                'message': 'Checking surface_grids',
+                                'data': {
+                                    'surface_id': surface_id,
+                                    'surface_grids_type': type(surface_grids).__name__,
+                                    'surface_grids_keys': list(surface_grids.keys()) if isinstance(surface_grids, dict) else None,
+                                    'surface_id_in_grids': surface_id in surface_grids if isinstance(surface_grids, dict) else False
+                                },
+                                'timestamp': int(time.time() * 1000)
+                            }
+                            f.write(json.dumps(log_entry) + '\n')
+                    except Exception:
+                        pass
+                    # #endregion
                     if isinstance(surface_grids, dict) and surface_id in surface_grids:
                         grid_data = surface_grids[surface_id]
                         if isinstance(grid_data, dict):
                             is_empty_surface = grid_data.get('is_empty', False)
+                            # #region agent log
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    log_entry = {
+                                        'sessionId': 'debug-session',
+                                        'runId': 'run1',
+                                        'hypothesisId': 'F',
+                                        'location': 'Plot3DOverlaysSurfaces.py:287',
+                                        'message': 'Found grid_data, checking is_empty flag',
+                                        'data': {
+                                            'surface_id': surface_id,
+                                            'is_empty_surface': is_empty_surface,
+                                            'grid_data_keys': list(grid_data.keys()) if isinstance(grid_data, dict) else None,
+                                            'is_empty_flag': grid_data.get('is_empty', None) if isinstance(grid_data, dict) else None
+                                        },
+                                        'timestamp': int(time.time() * 1000)
+                                    }
+                                    f.write(json.dumps(log_entry) + '\n')
+                            except Exception:
+                                pass
+                            # #endregion
             
             # 🎯 VALIDIERUNG: Prüfe ob enabled Surface für SPL-Berechnung verwendet werden kann
             is_valid_for_spl = True
@@ -373,6 +472,32 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                         invalid_enabled_points_list.append(closed_coords_array)
                         invalid_enabled_faces_list.append(n_points)
                         invalid_enabled_lines_list.append(n_points)
+                        # #region agent log
+                        import json
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                log_entry = {
+                                    'sessionId': 'debug-session',
+                                    'runId': 'run1',
+                                    'hypothesisId': 'F',
+                                    'location': 'Plot3DOverlaysSurfaces.py:396',
+                                    'message': 'Adding surface to invalid_enabled_points_list',
+                                    'data': {
+                                        'surface_id': surface_id,
+                                        'is_empty_surface': is_empty_surface,
+                                        'is_valid_for_spl': is_valid_for_spl,
+                                        'invalid_list_size_before': len(invalid_enabled_points_list) - 1,
+                                        'invalid_list_size_after': len(invalid_enabled_points_list),
+                                        'n_points': n_points,
+                                        'enabled': enabled,
+                                        'hidden': hidden
+                                    },
+                                    'timestamp': int(time.time() * 1000)
+                                }
+                                f.write(json.dumps(log_entry) + '\n')
+                        except Exception:
+                            pass
+                        # #endregion
                         # Rahmen wird separat gezeichnet (wie bei gültigen Surfaces)
                         if is_active:
                             active_enabled_points_list.append(closed_coords_array)
@@ -573,6 +698,29 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
         
         # 🎯 NEU: Zeichne ungültige enabled Surfaces grau hinterlegt (immer, auch wenn SPL-Daten vorhanden)
         
+        # #region agent log
+        import json
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'Plot3DOverlaysSurfaces.py:576',
+                    'message': 'Rendering invalid enabled surfaces',
+                    'data': {
+                        'invalid_enabled_points_list_size': len(invalid_enabled_points_list),
+                        'invalid_enabled_faces_list_size': len(invalid_enabled_faces_list),
+                        'has_spl_data': has_spl_data,
+                        'create_empty_plot_surfaces': create_empty_plot_surfaces
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }
+                f.write(json.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
+        
         if invalid_enabled_points_list:
             try:
                 all_invalid_points = []
@@ -655,11 +803,13 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     invalid_polygon_mesh.faces = all_invalid_faces
                     
                     actor_name = "surface_invalid_enabled_batch"
+                    # 🎯 NEU: Verwende plotter.add_mesh direkt, aber mit höherer Opacity für bessere Sichtbarkeit
+                    # Die Punkte haben bereits z_offset (0.005m), also sollten sie über den SPL-Texturen liegen
                     actor = self.plotter.add_mesh(
                         invalid_polygon_mesh,
                         name=actor_name,
                         color='#808080',  # Grau
-                        opacity=0.6,
+                        opacity=0.7,  # Etwas höhere Opacity für bessere Sichtbarkeit
                         smooth_shading=False,
                         show_scalar_bar=False,
                         reset_camera=False,

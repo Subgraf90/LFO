@@ -22,6 +22,31 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         sound_field_complex, sound_field_x, sound_field_y, array_fields = self._calculate_sound_field_complex(
             capture_arrays=True
         )
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "I",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:after_calc_complex",
+                    "message": "Nach _calculate_sound_field_complex",
+                    "data": {
+                        "array_fields_is_none": array_fields is None,
+                        "array_fields_type": type(array_fields).__name__ if array_fields is not None else None,
+                        "array_fields_len": len(array_fields) if isinstance(array_fields, dict) else (0 if array_fields is None else "not_dict"),
+                        "array_fields_keys": list(array_fields.keys()) if isinstance(array_fields, dict) else None,
+                        "sound_field_x_len": len(sound_field_x) if sound_field_x is not None else 0,
+                        "sound_field_y_len": len(sound_field_y) if sound_field_y is not None else 0
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
         if not array_fields:
             # 🎯 FIX: Erstelle leeres Array mit richtiger Form statt leerer Liste
