@@ -1,6 +1,7 @@
 # Setting State enthält default variablen. Diese werden bei unverändertem UI-Inpult verwendet
 import numpy as np
 import copy
+from typing import Optional
 
 from Module_LFO.Modules_Calculate.Functions import FunctionToolbox
 from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefinition, SurfaceGroup
@@ -259,7 +260,7 @@ class Settings:
 
         self.update_surface_dimensions()
 
-    def _ensure_surface_object(self, surface_id: str) -> SurfaceDefinition | None:
+    def _ensure_surface_object(self, surface_id: str) -> Optional[SurfaceDefinition]:
         surface = self.surface_definitions.get(surface_id)
         if surface is None:
             return None

@@ -44,19 +44,23 @@ class CacheTestSuite:
         print(f"\n{'='*60}")
         print(f"Test: {test_name}")
         print(f"{'='*60}")
+        print(f"⏱️  Starte Test um {time.strftime('%H:%M:%S')}...")
         
+        start_time = time.time()
         try:
             result = test_func()
+            elapsed = time.time() - start_time
             if result:
-                print(f"✅ PASSED: {test_name}")
+                print(f"✅ PASSED: {test_name} (dauerte {elapsed:.2f}s)")
                 self.tests_passed += 1
                 self.test_results.append((test_name, True, None))
             else:
-                print(f"❌ FAILED: {test_name}")
+                print(f"❌ FAILED: {test_name} (dauerte {elapsed:.2f}s)")
                 self.tests_failed += 1
                 self.test_results.append((test_name, False, "Test returned False"))
         except Exception as e:
-            print(f"❌ ERROR: {test_name}")
+            elapsed = time.time() - start_time
+            print(f"❌ ERROR: {test_name} (dauerte {elapsed:.2f}s)")
             print(f"   Fehler: {e}")
             import traceback
             traceback.print_exc()
@@ -111,8 +115,9 @@ def test_cache_manager_basic():
 
 def test_lru_cache_behavior():
     """Test 2: LRU-Cache Verhalten"""
-    print("\n2.1 Cache leeren...")
+    print("\n2.1 Cache leeren und konfigurieren (max_size=5)...")
     cache_manager.clear_cache(CacheType.GRID)
+    cache_manager.configure_cache(CacheType.GRID, max_size=5)
     cache = cache_manager.get_cache(CacheType.GRID)
     
     print("\n2.2 Cache füllen (max_size=5)...")

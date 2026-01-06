@@ -782,7 +782,7 @@ class GridBuilder(ModuleBase):
         self,
         vertices: np.ndarray,
         faces_flat: np.ndarray,
-        resolution: float | None,
+        resolution: Optional[float],
         surface_id: str,
         ) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -3369,7 +3369,7 @@ class FlexibleGridGenerator(ModuleBase):
         self,
         vertices: np.ndarray,
         faces_flat: np.ndarray,
-        resolution: float | None,
+        resolution: Optional[float],
         surface_id: str,
         ) -> Tuple[np.ndarray, np.ndarray]:
         """

@@ -664,10 +664,13 @@ class CacheManager:
         cache_type: CacheType,
         max_size: Optional[int] = None,
         max_memory_mb: Optional[float] = None,
+        memory_eviction_enabled: Optional[bool] = None,
         enable_lru: Optional[bool] = None,
         enable_file_cache: Optional[bool] = None,
         file_cache_dir: Optional[str] = None,
         description: Optional[str] = None,
+        ttl_seconds: Optional[float] = None,
+        max_idle_seconds: Optional[float] = None,
     ) -> bool:
         """
         Konfiguriert einen bestehenden Cache
@@ -675,10 +678,14 @@ class CacheManager:
         Args:
             cache_type: Typ des Caches
             max_size: Neue maximale Größe
+            max_memory_mb: Maximale Memory in MB
+            memory_eviction_enabled: Memory-basierte Eviction aktivieren/deaktivieren
             enable_lru: LRU aktivieren/deaktivieren
             enable_file_cache: File-Cache aktivieren/deaktivieren
             file_cache_dir: File-Cache-Verzeichnis
             description: Neue Beschreibung
+            ttl_seconds: Time-To-Live in Sekunden
+            max_idle_seconds: Maximale Idle-Zeit in Sekunden
         
         Returns:
             True wenn Cache konfiguriert wurde, False wenn nicht gefunden
