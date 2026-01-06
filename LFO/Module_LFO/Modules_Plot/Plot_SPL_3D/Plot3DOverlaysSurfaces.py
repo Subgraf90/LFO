@@ -370,13 +370,48 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                                         'sessionId': 'debug-session',
                                         'runId': 'run1',
                                         'hypothesisId': 'F',
-                                        'location': 'Plot3DOverlaysSurfaces.py:287',
+                                        'location': 'Plot3DOverlaysSurfaces.py:365',
                                         'message': 'Found grid_data, checking is_empty flag',
                                         'data': {
                                             'surface_id': surface_id,
                                             'is_empty_surface': is_empty_surface,
                                             'grid_data_keys': list(grid_data.keys()) if isinstance(grid_data, dict) else None,
-                                            'is_empty_flag': grid_data.get('is_empty', None) if isinstance(grid_data, dict) else None
+                                            'is_empty_flag': grid_data.get('is_empty', None) if isinstance(grid_data, dict) else None,
+                                            'has_is_empty_key': 'is_empty' in grid_data if isinstance(grid_data, dict) else False
+                                        },
+                                        'timestamp': int(time.time() * 1000)
+                                    }
+                                    f.write(json.dumps(log_entry) + '\n')
+                            except Exception as e:
+                                # Log auch Exceptions
+                                try:
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        log_entry = {
+                                            'sessionId': 'debug-session',
+                                            'runId': 'run1',
+                                            'hypothesisId': 'F',
+                                            'location': 'Plot3DOverlaysSurfaces.py:365:exception',
+                                            'message': 'Exception while logging is_empty check',
+                                            'data': {'error': str(e)},
+                                            'timestamp': int(time.time() * 1000)
+                                        }
+                                        f.write(json.dumps(log_entry) + '\n')
+                                except Exception:
+                                    pass
+                            # #endregion
+                        else:
+                            # #region agent log
+                            try:
+                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                    log_entry = {
+                                        'sessionId': 'debug-session',
+                                        'runId': 'run1',
+                                        'hypothesisId': 'F',
+                                        'location': 'Plot3DOverlaysSurfaces.py:365',
+                                        'message': 'grid_data is not a dict',
+                                        'data': {
+                                            'surface_id': surface_id,
+                                            'grid_data_type': type(grid_data).__name__
                                         },
                                         'timestamp': int(time.time() * 1000)
                                     }
@@ -384,6 +419,28 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                             except Exception:
                                 pass
                             # #endregion
+                    else:
+                        # #region agent log
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                log_entry = {
+                                    'sessionId': 'debug-session',
+                                    'runId': 'run1',
+                                    'hypothesisId': 'F',
+                                    'location': 'Plot3DOverlaysSurfaces.py:365',
+                                    'message': 'Surface not in surface_grids',
+                                    'data': {
+                                        'surface_id': surface_id,
+                                        'surface_grids_is_dict': isinstance(surface_grids, dict),
+                                        'surface_id_in_grids': surface_id in surface_grids if isinstance(surface_grids, dict) else False,
+                                        'surface_grids_keys': list(surface_grids.keys()) if isinstance(surface_grids, dict) else None
+                                    },
+                                    'timestamp': int(time.time() * 1000)
+                                }
+                                f.write(json.dumps(log_entry) + '\n')
+                        except Exception:
+                            pass
+                        # #endregion
             
             # 🎯 VALIDIERUNG: Prüfe ob enabled Surface für SPL-Berechnung verwendet werden kann
             is_valid_for_spl = True
@@ -747,13 +804,6 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     # Versuche Triangulation
                     triangles = triangulate_points(points_dict)
                     
-                    # 🎯 DEBUG: Berechne erwartete Polygon-Fläche
-                    from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import _calculate_polygon_area
-                    expected_polygon_area = _calculate_polygon_area(points_dict)
-                    
-                    # Versuche Triangulation
-                    triangles = triangulate_points(points_dict)
-                    
                     triangulation_success = False
                     if triangles and len(triangles) > 0:
                         # Triangulation erfolgreich: Verwende Dreiecke
@@ -803,17 +853,14 @@ class SPL3DOverlaySurfaces(SPL3DOverlayBase):
                     invalid_polygon_mesh.faces = all_invalid_faces
                     
                     actor_name = "surface_invalid_enabled_batch"
-                    # 🎯 NEU: Verwende plotter.add_mesh direkt, aber mit höherer Opacity für bessere Sichtbarkeit
-                    # Die Punkte haben bereits z_offset (0.005m), also sollten sie über den SPL-Texturen liegen
-                    actor = self.plotter.add_mesh(
+                    # 🎯 NEU: Verwende _add_overlay_mesh, damit Z-Offset automatisch angewendet wird
+                    actor = self._add_overlay_mesh(
                         invalid_polygon_mesh,
                         name=actor_name,
                         color='#808080',  # Grau
                         opacity=0.7,  # Etwas höhere Opacity für bessere Sichtbarkeit
-                        smooth_shading=False,
-                        show_scalar_bar=False,
-                        reset_camera=False,
                         show_edges=False,
+                        category='surfaces',
                     )
                     try:
                         if actor is not None and hasattr(actor, "SetPickable"):

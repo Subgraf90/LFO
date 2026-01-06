@@ -778,6 +778,33 @@ class SPL3DPlotRenderer:
                     try:
                         from scipy.interpolate import griddata
                         
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "M1",
+                                    "location": "Plot3DSPL.py:_render_surfaces:triangulation_path_entry",
+                                    "message": "Triangulation-Pfad gestartet",
+                                    "data": {
+                                        "surface_id": surface_id,
+                                        "phase_mode": phase_mode,
+                                        "n_vertices": n_vertices,
+                                        "n_grid_points": n_grid_points,
+                                        "is_step_mode": is_step_mode,
+                                        "has_additional_vertices_coords": additional_vertices_coords is not None,
+                                        "has_additional_vertices_spl_db": additional_vertices_spl_db is not None,
+                                        "override_used_here": override_used_here
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        
                         # Lade SPL-Werte aus surface_results_data
                         result_data = surface_results_data.get(surface_id) if isinstance(surface_results_data, dict) else None
                         if result_data is None:
@@ -904,53 +931,238 @@ class SPL3DPlotRenderer:
                                     vertex_source_indices = None
                             
                             additional_vertices_spl_list = result_data.get('additional_vertices_spl') if result_data else None
+                            
+                            # #region agent log
+                            if phase_mode:
+                                try:
+                                    import json
+                                    import time as time_module
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "B",
+                                            "location": "Plot3DSPL.py:_render_surfaces:check_additional_vertices",
+                                            "message": "Prüfe additional_vertices Daten",
+                                            "data": {
+                                                "surface_id": surface_id,
+                                                "has_result_data": result_data is not None,
+                                                "has_additional_vertices_spl": result_data.get('additional_vertices_spl') is not None if result_data else False,
+                                                "has_additional_vertices_phase": result_data.get('additional_vertices_phase') is not None if result_data else False,
+                                                "result_data_keys": list(result_data.keys()) if isinstance(result_data, dict) else None
+                                            },
+                                            "timestamp": int(time_module.time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                            # #endregion
+                            
                             additional_vertices_spl = None
                             if additional_vertices_spl_list is not None:
                                 try:
                                     additional_vertices_spl = np.array(additional_vertices_spl_list, dtype=complex)
-                                    # 🎯 FIX: Für Phase-Modus verwende Phase-Daten aus Surface-Overrides
-                                    # Für additional_vertices müssen wir interpolieren, da sie nicht in Overrides sind
-                                    if phase_mode and override_used_here and vals.size > 0:
-                                        # Interpoliere Phase-Daten von Grid auf additional_vertices
-                                        from scipy.interpolate import griddata
-                                        if Xg.size > 0 and Yg.size > 0 and vals.size > 0:
-                                            # Erstelle Quell-Punkte (Grid-Koordinaten)
-                                            Xg_flat = Xg.ravel()
-                                            Yg_flat = Yg.ravel()
-                                            vals_flat = vals.ravel()
-                                            points_source = np.column_stack([Xg_flat, Yg_flat])
-                                            values_source = vals_flat
-                                            
-                                            # Ziel-Punkte (additional_vertices X/Y-Koordinaten)
-                                            additional_vertices_coords_temp = grid_data.get('additional_vertices')
-                                            if additional_vertices_coords_temp is not None:
+                                    # 🎯 NEU: Für Phase-Modus verwende direkt berechnete Phase-Daten für additional_vertices
+                                    if phase_mode:
+                                        # #region agent log
+                                        try:
+                                            import json
+                                            import time as time_module
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "B",
+                                                    "location": "Plot3DSPL.py:_render_surfaces:phase_mode_additional_vertices",
+                                                    "message": "Phase-Modus: Lade additional_vertices_phase",
+                                                    "data": {
+                                                        "surface_id": surface_id,
+                                                        "has_additional_vertices_spl": additional_vertices_spl is not None,
+                                                        "additional_vertices_spl_shape": list(additional_vertices_spl.shape) if additional_vertices_spl is not None else None,
+                                                        "has_additional_vertices_phase": result_data.get('additional_vertices_phase') is not None,
+                                                        "additional_vertices_phase_type": type(result_data.get('additional_vertices_phase')).__name__ if result_data.get('additional_vertices_phase') is not None else None,
+                                                        "override_used_here": override_used_here,
+                                                        "vals_size": vals.size if vals is not None else 0
+                                                    },
+                                                    "timestamp": int(time_module.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
+                                        
+                                        # Prüfe zuerst, ob direkt berechnete Phase-Daten vorhanden sind
+                                        additional_vertices_phase_list = result_data.get('additional_vertices_phase')
+                                        if additional_vertices_phase_list is not None:
+                                            try:
+                                                additional_vertices_spl_db = np.array(additional_vertices_phase_list, dtype=float)
+                                                
+                                                # #region agent log
                                                 try:
-                                                    additional_vertices_coords_temp = np.array(additional_vertices_coords_temp, dtype=float)
-                                                    if additional_vertices_coords_temp.ndim == 2 and additional_vertices_coords_temp.shape[1] >= 2:
-                                                        points_target = additional_vertices_coords_temp[:, :2]  # Nur X, Y
-                                                        # Interpoliere Phase-Daten
-                                                        additional_vertices_spl_db = griddata(
-                                                            points_source, values_source, points_target,
-                                                            method='linear', fill_value=np.nan
-                                                        )
-                                                        # Setze nur inf auf 0, behalte NaN
-                                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
-                                                    else:
-                                                        additional_vertices_spl_db = None
+                                                    import json
+                                                    import time as time_module
+                                                    nan_count = np.sum(np.isnan(additional_vertices_spl_db))
+                                                    inf_count = np.sum(np.isinf(additional_vertices_spl_db))
+                                                    valid_count = np.sum(np.isfinite(additional_vertices_spl_db))
+                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                        f.write(json.dumps({
+                                                            "sessionId": "debug-session",
+                                                            "runId": "run1",
+                                                            "hypothesisId": "C",
+                                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_loaded",
+                                                            "message": "Phase-Daten geladen (direkt berechnet)",
+                                                            "data": {
+                                                                "surface_id": surface_id,
+                                                                "len": len(additional_vertices_spl_db),
+                                                                "nan_count": int(nan_count),
+                                                                "inf_count": int(inf_count),
+                                                                "valid_count": int(valid_count),
+                                                                "min": float(np.nanmin(additional_vertices_spl_db)) if valid_count > 0 else None,
+                                                                "max": float(np.nanmax(additional_vertices_spl_db)) if valid_count > 0 else None
+                                                            },
+                                                            "timestamp": int(time_module.time() * 1000)
+                                                        }) + "\n")
                                                 except Exception:
+                                                    pass
+                                                # #endregion
+                                                
+                                                # Konvertiere von Grad zu Radiant für Konsistenz (falls nötig)
+                                                # Phase-Daten sind bereits in Grad, also direkt verwenden
+                                                additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                                # Behalte NaN-Werte für transparente Darstellung
+                                            except Exception as e:
+                                                additional_vertices_spl_db = None
+                                                # #region agent log
+                                                try:
+                                                    import json
+                                                    import time as time_module
+                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                        f.write(json.dumps({
+                                                            "sessionId": "debug-session",
+                                                            "runId": "run1",
+                                                            "hypothesisId": "C",
+                                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_load_error",
+                                                            "message": "Fehler beim Laden der Phase-Daten",
+                                                            "data": {
+                                                                "surface_id": surface_id,
+                                                                "error": str(e),
+                                                                "error_type": type(e).__name__
+                                                            },
+                                                            "timestamp": int(time_module.time() * 1000)
+                                                        }) + "\n")
+                                                except Exception:
+                                                    pass
+                                                # #endregion
+                                        # Fallback 1: Wenn Overrides vorhanden sind, interpoliere von Grid
+                                        elif override_used_here and vals.size > 0:
+                                            # Interpoliere Phase-Daten von Grid auf additional_vertices
+                                            from scipy.interpolate import griddata
+                                            if Xg.size > 0 and Yg.size > 0 and vals.size > 0:
+                                                # Erstelle Quell-Punkte (Grid-Koordinaten)
+                                                Xg_flat = Xg.ravel()
+                                                Yg_flat = Yg.ravel()
+                                                vals_flat = vals.ravel()
+                                                points_source = np.column_stack([Xg_flat, Yg_flat])
+                                                values_source = vals_flat
+                                                
+                                                # Ziel-Punkte (additional_vertices X/Y-Koordinaten)
+                                                additional_vertices_coords_temp = grid_data.get('additional_vertices')
+                                                if additional_vertices_coords_temp is not None:
+                                                    try:
+                                                        additional_vertices_coords_temp = np.array(additional_vertices_coords_temp, dtype=float)
+                                                        if additional_vertices_coords_temp.ndim == 2 and additional_vertices_coords_temp.shape[1] >= 2:
+                                                            points_target = additional_vertices_coords_temp[:, :2]  # Nur X, Y
+                                                            # Interpoliere Phase-Daten
+                                                            additional_vertices_spl_db = griddata(
+                                                                points_source, values_source, points_target,
+                                                                method='linear', fill_value=np.nan
+                                                            )
+                                                            # Setze nur inf auf 0, behalte NaN
+                                                            additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                                        else:
+                                                            additional_vertices_spl_db = None
+                                                    except Exception:
+                                                        additional_vertices_spl_db = None
+                                                else:
                                                     additional_vertices_spl_db = None
                                             else:
                                                 additional_vertices_spl_db = None
+                                        # Fallback 2: Verwende np.angle aus komplexen Werten
                                         else:
-                                            additional_vertices_spl_db = None
+                                            # #region agent log
+                                            try:
+                                                import json
+                                                import time as time_module
+                                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                    f.write(json.dumps({
+                                                        "sessionId": "debug-session",
+                                                        "runId": "run1",
+                                                        "hypothesisId": "D",
+                                                        "location": "Plot3DSPL.py:_render_surfaces:phase_mode_fallback2",
+                                                        "message": "Fallback 2: Verwende np.angle",
+                                                        "data": {
+                                                            "surface_id": surface_id,
+                                                            "has_additional_vertices_spl": additional_vertices_spl is not None,
+                                                            "additional_vertices_spl_shape": list(additional_vertices_spl.shape) if additional_vertices_spl is not None else None
+                                                        },
+                                                        "timestamp": int(time_module.time() * 1000)
+                                                    }) + "\n")
+                                            except Exception:
+                                                pass
+                                            # #endregion
+                                            
+                                            # np.angle gibt Radiant zurück, konvertiere zu Grad für Konsistenz
+                                            if additional_vertices_spl is not None:
+                                                additional_vertices_spl_db = np.degrees(np.angle(additional_vertices_spl))
+                                                additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                                # Behalte NaN-Werte für transparente Darstellung
+                                                
+                                                # #region agent log
+                                                try:
+                                                    import json
+                                                    import time as time_module
+                                                    nan_count = np.sum(np.isnan(additional_vertices_spl_db))
+                                                    valid_count = np.sum(np.isfinite(additional_vertices_spl_db))
+                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                        f.write(json.dumps({
+                                                            "sessionId": "debug-session",
+                                                            "runId": "run1",
+                                                            "hypothesisId": "D",
+                                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_fallback2_result",
+                                                            "message": "Fallback 2 Ergebnis",
+                                                            "data": {
+                                                                "surface_id": surface_id,
+                                                                "len": len(additional_vertices_spl_db),
+                                                                "nan_count": int(nan_count),
+                                                                "valid_count": int(valid_count)
+                                                            },
+                                                            "timestamp": int(time_module.time() * 1000)
+                                                        }) + "\n")
+                                                except Exception:
+                                                    pass
+                                                # #endregion
+                                            else:
+                                                additional_vertices_spl_db = None
+                                                # #region agent log
+                                                try:
+                                                    import json
+                                                    import time as time_module
+                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                        f.write(json.dumps({
+                                                            "sessionId": "debug-session",
+                                                            "runId": "run1",
+                                                            "hypothesisId": "D",
+                                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_fallback2_none",
+                                                            "message": "Fallback 2: additional_vertices_spl ist None",
+                                                            "data": {
+                                                                "surface_id": surface_id
+                                                            },
+                                                            "timestamp": int(time_module.time() * 1000)
+                                                        }) + "\n")
+                                                except Exception:
+                                                    pass
+                                                # #endregion
                                     elif time_mode:
                                         additional_vertices_spl_db = np.real(additional_vertices_spl)
                                         additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
-                                    elif phase_mode:
-                                        # Fallback: Wenn keine Overrides vorhanden sind, verwende np.angle
-                                        additional_vertices_spl_db = np.angle(additional_vertices_spl)
-                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
-                                        # Behalte NaN-Werte für transparente Darstellung
                                     else:
                                         pressure_magnitude_add = np.abs(additional_vertices_spl)
                                         pressure_magnitude_add = np.clip(pressure_magnitude_add, 1e-12, None)
@@ -1011,7 +1223,7 @@ class SPL3DPlotRenderer:
                                         mask_flat = surface_mask.ravel().astype(bool)
                                         spl_at_verts[~mask_flat] = np.nan
                                 else:
-                                    # 🎯 Zusätzliche Vertices: Nearest-Neighbour auf Gridpunkte (diskrete Stufen)
+                                    # 🎯 Zusätzliche Vertices: Nearest-Neighbour auf Gridpunkte UND Additional Vertices (diskrete Stufen)
                                     try:
                                         from scipy.spatial import cKDTree
                                         # Erstelle Grid-Punkte für Nearest-Map (2D reicht hier)
@@ -1023,11 +1235,50 @@ class SPL3DPlotRenderer:
                                             grid_pts = grid_pts[mask_flat]
                                             grid_vals = grid_vals[mask_flat]
                                         
-                                        tree = cKDTree(grid_pts)
+                                        # 🎯 FIX: Füge Additional Vertices hinzu, wenn vorhanden
+                                        if additional_vertices_coords is not None and additional_vertices_spl_db is not None:
+                                            # Kombiniere Grid-Punkte und Additional Vertices
+                                            additional_pts = additional_vertices_coords[:, :2]  # Nur X, Y
+                                            combined_pts = np.vstack([grid_pts, additional_pts])
+                                            combined_vals = np.concatenate([grid_vals, additional_vertices_spl_db])
+                                        else:
+                                            combined_pts = grid_pts
+                                            combined_vals = grid_vals
+                                        
+                                        tree = cKDTree(combined_pts)
                                         _, nn_idx = tree.query(triangulated_vertices[:, :2], k=1)
-                                        spl_at_verts = grid_vals[nn_idx]
+                                        spl_at_verts = combined_vals[nn_idx]
                                         
                                         valid_mask = np.isfinite(spl_at_verts)
+                                        
+                                        # #region agent log
+                                        try:
+                                            import json
+                                            import time as time_module
+                                            nan_count = np.sum(~valid_mask)
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "N1",
+                                                    "location": "Plot3DSPL.py:_render_surfaces:nearest_neighbor_with_additional",
+                                                    "message": "Nearest Neighbor mit Additional Vertices",
+                                                    "data": {
+                                                        "surface_id": surface_id,
+                                                        "phase_mode": phase_mode,
+                                                        "n_vertices": n_vertices,
+                                                        "n_grid_points": len(grid_pts),
+                                                        "n_additional_vertices": len(additional_vertices_coords) if additional_vertices_coords is not None else 0,
+                                                        "n_combined_points": len(combined_pts),
+                                                        "valid_count": np.sum(valid_mask),
+                                                        "nan_count": nan_count
+                                                    },
+                                                    "timestamp": int(time_module.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
+                                        
                                         if not np.any(valid_mask):
                                             raise ValueError(f"Surface '{surface_id}': Nearest-Map liefert keine gültigen Werte")
                                     except Exception:
@@ -1040,6 +1291,13 @@ class SPL3DPlotRenderer:
                                             if np.any(mask_flat):
                                                 points_orig = points_orig[mask_flat]
                                                 values_orig = values_orig[mask_flat]
+                                        
+                                        # 🎯 FIX: Füge Additional Vertices hinzu, wenn vorhanden
+                                        if additional_vertices_coords is not None and additional_vertices_spl_db is not None:
+                                            additional_pts = additional_vertices_coords[:, :2]  # Nur X, Y
+                                            points_orig = np.vstack([points_orig, additional_pts])
+                                            values_orig = np.concatenate([values_orig, additional_vertices_spl_db])
+                                        
                                         spl_at_verts = griddata(
                                             points_orig,
                                             values_orig,
@@ -1054,6 +1312,33 @@ class SPL3DPlotRenderer:
                                 # ===========================
                                 # GRADIENT → BILINEARE INTERPOLATION ODER LINEAR MIT RANDPUNKTEN
                                 # ===========================
+                                
+                                # #region agent log
+                                try:
+                                    import json
+                                    import time as time_module
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "M2",
+                                            "location": "Plot3DSPL.py:_render_surfaces:gradient_path_entry",
+                                            "message": "Gradient-Pfad gestartet",
+                                            "data": {
+                                                "surface_id": surface_id,
+                                                "phase_mode": phase_mode,
+                                                "n_vertices": n_vertices,
+                                                "n_grid_points": n_grid_points,
+                                                "has_additional_vertices_coords": additional_vertices_coords is not None,
+                                                "has_additional_vertices_spl_db": additional_vertices_spl_db is not None,
+                                                "additional_vertices_count": len(additional_vertices_coords) if additional_vertices_coords is not None else 0
+                                            },
+                                            "timestamp": int(time_module.time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                                # #endregion
+                                
                                 # 🎯 FIX: Wenn additional_vertices vorhanden sind, verwende griddata mit linear
                                 # statt bilinearer Interpolation, um Randpunkte einzubeziehen
                                 if additional_vertices_coords is not None and additional_vertices_spl_db is not None:
@@ -1095,6 +1380,37 @@ class SPL3DPlotRenderer:
                                         valid_mask = np.isfinite(spl_at_verts)
                                         
                                         # #region agent log
+                                        if phase_mode:
+                                            try:
+                                                import json
+                                                import time as time_module
+                                                nan_count = np.sum(~valid_mask)
+                                                nan_indices = np.where(~valid_mask)[0][:10]  # Erste 10 NaN-Indizes
+                                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                    f.write(json.dumps({
+                                                        "sessionId": "debug-session",
+                                                        "runId": "run1",
+                                                        "hypothesisId": "E",
+                                                        "location": "Plot3DSPL.py:_render_surfaces:gradient_interpolation_phase",
+                                                        "message": "Gradient-Interpolation Phase-Modus Ergebnis",
+                                                        "data": {
+                                                            "surface_id": surface_id,
+                                                            "n_vertices": n_vertices,
+                                                            "n_grid_points": len(points_grid),
+                                                            "n_additional_vertices": len(additional_vertices_coords) if additional_vertices_coords is not None else 0,
+                                                            "n_combined_points": len(points_combined),
+                                                            "valid_count": int(np.sum(valid_mask)),
+                                                            "nan_count": int(nan_count),
+                                                            "nan_indices_sample": nan_indices.tolist(),
+                                                            "additional_vertices_nan_count": int(np.sum(np.isnan(additional_vertices_spl_db))) if additional_vertices_spl_db is not None else 0
+                                                        },
+                                                        "timestamp": int(time_module.time() * 1000)
+                                                    }) + "\n")
+                                            except Exception:
+                                                pass
+                                        # #endregion
+                                        
+                                        # #region agent log
                                         try:
                                             import json
                                             import time as time_module
@@ -1134,6 +1450,31 @@ class SPL3DPlotRenderer:
                                             )
                                     except Exception as e:
                                         # Fallback auf bilineare Interpolation ohne Randpunkte
+                                        
+                                        # #region agent log
+                                        try:
+                                            import json
+                                            import time as time_module
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "M3",
+                                                    "location": "Plot3DSPL.py:_render_surfaces:bilinear_fallback",
+                                                    "message": "Bilineare Interpolation Fallback",
+                                                    "data": {
+                                                        "surface_id": surface_id,
+                                                        "phase_mode": phase_mode,
+                                                        "error": str(e),
+                                                        "n_vertices": n_vertices,
+                                                        "n_grid_points": n_grid_points
+                                                    },
+                                                    "timestamp": int(time_module.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                        # #endregion
+                                        
                                         try:
                                             # Stelle sicher, dass Xg/Yg als reguläres Grid interpretiert werden können
                                             Xg_arr = np.asarray(Xg)

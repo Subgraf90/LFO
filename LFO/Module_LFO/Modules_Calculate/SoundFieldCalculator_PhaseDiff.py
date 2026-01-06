@@ -76,6 +76,89 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
                       f"mean={np.nanmean(valid_phase):.2f}°, valid={len(valid_phase)}/{phase_diff.size}")
             else:
                 print(f"[Phase Calc] Phase-Daten berechnet, aber alle NaN: shape={phase_diff.shape}")
+        
+        # 🎯 NEU: Berechne Phase-Daten für additional_vertices (wie im SPL-Fall)
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:before_additional_vertices",
+                    "message": "Vor Berechnung additional_vertices_phase",
+                    "data": {
+                        "has_calculation_spl": isinstance(self.calculation_spl, dict),
+                        "has_surface_results": isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl,
+                        "surface_results_keys": list(self.calculation_spl.get('surface_results', {}).keys()) if isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl else []
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        additional_vertices_phase_diff = self._compute_phase_differences_for_additional_vertices()
+        
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:after_additional_vertices",
+                    "message": "Nach Berechnung additional_vertices_phase",
+                    "data": {
+                        "additional_vertices_phase_diff_is_none": additional_vertices_phase_diff is None,
+                        "additional_vertices_phase_diff_keys": list(additional_vertices_phase_diff.keys()) if additional_vertices_phase_diff is not None else [],
+                        "additional_vertices_phase_diff_values": {
+                            k: {
+                                "is_none": v is None,
+                                "len": len(v) if v is not None else 0,
+                                "nan_count": sum(1 for x in v if (isinstance(x, float) and (x != x or np.isnan(x)))) if v is not None else 0
+                            } for k, v in (additional_vertices_phase_diff.items() if additional_vertices_phase_diff is not None else {})
+                        }
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        if additional_vertices_phase_diff is not None:
+            # Speichere additional_vertices_phase_diff in surface_results
+            if isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl:
+                surface_results = self.calculation_spl['surface_results']
+                for surface_id, result_data in surface_results.items():
+                    if isinstance(result_data, dict) and 'additional_vertices_array_fields' in result_data:
+                        result_data['additional_vertices_phase'] = additional_vertices_phase_diff.get(surface_id)
+                        
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "B",
+                                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:save_additional_vertices_phase",
+                                    "message": "Speichere additional_vertices_phase",
+                                    "data": {
+                                        "surface_id": surface_id,
+                                        "phase_data_is_none": result_data.get('additional_vertices_phase') is None,
+                                        "phase_data_len": len(result_data.get('additional_vertices_phase')) if result_data.get('additional_vertices_phase') is not None else 0
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
 
         # 🎯 Speichere Phase-Diff-Daten
         self.calculation_spl["sound_field_phase_diff"] = (
@@ -207,6 +290,200 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         except Exception:
             pass
         # #endregion
+        
+        return phase_diff_deg
+    
+    def _compute_phase_differences_for_additional_vertices(self) -> dict:
+        """
+        Berechnet Phasendifferenzen für additional_vertices (Rand- und Eckpunkte).
+        
+        Verwendet dieselbe Logik wie _compute_phase_differences, aber für 1D-Arrays
+        statt 2D-Grids.
+        
+        Returns:
+            dict: {surface_id: phase_diff_array} oder None wenn keine Daten vorhanden
+        """
+        # #region agent log
+        try:
+            import json
+            import time as time_module
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A",
+                    "location": "SoundFieldCalculator_PhaseDiff.py:_compute_phase_differences_for_additional_vertices:entry",
+                    "message": "Berechne Phase-Daten für additional_vertices",
+                    "data": {
+                        "has_calculation_spl": isinstance(self.calculation_spl, dict),
+                        "has_surface_results": isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl
+                    },
+                    "timestamp": int(time_module.time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        if not isinstance(self.calculation_spl, dict) or 'surface_results' not in self.calculation_spl:
+            return None
+        
+        surface_results = self.calculation_spl['surface_results']
+        additional_vertices_phase_diff = {}
+        
+        for surface_id, result_data in surface_results.items():
+            if not isinstance(result_data, dict):
+                continue
+            
+            additional_vertices_array_fields = result_data.get('additional_vertices_array_fields')
+            
+            # #region agent log
+            try:
+                import json
+                import time as time_module
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "A",
+                        "location": "SoundFieldCalculator_PhaseDiff.py:_compute_phase_differences_for_additional_vertices:surface_check",
+                        "message": "Prüfe Surface für additional_vertices",
+                        "data": {
+                            "surface_id": surface_id,
+                            "has_additional_vertices_array_fields": additional_vertices_array_fields is not None,
+                            "array_fields_type": type(additional_vertices_array_fields).__name__ if additional_vertices_array_fields is not None else None,
+                            "array_fields_keys": list(additional_vertices_array_fields.keys()) if isinstance(additional_vertices_array_fields, dict) else None
+                        },
+                        "timestamp": int(time_module.time() * 1000)
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            if not additional_vertices_array_fields:
+                continue
+            
+            # Konvertiere Listen zurück zu numpy Arrays
+            try:
+                array_fields_dict = {}
+                for array_key, array_field_list in additional_vertices_array_fields.items():
+                    if array_field_list is not None:
+                        array_fields_dict[array_key] = np.asarray(array_field_list, dtype=complex)
+                
+                if not array_fields_dict:
+                    continue
+                
+                # Berechne Phase-Differenzen für additional_vertices (1D-Array)
+                phase_diff = self._compute_phase_differences_1d(array_fields_dict)
+                
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    nan_count = np.sum(np.isnan(phase_diff)) if phase_diff is not None else 0
+                    valid_count = np.sum(np.isfinite(phase_diff)) if phase_diff is not None else 0
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "A",
+                            "location": "SoundFieldCalculator_PhaseDiff.py:_compute_phase_differences_for_additional_vertices:phase_calc_result",
+                            "message": "Phase-Berechnung Ergebnis",
+                            "data": {
+                                "surface_id": surface_id,
+                                "phase_diff_is_none": phase_diff is None,
+                                "phase_diff_len": len(phase_diff) if phase_diff is not None else 0,
+                                "nan_count": int(nan_count),
+                                "valid_count": int(valid_count),
+                                "min_deg": float(np.nanmin(phase_diff)) if phase_diff is not None and valid_count > 0 else None,
+                                "max_deg": float(np.nanmax(phase_diff)) if phase_diff is not None and valid_count > 0 else None
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                
+                if phase_diff is not None:
+                    additional_vertices_phase_diff[surface_id] = phase_diff.tolist()
+            except Exception as e:
+                print(f"[Phase Calc] Fehler bei Berechnung der Phase-Daten für additional_vertices (Surface {surface_id}): {e}")
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "A",
+                            "location": "SoundFieldCalculator_PhaseDiff.py:_compute_phase_differences_for_additional_vertices:error",
+                            "message": "Fehler bei Phase-Berechnung",
+                            "data": {
+                                "surface_id": surface_id,
+                                "error": str(e),
+                                "error_type": type(e).__name__
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                continue
+        
+        return additional_vertices_phase_diff if additional_vertices_phase_diff else None
+    
+    def _compute_phase_differences_1d(self, array_fields: dict) -> np.ndarray:
+        """
+        Berechnet Phasendifferenzen für 1D-Arrays (additional_vertices).
+        
+        Args:
+            array_fields: Dict von {array_key: 1D-Array komplexer Werte}
+        
+        Returns:
+            np.ndarray: 1D-Array mit Phasendifferenzen in Grad, oder None bei Fehler
+        """
+        arrays = [field for field in array_fields.values() if field is not None]
+        if not arrays:
+            return None
+        if len(arrays) == 1:
+            return np.zeros_like(arrays[0], dtype=float)
+        
+        # Stelle sicher, dass alle Arrays die gleiche Länge haben
+        lengths = [len(arr) for arr in arrays]
+        if len(set(lengths)) > 1:
+            # Unterschiedliche Längen - verwende minimale Länge
+            min_length = min(lengths)
+            arrays = [arr[:min_length] for arr in arrays]
+        
+        stack = np.stack(arrays, axis=0)  # [n_arrays, n_points]
+        magnitudes = np.abs(stack)
+        valid_masks = magnitudes > self._AMPLITUDE_THRESHOLD
+        
+        phases_rad = np.angle(stack)  # [-pi, pi]
+        weighted_diff_sum = np.zeros_like(magnitudes[0], dtype=float)
+        weight_sum = np.zeros_like(magnitudes[0], dtype=float)
+        
+        num_arrays = stack.shape[0]
+        for i in range(num_arrays):
+            for j in range(i + 1, num_arrays):
+                pair_mask = valid_masks[i] & valid_masks[j]
+                if not np.any(pair_mask):
+                    continue
+                diff_rad = np.abs(np.angle(np.exp(1j * (phases_rad[i] - phases_rad[j]))))
+                pair_weight = magnitudes[i] * magnitudes[j]
+                pair_weight = np.where(pair_mask, pair_weight, 0.0)
+                if not np.any(pair_weight):
+                    continue
+                weighted_diff_sum += diff_rad * pair_weight
+                weight_sum += pair_weight
+        
+        phase_diff_rad = np.divide(
+            weighted_diff_sum,
+            weight_sum,
+            out=np.full_like(weight_sum, np.nan),
+            where=weight_sum > 0,
+        )
+        phase_diff_deg = np.degrees(phase_diff_rad)
         
         return phase_diff_deg
 

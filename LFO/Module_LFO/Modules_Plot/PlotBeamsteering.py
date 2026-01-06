@@ -37,6 +37,10 @@ class BeamsteeringPlot(QWidget):
         # Verbinde Zoom-Callbacks für adaptive Achsenbeschriftung
         self._connect_zoom_callbacks()
         
+        # Verbinde Mouse-Zoom und Pan Events
+        self.canvas.mpl_connect('scroll_event', self._on_scroll)
+        self.canvas.mpl_connect('button_press_event', self._on_button_press)
+        
         # Verbinde Resize-Event für automatische Anpassung
         self.canvas.mpl_connect('resize_event', self._on_canvas_resize)
 
@@ -139,7 +143,8 @@ class BeamsteeringPlot(QWidget):
             # Formatierung auf eine Nachkommastelle
             self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
 
-        # Setze aspect='equal' für gleichmäßige Skalierung (1:1 Verhältnis)
+        # Setze aspect='equal' für 1:1 Skalierung (1 Meter X = 1 Meter Y in Pixeln)
+        # Plot-Dimensionen bleiben starr, nur Limits ändern sich beim Zoom
         self.ax.set_aspect('equal', adjustable='box')
 
         # Finale Plot-Einstellungen (identisch zu Windowing-Plot)
@@ -331,28 +336,11 @@ class BeamsteeringPlot(QWidget):
             # und gröber bei größerem Bereich (Zoom-out)
             x_ticks, step = self._calculate_metric_ticks(x_min, x_max)
             ax.set_xticks(x_ticks)
+            # Formatierung auf eine Nachkommastelle
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
             
-            # Für aspect='equal': Passe Y-Limits an X-Limits an
-            y_min, y_max = ax.get_ylim()
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            
-            # Verwende die größere Range für beide Achsen
-            max_range = max(x_range, y_range)
-            
-            # Zentriere beide Achsen um ihre Mitte
-            x_center = (x_min + x_max) / 2
-            y_center = (y_min + y_max) / 2
-            
-            # Setze Limits für equal aspect
-            x_min_equal = x_center - max_range / 2
-            x_max_equal = x_center + max_range / 2
-            y_min_equal = y_center - max_range / 2
-            y_max_equal = y_center + max_range / 2
-            
-            ax.set_xlim(x_min_equal, x_max_equal)
-            ax.set_ylim(y_min_equal, y_max_equal)
-            ax.set_aspect('equal', adjustable='box')
+            # X-Achse bleibt unverändert - keine Anpassung der Breite
+            # Nur Ticks werden aktualisiert
             
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
@@ -375,35 +363,16 @@ class BeamsteeringPlot(QWidget):
         
         try:
             self._updating_ticks = True
-            x_min, x_max = ax.get_xlim()
             y_min, y_max = ax.get_ylim()
             
-            # Für aspect='equal': Passe X-Limits an Y-Limits an
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            
-            # Verwende die größere Range für beide Achsen
-            max_range = max(x_range, y_range)
-            
-            # Zentriere beide Achsen um ihre Mitte
-            x_center = (x_min + x_max) / 2
-            y_center = (y_min + y_max) / 2
-            
-            # Setze Limits für equal aspect
-            x_min_equal = x_center - max_range / 2
-            x_max_equal = x_center + max_range / 2
-            y_min_equal = y_center - max_range / 2
-            y_max_equal = y_center + max_range / 2
-            
-            ax.set_xlim(x_min_equal, x_max_equal)
-            ax.set_ylim(y_min_equal, y_max_equal)
-            ax.set_aspect('equal', adjustable='box')
-            
             # Berechne neue Ticks basierend auf sichtbarem Bereich
-            y_ticks, step = self._calculate_metric_ticks(y_min_equal, y_max_equal)
+            y_ticks, step = self._calculate_metric_ticks(y_min, y_max)
             ax.set_yticks(y_ticks)
             # Formatierung auf eine Nachkommastelle
             ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
+            
+            # Y-Achse kann geändert werden, aber X-Achse bleibt unverändert
+            # Keine Anpassung der X-Limits für aspect='equal'
             
             # Trigger Redraw
             if hasattr(ax.figure, 'canvas'):
@@ -440,6 +409,93 @@ class BeamsteeringPlot(QWidget):
             self.ax.set_aspect('equal', adjustable='box')
         except Exception:
             pass
+    
+    def _on_scroll(self, event):
+        """Handler für Mausrad-Zoom Events"""
+        if event.inaxes != self.ax:
+            return
+        
+        scale_factor = 1.1 if event.button == 'up' else 1/1.1
+        
+        # Hole aktuelle Grenzen
+        x_min, x_max = self.ax.get_xlim()
+        y_min, y_max = self.ax.get_ylim()
+        
+        # Mausposition als Zentrum des Zooms
+        x_center = event.xdata
+        y_center = event.ydata
+        
+        if x_center is None or y_center is None:
+            return
+        
+        # Berechne neue Grenzen für beide Achsen
+        x_new_min = x_center - (x_center - x_min) * scale_factor
+        x_new_max = x_center + (x_max - x_center) * scale_factor
+        y_new_min = y_center - (y_center - y_min) * scale_factor
+        y_new_max = y_center + (y_max - y_center) * scale_factor
+        
+        # Setze neue Grenzen für beide Achsen
+        self.ax.set_xlim(x_new_min, x_new_max)
+        self.ax.set_ylim(y_new_min, y_new_max)
+        
+        # Manuell Callbacks aufrufen für adaptive Ticks
+        self._on_xlim_changed(self.ax)
+        self._on_ylim_changed(self.ax)
+        
+        self.canvas.draw_idle()
+    
+    def _on_button_press(self, event):
+        """Handler für Maus-Pan Events (Linke Maustaste)"""
+        if event.inaxes != self.ax or event.button != 1:
+            return
+        
+        self.ax._pan_start = (event.xdata, event.ydata)
+        self._pan_cid = self.canvas.mpl_connect('motion_notify_event', self._on_pan_move)
+        self._pan_release_cid = self.canvas.mpl_connect('button_release_event', self._on_pan_release)
+    
+    def _on_pan_move(self, event):
+        """Handler für Mausbewegung während des Pannens"""
+        if event.inaxes != self.ax or not hasattr(self.ax, '_pan_start'):
+            return
+        
+        if self.ax._pan_start[0] is None or self.ax._pan_start[1] is None:
+            return
+        
+        dx = event.xdata - self.ax._pan_start[0]
+        dy = event.ydata - self.ax._pan_start[1]
+        
+        if event.xdata is None or event.ydata is None:
+            return
+        
+        x_min, x_max = self.ax.get_xlim()
+        y_min, y_max = self.ax.get_ylim()
+        
+        # Beide Achsen pannen
+        x_new_min = x_min - dx
+        x_new_max = x_max - dx
+        y_new_min = y_min - dy
+        y_new_max = y_max - dy
+        
+        self.ax.set_xlim(x_new_min, x_new_max)
+        self.ax.set_ylim(y_new_min, y_new_max)
+        
+        # Aktualisiere Start-Position für nächste Bewegung
+        self.ax._pan_start = (event.xdata, event.ydata)
+        
+        # Manuell Callbacks aufrufen für adaptive Ticks
+        self._on_xlim_changed(self.ax)
+        self._on_ylim_changed(self.ax)
+        
+        self.canvas.draw_idle()
+    
+    def _on_pan_release(self, event):
+        """Handler für Loslassen der Maustaste nach dem Pannens"""
+        if hasattr(self, '_pan_cid'):
+            self.canvas.mpl_disconnect(self._pan_cid)
+        if hasattr(self, '_pan_release_cid'):
+            self.canvas.mpl_disconnect(self._pan_release_cid)
+        if hasattr(self.ax, '_pan_start'):
+            del self.ax._pan_start
     
     def _apply_layout(self):
         """Wendet Layout-Einstellungen konsistent an - passt sich der Fenstergröße an"""

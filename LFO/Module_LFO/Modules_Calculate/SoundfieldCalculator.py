@@ -895,11 +895,17 @@ class SoundFieldCalculator(ModuleBase):
                     "is_group_sum": False,
                 }
                 
-                # Hole additional_vertices_spl aus grid-Objekt
+                # Hole additional_vertices_spl und additional_vertices_array_fields aus grid-Objekt
                 if surface_id in surface_grids_dict:
                     grid_obj = surface_grids_dict[surface_id]
                     if hasattr(grid_obj, 'additional_vertices_spl') and grid_obj.additional_vertices_spl is not None:
                         result_data['additional_vertices_spl'] = grid_obj.additional_vertices_spl.tolist()
+                    # 🎯 NEU: Füge additional_vertices_array_fields hinzu (für Phase-Berechnung)
+                    if hasattr(grid_obj, 'additional_vertices_array_fields') and grid_obj.additional_vertices_array_fields is not None:
+                        result_data['additional_vertices_array_fields'] = {
+                            array_key: array_field.tolist() 
+                            for array_key, array_field in grid_obj.additional_vertices_array_fields.items()
+                        }
                 
                 surface_results_data[surface_id] = result_data
 
@@ -1663,8 +1669,14 @@ class SoundFieldCalculator(ModuleBase):
         # (wird später in der Schleife akkumuliert)
         if additional_vertices is not None and additional_vertices.size > 0:
             surface_grid._temp_additional_vertices_spl = np.zeros(len(additional_vertices), dtype=complex)
+            # 🎯 NEU: Initialisiere auch temporäre Variable für additional_vertices Array-Felder (für Phase-Berechnung)
+            if capture_arrays:
+                surface_grid._temp_additional_vertices_array_fields = {}
+            else:
+                surface_grid._temp_additional_vertices_array_fields = None
         else:
             surface_grid._temp_additional_vertices_spl = None
+            surface_grid._temp_additional_vertices_array_fields = None
         
         
         # 🎯 VERWENDE NUR SURFACE_MASK: Die Maske enthält bereits alle gewünschten Punkte
@@ -1801,8 +1813,11 @@ class SoundFieldCalculator(ModuleBase):
                     if surface_grid._temp_additional_vertices_spl is not None and len(wave_additional) > 0:
                         surface_grid._temp_additional_vertices_spl += wave_additional
                     
-                    
-                    
+                    # 🎯 NEU: Speichere additional_vertices Array-Felder (für Phase-Berechnung)
+                    if capture_arrays and surface_grid._temp_additional_vertices_array_fields is not None and len(wave_additional) > 0:
+                        if array_key not in surface_grid._temp_additional_vertices_array_fields:
+                            surface_grid._temp_additional_vertices_array_fields[array_key] = np.zeros(len(additional_vertices), dtype=complex)
+                        surface_grid._temp_additional_vertices_array_fields[array_key] += wave_additional
                     
                     # AKKUMULATION (Interferenz-Überlagerung)
                     sound_field_p += wave
@@ -1825,6 +1840,14 @@ class SoundFieldCalculator(ModuleBase):
                 surface_grid.additional_vertices_spl = np.zeros(len(additional_vertices), dtype=complex)
             else:
                 surface_grid.additional_vertices_spl = None
+        
+        # 🎯 NEU: Speichere additional_vertices Array-Felder (für Phase-Berechnung)
+        if hasattr(surface_grid, '_temp_additional_vertices_array_fields'):
+            surface_grid.additional_vertices_array_fields = surface_grid._temp_additional_vertices_array_fields
+            # Entferne temporäre Variable
+            delattr(surface_grid, '_temp_additional_vertices_array_fields')
+        else:
+            surface_grid.additional_vertices_array_fields = None
         
         
         return sound_field_p, array_fields

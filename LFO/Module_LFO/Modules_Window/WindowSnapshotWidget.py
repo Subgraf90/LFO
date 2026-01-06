@@ -303,16 +303,21 @@ class SnapshotWidget:
                 else:
                     spl_data['sound_field_y'] = field_y
             
-            # 🎯 NEU: Speichere auch Phasendaten falls vorhanden
-            if 'sound_field_phase_diff' in self.container.calculation_spl:
-                field_phase = self.container.calculation_spl['sound_field_phase_diff']
-                if isinstance(field_phase, np.ndarray):
-                    spl_data['sound_field_phase_diff'] = field_phase.tolist()
-                else:
-                    spl_data['sound_field_phase_diff'] = field_phase
+            # 🎯 NEU: Speichere Phasendaten nur wenn wir im Phase-Modus sind
+            current_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
+            if current_mode == "Phase alignment":
+                if 'sound_field_phase_diff' in self.container.calculation_spl:
+                    field_phase = self.container.calculation_spl['sound_field_phase_diff']
+                    if isinstance(field_phase, np.ndarray):
+                        spl_data['sound_field_phase_diff'] = field_phase.tolist()
+                    else:
+                        spl_data['sound_field_phase_diff'] = field_phase
             
             if spl_data:
                 capture_data['spl_field_data'] = spl_data
+            
+            # 🎯 NEU: Speichere den Plot-Modus im Snapshot
+            capture_data['spl_plot_mode'] = current_mode
             
             # 🎯 NEU: Speichere Surface-Geometrie (points) für alle Surfaces mit SPL-Daten
             # Dies ermöglicht später die Validierung beim Laden des Snapshots
@@ -547,6 +552,26 @@ class SnapshotWidget:
         Checkbox beeinflusst nur X/Y-Achsen-Plots und Impuls-Plot.
         Wenn mehrere Items ausgewählt sind, wird das oberste angezeigt.
         """
+        # #region agent log
+        import json
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'H1',
+                    'location': 'WindowSnapshotWidget.py:on_snapshot_item_clicked:entry',
+                    'message': 'on_snapshot_item_clicked called',
+                    'data': {
+                        'item_text': item.text(0) if item else None,
+                        'column': column
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }
+                f.write(json.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
         # Wenn mehrere Items ausgewählt sind, verwende das oberste
         selected_items = self.snapshot_tree_widget.selectedItems()
         if selected_items:
@@ -633,6 +658,28 @@ class SnapshotWidget:
             self._backup_current_data()
 
         snapshot_data = self.container.calculation_axes[snapshot_key]
+        
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'H1,H2',
+                    'location': 'WindowSnapshotWidget.py:on_snapshot_item_clicked:snapshot_data',
+                    'message': 'Snapshot data loaded',
+                    'data': {
+                        'snapshot_key': snapshot_key,
+                        'has_surface_geometries': 'surface_geometries' in snapshot_data,
+                        'has_surface_grids': 'surface_grids' in snapshot_data,
+                        'snapshot_data_keys': list(snapshot_data.keys()) if isinstance(snapshot_data, dict) else []
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }
+                f.write(json.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
         
         # ========================================
         # 1. Aktualisiere SPL 2D-Schallfeld-Daten (immer laden wenn Snapshot ausgewählt)
@@ -796,6 +843,28 @@ class SnapshotWidget:
                         surface_compatibility[surface_id] = {'is_compatible': True, 'reason': None}
                     else:
                         surface_compatibility[surface_id] = {'is_compatible': False, 'reason': "Geometrie geändert"}
+                        # #region agent log
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                log_entry = {
+                                    'sessionId': 'debug-session',
+                                    'runId': 'run1',
+                                    'hypothesisId': 'H2',
+                                    'location': 'WindowSnapshotWidget.py:on_snapshot_item_clicked:incompatible',
+                                    'message': 'Surface marked as incompatible',
+                                    'data': {
+                                        'surface_id': surface_id,
+                                        'is_compatible': False,
+                                        'reason': 'Geometrie geändert',
+                                        'first_mismatch_idx': first_mismatch_idx,
+                                        'first_mismatch_diff': first_mismatch_diff
+                                    },
+                                    'timestamp': int(time.time() * 1000)
+                                }
+                                f.write(json.dumps(log_entry) + '\n')
+                        except Exception:
+                            pass
+                        # #endregion
         
         # Lade globale SPL-Daten (falls vorhanden)
         if 'spl_field_data' in snapshot_data and snapshot_data['spl_field_data']:
@@ -845,6 +914,7 @@ class SnapshotWidget:
         # (bei alten Snapshots ohne Geometrie-Validierung werden keine Surface-Daten geladen)
         if 'surface_geometries' in snapshot_data:
             # Lade Surface-Grids aus dem Snapshot - auch inkompatible werden geladen, aber als "empty" markiert
+            has_empty_grids = False
             if 'surface_grids' in snapshot_data:
                 snapshot_surface_grids = snapshot_data['surface_grids']
                 if isinstance(snapshot_surface_grids, dict):
@@ -891,14 +961,15 @@ class SnapshotWidget:
                                         'incompatibility_reason': compat_info.get('reason', 'unbekannt')
                                     }
                                     self.container.calculation_spl['surface_grids'][surface_id] = empty_grid
+                                    has_empty_grids = True
                                     # #region agent log
                                     try:
                                         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                                             log_entry = {
                                                 'sessionId': 'debug-session',
                                                 'runId': 'run1',
-                                                'hypothesisId': 'E',
-                                                'location': 'WindowSnapshotWidget.py:859',
+                                                'hypothesisId': 'H3',
+                                                'location': 'WindowSnapshotWidget.py:895',
                                                 'message': 'Created empty grid for incompatible surface',
                                                 'data': {
                                                     'surface_id': surface_id,
@@ -906,7 +977,8 @@ class SnapshotWidget:
                                                     'is_hidden': is_hidden,
                                                     'compat_info': compat_info,
                                                     'empty_grid_keys': list(empty_grid.keys()),
-                                                    'is_empty_flag': empty_grid.get('is_empty')
+                                                    'is_empty_flag': empty_grid.get('is_empty'),
+                                                    'surface_grids_keys_after': list(self.container.calculation_spl.get('surface_grids', {}).keys())
                                                 },
                                                 'timestamp': int(time.time() * 1000)
                                             }
@@ -961,6 +1033,61 @@ class SnapshotWidget:
                                     }
                                     self.container.calculation_spl['surface_results'][surface_id] = empty_result
             
+            # 🎯 NEU: Prüfe alle aktuell existierenden enabled Surfaces
+            # Für Surfaces, die nicht im Snapshot vorhanden sind, erstelle auch leere Grids
+            if isinstance(surface_definitions, dict):
+                for surface_id, surface_def in surface_definitions.items():
+                    # Prüfe ob Surface bereits behandelt wurde (im Snapshot vorhanden)
+                    if surface_id in surface_compatibility:
+                        continue  # Bereits behandelt
+                    
+                    # Prüfe ob Surface enabled und nicht hidden ist
+                    is_enabled = True
+                    is_hidden = False
+                    if isinstance(surface_def, dict):
+                        is_enabled = bool(surface_def.get('enabled', True))
+                        is_hidden = bool(surface_def.get('hidden', False))
+                    else:
+                        is_enabled = bool(getattr(surface_def, 'enabled', True))
+                        is_hidden = bool(getattr(surface_def, 'hidden', False))
+                    
+                    # Nur wenn Surface enabled und nicht hidden ist, erstelle leeres Grid
+                    if is_enabled and not is_hidden:
+                        # Surface existiert aktuell, aber nicht im Snapshot → als "empty" markieren
+                        empty_grid = {
+                            'X_grid': np.array([], dtype=float),
+                            'Y_grid': np.array([], dtype=float),
+                            'Z_grid': np.array([], dtype=float),
+                            'sound_field_x': np.array([], dtype=float),
+                            'sound_field_y': np.array([], dtype=float),
+                            'is_empty': True,  # Flag für graue Anzeige
+                            'is_incompatible': True,  # Flag für Inkompatibilität
+                            'incompatibility_reason': "nicht im Snapshot vorhanden"
+                        }
+                        self.container.calculation_spl['surface_grids'][surface_id] = empty_grid
+                        has_empty_grids = True
+                        # #region agent log
+                        try:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                log_entry = {
+                                    'sessionId': 'debug-session',
+                                    'runId': 'run1',
+                                    'hypothesisId': 'H6',
+                                    'location': 'WindowSnapshotWidget.py:on_snapshot_item_clicked:missing_surface',
+                                    'message': 'Created empty grid for surface not in snapshot',
+                                    'data': {
+                                        'surface_id': surface_id,
+                                        'is_enabled': is_enabled,
+                                        'is_hidden': is_hidden,
+                                        'reason': 'nicht im Snapshot vorhanden'
+                                    },
+                                    'timestamp': int(time.time() * 1000)
+                                }
+                                f.write(json.dumps(log_entry) + '\n')
+                        except Exception:
+                            pass
+                        # #endregion
+            
             # Prüfe ob mindestens eine kompatible Surface vorhanden ist
             compatible_count = sum(1 for info in surface_compatibility.values() if info.get('is_compatible', False))
             if compatible_count > 0:
@@ -978,7 +1105,9 @@ class SnapshotWidget:
                 print(f"[Snapshot] Warnung: Snapshot enthält Surface-Daten, aber keine Geometrie-Validierung. Surface-Daten werden nicht geladen.")
         
         # 🎯 NEU: Prüfe ob leere Grids vorhanden sind (inkompatible Surfaces)
-        has_empty_grids = False
+        # Prüfe ob leere Grids vorhanden sind (wenn has_empty_grids noch nicht gesetzt wurde)
+        if 'has_empty_grids' not in locals():
+            has_empty_grids = False
         if hasattr(self.container, "calculation_spl") and isinstance(self.container.calculation_spl, dict):
             surface_grids = self.container.calculation_spl.get('surface_grids', {})
             if isinstance(surface_grids, dict):
@@ -986,6 +1115,32 @@ class SnapshotWidget:
                     isinstance(grid_data, dict) and grid_data.get('is_empty', False)
                     for grid_data in surface_grids.values()
                 )
+        
+        # #region agent log
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'H3',
+                    'location': 'WindowSnapshotWidget.py:on_snapshot_item_clicked:before_plot_spl',
+                    'message': 'Before calling plot_spl',
+                    'data': {
+                        'has_spl_data': has_spl_data,
+                        'has_empty_grids': has_empty_grids,
+                        'surface_grids_keys': list(self.container.calculation_spl.get('surface_grids', {}).keys()) if hasattr(self.container, 'calculation_spl') else [],
+                        'empty_grids_check': {
+                            sid: grid_data.get('is_empty', False) 
+                            for sid, grid_data in (self.container.calculation_spl.get('surface_grids', {}) or {}).items() 
+                            if isinstance(grid_data, dict)
+                        } if hasattr(self.container, 'calculation_spl') else {}
+                    },
+                    'timestamp': int(time.time() * 1000)
+                }
+                f.write(json.dumps(log_entry) + '\n')
+        except Exception:
+            pass
+        # #endregion
         
         if has_spl_data or has_empty_grids:
             # 🎯 NEU: Wenn leere Grids vorhanden sind, setze show_in_plot auf True, damit plot_spl() aufgerufen wird
@@ -1048,35 +1203,18 @@ class SnapshotWidget:
                 del self.container.calculation_spl['fdtd_simulation']
         
         # ========================================
-        # 1c. Prüfe ob Phasendaten vorhanden sind und schalte ggf. auf Phase-Modus um
+        # 1c. Stelle den Plot-Modus aus dem Snapshot wieder her
         # ========================================
-        current_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
-        has_phase_data = False
-        
-        # Prüfe ob Phasendaten im Container vorhanden sind (nach dem Laden)
-        if hasattr(self.container, 'calculation_spl') and isinstance(self.container.calculation_spl, dict):
-            phase_diff = self.container.calculation_spl.get('sound_field_phase_diff')
-            # Prüfe ob Phasendaten nicht leer sind
-            if phase_diff is not None:
-                try:
-                    import numpy as np
-                    if isinstance(phase_diff, list):
-                        phase_array = np.array(phase_diff)
-                    else:
-                        phase_array = phase_diff
-                    # Prüfe ob Array gültige Daten enthält (nicht nur NaN oder leer)
-                    if hasattr(phase_array, 'size') and phase_array.size > 0:
-                        valid_count = np.sum(np.isfinite(phase_array))
-                        if valid_count > 0:
-                            has_phase_data = True
-                except Exception:
-                    pass
-        
-        # 🎯 NEU: Wenn Phasendaten vorhanden sind und wir im SPL-Modus sind, wechsle auf Phase-Modus
-        if has_phase_data and current_mode == "SPL plot":
+        # 🎯 NEU: Stelle den gespeicherten Plot-Modus aus dem Snapshot wieder her
+        snapshot_plot_mode = snapshot_data.get('spl_plot_mode')
+        if snapshot_plot_mode:
+            # Snapshot hat einen gespeicherten Modus - stelle diesen wieder her
             if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'on_plot_mode_changed'):
-                self.main_window.draw_plots.on_plot_mode_changed("Phase alignment")
-                current_mode = "Phase alignment"
+                self.main_window.draw_plots.on_plot_mode_changed(snapshot_plot_mode)
+            current_mode = snapshot_plot_mode
+        else:
+            # Alte Snapshots ohne gespeicherten Modus - verwende aktuellen Modus
+            current_mode = getattr(self.settings, 'spl_plot_mode', 'SPL plot')
         
         # ========================================
         # 1d. Prüfe aktuellen Plot-Modus (NICHT ändern, nur aktualisieren)
