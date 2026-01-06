@@ -1845,8 +1845,18 @@ class SPL3DSpeakerMixin(SPL3DOverlayBase):
         site = self._array_value(getattr(speaker_array, 'source_site', None), 0)
         params.append(round(float(site), 4) if site is not None else 0.0)
         
-        angle = self._array_value(getattr(speaker_array, 'source_angle', None), 0)
-        params.append(round(float(angle), 4) if angle is not None else 0.0)
+        # 🎯 FIX: Alle Zwischenwinkel (source_angle) zur Signatur hinzufügen, nicht nur der erste
+        # Bei Flown-Arrays können sich Zwischenwinkel an verschiedenen Indizes ändern
+        source_angle = getattr(speaker_array, 'source_angle', None)
+        if source_angle is not None:
+            # Konvertiere zu Tuple mit gerundeten Werten für konsistente Signatur
+            if isinstance(source_angle, (list, tuple, np.ndarray)):
+                angle_tuple = tuple(round(float(v), 4) if v is not None else 0.0 for v in source_angle)
+            else:
+                angle_tuple = (round(float(source_angle), 4),)
+            params.append(angle_tuple)
+        else:
+            params.append(tuple())
 
         speaker_names: List[str] = []
         for idx in range(getattr(speaker_array, 'number_of_sources', 0)):

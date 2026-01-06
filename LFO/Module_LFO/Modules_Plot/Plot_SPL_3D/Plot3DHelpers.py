@@ -263,7 +263,17 @@ class SPL3DHelpers:
                     zs_flown = None
                 
                 azimuth = _to_tuple(getattr(array, 'source_azimuth', None))
-                angles = _to_tuple(getattr(array, 'source_angle', None))
+                # 🎯 FIX: Runde Winkel auf 4 Dezimalstellen für konsistente Signatur-Vergleichung
+                # (verhindert Floating-Point-Ungenauigkeiten bei der Signatur-Vergleichung)
+                angles_raw = getattr(array, 'source_angle', None)
+                if angles_raw is not None:
+                    try:
+                        angles_list = list(angles_raw)
+                        angles = tuple(round(float(v), 4) if v is not None and not np.isnan(float(v)) else None for v in angles_list)
+                    except (TypeError, ValueError):
+                        angles = _to_tuple(angles_raw)
+                else:
+                    angles = tuple()
                 # 🎯 FIX: source_site für Flown-Arrays zur Signatur hinzufügen
                 # (wird für Flown-Arrays verwendet, um die Position entlang der Kurve zu bestimmen)
                 site = _to_tuple(getattr(array, 'source_site', None)) if configuration == 'flown' else None

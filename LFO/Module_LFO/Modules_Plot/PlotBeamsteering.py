@@ -123,23 +123,34 @@ class BeamsteeringPlot(QWidget):
                 y_ticks, step = self._calculate_metric_ticks(y_min_visible, y_max_visible)
             else:
                 # Nicht gezoomt - verwende Daten-Grenzen
-                # WICHTIG: Zentriere Y-Limits bei Y=0, damit sie mit ax_speakers synchronisiert sind
-                # ABER: Stelle sicher, dass alle Daten enthalten sind (nicht abgeschnitten)
-                y_center = 0.0  # Zentriere bei Y=0
-                # Berechne die maximale Abweichung von Y=0 in beide Richtungen
-                max_abs_positive = max(abs(y_max), 0.0) if y_max > 0 else 0.0
-                max_abs_negative = max(abs(y_min), 0.0) if y_min < 0 else 0.0
-                # Verwende die größere Abweichung für symmetrische Limits
-                max_abs_deviation = max(max_abs_positive, max_abs_negative)
-                # Falls keine Daten vorhanden sind, verwende einen Standard-Wert
-                if max_abs_deviation == 0:
-                    max_abs_deviation = 1.0
-                # Setze symmetrische Limits um Y=0, die alle Daten enthalten
-                y_min_centered = -max_abs_deviation
-                y_max_centered = max_abs_deviation
+                # WICHTIG: Synchronisiere Y=0 zwischen beiden Achsen
+                # Die Lautsprecher-Achse ist symmetrisch um Y=0 (Y=0 bei 50%)
+                # Die Hauptachse sollte auch so gesetzt werden, dass Y=0 bei 50% ist
+                y_range_data = y_max - y_min
+                padding_bottom = max(y_range_data * 0.15, 0.2)  # Mindestens 0.2m unten
+                padding_top = 0.1  # Minimal oben (wird später durch _adjust_ylim_for_speakers angepasst)
+                
+                # Berechne die benötigte Range, um alle Daten + Padding zu enthalten
+                required_range_below_zero = abs(y_min) + padding_bottom  # Bereich unter Y=0
+                required_range_above_zero = max(y_max, 0.0) + padding_top  # Bereich über Y=0
+                
+                # Verwende die größere Range für symmetrische Limits um Y=0
+                # Dies stellt sicher, dass Y=0 bei 50% ist (wie auf der Lautsprecher-Achse)
+                max_range = max(required_range_below_zero, required_range_above_zero)
+                
+                # Setze symmetrische Limits um Y=0, die alle Daten + Padding enthalten
+                y_min_centered = -max_range
+                y_max_centered = max_range
+                
                 # Stelle sicher, dass die ursprünglichen Daten-Grenzen enthalten sind
-                y_min_centered = min(y_min_centered, y_min)
-                y_max_centered = max(y_max_centered, y_max)
+                y_min_centered = min(y_min_centered, y_min - padding_bottom)
+                y_max_centered = max(y_max_centered, y_max + padding_top)
+                
+                # Stelle sicher, dass Y=0 enthalten ist (sollte immer der Fall sein)
+                if y_min_centered > 0.0:
+                    y_min_centered = -max_range
+                if y_max_centered < 0.0:
+                    y_max_centered = max_range
                 # #region agent log - Vor _calculate_metric_ticks
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     f.write(json.dumps({
@@ -389,70 +400,93 @@ class BeamsteeringPlot(QWidget):
             y_min_data = current_ax_ylim[0]
             y_max_data = current_ax_ylim[1]
         
-        # Prüfe ob Y=0 zentriert ist (Toleranz: 0.1)
-        # #region agent log - Vor finaler Zentrierung
+        # OPTIMIERT: Prüfe ob Limits angepasst werden müssen, um Daten vollständig anzuzeigen
+        # Statt symmetrischer Zentrierung: Stelle sicher, dass alle Daten + Padding enthalten sind
+        # #region agent log - Vor finaler Anpassung
         with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
             f.write(json.dumps({
                 'sessionId': 'debug-session',
                 'runId': 'run1',
                 'hypothesisId': 'A',
                 'location': 'PlotBeamsteering.py:393',
-                'message': 'Vor finaler Zentrierung',
+                'message': 'Vor finaler Anpassung',
                 'data': {
                     'current_ax_ylim': list(current_ax_ylim),
                     'ax_y_center': float(ax_y_center),
                     'y_min_data': float(y_min_data),
-                    'y_max_data': float(y_max_data),
-                    'needs_centering': bool(abs(ax_y_center - 0.0) > 0.1)
+                    'y_max_data': float(y_max_data)
                 },
                 'timestamp': int(time.time() * 1000)
             }) + '\n')
         # #endregion
-        if abs(ax_y_center - 0.0) > 0.1:
-            # Zentriere bei Y=0, aber stelle sicher, dass alle Daten enthalten sind
-            max_abs_deviation = max(abs(y_min_data), abs(y_max_data))
-            if max_abs_deviation == 0:
-                max_abs_deviation = 1.0
-            # Setze symmetrische Limits um Y=0
-            y_min_centered = -max_abs_deviation
-            y_max_centered = max_abs_deviation
-            # Stelle sicher, dass die Daten-Grenzen enthalten sind
-            y_min_centered = min(y_min_centered, y_min_data)
-            y_max_centered = max(y_max_centered, y_max_data)
-            # #region agent log - Vor _calculate_metric_ticks in finaler Zentrierung
+        
+        # WICHTIG: Synchronisiere Y=0 zwischen beiden Achsen
+        # Die Lautsprecher-Achse ist symmetrisch um Y=0 (Y=0 bei 50%)
+        # Die Hauptachse sollte auch so gesetzt werden, dass Y=0 bei 50% ist
+        # Berechne optimale Limits: Y=0 als Ankerpunkt in der Mitte, Daten + Padding
+        y_range_data = y_max_data - y_min_data
+        padding_bottom = max(y_range_data * 0.15, 0.2)  # 15% oder mindestens 0.2m unten
+        padding_top = 0.1  # Minimal oben (wird durch _adjust_ylim_for_speakers angepasst)
+        
+        # Berechne die benötigte Range, um alle Daten + Padding zu enthalten
+        required_range_below_zero = abs(y_min_data) + padding_bottom  # Bereich unter Y=0
+        required_range_above_zero = max(y_max_data, 0.0) + padding_top  # Bereich über Y=0
+        
+        # Verwende die größere Range für symmetrische Limits um Y=0
+        # Dies stellt sicher, dass Y=0 bei 50% ist (wie auf der Lautsprecher-Achse)
+        max_range = max(required_range_below_zero, required_range_above_zero)
+        
+        # Setze symmetrische Limits um Y=0, die alle Daten + Padding enthalten
+        y_min_optimal = -max_range
+        y_max_optimal = max_range
+        
+        # Stelle sicher, dass die ursprünglichen Daten-Grenzen enthalten sind
+        y_min_optimal = min(y_min_optimal, y_min_data - padding_bottom)
+        y_max_optimal = max(y_max_optimal, y_max_data + padding_top)
+        
+        # Stelle sicher, dass Y=0 enthalten ist (sollte immer der Fall sein)
+        if y_min_optimal > 0.0:
+            y_min_optimal = -max_range
+        if y_max_optimal < 0.0:
+            y_max_optimal = max_range
+        
+        # Prüfe ob Anpassung nötig ist
+        if abs(y_min_optimal - current_ax_ylim[0]) > 0.01 or abs(y_max_optimal - current_ax_ylim[1]) > 0.01:
+            # #region agent log - Vor _calculate_metric_ticks in finaler Anpassung
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 f.write(json.dumps({
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'A',
                     'location': 'PlotBeamsteering.py:404',
-                    'message': 'Finale Zentrierung: Vor _calculate_metric_ticks',
+                    'message': 'Finale Anpassung: Vor _calculate_metric_ticks',
                     'data': {
-                        'max_abs_deviation': float(max_abs_deviation),
-                        'y_min_centered': float(y_min_centered),
-                        'y_max_centered': float(y_max_centered),
-                        'y_range_centered': float(y_max_centered - y_min_centered)
+                        'y_min_optimal': float(y_min_optimal),
+                        'y_max_optimal': float(y_max_optimal),
+                        'y_range_optimal': float(y_max_optimal - y_min_optimal),
+                        'padding_bottom': float(padding_bottom),
+                        'padding_top': float(padding_top)
                     },
                     'timestamp': int(time.time() * 1000)
                 }) + '\n')
             # #endregion
-            y_ticks, step = self._calculate_metric_ticks(y_min_centered, y_max_centered)
-            self.ax.set_ylim(y_min_centered, y_max_centered)
+            y_ticks, step = self._calculate_metric_ticks(y_min_optimal, y_max_optimal)
+            self.ax.set_ylim(y_min_optimal, y_max_optimal)
             self.ax.set_yticks(y_ticks)
             self.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.1f}'))
-            # #region agent log - Nach finaler Zentrierung
+            # #region agent log - Nach finaler Anpassung
             with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                 f.write(json.dumps({
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'A',
                     'location': 'PlotBeamsteering.py:410',
-                    'message': 'Nach finaler Zentrierung',
+                    'message': 'Nach finaler Anpassung',
                     'data': {
                         'ax_ylim_final': list(self.ax.get_ylim()),
                         'y_ticks': [float(t) for t in y_ticks],
-                        'y_min_centered': float(y_min_centered),
-                        'y_max_centered': float(y_max_centered)
+                        'y_min_optimal': float(y_min_optimal),
+                        'y_max_optimal': float(y_max_optimal)
                     },
                     'timestamp': int(time.time() * 1000)
                 }) + '\n')
@@ -989,10 +1023,10 @@ class BeamsteeringPlot(QWidget):
                     patch_height = patch.get_height()
                     max_height = max(max_height, patch_height)
             
-            # Füge Padding hinzu (oberhalb und unterhalb von Y=0)
+            # Füge Padding hinzu (nur oberhalb von Y=0, da Lautsprecher bei Y=0 starten)
             padding = 0.1
-            max_y_with_padding = max_height / 2 + padding  # Obere Hälfte + Padding
-            min_y_with_padding = -max_height / 2 - padding  # Untere Hälfte + Padding
+            max_y_with_padding = max_height + padding  # Lautsprecher-Höhe + Padding (Lautsprecher starten bei Y=0)
+            min_y_with_padding = -padding  # Minimales Padding unterhalb von Y=0 (nur für Sicherheit)
             
             # Für die zweite Y-Achse mit aspect='equal': Berechne Y-Limits basierend auf X-Limits
             if self.ax_speakers is not None:
@@ -1017,6 +1051,7 @@ class BeamsteeringPlot(QWidget):
                 self.ax_speakers.set_aspect('equal', adjustable='datalim')
             
             # Hauptachse: Passe Y-Limits an, damit Lautsprecher nicht abgeschnitten werden
+            # OPTIMIERT: Erweitere nur nach oben, wenn nötig; behalte untere Grenze bei
             current_ylim = self.ax.get_ylim()
             # #region agent log - Vor Anpassung Hauptachse
             import json
@@ -1034,15 +1069,31 @@ class BeamsteeringPlot(QWidget):
                         'max_y_with_padding': float(max_y_with_padding),
                         'min_y_with_padding': float(min_y_with_padding),
                         'current_ylim': list(current_ylim),
-                        'needs_adjustment': bool(max_y_with_padding > current_ylim[1] or min_y_with_padding < current_ylim[0])
+                        'needs_adjustment_top': bool(max_y_with_padding > current_ylim[1]),
+                        'needs_adjustment_bottom': bool(min_y_with_padding < current_ylim[0])
                     },
                     'timestamp': int(time.time() * 1000)
                 }) + '\n')
             # #endregion
-            if max_y_with_padding > current_ylim[1] or min_y_with_padding < current_ylim[0]:
+            # Erweitere nur nach oben, wenn Lautsprecher abgeschnitten werden
+            # Unten: Nur erweitern, wenn absolut nötig (z.B. wenn Daten negativer sind als erwartet)
+            needs_adjustment = False
+            y_min = current_ylim[0]  # Behalte untere Grenze bei
+            y_max = current_ylim[1]   # Starte mit aktueller oberer Grenze
+            
+            if max_y_with_padding > current_ylim[1]:
+                # Erweitere nach oben für Lautsprecher
+                y_max = max_y_with_padding
+                needs_adjustment = True
+            
+            # Unten nur erweitern, wenn absolut nötig (z.B. wenn Y=0 nicht sichtbar ist)
+            if current_ylim[0] > 0.0:
+                # Y=0 ist nicht sichtbar - erweitere minimal nach unten
+                y_min = min(current_ylim[0], -padding)
+                needs_adjustment = True
+            
+            if needs_adjustment:
                 # Berechne neue Ticks für erweiterte Grenze
-                y_min = min(current_ylim[0], min_y_with_padding)
-                y_max = max(current_ylim[1], max_y_with_padding)
                 # #region agent log - Vor _calculate_metric_ticks in _adjust
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
                     f.write(json.dumps({

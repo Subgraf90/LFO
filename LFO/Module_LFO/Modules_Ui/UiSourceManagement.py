@@ -6692,6 +6692,13 @@ class Sources(ModuleBase, QObject):
                             pass
                         # #endregion
                         self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id)
+                        
+                        # 🎯 FIX: Setze die Signatur zurück, damit die Änderung erkannt wird
+                        # Wenn sich ein Zwischenwinkel ändert, muss die Signatur als geändert erkannt werden
+                        if hasattr(self.main_window.draw_plots.draw_spl_plotter, '_last_overlay_signatures'):
+                            # Setze die speakers-Signatur auf None, damit sie als geändert erkannt wird
+                            if 'speakers' in self.main_window.draw_plots.draw_spl_plotter._last_overlay_signatures:
+                                self.main_window.draw_plots.draw_spl_plotter._last_overlay_signatures['speakers'] = None
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird
@@ -8329,6 +8336,13 @@ class Sources(ModuleBase, QObject):
                             pass
                         # #endregion
                         self.main_window.draw_plots.draw_spl_plotter.overlay_speakers.clear_array_cache(array_id_str)
+                        
+                        # 🎯 FIX: Setze die Signatur zurück, damit die Änderung erkannt wird
+                        # Wenn sich ein Zwischenwinkel ändert, muss die Signatur als geändert erkannt werden
+                        if hasattr(self.main_window.draw_plots.draw_spl_plotter, '_last_overlay_signatures'):
+                            # Setze die speakers-Signatur auf None, damit sie als geändert erkannt wird
+                            if 'speakers' in self.main_window.draw_plots.draw_spl_plotter._last_overlay_signatures:
+                                self.main_window.draw_plots.draw_spl_plotter._last_overlay_signatures['speakers'] = None
             
             # 🎯 FIX: speaker_position_calculator VOR update_speaker_overlays() aufrufen,
             # damit die Positionen korrekt berechnet sind, bevor geplottet wird

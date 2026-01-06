@@ -59,6 +59,9 @@ class SnapshotWidget:
         self.snapshot_tree_widget.setRootIsDecorated(False)
         self.snapshot_tree_widget.setIndentation(0)
         
+        # Mehrfachauswahl aktivieren
+        self.snapshot_tree_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        
         # Spaltenbreiten konfigurieren
         self.snapshot_tree_widget.setColumnWidth(0, 150)  # Name-Spalte etwas kleiner
         self.snapshot_tree_widget.setColumnWidth(1, 40)   # Show-Checkbox schmaler
@@ -533,14 +536,33 @@ class SnapshotWidget:
         Wird aufgerufen wenn ein Snapshot-Item angeklickt wird.
         Zeigt die Daten dieses Snapshots in SPL- und Polarplot an (unabhängig von Checkbox).
         Checkbox beeinflusst nur X/Y-Achsen-Plots und Impuls-Plot.
+        Wenn mehrere Items ausgewählt sind, wird das oberste angezeigt.
         """
+        # Wenn mehrere Items ausgewählt sind, verwende das oberste
+        selected_items = self.snapshot_tree_widget.selectedItems()
+        if selected_items:
+            # Finde das oberste ausgewählte Item
+            root = self.snapshot_tree_widget.invisibleRootItem()
+            topmost_item = None
+            topmost_index = float('inf')
+            
+            for sel_item in selected_items:
+                index = self.snapshot_tree_widget.indexOfTopLevelItem(sel_item)
+                if index != -1 and index < topmost_index:
+                    topmost_index = index
+                    topmost_item = sel_item
+            
+            # Verwende das oberste Item für die Anzeige
+            if topmost_item:
+                item = topmost_item
+        
         # Hole den Key des geklickten Items
         snapshot_key = item.data(0, Qt.UserRole)
         if not snapshot_key:
             return
         
         previous_key = getattr(self, "selected_snapshot_key", "aktuelle_simulation")
-        # Speichere das ausgewählte Item
+        # Speichere das ausgewählte Item (oberstes wenn mehrere ausgewählt)
         self.selected_snapshot_key = snapshot_key
         
         # Hole Checkbox-Status für Achsen/Impuls-Plots
@@ -896,6 +918,12 @@ class SnapshotWidget:
     def show_context_menu(self, position):
         """Zeigt das Kontextmenü beim Rechtsklick auf ein Snapshot-Item"""
         item = self.snapshot_tree_widget.itemAt(position)
+        selected_items = self.snapshot_tree_widget.selectedItems()
+        
+        # Wenn kein Item unter der Maus, aber Items ausgewählt sind, verwende diese
+        if not item and selected_items:
+            item = selected_items[0]
+        
         if item:
             # Prüfe ob es sich um "current speakers" handelt
             snapshot_key = item.data(0, Qt.UserRole)
@@ -903,38 +931,99 @@ class SnapshotWidget:
                 # Kein Kontextmenü für "current speakers"
                 return
             
+            # Filtere "current speakers" aus den ausgewählten Items heraus
+            items_to_delete = [it for it in selected_items if it.data(0, Qt.UserRole) != "aktuelle_simulation"]
+            
+            # Wenn kein Item zum Löschen vorhanden, beende
+            if not items_to_delete:
+                return
+            
             context_menu = QMenu()
             
-            # Delete Action
-            delete_action = context_menu.addAction("Delete")
-            delete_action.triggered.connect(lambda: self.delete_snapshot(item))
+            # Delete Action - Text anpassen je nach Anzahl
+            if len(items_to_delete) > 1:
+                delete_action = context_menu.addAction(f"Delete ({len(items_to_delete)} Snapshots)")
+            else:
+                delete_action = context_menu.addAction("Delete")
+            delete_action.triggered.connect(lambda: self.delete_snapshots(items_to_delete))
             
             # Zeige Menü an Mausposition
             context_menu.exec_(self.snapshot_tree_widget.viewport().mapToGlobal(position))
     
     def delete_snapshot(self, item):
-        """Löscht einen Snapshot"""
-        if item:
+        """Löscht einen Snapshot (Legacy-Methode für Rückwärtskompatibilität)"""
+        self.delete_snapshots([item])
+    
+    def delete_snapshots(self, items):
+        """Löscht mehrere Snapshots gleichzeitig"""
+        if not items:
+            return
+        
+        # Speichere das aktuell oberste ausgewählte Item (für Plot-Anzeige)
+        topmost_item = None
+        topmost_index = float('inf')
+        
+        for item in items:
+            index = self.snapshot_tree_widget.indexOfTopLevelItem(item)
+            if index != -1 and index < topmost_index:
+                topmost_index = index
+                topmost_item = item
+        
+        # Prüfe ob das oberste gelöschte Item das aktuell angezeigte ist
+        topmost_key = topmost_item.data(0, Qt.UserRole) if topmost_item else None
+        was_topmost_selected = (topmost_key == self.selected_snapshot_key)
+        
+        # Sortiere Items nach Index (von unten nach oben), damit Indizes beim Löschen korrekt bleiben
+        items_with_indices = []
+        for item in items:
+            index = self.snapshot_tree_widget.indexOfTopLevelItem(item)
+            if index != -1:
+                items_with_indices.append((index, item))
+        items_with_indices.sort(reverse=True)  # Von unten nach oben sortieren
+        
+        # Lösche alle Snapshots
+        deleted_keys = []
+        for index, item in items_with_indices:
             snapshot_key = item.data(0, Qt.UserRole)
-            if snapshot_key in self.container.calculation_axes:
-                del self.container.calculation_axes[snapshot_key]
-                
-                # Entferne Item aus TreeWidget
-                index = self.snapshot_tree_widget.indexOfTopLevelItem(item)
-                if index != -1:
+            if snapshot_key and snapshot_key != "aktuelle_simulation":
+                if snapshot_key in self.container.calculation_axes:
+                    del self.container.calculation_axes[snapshot_key]
+                    deleted_keys.append(snapshot_key)
+                    
+                    # Entferne Item aus TreeWidget (in umgekehrter Reihenfolge)
                     self.snapshot_tree_widget.takeTopLevelItem(index)
-                
-                print(f"Snapshot '{snapshot_key}' gelöscht")
-                
-                # Aktualisiere alle relevanten Plots
-                if hasattr(self.main_window, 'plot_xaxis'):
-                    self.main_window.plot_xaxis()
-                if hasattr(self.main_window, 'plot_yaxis'):
-                    self.main_window.plot_yaxis()
-                if hasattr(self.main_window, 'update_plot_impulse'):
-                    self.main_window.update_plot_impulse()
-                elif hasattr(self.main_window, 'impulse_manager'):
-                    self.main_window.impulse_manager.update_plot_impulse()
+        
+        if deleted_keys:
+            if len(deleted_keys) > 1:
+                print(f"{len(deleted_keys)} Snapshots gelöscht: {', '.join(deleted_keys)}")
+            else:
+                print(f"Snapshot '{deleted_keys[0]}' gelöscht")
+        
+        # Wenn das oberste gelöschte Item das aktuell angezeigte war, wechsle zu "current speakers"
+        if was_topmost_selected:
+            self.selected_snapshot_key = "aktuelle_simulation"
+            # Wähle "current speakers" Item aus
+            self._select_item_by_key("aktuelle_simulation")
+            # Lade "current speakers" Daten
+            current_item = None
+            root = self.snapshot_tree_widget.invisibleRootItem()
+            for i in range(root.childCount()):
+                item = root.child(i)
+                if item.data(0, Qt.UserRole) == "aktuelle_simulation":
+                    current_item = item
+                    break
+            if current_item:
+                self.on_snapshot_item_clicked(current_item, 0)
+        
+        # Aktualisiere alle relevanten Plots
+        if hasattr(self.main_window, 'plot_xaxis'):
+            self.main_window.plot_xaxis()
+        if hasattr(self.main_window, 'plot_yaxis'):
+            self.main_window.plot_yaxis()
+        if hasattr(self.main_window, 'update_plot_impulse'):
+            self.main_window.update_plot_impulse()
+        elif hasattr(self.main_window, 'impulse_manager'):
+            self.main_window.impulse_manager.update_plot_impulse()
 
     def _backup_current_data(self):
         """Sichert aktuelle SPL-, Polar-, Achsen- und Impuls-Daten bevor ein Snapshot geladen wird."""
