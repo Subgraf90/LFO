@@ -44,9 +44,27 @@ class ImpulseInputDockWidget(QDockWidget):
         if draw_plots is None:
             return
         try:
-            draw_plots.plot_impulse_points()
+            # 🚀 FIX: Aktualisiere 3D-Overlays für Impulse Points
+            # Stelle sicher, dass der Plotter die Overlays aktualisiert
+            if hasattr(draw_plots, 'draw_spl_plotter') and draw_plots.draw_spl_plotter is not None:
+                plotter = draw_plots.draw_spl_plotter
+                if hasattr(plotter, 'update_overlays'):
+                    # 🚀 FIX: Setze Signatur zurück, damit 'impulse' Kategorie erkannt wird
+                    # Die Signatur wird in update_overlays neu berechnet und erkennt die Änderung
+                    if hasattr(plotter, '_last_overlay_signatures'):
+                        # Entferne 'impulse' aus der letzten Signatur, damit Änderung erkannt wird
+                        if plotter._last_overlay_signatures and 'impulse' in plotter._last_overlay_signatures:
+                            # Setze auf None, damit die Signatur als geändert erkannt wird
+                            plotter._last_overlay_signatures['impulse'] = None
+                    # Aktualisiere Overlays - die Signatur-Erkennung wird die Änderung erkennen
+                    plotter.update_overlays(self.settings, self.container)
+            else:
+                # Fallback: Verwende plot_impulse_points()
+                draw_plots.plot_impulse_points()
         except Exception as exc:
             print(f"[ImpulseInputDockWidget] Fehler beim Aktualisieren der Messpunkt-Overlays: {exc}")
+            import traceback
+            traceback.print_exc()
 
     def schedule_calculation(self, update_speaker_arrays=False):
         """
@@ -283,7 +301,13 @@ class ImpulseInputDockWidget(QDockWidget):
                 'created_at': time.time()  # Zeitstempel für Sortierung
             })
             self.container.set_measurement_point(key, point)
-            self.schedule_calculation()
+            
+            # 🚀 FIX: Sofortige Berechnung und Plot-Update nach Hinzufügen eines Points
+            if hasattr(self.main_window, 'impulse_manager'):
+                # Erzwinge sofortige Berechnung (force=True) damit der neue Point berücksichtigt wird
+                self.main_window.impulse_manager.update_calculation_impulse(force=True)
+            
+            # Aktualisiere 3D-Overlays
             self._refresh_measurement_overlays()
             
             # Wähle das neu erstellte Item aus
@@ -382,13 +406,24 @@ class ImpulseInputDockWidget(QDockWidget):
         # Aktualisiere die Berechnung
         self.schedule_calculation()
 
-        # Aktualisiere 3D-Overlays, damit der Messpunkt sofort verschwindet
+        # 🚀 FIX: Aktualisiere 3D-Overlays, damit der Messpunkt sofort verschwindet
         draw_plots = getattr(self.main_window, 'draw_plots', None)
         if draw_plots is not None and hasattr(draw_plots, 'draw_spl_plotter'):
             try:
-                draw_plots.draw_spl_plotter.update_overlays(self.settings, self.container)
+                plotter = draw_plots.draw_spl_plotter
+                if plotter is not None and hasattr(plotter, 'update_overlays'):
+                    # 🚀 FIX: Setze Signatur zurück, damit 'impulse' Kategorie erkannt wird
+                    if hasattr(plotter, '_last_overlay_signatures'):
+                        # Entferne 'impulse' aus der letzten Signatur, damit Änderung erkannt wird
+                        if plotter._last_overlay_signatures and 'impulse' in plotter._last_overlay_signatures:
+                            # Setze auf None, damit die Signatur als geändert erkannt wird
+                            plotter._last_overlay_signatures['impulse'] = None
+                    # Aktualisiere Overlays - die Signatur-Erkennung wird die Änderung erkennen
+                    plotter.update_overlays(self.settings, self.container)
             except Exception as exc:
                 print(f"[ImpulseInputDockWidget] Fehler beim Aktualisieren der SPL-Overlays nach Löschen eines Messpunkts: {exc}")
+                import traceback
+                traceback.print_exc()
 
 
     def show_context_menu(self, position):

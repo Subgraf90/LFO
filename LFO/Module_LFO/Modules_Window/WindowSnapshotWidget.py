@@ -392,6 +392,54 @@ class SnapshotWidget:
                                     for key, value in result_data.items():
                                         if isinstance(value, np.ndarray):
                                             result_data[key] = value.tolist()
+                                
+                                # 🎯 NEU: Wenn wir im Phase-Modus sind, speichere Phase-Daten pro Surface
+                                # um beim Laden keine Interpolation durchführen zu müssen
+                                if current_mode == "Phase alignment":
+                                    if sid in self.container.calculation_spl.get('surface_grids', {}):
+                                        grid_data = self.container.calculation_spl['surface_grids'][sid]
+                                        Xg = np.asarray(grid_data.get("X_grid", []))
+                                        Yg = np.asarray(grid_data.get("Y_grid", []))
+                                        
+                                        if Xg.size > 0 and Yg.size > 0 and Xg.ndim == 2 and Yg.ndim == 2:
+                                            # Interpoliere Phase-Daten von globalem Grid auf Surface-Grid
+                                            phase_diff = self.container.calculation_spl.get('sound_field_phase_diff')
+                                            phase_x = self.container.calculation_spl.get('sound_field_x')
+                                            phase_y = self.container.calculation_spl.get('sound_field_y')
+                                            
+                                            if phase_diff is not None and phase_x is not None and phase_y is not None:
+                                                try:
+                                                    from scipy.interpolate import griddata
+                                                    global_phase_data = np.asarray(phase_diff, dtype=float)
+                                                    global_phase_x = np.asarray(phase_x, dtype=float)
+                                                    global_phase_y = np.asarray(phase_y, dtype=float)
+                                                    
+                                                    # Stelle sicher, dass global_phase_data 2D ist
+                                                    if global_phase_data.ndim == 1 and len(global_phase_x) > 0 and len(global_phase_y) > 0:
+                                                        global_phase_data = global_phase_data.reshape(len(global_phase_y), len(global_phase_x))
+                                                    
+                                                    # Erstelle Quell-Grid (globales Grid)
+                                                    X_global, Y_global = np.meshgrid(global_phase_x, global_phase_y)
+                                                    points_source = np.column_stack([X_global.ravel(), Y_global.ravel()])
+                                                    values_source = global_phase_data.ravel()
+                                                    
+                                                    # Ziel-Punkte auf Surface-Grid
+                                                    points_target = np.column_stack([Xg.ravel(), Yg.ravel()])
+                                                    
+                                                    # Interpoliere Phase-Daten
+                                                    phase_values_interp = griddata(
+                                                        points_source, values_source, points_target,
+                                                        method='linear', fill_value=np.nan
+                                                    )
+                                                    phase_values_2d = phase_values_interp.reshape(Xg.shape)
+                                                    phase_values_2d = np.where(np.isinf(phase_values_2d), 0.0, phase_values_2d)
+                                                    
+                                                    # Speichere Phase-Daten pro Surface
+                                                    result_data['sound_field_phase'] = phase_values_2d.tolist()
+                                                except Exception as e:
+                                                    # Falls Interpolation fehlschlägt, überspringe
+                                                    pass
+                                
                                 snapshot_surface_results[sid] = result_data
                         if snapshot_surface_results:
                             capture_data['surface_results'] = snapshot_surface_results

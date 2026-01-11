@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Dict, Any, Tuple, Optional
 
 from Module_LFO.Modules_Calculate.SoundfieldCalculator import SoundFieldCalculator
 
@@ -7,6 +8,57 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
     """Berechnet Phasendifferenzen zwischen allen aktiven Arrays pro Grid-Punkt."""
 
     _AMPLITUDE_THRESHOLD = 1e-9
+    
+    def _calculate_sound_field_for_surface_grid(
+        self,
+        surface_grid: 'SurfaceGrid',
+        phys_constants: Dict[str, Any],
+        capture_arrays: bool = False
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """
+        Überschreibt die Basis-Methode, um zusätzlich Phase-Differenzen für additional_vertices
+        direkt während der Berechnung zu berechnen (wie SPL).
+        
+        Dies stellt sicher, dass Phase-Berechnung und SPL-Berechnung identisch funktionieren.
+        """
+        # Rufe Basis-Methode auf (berechnet alles inkl. additional_vertices_array_fields)
+        sound_field_p, array_fields = super()._calculate_sound_field_for_surface_grid(
+            surface_grid, phys_constants, capture_arrays
+        )
+        
+        # 🎯 NEU: Berechne Phase-Differenzen für additional_vertices direkt hier
+        # (genau wie SPL direkt berechnet wird)
+        if capture_arrays and hasattr(surface_grid, 'additional_vertices_array_fields') and surface_grid.additional_vertices_array_fields is not None:
+            additional_vertices_array_fields = surface_grid.additional_vertices_array_fields
+            
+            if additional_vertices_array_fields:
+                try:
+                    # Konvertiere zu numpy Arrays falls nötig
+                    array_fields_dict = {}
+                    for array_key, array_field in additional_vertices_array_fields.items():
+                        if array_field is not None:
+                            array_fields_dict[array_key] = np.asarray(array_field, dtype=complex)
+                    
+                    if array_fields_dict:
+                        # Berechne Phase-Differenzen für additional_vertices (1D-Array)
+                        phase_diff = self._compute_phase_differences_1d(array_fields_dict)
+                        
+                        if phase_diff is not None:
+                            # Speichere direkt im surface_grid (wie additional_vertices_spl)
+                            surface_grid.additional_vertices_phase = phase_diff
+                        else:
+                            surface_grid.additional_vertices_phase = None
+                    else:
+                        surface_grid.additional_vertices_phase = None
+                except Exception as e:
+                    print(f"[Phase Calc] Fehler bei direkter Berechnung der Phase-Daten für additional_vertices: {e}")
+                    surface_grid.additional_vertices_phase = None
+            else:
+                surface_grid.additional_vertices_phase = None
+        else:
+            surface_grid.additional_vertices_phase = None
+        
+        return sound_field_p, array_fields
 
     def calculate_phase_alignment(self):
         """
@@ -18,6 +70,7 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
         - Surface-Masken werden für Berechnung verwendet
         - Alle Surface-Daten (Z_grid, surface_mask, surface_meshes, etc.) werden
           automatisch in self.calculation_spl gespeichert (durch _calculate_sound_field_complex)
+        - 🎯 NEU: additional_vertices werden direkt während der Berechnung behandelt (wie SPL)
         """
         sound_field_complex, sound_field_x, sound_field_y, array_fields = self._calculate_sound_field_complex(
             capture_arrays=True
@@ -77,88 +130,9 @@ class SoundFieldCalculatorPhaseDiff(SoundFieldCalculator):
             else:
                 print(f"[Phase Calc] Phase-Daten berechnet, aber alle NaN: shape={phase_diff.shape}")
         
-        # 🎯 NEU: Berechne Phase-Daten für additional_vertices (wie im SPL-Fall)
-        # #region agent log
-        try:
-            import json
-            import time as time_module
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "A",
-                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:before_additional_vertices",
-                    "message": "Vor Berechnung additional_vertices_phase",
-                    "data": {
-                        "has_calculation_spl": isinstance(self.calculation_spl, dict),
-                        "has_surface_results": isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl,
-                        "surface_results_keys": list(self.calculation_spl.get('surface_results', {}).keys()) if isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl else []
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        
-        additional_vertices_phase_diff = self._compute_phase_differences_for_additional_vertices()
-        
-        # #region agent log
-        try:
-            import json
-            import time as time_module
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": "A",
-                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:after_additional_vertices",
-                    "message": "Nach Berechnung additional_vertices_phase",
-                    "data": {
-                        "additional_vertices_phase_diff_is_none": additional_vertices_phase_diff is None,
-                        "additional_vertices_phase_diff_keys": list(additional_vertices_phase_diff.keys()) if additional_vertices_phase_diff is not None else [],
-                        "additional_vertices_phase_diff_values": {
-                            k: {
-                                "is_none": v is None,
-                                "len": len(v) if v is not None else 0,
-                                "nan_count": sum(1 for x in v if (isinstance(x, float) and (x != x or np.isnan(x)))) if v is not None else 0
-                            } for k, v in (additional_vertices_phase_diff.items() if additional_vertices_phase_diff is not None else {})
-                        }
-                    },
-                    "timestamp": int(time_module.time() * 1000)
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        
-        if additional_vertices_phase_diff is not None:
-            # Speichere additional_vertices_phase_diff in surface_results
-            if isinstance(self.calculation_spl, dict) and 'surface_results' in self.calculation_spl:
-                surface_results = self.calculation_spl['surface_results']
-                for surface_id, result_data in surface_results.items():
-                    if isinstance(result_data, dict) and 'additional_vertices_array_fields' in result_data:
-                        result_data['additional_vertices_phase'] = additional_vertices_phase_diff.get(surface_id)
-                        
-                        # #region agent log
-                        try:
-                            import json
-                            import time as time_module
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "B",
-                                    "location": "SoundFieldCalculator_PhaseDiff.py:calculate_phase_alignment:save_additional_vertices_phase",
-                                    "message": "Speichere additional_vertices_phase",
-                                    "data": {
-                                        "surface_id": surface_id,
-                                        "phase_data_is_none": result_data.get('additional_vertices_phase') is None,
-                                        "phase_data_len": len(result_data.get('additional_vertices_phase')) if result_data.get('additional_vertices_phase') is not None else 0
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
+        # 🎯 NEU: additional_vertices_phase wird bereits direkt während _calculate_sound_field_for_surface_grid
+        # berechnet (durch Überschreibung der Methode), daher müssen wir hier nichts mehr tun.
+        # Die Phase-Daten sind bereits in surface_results['additional_vertices_phase'] gespeichert.
 
         # 🎯 Speichere Phase-Diff-Daten
         self.calculation_spl["sound_field_phase_diff"] = (

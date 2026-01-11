@@ -287,22 +287,22 @@ class ImpulseCalculator(ModuleBase):
                         
                     time_offset = point_key['time_offset']
 
-                    # Geometrie-Berechnung
-                    source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
-
+                    # 🚀 OPTIMIERT: getattr() nur einmal pro Attribut
                     source_position_x = getattr(
                         speaker_array,
                         'source_position_calc_x',
                         speaker_array.source_position_x,
                     )
-                    x_distance = point_x - source_position_x[i]
                     source_position_y = getattr(
                         speaker_array,
                         'source_position_calc_y',
                         speaker_array.source_position_y,
                     )
+                    source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
+                    
+                    x_distance = point_x - source_position_x[i]
                     y_distance = point_y - source_position_y[i]
-                    z_distance = source_position_z[i]
+                    z_distance = source_position_z[i] if source_position_z is not None else 0
                         
                     # Horizontale und 3D-Distanz berechnen
                     horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
@@ -355,11 +355,13 @@ class ImpulseCalculator(ModuleBase):
                         dt = 1/sample_rate * 1000  # Zeitschritt in ms
                         time = np.arange(0, fft_size) * dt + delay_ms - time_offset
                             
-                        # Delays addieren
-                        if hasattr(speaker_array, 'delay'):
-                            time = time + speaker_array.delay
-                        if hasattr(speaker_array, 'source_time'):
-                            time = time + speaker_array.source_time[i]
+                        # 🚀 OPTIMIERT: getattr() statt hasattr() + direkter Zugriff
+                        array_delay = getattr(speaker_array, 'delay', 0.0)
+                        source_time = getattr(speaker_array, 'source_time', None)
+                        if source_time is not None:
+                            time = time + array_delay + source_time[i]
+                        elif array_delay != 0.0:
+                            time = time + array_delay
                             
                         # Amplitudenskalierung
                         impulse = impulse / (distance + 1e-6)  # Pegelabnahme mit Entfernung
@@ -367,8 +369,9 @@ class ImpulseCalculator(ModuleBase):
                         source_level_factor = 10 ** (speaker_array.source_level[i] / 20)
                         impulse = impulse * array_gain_factor * source_level_factor
                             
-                        # Polaritätsinvertierung
-                        if hasattr(speaker_array, 'source_polarity') and speaker_array.source_polarity[i]:
+                        # 🚀 OPTIMIERT: getattr() statt hasattr()
+                        polarity_list = getattr(speaker_array, 'source_polarity', None)
+                        if polarity_list is not None and i < len(polarity_list) and polarity_list[i]:
                             impulse = -impulse
                             
                         # Finde maximale Amplitude
@@ -435,18 +438,23 @@ class ImpulseCalculator(ModuleBase):
                 if response['impulse'].size > 0:
                     max_spl = max(max_spl, np.max(np.abs(response['impulse'])))
             
+            # 🚀 OPTIMIERT: Cache für Speaker-Array-Lookups
+            speaker_arrays = self._get_speaker_array_lookup()
+            
             # Verarbeite jeden Lautsprecher
             for speaker_name, response in responses.items():
                 if response['impulse'].size > 0:
-                    # Array settings
-                    array_name = speaker_name.split('_Speaker_')[0]
-                    speaker_number = int(speaker_name.split('_Speaker_')[1]) - 1
-                    array_id = next((id for id, array in self.settings.get_all_speaker_arrays().items() 
-                                   if array.name == array_name), None)
-                    if array_id is None:
+                    # 🚀 OPTIMIERT: String-Splitting nur einmal
+                    parts = speaker_name.split('_Speaker_', 1)
+                    if len(parts) != 2:
                         continue
+                    array_name = parts[0]
+                    speaker_number = int(parts[1]) - 1
                     
-                    speaker_array = self.settings.get_speaker_array(array_id)
+                    # 🚀 OPTIMIERT: Direkter Lookup statt next()
+                    speaker_array = speaker_arrays.get(array_name)
+                    if speaker_array is None:
+                        continue
                     
                     # Normalisierte Impulsantwort
                     normalized_impulse = response['impulse'] / max_spl
@@ -455,12 +463,6 @@ class ImpulseCalculator(ModuleBase):
                     impulse_data["color"].append(speaker_array.color)
             
             individual_impulse_data[key] = impulse_data
-        
-        for key in individual_impulse_data:
-            for i, (spl, time) in enumerate(zip(
-                individual_impulse_data[key]['spl'],
-                individual_impulse_data[key]['time'])):
-                peak_idx = np.argmax(np.abs(spl))
         
         return individual_impulse_data if individual_impulse_data else None
 
@@ -491,12 +493,16 @@ class ImpulseCalculator(ModuleBase):
                 if response['impulse'].size == 0:
                     continue
 
-                array_name = speaker_name.split('_Speaker_')[0]
+                # 🚀 OPTIMIERT: String-Splitting nur einmal
+                parts = speaker_name.split('_Speaker_', 1)
+                if len(parts) != 2:
+                    continue
+                array_name = parts[0]
+                speaker_number = int(parts[1]) - 1
+                
                 speaker_array = speaker_arrays.get(array_name)
                 if speaker_array is None:
                     continue
-
-                speaker_number = int(speaker_name.split('_Speaker_')[1]) - 1
 
                 if balloon_cache:
                     freq_data = self._get_cached_balloon_data(
@@ -560,17 +566,20 @@ class ImpulseCalculator(ModuleBase):
             if min_len == 0:
                 continue
 
-            common_freq = entries[0]['freq'][:min_len].astype(float, copy=True)
+            # 🚀 OPTIMIERT: Gemeinsame Frequenz ohne Kopie
+            common_freq = entries[0]['freq'][:min_len].astype(float, copy=False)
             mag_stack = np.stack([entry['mag'][:min_len] for entry in entries])
             phase_rad_stack = np.deg2rad(np.stack([entry['phase_deg'][:min_len] for entry in entries]))
 
-            distance_array = np.array([entry['distance'] for entry in entries], dtype=float)[:, None]
-            gain_linear = 10 ** (np.array([entry['total_gain'] for entry in entries], dtype=float)[:, None] / 20.0)
+            # 🚀 OPTIMIERT: Direkte Array-Erstellung ohne Zwischenschritt
+            num_entries = len(entries)
+            distance_array = np.array([entry['distance'] for entry in entries], dtype=float).reshape(num_entries, 1)
+            gain_linear = np.power(10.0, np.array([entry['total_gain'] for entry in entries], dtype=float).reshape(num_entries, 1) / 20.0)
             delay_ms = np.array(
                 [entry['total_delay'] - entry['time_offset'] for entry in entries],
                 dtype=float
-            )[:, None]
-            polarity_array = np.array([entry['polarity'] for entry in entries], dtype=float)[:, None]
+            ).reshape(num_entries, 1)
+            polarity_array = np.array([entry['polarity'] for entry in entries], dtype=float).reshape(num_entries, 1)
 
             distance_safe = np.maximum(distance_array, 1e-9)
             air_absorption_coeffs = self._get_air_absorption_coefficients(common_freq)
@@ -635,12 +644,16 @@ class ImpulseCalculator(ModuleBase):
 
             entries = []
             for speaker_name, response in responses.items():
-                array_name = speaker_name.split('_Speaker_')[0]
+                # 🚀 OPTIMIERT: String-Splitting nur einmal
+                parts = speaker_name.split('_Speaker_', 1)
+                if len(parts) != 2:
+                    continue
+                array_name = parts[0]
+                speaker_number = int(parts[1]) - 1
+                
                 speaker_array = speaker_arrays.get(array_name)
                 if speaker_array is None:
                     continue
-
-                speaker_number = int(speaker_name.split('_Speaker_')[1]) - 1
 
                 if balloon_cache:
                     freq_data = self._get_cached_balloon_data(
@@ -705,17 +718,20 @@ class ImpulseCalculator(ModuleBase):
             if min_len == 0:
                 continue
 
-            common_freq = entries[0]['freq'][:min_len].astype(float, copy=True)
+            # 🚀 OPTIMIERT: Gemeinsame Frequenz ohne Kopie
+            common_freq = entries[0]['freq'][:min_len].astype(float, copy=False)
             mag_stack = np.stack([entry['mag'][:min_len] for entry in entries])
             phase_rad_stack = np.deg2rad(np.stack([entry['phase_deg'][:min_len] for entry in entries]))
 
-            distance_array = np.array([entry['distance'] for entry in entries], dtype=float)[:, None]
-            gain_linear = 10 ** (np.array([entry['total_gain'] for entry in entries], dtype=float)[:, None] / 20.0)
+            # 🚀 OPTIMIERT: Direkte Array-Erstellung ohne Zwischenschritt
+            num_entries = len(entries)
+            distance_array = np.array([entry['distance'] for entry in entries], dtype=float).reshape(num_entries, 1)
+            gain_linear = np.power(10.0, np.array([entry['total_gain'] for entry in entries], dtype=float).reshape(num_entries, 1) / 20.0)
             delay_ms = np.array(
                 [entry['total_delay'] - entry['time_offset'] for entry in entries],
                 dtype=float
-            )[:, None]
-            polarity_array = np.array([entry['polarity'] for entry in entries], dtype=float)[:, None]
+            ).reshape(num_entries, 1)
+            polarity_array = np.array([entry['polarity'] for entry in entries], dtype=float).reshape(num_entries, 1)
 
             distance_safe = np.maximum(distance_array, 1e-9)
             air_absorption_coeffs = self._get_air_absorption_coefficients(common_freq)
@@ -780,12 +796,16 @@ class ImpulseCalculator(ModuleBase):
             time_offset = point_key.get('time_offset', 0.0)
 
             for speaker_name, response in responses.items():
-                array_name = speaker_name.split('_Speaker_')[0]
+                # 🚀 OPTIMIERT: String-Splitting nur einmal
+                parts = speaker_name.split('_Speaker_', 1)
+                if len(parts) != 2:
+                    continue
+                array_name = parts[0]
+                speaker_number = int(parts[1]) - 1
+                
                 speaker_array = speaker_arrays.get(array_name)
                 if speaker_array is None:
                     continue
-
-                speaker_number = int(speaker_name.split('_Speaker_')[1]) - 1
 
                 if balloon_cache:
                     freq_data = self._get_cached_balloon_data(
@@ -852,18 +872,18 @@ class ImpulseCalculator(ModuleBase):
 
             arrival_time = (distances / speed_of_sound) * 1000.0 - time_offset + total_delay
 
+            # 🚀 OPTIMIERT: Vektorisierte SPL-Berechnung
             spl_values = []
             for entry, distance, gain in zip(entries, distances, total_gain):
                 freq_data = entry['freq_data']
                 if freq_data and freq_data['mag'] is not None:
                     magnitude_linear = np.asarray(freq_data['mag'], dtype=float)
                     if magnitude_linear.size:
-                        intensity = np.square(magnitude_linear)
-                        total_intensity = np.sum(intensity)
+                        # Vektorisierte Berechnung
+                        total_intensity = np.sum(np.square(magnitude_linear))
                         total_spl = 10 * np.log10(total_intensity + 1e-12)
-                        source_spl = total_spl + gain
                         distance_attenuation = -20 * np.log10(max(distance, 1e-6))
-                        spl = source_spl + distance_attenuation
+                        spl = total_spl + gain + distance_attenuation
                     else:
                         spl = 0.0
                 else:
@@ -1103,6 +1123,7 @@ class ImpulseCalculator(ModuleBase):
         """
         Liefert Luftabsorptionskoeffizienten (Neper/m) für die angegebenen Frequenzen.
         Gibt None zurück, wenn Luftabsorption deaktiviert ist.
+        🚀 OPTIMIERT: Vektorisiert statt List-Comprehension
         """
         if not getattr(self.settings, "use_air_absorption", False):
             return None
@@ -1111,10 +1132,9 @@ class ImpulseCalculator(ModuleBase):
         temperature = getattr(self.settings, "temperature", 20.0)
         humidity = getattr(self.settings, "humidity", 50.0)
         freq_array = np.atleast_1d(frequencies).astype(float)
-        coeffs = np.array([
-            self.functions.calculate_air_absorption(float(freq), temperature, humidity)
-            for freq in freq_array
-        ], dtype=float)
+        # 🚀 Vektorisiert: Verwende vectorize für bessere Performance
+        calc_func = np.vectorize(lambda f: self.functions.calculate_air_absorption(float(f), temperature, humidity))
+        coeffs = calc_func(freq_array).astype(float)
         return coeffs
 
     def _get_speaker_names_list(self):

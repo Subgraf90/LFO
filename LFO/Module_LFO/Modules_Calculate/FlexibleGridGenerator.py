@@ -119,7 +119,7 @@ class CachedSurfaceGrid:
     triangulated_vertices: Optional[np.ndarray] = None
     triangulated_faces: Optional[np.ndarray] = None
     additional_vertices: Optional[np.ndarray] = None
-    # vertex_source_indices wird NICHT gecacht (kann bei Bedarf neu berechnet werden)
+    vertex_source_indices: Optional[np.ndarray] = None  # 🎯 FIX: Speichere vertex_source_indices im Cache
     
     def to_surface_grid(self, geometry: 'SurfaceGeometry') -> 'SurfaceGrid':
         """Konvertiert CachedSurfaceGrid zurück zu SurfaceGrid."""
@@ -136,7 +136,7 @@ class CachedSurfaceGrid:
             triangulated_vertices=self.triangulated_vertices,
             triangulated_faces=self.triangulated_faces,
             triangulated_success=self.triangulated_vertices is not None and self.triangulated_faces is not None,
-            vertex_source_indices=None,  # Wird bei Bedarf neu berechnet
+            vertex_source_indices=self.vertex_source_indices,  # 🎯 FIX: Verwende gecachte vertex_source_indices
             additional_vertices=self.additional_vertices,
         )
 
@@ -4248,6 +4248,7 @@ class FlexibleGridGenerator(ModuleBase):
             triangulated_vertices=triangulated_vertices,
             triangulated_faces=triangulated_faces,
             additional_vertices=additional_vertices_final,
+            vertex_source_indices=vertex_source_indices,  # 🎯 FIX: Speichere vertex_source_indices im Cache
         )
         
         # 🎯 CACHE-MANAGER: Speichere im Cache-Manager (Thread-Safe, LRU-Eviction automatisch)

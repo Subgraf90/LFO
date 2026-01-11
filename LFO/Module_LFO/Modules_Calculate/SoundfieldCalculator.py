@@ -906,6 +906,9 @@ class SoundFieldCalculator(ModuleBase):
                             array_key: array_field.tolist() 
                             for array_key, array_field in grid_obj.additional_vertices_array_fields.items()
                         }
+                    # 🎯 NEU: Füge additional_vertices_phase hinzu (direkt berechnet, wie SPL)
+                    if hasattr(grid_obj, 'additional_vertices_phase') and grid_obj.additional_vertices_phase is not None:
+                        result_data['additional_vertices_phase'] = grid_obj.additional_vertices_phase.tolist()
                 
                 surface_results_data[surface_id] = result_data
 

@@ -836,7 +836,8 @@ class SPL3DPlotRenderer:
                                     spl_values_2d = vals.reshape(Xg.shape)
                                 else:
                                     # Fallback: Verwende np.angle wenn Shape nicht passt
-                                    spl_values_2d = np.angle(sound_field_p_complex)
+                                    # 🎯 FIX: Konvertiere zu Grad für Konsistenz mit additional_vertices_phase
+                                    spl_values_2d = np.degrees(np.angle(sound_field_p_complex))
                                     spl_values_2d = np.where(np.isinf(spl_values_2d), 0.0, spl_values_2d)
                                     # Behalte NaN-Werte für transparente Darstellung
                             elif time_mode:
@@ -844,14 +845,16 @@ class SPL3DPlotRenderer:
                                 spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
                             elif phase_mode:
                                 # Fallback: Wenn keine Overrides vorhanden sind, verwende np.angle
-                                spl_values_2d = np.angle(sound_field_p_complex)
+                                # 🎯 FIX: Konvertiere zu Grad für Konsistenz mit additional_vertices_phase
+                                spl_values_2d = np.degrees(np.angle(sound_field_p_complex))
                                 spl_values_2d = np.where(np.isinf(spl_values_2d), 0.0, spl_values_2d)
                                 # Behalte NaN-Werte für transparente Darstellung
                             else:
                                 pressure_magnitude = np.abs(sound_field_p_complex)
                                 pressure_magnitude = np.clip(pressure_magnitude, 1e-12, None)
                                 spl_values_2d = self.functions.mag2db(pressure_magnitude)
-                                spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
+                                # Setze nur inf auf 0, behalte NaN
+                                spl_values_2d = np.where(np.isinf(spl_values_2d), 0.0, spl_values_2d)
                             
                             # ⚠️ StructuredGrid-Pfad vorübergehend deaktiviert wegen Orientierungsproblemen
                             # Verwende stattdessen den Triangulation-Pfad, der konsistente Orientierung garantiert
@@ -923,12 +926,62 @@ class SPL3DPlotRenderer:
                             
                             # 🎯 OPTIMIERUNG: Lade vertex_source_indices und additional_vertices_spl
                             vertex_source_indices_list = grid_data.get('vertex_source_indices')
+                            
+                            # #region agent log
+                            if phase_mode:
+                                try:
+                                    import json
+                                    import time as time_module
+                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "G",
+                                            "location": "Plot3DSPL.py:_render_surfaces:load_vertex_source_indices",
+                                            "message": "Lade vertex_source_indices",
+                                            "data": {
+                                                "surface_id": surface_id,
+                                                "has_grid_data": grid_data is not None,
+                                                "grid_data_is_dict": isinstance(grid_data, dict),
+                                                "has_vertex_source_indices_key": 'vertex_source_indices' in grid_data if isinstance(grid_data, dict) else False,
+                                                "vertex_source_indices_list_is_none": vertex_source_indices_list is None,
+                                                "vertex_source_indices_list_type": type(vertex_source_indices_list).__name__ if vertex_source_indices_list is not None else None,
+                                                "vertex_source_indices_list_len": len(vertex_source_indices_list) if hasattr(vertex_source_indices_list, '__len__') else None
+                                            },
+                                            "timestamp": int(time_module.time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                            # #endregion
+                            
                             vertex_source_indices = None
                             if vertex_source_indices_list is not None:
                                 try:
                                     vertex_source_indices = np.array(vertex_source_indices_list, dtype=np.int64)
-                                except Exception:
+                                except Exception as e:
                                     vertex_source_indices = None
+                                    # #region agent log
+                                    if phase_mode:
+                                        try:
+                                            import json
+                                            import time as time_module
+                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "G",
+                                                    "location": "Plot3DSPL.py:_render_surfaces:vertex_source_indices_error",
+                                                    "message": "Fehler beim Konvertieren von vertex_source_indices",
+                                                    "data": {
+                                                        "surface_id": surface_id,
+                                                        "error": str(e),
+                                                        "error_type": type(e).__name__
+                                                    },
+                                                    "timestamp": int(time_module.time() * 1000)
+                                                }) + "\n")
+                                        except Exception:
+                                            pass
+                                    # #endregion
                             
                             additional_vertices_spl_list = result_data.get('additional_vertices_spl') if result_data else None
                             
@@ -957,51 +1010,112 @@ class SPL3DPlotRenderer:
                                     pass
                             # #endregion
                             
+                            # 🎯 FIX: Für Phase-Modus: Verwende direkt berechnete additional_vertices_phase, falls vorhanden
+                            additional_vertices_phase_list = result_data.get('additional_vertices_phase') if result_data else None
+                            
+                            # 🎯 DEBUG: Prüfe ob additional_vertices_phase vorhanden ist
+                            if phase_mode:
+                                if additional_vertices_phase_list is None:
+                                    print(f"[Phase Plot] ⚠️  INFO: additional_vertices_phase für Surface '{surface_id}' nicht vorhanden, verwende Fallback")
+                                elif isinstance(additional_vertices_phase_list, list) and len(additional_vertices_phase_list) == 0:
+                                    print(f"[Phase Plot] ⚠️  WARNUNG: additional_vertices_phase für Surface '{surface_id}' ist leer!")
+                            
                             additional_vertices_spl = None
                             if additional_vertices_spl_list is not None:
                                 try:
                                     additional_vertices_spl = np.array(additional_vertices_spl_list, dtype=complex)
-                                    # 🎯 Für Phase-Modus: Berechne IMMER aus additional_vertices_spl (wie SPL-Modus)
                                     if phase_mode:
-                                        # np.angle gibt Radiant zurück, konvertiere zu Grad für Konsistenz
-                                        additional_vertices_spl_db = np.degrees(np.angle(additional_vertices_spl))
-                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
-                                        # Behalte NaN-Werte für transparente Darstellung
-                                        
-                                        # #region agent log
-                                        try:
-                                            import json
-                                            import time as time_module
-                                            nan_count = np.sum(np.isnan(additional_vertices_spl_db))
-                                            valid_count = np.sum(np.isfinite(additional_vertices_spl_db))
-                                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                                f.write(json.dumps({
-                                                    "sessionId": "debug-session",
-                                                    "runId": "run1",
-                                                    "hypothesisId": "B",
-                                                    "location": "Plot3DSPL.py:_render_surfaces:phase_mode_calc",
-                                                    "message": "Phase-Modus: Berechne aus additional_vertices_spl",
-                                                    "data": {
-                                                        "surface_id": surface_id,
-                                                        "len": len(additional_vertices_spl_db),
-                                                        "nan_count": int(nan_count),
-                                                        "valid_count": int(valid_count),
-                                                        "min": float(np.nanmin(additional_vertices_spl_db)) if valid_count > 0 else None,
-                                                        "max": float(np.nanmax(additional_vertices_spl_db)) if valid_count > 0 else None
-                                                    },
-                                                    "timestamp": int(time_module.time() * 1000)
-                                                }) + "\n")
-                                        except Exception:
-                                            pass
-                                        # #endregion
+                                        # 🎯 PRIORITÄT: Verwende direkt berechnete additional_vertices_phase, falls vorhanden
+                                        if additional_vertices_phase_list is not None:
+                                            try:
+                                                additional_vertices_spl_db = np.array(additional_vertices_phase_list, dtype=float)
+                                                # Stelle sicher, dass NaN-Werte erhalten bleiben
+                                                additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), np.nan, additional_vertices_spl_db)
+                                                
+                                                # #region agent log
+                                                try:
+                                                    import json
+                                                    import time as time_module
+                                                    nan_count = np.sum(np.isnan(additional_vertices_spl_db))
+                                                    valid_count = np.sum(np.isfinite(additional_vertices_spl_db))
+                                                    
+                                                    # 🎯 DEBUG: Prüfe ob gültige Daten vorhanden sind
+                                                    if valid_count == 0:
+                                                        print(f"[Phase Plot] ⚠️  WARNUNG: additional_vertices_phase für Surface '{surface_id}' enthält keine gültigen Daten!")
+                                                        print(f"[Phase Plot]   - Gesamtanzahl: {len(additional_vertices_spl_db)}")
+                                                        print(f"[Phase Plot]   - NaN count: {nan_count}")
+                                                        print(f"[Phase Plot]   - Inf count: {np.sum(np.isinf(additional_vertices_spl_db))}")
+                                                    
+                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                        f.write(json.dumps({
+                                                            "sessionId": "debug-session",
+                                                            "runId": "run1",
+                                                            "hypothesisId": "B",
+                                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_use_direct",
+                                                            "message": "Phase-Modus: Verwende direkt berechnete additional_vertices_phase",
+                                                            "data": {
+                                                                "surface_id": surface_id,
+                                                                "len": len(additional_vertices_spl_db),
+                                                                "nan_count": int(nan_count),
+                                                                "valid_count": int(valid_count),
+                                                                "inf_count": int(np.sum(np.isinf(additional_vertices_spl_db))),
+                                                                "has_valid_data": valid_count > 0,
+                                                                "min": float(np.nanmin(additional_vertices_spl_db)) if valid_count > 0 else None,
+                                                                "max": float(np.nanmax(additional_vertices_spl_db)) if valid_count > 0 else None
+                                                            },
+                                                            "timestamp": int(time_module.time() * 1000)
+                                                        }) + "\n")
+                                                except Exception:
+                                                    pass
+                                                # #endregion
+                                            except Exception:
+                                                # Fallback: Berechne aus additional_vertices_spl
+                                                additional_vertices_spl_db = np.degrees(np.angle(additional_vertices_spl))
+                                                # Setze nur inf auf 0, behalte NaN
+                                                additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                        else:
+                                            # Fallback: Berechne aus additional_vertices_spl (wenn additional_vertices_phase nicht vorhanden)
+                                            # np.angle gibt Radiant zurück, konvertiere zu Grad für Konsistenz
+                                            additional_vertices_spl_db = np.degrees(np.angle(additional_vertices_spl))
+                                            # Setze nur inf auf 0, behalte NaN für transparente Darstellung
+                                            additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
+                                            
+                                            # #region agent log
+                                            try:
+                                                import json
+                                                import time as time_module
+                                                nan_count = np.sum(np.isnan(additional_vertices_spl_db))
+                                                valid_count = np.sum(np.isfinite(additional_vertices_spl_db))
+                                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                                    f.write(json.dumps({
+                                                        "sessionId": "debug-session",
+                                                        "runId": "run1",
+                                                        "hypothesisId": "B",
+                                                        "location": "Plot3DSPL.py:_render_surfaces:phase_mode_calc_fallback",
+                                                        "message": "Phase-Modus: Fallback - Berechne aus additional_vertices_spl",
+                                                        "data": {
+                                                            "surface_id": surface_id,
+                                                            "len": len(additional_vertices_spl_db),
+                                                            "nan_count": int(nan_count),
+                                                            "valid_count": int(valid_count),
+                                                            "min": float(np.nanmin(additional_vertices_spl_db)) if valid_count > 0 else None,
+                                                            "max": float(np.nanmax(additional_vertices_spl_db)) if valid_count > 0 else None
+                                                        },
+                                                        "timestamp": int(time_module.time() * 1000)
+                                                    }) + "\n")
+                                            except Exception:
+                                                pass
+                                            # #endregion
                                     elif time_mode:
                                         additional_vertices_spl_db = np.real(additional_vertices_spl)
-                                        additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                        # Setze nur inf auf 0, behalte NaN
+                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
                                     else:
                                         pressure_magnitude_add = np.abs(additional_vertices_spl)
                                         pressure_magnitude_add = np.clip(pressure_magnitude_add, 1e-12, None)
                                         additional_vertices_spl_db = self.functions.mag2db(pressure_magnitude_add)
-                                        additional_vertices_spl_db = np.nan_to_num(additional_vertices_spl_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                        # Setze nur inf auf 0, behalte NaN
+                                        additional_vertices_spl_db = np.where(np.isinf(additional_vertices_spl_db), 0.0, additional_vertices_spl_db)
                                 except Exception:
                                     additional_vertices_spl_db = None
                             else:
@@ -1219,6 +1333,15 @@ class SPL3DPlotRenderer:
                                     
                                     valid_mask = np.isfinite(spl_at_verts)
                                     if not np.any(valid_mask):
+                                        # 🎯 DEBUG: Keine gültigen Daten nach Step-Mode-Verarbeitung
+                                        if phase_mode:
+                                            print(f"[Phase Plot] ⚠️  WARNUNG: Nach Step-Mode-Verarbeitung keine gültigen Daten für Surface '{surface_id}'!")
+                                            print(f"[Phase Plot]   - n_vertices: {n_vertices}")
+                                            print(f"[Phase Plot]   - n_grid_points: {n_grid_points}")
+                                            print(f"[Phase Plot]   - valid_count: {np.sum(valid_mask)}")
+                                            print(f"[Phase Plot]   - NaN count: {np.sum(~valid_mask)}")
+                                            print(f"[Phase Plot]   - additional_vertices_spl_db vorhanden: {additional_vertices_spl_db is not None}")
+                                        
                                         # Fallback: Verwende alte Logik
                                         if n_vertices == n_grid_points:
                                             spl_at_verts = spl_values_2d.ravel().copy()
@@ -1580,13 +1703,46 @@ class SPL3DPlotRenderer:
                                                                 spl_at_verts[v_idx] = sum(v * w for v, w in zip(valid_vals, valid_weights)) / weights_sum
                                                     # Sonst bleibt NaN
                                             else:
-                                                # Standard bilineare Interpolation (für SPL-Modus)
-                                                spl_at_verts = (
-                                                    (1 - tx) * (1 - ty) * v00
-                                                    + tx * (1 - ty) * v10
-                                                    + (1 - tx) * ty * v01
-                                                    + tx * ty * v11
-                                                )
+                                                # 🎯 ANGLEICHUNG: Standard bilineare Interpolation mit NaN-Behandlung (wie Phase-Modus)
+                                                # Prüfe welche Nachbarn gültig sind
+                                                valid_00 = np.isfinite(v00)
+                                                valid_10 = np.isfinite(v10)
+                                                valid_01 = np.isfinite(v01)
+                                                valid_11 = np.isfinite(v11)
+                                                
+                                                # Berechne Interpolation nur für gültige Nachbarn
+                                                spl_at_verts = np.full(n_vertices, np.nan, dtype=float)
+                                                for v_idx in range(n_vertices):
+                                                    if valid_00[v_idx] and valid_10[v_idx] and valid_01[v_idx] and valid_11[v_idx]:
+                                                        # Alle Nachbarn gültig → bilineare Interpolation
+                                                        spl_at_verts[v_idx] = (
+                                                            (1 - tx[v_idx]) * (1 - ty[v_idx]) * v00[v_idx]
+                                                            + tx[v_idx] * (1 - ty[v_idx]) * v10[v_idx]
+                                                            + (1 - tx[v_idx]) * ty[v_idx] * v01[v_idx]
+                                                            + tx[v_idx] * ty[v_idx] * v11[v_idx]
+                                                        )
+                                                    elif valid_00[v_idx] or valid_10[v_idx] or valid_01[v_idx] or valid_11[v_idx]:
+                                                        # Mindestens ein Nachbar gültig → verwende gewichtete Mittelung
+                                                        valid_vals = []
+                                                        valid_weights = []
+                                                        if valid_00[v_idx]:
+                                                            valid_vals.append(v00[v_idx])
+                                                            valid_weights.append((1 - tx[v_idx]) * (1 - ty[v_idx]))
+                                                        if valid_10[v_idx]:
+                                                            valid_vals.append(v10[v_idx])
+                                                            valid_weights.append(tx[v_idx] * (1 - ty[v_idx]))
+                                                        if valid_01[v_idx]:
+                                                            valid_vals.append(v01[v_idx])
+                                                            valid_weights.append((1 - tx[v_idx]) * ty[v_idx])
+                                                        if valid_11[v_idx]:
+                                                            valid_vals.append(v11[v_idx])
+                                                            valid_weights.append(tx[v_idx] * ty[v_idx])
+                                                        if valid_vals:
+                                                            # Gewichtete Mittelung der gültigen Nachbarn
+                                                            weights_sum = sum(valid_weights)
+                                                            if weights_sum > 0:
+                                                                spl_at_verts[v_idx] = sum(v * w for v, w in zip(valid_vals, valid_weights)) / weights_sum
+                                                    # Sonst bleibt NaN
 
                                             # Maske anwenden (Punkte außerhalb der Surface -> NaN)
                                             if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
@@ -1601,6 +1757,14 @@ class SPL3DPlotRenderer:
                                                 spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
 
                                             valid_mask = np.isfinite(spl_at_verts)
+                                            
+                                            # 🎯 DEBUG: Prüfe ob nach Interpolation gültige Daten vorhanden sind
+                                            if phase_mode and not np.any(valid_mask):
+                                                print(f"[Phase Plot] ⚠️  WARNUNG: Nach bilinearer Interpolation keine gültigen Daten für Surface '{surface_id}'!")
+                                                print(f"[Phase Plot]   - n_vertices: {n_vertices}")
+                                                print(f"[Phase Plot]   - valid_count: {np.sum(valid_mask)}")
+                                                print(f"[Phase Plot]   - NaN count: {np.sum(~valid_mask)}")
+                                                print(f"[Phase Plot]   - spl_values_2d NaN count: {np.sum(~np.isfinite(spl_values_2d)) if spl_values_2d.size > 0 else 0}")
                                             
                                             # #region agent log
                                             try:
@@ -1623,6 +1787,7 @@ class SPL3DPlotRenderer:
                                                             "n_vertices": n_vertices,
                                                             "valid_count": np.sum(valid_mask),
                                                             "nan_count": nan_count,
+                                                            "has_valid_data": np.any(valid_mask),
                                                             "x_axis_range": [float(x_axis[0]), float(x_axis[-1])] if len(x_axis) > 0 else None,
                                                             "y_axis_range": [float(y_axis[0]), float(y_axis[-1])] if len(y_axis) > 0 else None,
                                                             "nan_vertices_sample": nan_vertices[:5].tolist() if nan_vertices is not None and len(nan_vertices) > 0 else None,
@@ -2104,33 +2269,46 @@ class SPL3DPlotRenderer:
                     # 🎯 FIX: Im Phase-Modus verwende Phase-Daten statt Druck-Daten
                     surface_values = None
                     use_phase_data = False
-                    if phase_mode and global_phase_data is not None:
-                        # Interpoliere Phase-Daten von globalem Grid auf Surface-Grid
-                        from scipy.interpolate import griddata
-                        # Erstelle Quell-Grid (globales Grid)
-                        X_global, Y_global = np.meshgrid(global_phase_x, global_phase_y)
-                        points_source = np.column_stack([X_global.ravel(), Y_global.ravel()])
-                        values_source = global_phase_data.ravel()
+                    if phase_mode:
+                        # 🎯 OPTIMIERUNG: Prüfe zuerst, ob Phase-Daten pro Surface bereits gespeichert sind (z.B. aus Snapshot)
+                        if 'sound_field_phase' in result_data:
+                            try:
+                                phase_values_2d = np.asarray(result_data['sound_field_phase'], dtype=float)
+                                if phase_values_2d.shape == Xg.shape:
+                                    # Phase-Daten pro Surface bereits vorhanden - verwende diese direkt
+                                    surface_values = phase_values_2d
+                                    use_phase_data = True
+                            except Exception:
+                                pass
                         
-                        # Ziel-Punkte auf Surface-Grid
-                        points_target = np.column_stack([Xg.ravel(), Yg.ravel()])
-                        
-                        # Interpoliere Phase-Daten
-                        try:
-                            phase_values_interp = griddata(
-                                points_source, values_source, points_target,
-                                method='linear', fill_value=np.nan
-                            )
-                            phase_values_2d = phase_values_interp.reshape(Xg.shape)
-                            # 🎯 FIX: Für Phase-Modus behalte NaN-Werte (nicht auf 0.0 setzen)
-                            # NaN-Werte werden transparent dargestellt, 0.0 würde als 0° angezeigt werden
-                            # Setze nur inf/neginf auf 0, aber behalte NaN
-                            phase_values_2d = np.where(np.isinf(phase_values_2d), 0.0, phase_values_2d)
-                            surface_values = phase_values_2d  # Behalte NaN-Werte für transparente Darstellung
-                            use_phase_data = True
-                        except Exception:
-                            # Falls Interpolation fehlschlägt, verwende Standard-Pfad
-                            pass
+                        # Falls keine gespeicherten Phase-Daten vorhanden, interpoliere von globalem Grid
+                        if not use_phase_data and global_phase_data is not None:
+                            # Interpoliere Phase-Daten von globalem Grid auf Surface-Grid
+                            from scipy.interpolate import griddata
+                            # Erstelle Quell-Grid (globales Grid)
+                            X_global, Y_global = np.meshgrid(global_phase_x, global_phase_y)
+                            points_source = np.column_stack([X_global.ravel(), Y_global.ravel()])
+                            values_source = global_phase_data.ravel()
+                            
+                            # Ziel-Punkte auf Surface-Grid
+                            points_target = np.column_stack([Xg.ravel(), Yg.ravel()])
+                            
+                            # Interpoliere Phase-Daten
+                            try:
+                                phase_values_interp = griddata(
+                                    points_source, values_source, points_target,
+                                    method='linear', fill_value=np.nan
+                                )
+                                phase_values_2d = phase_values_interp.reshape(Xg.shape)
+                                # 🎯 FIX: Für Phase-Modus behalte NaN-Werte (nicht auf 0.0 setzen)
+                                # NaN-Werte werden transparent dargestellt, 0.0 würde als 0° angezeigt werden
+                                # Setze nur inf/neginf auf 0, aber behalte NaN
+                                phase_values_2d = np.where(np.isinf(phase_values_2d), 0.0, phase_values_2d)
+                                surface_values = phase_values_2d  # Behalte NaN-Werte für transparente Darstellung
+                                use_phase_data = True
+                            except Exception:
+                                # Falls Interpolation fehlschlägt, verwende Standard-Pfad
+                                pass
 
                     # 🎯 FIX: Im Phase-Modus überspringe Shape-Prüfung für sound_field_p_complex
                     if not use_phase_data and sound_field_p_complex.shape != Xg.shape:
@@ -2365,6 +2543,42 @@ class SPL3DPlotRenderer:
             # NaN bedeutet "keine gültigen Daten" und sollte transparent dargestellt werden
             finite_mask = np.isfinite(pressure)
             if not np.any(finite_mask):
+                # 🎯 DEBUG: Keine gültigen Phase-Daten vorhanden
+                print(f"[Phase Plot] ⚠️  WARNUNG: Keine gültigen Phase-Daten vorhanden!")
+                print(f"[Phase Plot]   - pressure.shape: {pressure.shape if hasattr(pressure, 'shape') else 'N/A'}")
+                print(f"[Phase Plot]   - pressure.size: {pressure.size if hasattr(pressure, 'size') else 'N/A'}")
+                print(f"[Phase Plot]   - finite_mask.sum(): {np.sum(finite_mask)}")
+                print(f"[Phase Plot]   - NaN count: {np.sum(np.isnan(pressure)) if hasattr(pressure, '__len__') else 'N/A'}")
+                print(f"[Phase Plot]   - Inf count: {np.sum(np.isinf(pressure)) if hasattr(pressure, '__len__') else 'N/A'}")
+                print(f"[Phase Plot]   - has_surface_overrides: {has_surface_overrides}")
+                
+                # #region agent log
+                try:
+                    import json
+                    import time as time_module
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "DEBUG",
+                            "location": "Plot3DSPL.py:update_spl_plot:phase_mode_no_valid_data",
+                            "message": "⚠️ WARNUNG: Keine gültigen Phase-Daten vorhanden",
+                            "data": {
+                                "pressure_shape": list(pressure.shape) if hasattr(pressure, 'shape') else None,
+                                "pressure_size": pressure.size if hasattr(pressure, 'size') else None,
+                                "finite_mask_sum": int(np.sum(finite_mask)),
+                                "nan_count": int(np.sum(np.isnan(pressure))) if hasattr(pressure, '__len__') else None,
+                                "inf_count": int(np.sum(np.isinf(pressure))) if hasattr(pressure, '__len__') else None,
+                                "has_surface_overrides": has_surface_overrides,
+                                "pressure_type": type(pressure).__name__,
+                                "pressure_dtype": str(pressure.dtype) if hasattr(pressure, 'dtype') else None
+                            },
+                            "timestamp": int(time_module.time() * 1000)
+                        }) + "\n")
+                except Exception as e:
+                    print(f"[Phase Plot] Fehler beim Schreiben des Debug-Logs: {e}")
+                # #endregion
+                
                 if not has_surface_overrides:
                     return
             # Behalte NaN-Werte für Phase-Daten (werden später beim Rendering transparent dargestellt)
@@ -2405,13 +2619,46 @@ class SPL3DPlotRenderer:
                         phase_mean = float(np.nanmean(valid_phase))
                         print(f"[Phase Plot] Phase-Daten: min={phase_min:.2f}°, max={phase_max:.2f}°, mean={phase_mean:.2f}°, valid={len(valid_phase)}/{phase_values.size}")
                     else:
-                        print(f"[Phase Plot] Keine gültigen Phase-Daten (alle NaN)")
+                        print(f"[Phase Plot] ⚠️  WARNUNG: Keine gültigen Phase-Daten (alle NaN)")
+                        print(f"[Phase Plot]   - phase_values.shape: {phase_values.shape if hasattr(phase_values, 'shape') else 'N/A'}")
+                        print(f"[Phase Plot]   - phase_values.size: {phase_values.size if hasattr(phase_values, 'size') else 'N/A'}")
+                        print(f"[Phase Plot]   - NaN count: {np.sum(np.isnan(phase_values))}")
+                        print(f"[Phase Plot]   - Inf count: {np.sum(np.isinf(phase_values))}")
+                        
+                        # #region agent log
+                        try:
+                            import json
+                            import time as time_module
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "DEBUG",
+                                    "location": "Plot3DSPL.py:update_spl_plot:phase_mode_all_nan",
+                                    "message": "⚠️ WARNUNG: Alle Phase-Daten sind NaN",
+                                    "data": {
+                                        "phase_values_shape": list(phase_values.shape) if hasattr(phase_values, 'shape') else None,
+                                        "phase_values_size": phase_values.size if hasattr(phase_values, 'size') else None,
+                                        "nan_count": int(np.sum(np.isnan(phase_values))),
+                                        "inf_count": int(np.sum(np.isinf(phase_values))),
+                                        "valid_count": len(valid_phase)
+                                    },
+                                    "timestamp": int(time_module.time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                 except Exception as e:
                     print(f"[Phase Plot] Fehler bei Debug-Ausgabe: {e}")
         else:
-            pressure_2d = np.nan_to_num(np.abs(pressure), nan=0.0, posinf=0.0, neginf=0.0)
+            # 🎯 ANGLEICHUNG: Behalte NaN-Werte wie im Phase-Modus
+            pressure_2d = np.abs(pressure)
+            # Setze nur inf auf 0, behalte NaN
+            pressure_2d = np.where(np.isinf(pressure_2d), 0.0, pressure_2d)
             pressure_2d = np.clip(pressure_2d, 1e-12, None)
             spl_db = self.functions.mag2db(pressure_2d)
+            # Setze nur inf auf 0, behalte NaN
+            spl_db = np.where(np.isinf(spl_db), 0.0, spl_db)
             if getattr(self.settings, "fem_debug_logging", True):
                 try:
                     p_min = float(np.nanmin(pressure_2d))
@@ -2500,7 +2747,8 @@ class SPL3DPlotRenderer:
         # Clipping nur für Visualisierung (nicht für Sampling)
         if time_mode:
             plot_values = np.clip(plot_values, cbar_min, cbar_max)
-        elif phase_mode:
+        else:
+            # 🎯 ANGLEICHUNG: Phase- und SPL-Modus behandeln NaN gleich
             # #region agent log
             try:
                 import json
@@ -2525,7 +2773,7 @@ class SPL3DPlotRenderer:
                 pass
             # #endregion
             
-            # 🎯 FIX: Für Phase-Modus behalte NaN-Werte beim Clipping
+            # 🎯 ANGLEICHUNG: Für beide Modi behalte NaN-Werte beim Clipping
             # Clip nur gültige Werte, behalte NaN
             valid_mask = np.isfinite(plot_values)
             if np.any(valid_mask):
@@ -2554,8 +2802,6 @@ class SPL3DPlotRenderer:
             except Exception:
                 pass
             # #endregion
-        else:
-            plot_values = np.clip(plot_values, cbar_min - 20, cbar_max + 20)
         
         # 🎯 Gradient-Modus: Normales Upscaling (Performance-Optimierung)
         # Bilineare Interpolation sorgt bereits für glatte Übergänge, daher kein zusätzliches Upscaling nötig

@@ -81,10 +81,22 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
         impulse_signature: List[Tuple[float, float]] = []
         for point in impulse_points:
             try:
-                data = point["data"]
-                x_val, y_val = data
+                # 🚀 FIX: Robustere Extraktion der Koordinaten
+                data = point.get("data")
+                if data is None:
+                    continue
+                # Unterstütze sowohl Liste als auch Dict-Format
+                if isinstance(data, (list, tuple)) and len(data) >= 2:
+                    x_val, y_val = data[0], data[1]
+                elif isinstance(data, dict):
+                    x_val = data.get("x", data.get(0, 0.0))
+                    y_val = data.get("y", data.get(1, 0.0))
+                else:
+                    continue
                 impulse_signature.append((float(x_val), float(y_val)))
-            except Exception:
+            except (ValueError, TypeError, KeyError, IndexError) as e:
+                # Debug-Output für Fehlerfälle
+                print(f"[SPL3DOverlayImpulse] Fehler beim Verarbeiten eines Impulse Points: {e}, point={point}")
                 continue
         return tuple(sorted(impulse_signature))
 
