@@ -573,9 +573,10 @@ class SurfaceDataImporter:
             # Stelle sicher, dass imported Surfaces immer enabled=False haben
             surface.enabled = False
             
-            # Trianguliere grundsätzlich alle Flächen mit mindestens 3 Punkten
+            # Keine Triangulation beim Import (wie beim TXT-Import)
+            # Surfaces werden als Original-Polygone gespeichert
             target_surfaces: List[Tuple[str, SurfaceDefinition]] = []
-            triangulate_needed = len(surface.points) >= 3
+            triangulate_needed = False  # Keine Triangulation beim Import
             if triangulate_needed:
                 tris = triangulate_points(surface.points)
                 logger = logging.getLogger(__name__)
@@ -620,24 +621,83 @@ class SurfaceDataImporter:
 
             for sid, sdef in target_surfaces:
                 sid_unique = _make_unique_surface_id(self.settings.surface_definitions, sid)
+                # #region agent log - HYPOTHESIS A: Surface wird gespeichert
+                import json, time
+                try:
+                    group_id_before = getattr(sdef, "group_id", None)
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"SurfaceDataImporter.py:_store_surfaces:before_store","message":"BEFORE storing surface","data":{"surface_id":sid_unique,"original_id":sid,"group_id":str(group_id_before) if group_id_before else None,"has_group_manager":self.group_manager is not None},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
+                # #endregion
                 if hasattr(self.settings, "add_surface_definition"):
                     self.settings.add_surface_definition(sid_unique, sdef, make_active=False)
                 else:
                     self.settings.surface_definitions[sid_unique] = sdef
                 imported += 1
+                # #region agent log - HYPOTHESIS A: Surface wurde gespeichert
+                try:
+                    stored_check = sid_unique in getattr(self.settings, 'surface_definitions', {})
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"SurfaceDataImporter.py:_store_surfaces:after_store","message":"AFTER storing surface","data":{"surface_id":sid_unique,"stored_in_settings":stored_check,"total_surfaces":len(getattr(self.settings, 'surface_definitions', {}))},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
+                # #endregion
 
                 # Weise Surface direkt einer Gruppe zu (inkl. Erstellung)
                 if self.group_manager:
                     group_id = getattr(sdef, "group_id", None)
+                    # #region agent log - HYPOTHESIS B: Gruppen-Zuordnung
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"SurfaceDataImporter.py:_store_surfaces:before_assign","message":"BEFORE assigning to group","data":{"surface_id":sid_unique,"group_id":str(group_id) if group_id else None},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     if group_id:
-                        self.group_manager.assign_surface_to_group(
-                            sid_unique,
-                            group_id,
-                            create_missing=True,
-                        )
+                        # Stelle sicher, dass die Gruppe existiert, bevor wir das Surface zuordnen
+                        # (analog zu TXT-Import, wo _ensure_group_for_label die Gruppe erstellt)
+                        group = self.group_manager.get_group(group_id) if hasattr(self.group_manager, 'get_group') else None
+                        if not group:
+                            # Gruppe existiert nicht - erstelle sie (sollte eigentlich durch _ensure_group_for_label erstellt worden sein)
+                            # Extrahiere Gruppennamen aus group_id (falls es ein Label gibt)
+                            group_name = f"Group {group_id}" if group_id.startswith("group_") else group_id
+                            group = self.group_manager.create_surface_group(group_name, group_id=group_id)
+                        
+                        if group:
+                            self.group_manager.assign_surface_to_group(
+                                sid_unique,
+                                group_id,
+                                create_missing=False,  # Gruppe sollte bereits existieren
+                            )
+                        # #region agent log - HYPOTHESIS B: Surface wurde Gruppe zugeordnet
+                        try:
+                            assigned_group = self.group_manager.get_group(group_id) if hasattr(self.group_manager, 'get_group') else None
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"SurfaceDataImporter.py:_store_surfaces:after_assign","message":"AFTER assigning to group","data":{"surface_id":sid_unique,"group_id":str(group_id),"group_exists":assigned_group is not None,"group_name":assigned_group.name if assigned_group else None,"group_surface_count":len(assigned_group.surface_ids) if assigned_group else 0},"timestamp":int(time.time()*1000)})+"\n")
+                        except Exception:
+                            pass
+                        # #endregion
         if self.group_manager:
             # Struktur nur einmal am Ende sicherstellen
+            # #region agent log - HYPOTHESIS B: Gruppen-Struktur wird sichergestellt
+            import json, time
+            try:
+                groups_before = len(self.group_manager.list_groups()) if hasattr(self.group_manager, 'list_groups') else 0
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"SurfaceDataImporter.py:_store_surfaces:before_ensure","message":"BEFORE ensure_structure","data":{"groups_count":groups_before,"imported_count":imported},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
             self.group_manager.ensure_surface_group_structure()
+            # #region agent log - HYPOTHESIS B: Gruppen-Struktur wurde sichergestellt
+            try:
+                groups_after = len(self.group_manager.list_groups()) if hasattr(self.group_manager, 'list_groups') else 0
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"SurfaceDataImporter.py:_store_surfaces:after_ensure","message":"AFTER ensure_structure","data":{"groups_count":groups_after,"imported_count":imported},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
         return imported
 
     # ---- user confirmation ------------------------------------------

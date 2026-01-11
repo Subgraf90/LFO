@@ -414,7 +414,8 @@ class SPL3DOverlayBase:
                         except Exception:
                             pass
                     
-                    print(f"[_add_axis_line_mesh] Setting line_width for '{name}': requested={line_width:.2f}, before={actual_width_before:.2f if actual_width_before is not None else 'N/A'}")
+                    before_str = f"{actual_width_before:.2f}" if actual_width_before is not None else 'N/A'
+                    print(f"[_add_axis_line_mesh] Setting line_width for '{name}': requested={line_width:.2f}, before={before_str}")
                     
                     # Setze line_width explizit
                     if hasattr(prop, 'SetLineWidth'):
@@ -428,7 +429,8 @@ class SPL3DOverlayBase:
                         except Exception:
                             pass
                     
-                    print(f"[_add_axis_line_mesh] LineWidth after SetLineWidth for '{name}': {actual_width_after:.2f if actual_width_after is not None else 'N/A'} (requested: {line_width:.2f})")
+                    after_str = f"{actual_width_after:.2f}" if actual_width_after is not None else 'N/A'
+                    print(f"[_add_axis_line_mesh] LineWidth after SetLineWidth for '{name}': {after_str} (requested: {line_width:.2f})")
                     
                     # 🎯 WICHTIG: Deaktiviere Punkte explizit am Property-Objekt
                     # Dies verhindert, dass Punkte an Segmentenden beim zweiten Durchlauf sichtbar werden

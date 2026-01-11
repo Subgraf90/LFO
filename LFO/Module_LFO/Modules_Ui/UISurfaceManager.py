@@ -22,6 +22,8 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import (
 from Module_LFO.Modules_Data.SurfaceValidator import validate_and_optimize_surface, triangulate_points
 import logging
 
+logger = logging.getLogger(__name__)
+
 
 class UISurfaceManager(ModuleBase):
     """
@@ -1043,13 +1045,37 @@ class UISurfaceManager(ModuleBase):
     
     def load_surfaces(self):
         """Lädt alle Surfaces und Gruppen in das TreeWidget"""
+        # #region agent log - HYPOTHESIS C/E: load_surfaces Entry
+        import json, time
+        try:
+            has_widget = hasattr(self, 'surface_tree_widget')
+            widget_is_none = getattr(self, 'surface_tree_widget', None) is None if has_widget else True
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"UISurfaceManager.py:load_surfaces:entry","message":"load_surfaces ENTRY","data":{"has_tree_widget":has_widget,"tree_widget_is_none":widget_is_none},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         if not hasattr(self, 'surface_tree_widget'):
+            # #region agent log - HYPOTHESIS E: Kein TreeWidget
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"UISurfaceManager.py:load_surfaces:no_widget","message":"EARLY RETURN: no surface_tree_widget","data":{},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
             return
         
         logger = logging.getLogger(__name__)
         
         # Nur Validierung (keine Korrektur) beim Laden
         surface_store = getattr(self.settings, 'surface_definitions', {})
+        # #region agent log - HYPOTHESIS C: Surface Store gefunden
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"UISurfaceManager.py:load_surfaces:surface_store","message":"Surface store loaded","data":{"surface_count":len(surface_store),"surface_ids":list(surface_store.keys())[:10]},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         
         # #region agent log - VALIDIERUNG: Surface-Punkte vor load_surfaces
         try:
@@ -1136,6 +1162,14 @@ class UISurfaceManager(ModuleBase):
             group_id = surface.group_id if isinstance(surface, SurfaceDefinition) else surface.get('group_id')
             logger.debug("  Surface %s (%s) -> group %s", surface_id, name, group_id)
         
+        # Debug: Zeige Gruppen-Struktur
+        group_store = self._group_controller.list_groups()
+        logger.debug("load_surfaces: %d Gruppen gefunden (Root=%s)", len(group_store), root_group_id)
+        for group_id, group in group_store.items():
+            if group_id != root_group_id:
+                logger.debug("  Gruppe %s (%s): %d Surfaces, %d Child-Gruppen", 
+                           group_id, group.name, len(group.surface_ids), len(group.child_groups))
+        
         # Verwende Fortschrittsanzeige, falls main_window verfügbar ist und viele Surfaces vorhanden sind
         use_progress = (
             hasattr(self, 'main_window') and 
@@ -1220,12 +1254,41 @@ class UISurfaceManager(ModuleBase):
         
         # Lade manuelle Gruppen (ohne Root-Gruppe)
         group_store = self._group_controller.list_groups()
+        logger.debug("_load_surfaces_without_progress: Lade %d Gruppen (Root=%s)", len(group_store), root_group_id)
+        # #region agent log - HYPOTHESIS D: Gruppen werden geladen
+        import json, time
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"UISurfaceManager.py:_load_surfaces_without_progress:groups","message":"Groups found","data":{"groups_count":len(group_store),"root_group_id":str(root_group_id),"group_ids":list(group_store.keys())},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         # Lade alle Gruppen außer der Root-Gruppe
+        groups_added = 0
         for group_id, group in group_store.items():
             if group_id != root_group_id:
                 # Nur Top-Level-Gruppen (ohne Parent oder Parent ist Root)
                 if not group.parent_id or group.parent_id == root_group_id:
+                    logger.debug("  Füge Gruppe '%s' (%s) hinzu mit %d Surfaces", 
+                               group.name, group_id, len(group.surface_ids))
+                    # #region agent log - HYPOTHESIS D: Gruppe wird hinzugefügt
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"UISurfaceManager.py:_load_surfaces_without_progress:before_populate","message":"BEFORE _populate_group_tree","data":{"group_id":str(group_id),"group_name":group.name,"surface_count":len(group.surface_ids),"surface_ids":list(group.surface_ids)[:5]},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     self._populate_group_tree(None, group)
+                    groups_added += 1
+                    # #region agent log - HYPOTHESIS D: Gruppe wurde hinzugefügt
+                    try:
+                        tree_item_count = self.surface_tree_widget.topLevelItemCount() if self.surface_tree_widget else 0
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"UISurfaceManager.py:_load_surfaces_without_progress:after_populate","message":"AFTER _populate_group_tree","data":{"group_id":str(group_id),"tree_top_level_items":tree_item_count},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
+        logger.debug("_load_surfaces_without_progress: %d Gruppen zum TreeWidget hinzugefügt", groups_added)
         
         # Lade Surfaces ohne Gruppe als Top-Level-Items
         for surface_id, surface in surface_store.items():
@@ -1336,6 +1399,14 @@ class UISurfaceManager(ModuleBase):
     
     def _populate_group_tree(self, parent_item, group):
         """Rekursiv befüllt das TreeWidget mit Gruppen und deren Surfaces"""
+        # #region agent log - HYPOTHESIS D: _populate_group_tree Entry
+        import json, time
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"UISurfaceManager.py:_populate_group_tree:entry","message":"_populate_group_tree ENTRY","data":{"group_id":str(group.group_id),"group_name":group.name,"surface_count":len(group.surface_ids),"has_parent":parent_item is not None},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         # Erstelle Gruppen-Item
         group_item = self._create_group_item(group)
         
@@ -1354,13 +1425,30 @@ class UISurfaceManager(ModuleBase):
         
         # Füge Surfaces der Gruppe hinzu (umgekehrte Reihenfolge, damit neue oben erscheinen)
         surface_store = getattr(self.settings, 'surface_definitions', {})
+        surfaces_added = 0
         for surface_id in reversed(group.surface_ids):
             surface = surface_store.get(surface_id)
             if surface:
+                # #region agent log - HYPOTHESIS D: Surface wird zur Gruppe hinzugefügt
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"UISurfaceManager.py:_populate_group_tree:before_add_surface","message":"BEFORE adding surface to group","data":{"surface_id":str(surface_id),"group_id":str(group.group_id)},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
+                # #endregion
                 surface_item = self._create_surface_item(surface_id, surface)
                 group_item.insertChild(0, surface_item)
                 # ensure_surface_checkboxes prüft automatisch, ob Surface in Gruppe ist und entfernt Checkboxen
                 self.ensure_surface_checkboxes(surface_item)
+                surfaces_added += 1
+                # #region agent log - HYPOTHESIS D: Surface wurde zur Gruppe hinzugefügt
+                try:
+                    child_count = group_item.childCount()
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"UISurfaceManager.py:_populate_group_tree:after_add_surface","message":"AFTER adding surface to group","data":{"surface_id":str(surface_id),"group_id":str(group.group_id),"group_child_count":child_count},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
+                # #endregion
         
         # Expand-Zustand wird später durch _restore_expand_state() wiederhergestellt
         # group_item.setExpanded(True)  # Entfernt, da Zustand wiederhergestellt wird
@@ -2391,10 +2479,26 @@ class UISurfaceManager(ModuleBase):
         )
         
         result = importer.execute()
+        # #region agent log - HYPOTHESIS C: load_dxf nach Import
+        import json, time
+        try:
+            surface_count_before = len(getattr(self.settings, 'surface_definitions', {}))
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"UISurfaceManager.py:load_dxf:after_execute","message":"AFTER importer.execute()","data":{"result":bool(result),"surfaces_count":surface_count_before,"has_tree_widget":hasattr(self, 'surface_tree_widget')},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         if result:
             # Stelle sicher, dass Gruppen-Struktur aktuell ist
             self._group_controller.ensure_structure()
             # Lade TreeWidget neu
+            # #region agent log - HYPOTHESIS C: Vor load_surfaces
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"UISurfaceManager.py:load_dxf:before_load_surfaces","message":"BEFORE load_surfaces()","data":{"has_tree_widget":hasattr(self, 'surface_tree_widget'),"tree_widget_is_none":getattr(self, 'surface_tree_widget', None) is None},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
             self.load_surfaces()
             
             # Explizites Update des TreeWidgets
@@ -5170,15 +5274,21 @@ class _SurfaceGroupController:
                 group = self._ensure_group_object(target_group_id)
         
         if group is None and create_missing:
-            # Gruppe existiert nicht - erstelle sie mit group_id als temporären Namen
-            # (der Name sollte später aktualisiert werden, wenn die Gruppe durch _ensure_group_for_label erstellt wurde)
-            # Aber eigentlich sollte die Gruppe bereits existieren, wenn sie durch _ensure_group_for_label erstellt wurde
-            # Wenn group_id wie "group_1" aussieht, versuche nicht, eine Gruppe zu erstellen
-            # (die Gruppe sollte bereits existieren)
+            # Gruppe existiert nicht - erstelle sie
+            # Wenn group_id wie "group_1" aussieht, bedeutet das, dass die Gruppe durch _ensure_group_for_label
+            # bereits erstellt wurde, aber nicht im Store gefunden wird. Versuche sie zu finden oder erstelle sie neu.
             if target_group_id.startswith("group_"):
-                return
-            # Ansonsten erstelle eine neue Gruppe mit group_id als Name (Fallback)
-            group = self.create_surface_group(target_group_id, parent_id=None, group_id=target_group_id)
+                # Versuche die Gruppe im Store zu finden (vielleicht wurde sie gerade erstellt)
+                store = self._ensure_group_store()
+                if target_group_id in store:
+                    group = self._ensure_group_object(target_group_id)
+                else:
+                    # Gruppe wurde nicht gefunden - erstelle sie mit einem generischen Namen
+                    # Der Name wird später durch _ensure_group_for_label gesetzt
+                    group = self.create_surface_group(f"Group {target_group_id}", parent_id=None, group_id=target_group_id)
+            else:
+                # Ansonsten erstelle eine neue Gruppe mit group_id als Name (Fallback)
+                group = self.create_surface_group(target_group_id, parent_id=None, group_id=target_group_id)
         
         if group is None:
             # Gruppe existiert nicht und soll nicht erstellt werden

@@ -106,46 +106,54 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:56","message":"creating marker for point","data":{"x":x_val,"y":y_val,"z":z_val},"timestamp":time.time()*1000}) + '\n')
                 except: pass
                 # #endregion
-                # 🚀 Kugel + vertikale Scheibe auf Y-Seite (von z=0 bis zur Kugel)
+                # 🚀 Kugel + vertikale Kreisfläche auf Y-Minusseite (selber Z-Nullpunkt)
                 sphere_radius = 0.15
-                disk_width = 0.05  # Breite der vertikalen Scheibe
-                disk_offset_y = -sphere_radius - disk_width / 2.0  # Links von der Kugel in Y-Richtung
+                disk_radius = sphere_radius  # Durchmesser Kreis = Kugel-Durchmesser
                 
-                # Kugel am Messpunkt
+                # Kugel am Messpunkt - Unterseite bei z_val (nicht zentriert)
+                sphere_center_z = z_val + sphere_radius  # Kugel-Mitte so, dass Unterseite bei z_val ist
                 sphere = pv.Sphere(
                     radius=sphere_radius,
-                    center=(x_val, y_val, z_val),
+                    center=(x_val, y_val, sphere_center_z),
                     theta_resolution=16,
                     phi_resolution=16,
                 )
                 
-                # Vertikale Scheibe auf Y-Seite (von z=0 bis zur Kugel-Höhe)
+                # Vertikale Kreisfläche auf Y-Minusseite zur Kugel
                 meshes_to_combine = [sphere]
-                if z_val > 0.01:  # Nur wenn deutlich über Boden
-                    disk_height = z_val
-                    disk_center_y = y_val + disk_offset_y
-                    disk_x_min = x_val - sphere_radius
-                    disk_x_max = x_val + sphere_radius
-                    
-                    # Erstelle sehr dünne Box als vertikale Scheibe (dünn in Y, breit in X, hoch in Z)
-                    # Von z=0 bis z=disk_height, links von der Kugel in Y-Richtung
-                    disk = pv.Box(
-                        bounds=(
-                            disk_x_min,                        # x_min (breit wie Kugel)
-                            disk_x_max,                        # x_max
-                            disk_center_y - disk_width / 2.0,  # y_min
-                            disk_center_y + disk_width / 2.0,  # y_max
-                            0.0,                                # z_min (Boden/Nullpunkt)
-                            disk_height,                        # z_max (bis zur Kugel-Höhe)
-                        )
-                    )
-                    meshes_to_combine.append(disk)
-                    # #region agent log
-                    try:
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:73","message":"disk created","data":{"z_val":z_val,"disk_height":disk_height,"disk_center_y":disk_center_y},"timestamp":time.time()*1000}) + '\n')
-                    except: pass
-                    # #endregion
+                
+                # Kreisfläche positionieren (auf Y-Minusseite)
+                # Y-Position: Punktposition - Radius Kugel / 2
+                disk_center_y = y_val - sphere_radius / 2.0
+                disk_center_x = x_val  # X-Position gleich wie Kugel
+                disk_center_z = z_val  # Z-Position: z=0 ist unten wie bei Kugel
+                disk_thickness = 0.01  # Dicke für bessere Sichtbarkeit
+                
+                # Erstelle vertikale Kreisfläche als sehr dünnen Zylinder
+                # Die Kreisfläche soll in der XZ-Ebene liegen (vertikal, senkrecht zur Y-Achse)
+                # Ein Zylinder mit direction=(0,1,0) hat seine Achse in Y-Richtung
+                # und die Kreisfläche liegt bereits in der XZ-Ebene - keine Rotation nötig!
+                disk = pv.Cylinder(
+                    center=(disk_center_x, disk_center_y, disk_center_z),
+                    direction=(0, 1, 0),  # Achse in Y-Richtung = Kreisfläche in XZ-Ebene
+                    radius=disk_radius,
+                    height=disk_thickness,  # Dicke für Sichtbarkeit
+                    resolution=16,
+                )
+                # Keine Rotation nötig - der Zylinder ist bereits richtig orientiert
+                meshes_to_combine.append(disk)
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:142","message":"disk rotated and added","data":{"disk_thickness":disk_thickness,"disk_radius":disk_radius},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:73","message":"disk created","data":{"z_val":z_val,"sphere_center_z":sphere_center_z,"disk_radius":disk_radius,"disk_center_x":disk_center_x,"disk_center_y":disk_center_y,"disk_center_z":disk_center_z},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
                 
                 # Kombiniere Meshes zu einem einzigen Mesh (einfacher zu handhaben)
                 if len(meshes_to_combine) > 1:
@@ -169,7 +177,7 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 # #endregion
                 self._add_overlay_mesh(
                     combined_mesh,
-                    color="red",
+                    color="black",
                     opacity=1.0,
                     line_width=self._get_scaled_line_width(1.0),
                     category="impulse",
