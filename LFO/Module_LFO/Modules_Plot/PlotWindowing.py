@@ -41,6 +41,10 @@ class WindowingPlot(QWidget):
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         
+        # Verbinde Mouse-Move für Positionsanzeige
+        self.canvas.mpl_connect('motion_notify_event', self._on_mouse_move)
+        self.canvas.mpl_connect('axes_leave_event', self._on_axes_leave)
+        
         # Verbinde Resize-Event für automatische Anpassung
         self.canvas.mpl_connect('resize_event', self._on_canvas_resize)
 
@@ -468,3 +472,53 @@ class WindowingPlot(QWidget):
             self.canvas.mpl_disconnect(self._pan_release_cid)
         if hasattr(self.ax, '_pan_start'):
             del self.ax._pan_start
+    
+    def _get_main_window(self):
+        """Findet das MainWindow über den Widget-Tree"""
+        widget = self.parent()
+        while widget is not None:
+            from PyQt5.QtWidgets import QMainWindow
+            if isinstance(widget, QMainWindow):
+                return widget
+            widget = widget.parent()
+        return None
+    
+    def _update_mouse_position(self, text):
+        """Aktualisiert die Mauspositions-Anzeige"""
+        main_window = self._get_main_window()
+        if main_window and hasattr(main_window, 'ui') and hasattr(main_window.ui, 'mouse_position_label'):
+            main_window.ui.mouse_position_label.setText(text)
+    
+    def _clear_mouse_position(self):
+        """Löscht die Mauspositions-Anzeige"""
+        main_window = self._get_main_window()
+        if main_window and hasattr(main_window, 'ui') and hasattr(main_window.ui, 'mouse_position_label'):
+            main_window.ui.mouse_position_label.setText("")
+    
+    def _on_mouse_move(self, event):
+        """Handler für Mouse-Move im Windowing-Plot"""
+        if not event.inaxes or event.inaxes != self.ax:
+            self._clear_mouse_position()
+            return
+        
+        # Verhindere Anzeige während Pan
+        if hasattr(self.ax, '_pan_start'):
+            return
+        
+        try:
+            # X-Achse = Arc width (Meter), Y-Achse = Windowfunction (dB)
+            x_pos = event.xdata  # Arc width in Metern
+            y_db = event.ydata   # Windowfunction in dB
+            
+            if x_pos is None or y_db is None:
+                self._clear_mouse_position()
+                return
+            
+            text = f"Windowing:\nPos: {x_pos:.2f} m\nW.dB: {y_db:.1f} dB"
+            self._update_mouse_position(text)
+        except Exception as e:
+            pass
+    
+    def _on_axes_leave(self, event):
+        """Handler für Verlassen des Plot-Bereichs"""
+        self._clear_mouse_position()
