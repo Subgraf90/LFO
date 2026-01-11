@@ -109,15 +109,15 @@ class ImpulseInputDockWidget(QDockWidget):
         
         # TreeWidget für Messpunkte
         self.impulse_tree_widget = QTreeWidget()
-        self.impulse_tree_widget.setHeaderLabels(["Measurement Point", "Position X (m)", "Position Y (m)", "Position Z (m)", "Time offset (ms)", ""])
+        self.impulse_tree_widget.setHeaderLabels(["Measurement Point", "Position X (m)", "Position Y (m)", "Position Z (m)", "Offset (ms)", ""])
         self.impulse_tree_widget.setFixedHeight(120)
         
         # Breitere Spalten
         self.impulse_tree_widget.setColumnWidth(0, 160)
-        self.impulse_tree_widget.setColumnWidth(1, 100)
-        self.impulse_tree_widget.setColumnWidth(2, 100)
-        self.impulse_tree_widget.setColumnWidth(3, 100)
-        self.impulse_tree_widget.setColumnWidth(4, 100)
+        self.impulse_tree_widget.setColumnWidth(1, 85)
+        self.impulse_tree_widget.setColumnWidth(2, 85)
+        self.impulse_tree_widget.setColumnWidth(3, 85)
+        self.impulse_tree_widget.setColumnWidth(4, 85)
         self.impulse_tree_widget.setColumnWidth(5, 50)
         
         input_layout.addWidget(self.impulse_tree_widget)
@@ -252,7 +252,7 @@ class ImpulseInputDockWidget(QDockWidget):
         # X-Koordinate LineEdit
         x_edit = QLineEdit()
         x_edit.setValidator(QDoubleValidator(-100, 100, 2))
-        x_edit.setFixedWidth(90)
+        x_edit.setFixedWidth(75)
         x_edit.setFixedHeight(25)
         x_edit.setText(f"{point[0]:.2f}")
         x_edit.editingFinished.connect(
@@ -262,7 +262,7 @@ class ImpulseInputDockWidget(QDockWidget):
         # Y-Koordinate LineEdit
         y_edit = QLineEdit()
         y_edit.setValidator(QDoubleValidator(-100, 100, 2))
-        y_edit.setFixedWidth(98)
+        y_edit.setFixedWidth(75)
         y_edit.setFixedHeight(25)
         y_edit.setText(f"{point[1]:.2f}")
         y_edit.editingFinished.connect(
@@ -272,7 +272,7 @@ class ImpulseInputDockWidget(QDockWidget):
         # Z-Koordinate LineEdit
         z_edit = QLineEdit()
         z_edit.setValidator(QDoubleValidator(-100, 100, 2))
-        z_edit.setFixedWidth(98)
+        z_edit.setFixedWidth(75)
         z_edit.setFixedHeight(25)
         z_edit.setText(f"{point[2]:.2f}")
         z_edit.editingFinished.connect(
@@ -282,7 +282,7 @@ class ImpulseInputDockWidget(QDockWidget):
         # Time Offset LineEdit
         time_offset_edit = QLineEdit()
         time_offset_edit.setValidator(QDoubleValidator(-1000, 1000, 2))
-        time_offset_edit.setFixedWidth(98)
+        time_offset_edit.setFixedWidth(75)
         time_offset_edit.setFixedHeight(25)
         
         # Beim Laden: Verwende gespeicherten time_offset

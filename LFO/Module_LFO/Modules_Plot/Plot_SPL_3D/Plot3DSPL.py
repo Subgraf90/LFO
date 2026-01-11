@@ -844,58 +844,10 @@ class SPL3DPlotRenderer:
                                 spl_values_2d = np.real(sound_field_p_complex)
                                 spl_values_2d = np.nan_to_num(spl_values_2d, nan=0.0, posinf=0.0, neginf=0.0)
                             elif phase_mode:
-                                # #region agent log
-                                try:
-                                    import json
-                                    import time as time_module
-                                    nan_before_angle = np.sum(~np.isfinite(sound_field_p_complex))
-                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                        f.write(json.dumps({
-                                            "sessionId": "debug-session",
-                                            "runId": "run1",
-                                            "hypothesisId": "H2",
-                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_fallback_before",
-                                            "message": "Phase-Modus Fallback: Vor np.angle",
-                                            "data": {
-                                                "surface_id": surface_id,
-                                                "sound_field_p_complex_nan_count": int(nan_before_angle),
-                                                "sound_field_p_complex_size": sound_field_p_complex.size
-                                            },
-                                            "timestamp": int(time_module.time() * 1000)
-                                        }) + "\n")
-                                except Exception:
-                                    pass
-                                # #endregion
-                                
                                 # Fallback: Wenn keine Overrides vorhanden sind, verwende np.angle
                                 # 🎯 FIX: Konvertiere zu Grad für Konsistenz mit additional_vertices_phase
                                 spl_values_2d = np.degrees(np.angle(sound_field_p_complex))
                                 spl_values_2d = np.where(np.isinf(spl_values_2d), 0.0, spl_values_2d)
-                                
-                                # #region agent log
-                                try:
-                                    import json
-                                    import time as time_module
-                                    nan_after_angle = np.sum(~np.isfinite(spl_values_2d))
-                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                        f.write(json.dumps({
-                                            "sessionId": "debug-session",
-                                            "runId": "run1",
-                                            "hypothesisId": "H2",
-                                            "location": "Plot3DSPL.py:_render_surfaces:phase_mode_fallback_after",
-                                            "message": "Phase-Modus Fallback: Nach np.angle",
-                                            "data": {
-                                                "surface_id": surface_id,
-                                                "spl_values_2d_nan_count": int(nan_after_angle),
-                                                "spl_values_2d_size": spl_values_2d.size,
-                                                "nan_inherited": int(nan_before_angle) == int(nan_after_angle)
-                                            },
-                                            "timestamp": int(time_module.time() * 1000)
-                                        }) + "\n")
-                                except Exception:
-                                    pass
-                                # #endregion
-                                
                                 # Behalte NaN-Werte für transparente Darstellung
                             else:
                                 pressure_magnitude = np.abs(sound_field_p_complex)
@@ -1706,33 +1658,6 @@ class SPL3DPlotRenderer:
                                             v10 = spl_values_2d[j0, i1]
                                             v01 = spl_values_2d[j1, i0]
                                             v11 = spl_values_2d[j1, i1]
-                                            
-                                            # #region agent log
-                                            if phase_mode:
-                                                try:
-                                                    import json
-                                                    import time as time_module
-                                                    nan_in_grid = np.sum(~np.isfinite(spl_values_2d))
-                                                    nan_in_neighbors = np.sum(~np.isfinite(v00)) + np.sum(~np.isfinite(v10)) + np.sum(~np.isfinite(v01)) + np.sum(~np.isfinite(v11))
-                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                                        f.write(json.dumps({
-                                                            "sessionId": "debug-session",
-                                                            "runId": "run1",
-                                                            "hypothesisId": "H3",
-                                                            "location": "Plot3DSPL.py:_render_surfaces:bilinear_interp_before",
-                                                            "message": "Phase-Modus: Vor bilinearer Interpolation",
-                                                            "data": {
-                                                                "surface_id": surface_id,
-                                                                "spl_values_2d_nan_count": int(nan_in_grid),
-                                                                "spl_values_2d_total": spl_values_2d.size,
-                                                                "nan_in_neighbors_total": int(nan_in_neighbors),
-                                                                "n_vertices": n_vertices
-                                                            },
-                                                            "timestamp": int(time_module.time() * 1000)
-                                                        }) + "\n")
-                                                except Exception:
-                                                    pass
-                                            # #endregion
 
                                             # Bilineare Interpolation
                                             # 🎯 FIX: Für Phase-Modus behandle NaN-Werte in Grid-Werten korrekt
@@ -1844,7 +1769,6 @@ class SPL3DPlotRenderer:
                                                     # Sonst bleibt NaN
 
                                             # Maske anwenden (Punkte außerhalb der Surface -> NaN)
-                                            nan_before_mask = np.sum(~np.isfinite(spl_at_verts)) if phase_mode else 0
                                             if surface_mask.size == Xg_arr.size and surface_mask.shape == Xg_arr.shape:
                                                 mask_flat = surface_mask.ravel().astype(bool)
                                                 # Erzeuge Zellmaske im gleichen Verfahren wie oben: nur Zellen mit allen 4 Punkten
@@ -1854,61 +1778,9 @@ class SPL3DPlotRenderer:
                                                     & mask_flat.reshape(Yg_arr.shape)[j1, i0]
                                                     & mask_flat.reshape(Yg_arr.shape)[j1, i1]
                                                 )
-                                                
-                                                # #region agent log
-                                                if phase_mode:
-                                                    try:
-                                                        import json
-                                                        import time as time_module
-                                                        cells_masked = np.sum(~cell_mask)
-                                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                                            f.write(json.dumps({
-                                                                "sessionId": "debug-session",
-                                                                "runId": "run1",
-                                                                "hypothesisId": "H4",
-                                                                "location": "Plot3DSPL.py:_render_surfaces:mask_application",
-                                                                "message": "Phase-Modus: Maske wird angewendet",
-                                                                "data": {
-                                                                    "surface_id": surface_id,
-                                                                    "n_vertices": n_vertices,
-                                                                    "cells_masked_to_nan": int(cells_masked),
-                                                                    "nan_before_mask": int(nan_before_mask),
-                                                                    "cell_mask_total": len(cell_mask)
-                                                                },
-                                                                "timestamp": int(time_module.time() * 1000)
-                                                            }) + "\n")
-                                                    except Exception:
-                                                        pass
-                                                # #endregion
-                                                
                                                 spl_at_verts = np.where(cell_mask, spl_at_verts, np.nan)
 
                                             valid_mask = np.isfinite(spl_at_verts)
-                                            
-                                            # #region agent log
-                                            if phase_mode:
-                                                try:
-                                                    import json
-                                                    import time as time_module
-                                                    nan_after_mask = np.sum(~valid_mask)
-                                                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                                        f.write(json.dumps({
-                                                            "sessionId": "debug-session",
-                                                            "runId": "run1",
-                                                            "hypothesisId": "H4",
-                                                            "location": "Plot3DSPL.py:_render_surfaces:mask_application_after",
-                                                            "message": "Phase-Modus: Nach Masken-Anwendung",
-                                                            "data": {
-                                                                "surface_id": surface_id,
-                                                                "nan_after_mask": int(nan_after_mask),
-                                                                "valid_count": int(np.sum(valid_mask)),
-                                                                "nan_added_by_mask": int(nan_after_mask - nan_before_mask)
-                                                            },
-                                                            "timestamp": int(time_module.time() * 1000)
-                                                        }) + "\n")
-                                                except Exception:
-                                                    pass
-                                            # #endregion
                                             
                                             # 🎯 DEBUG: Prüfe ob nach Interpolation gültige Daten vorhanden sind
                                             if phase_mode and not np.any(valid_mask):
@@ -2422,32 +2294,6 @@ class SPL3DPlotRenderer:
                     surface_values = None
                     use_phase_data = False
                     if phase_mode:
-                        # #region agent log
-                        try:
-                            import json
-                            import time as time_module
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "H1",
-                                    "location": "Plot3DSPL.py:update_spl_plot:phase_mode_entry",
-                                    "message": "Phase-Modus: Start Phase-Daten-Berechnung",
-                                    "data": {
-                                        "surface_id": sid,
-                                        "sound_field_p_complex_shape": list(sound_field_p_complex.shape) if hasattr(sound_field_p_complex, 'shape') else None,
-                                        "sound_field_p_complex_size": sound_field_p_complex.size if hasattr(sound_field_p_complex, 'size') else None,
-                                        "sound_field_p_complex_nan_count": int(np.sum(~np.isfinite(sound_field_p_complex))) if hasattr(sound_field_p_complex, '__len__') else None,
-                                        "Xg_shape": list(Xg.shape) if hasattr(Xg, 'shape') else None,
-                                        "has_sound_field_phase": 'sound_field_phase' in result_data,
-                                        "has_global_phase_data": global_phase_data is not None
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
-                        
                         # 🎯 OPTIMIERUNG: Prüfe zuerst, ob Phase-Daten pro Surface bereits gespeichert sind (z.B. aus Snapshot)
                         if 'sound_field_phase' in result_data:
                             try:
@@ -2456,29 +2302,6 @@ class SPL3DPlotRenderer:
                                     # Phase-Daten pro Surface bereits vorhanden - verwende diese direkt
                                     surface_values = phase_values_2d
                                     use_phase_data = True
-                                    
-                                    # #region agent log
-                                    try:
-                                        import json
-                                        import time as time_module
-                                        nan_count = np.sum(~np.isfinite(phase_values_2d))
-                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "run1",
-                                                "hypothesisId": "H1",
-                                                "location": "Plot3DSPL.py:update_spl_plot:phase_mode_use_stored",
-                                                "message": "Phase-Modus: Verwende gespeicherte Phase-Daten",
-                                                "data": {
-                                                    "surface_id": sid,
-                                                    "nan_count": int(nan_count),
-                                                    "total_count": phase_values_2d.size
-                                                },
-                                                "timestamp": int(time_module.time() * 1000)
-                                            }) + "\n")
-                                    except Exception:
-                                        pass
-                                    # #endregion
                             except Exception:
                                 pass
                         
@@ -2518,36 +2341,13 @@ class SPL3DPlotRenderer:
                                 # NaN-Werte werden transparent dargestellt, 0.0 würde als 0° angezeigt werden
                                 # Setze nur inf/neginf auf 0, aber behalte NaN
                                 phase_values_2d = np.where(np.isinf(phase_values_2d), 0.0, phase_values_2d)
-                                
-                                # #region agent log
-                                try:
-                                    import json
-                                    import time as time_module
-                                    nan_count_after_interp = np.sum(~np.isfinite(phase_values_2d))
-                                    if nan_count_after_interp > 0:
-                                        total_points = phase_values_2d.size
-                                        nan_percentage = (nan_count_after_interp / total_points * 100) if total_points > 0 else 0
-                                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                            f.write(json.dumps({
-                                                "sessionId": "debug-session",
-                                                "runId": "run1",
-                                                "hypothesisId": "H2",
-                                                "location": "Plot3DSPL.py:update_spl_plot:phase_interpolation_after",
-                                                "message": "Phase-Modus: Nach Interpolation vom globalen Grid",
-                                                "data": {
-                                                    "surface_id": sid,
-                                                    "nan_count_after_interp": int(nan_count_after_interp),
-                                                    "total_points": int(total_points),
-                                                    "nan_percentage": float(nan_percentage)
-                                                },
-                                                "timestamp": int(time_module.time() * 1000)
-                                            }) + "\n")
-                                except Exception:
-                                    pass
-                                # #endregion
-                                
                                 surface_values = phase_values_2d  # Behalte NaN-Werte für transparente Darstellung
                                 use_phase_data = True
+                                
+                                # 🎯 SNAPSHOT: Speichere Phase-Daten pro Surface in surface_results für Snapshot
+                                # Dies ermöglicht später das Laden ohne erneute Interpolation
+                                if sid in surface_results_data:
+                                    surface_results_data[sid]['sound_field_phase'] = phase_values_2d.tolist()
                             except Exception:
                                 # Falls Interpolation fehlschlägt, verwende Standard-Pfad
                                 pass
@@ -2607,31 +2407,6 @@ class SPL3DPlotRenderer:
                     # erstelle surface_overrides mit Dummy-Daten (als Marker, da Triangulation aus surface_grids_data kommt)
                     if use_phase_data and surface_values is not None:
                         # Verwende interpolierte Phase-Daten (Phase-Modus)
-                        # #region agent log
-                        try:
-                            import json
-                            import time as time_module
-                            surface_values_valid = surface_values[np.isfinite(surface_values)] if surface_values.size > 0 else np.array([])
-                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "run1",
-                                    "hypothesisId": "K2",
-                                    "location": "Plot3DSPL.py:update_spl_plot:surface_phase_override",
-                                    "message": "Surface Phase-Override erstellt",
-                                    "data": {
-                                        "surface_id": sid,
-                                        "surface_values_shape": list(surface_values.shape),
-                                        "surface_values_valid_count": len(surface_values_valid),
-                                        "surface_values_min": float(np.nanmin(surface_values_valid)) if len(surface_values_valid) > 0 else None,
-                                        "surface_values_max": float(np.nanmax(surface_values_valid)) if len(surface_values_valid) > 0 else None,
-                                        "surface_values_mean": float(np.nanmean(surface_values_valid)) if len(surface_values_valid) > 0 else None
-                                    },
-                                    "timestamp": int(time_module.time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         surface_overrides[sid] = {
                             "source_x": np.asarray(gx, dtype=float),
                             "source_y": np.asarray(gy, dtype=float),

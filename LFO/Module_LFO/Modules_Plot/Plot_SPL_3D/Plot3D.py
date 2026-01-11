@@ -283,31 +283,108 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
             if phase_mode or time_mode:
                 return
             
-            # Hole Schallfeld-Daten
+            # Sammle alle SPL-Werte: globale Daten + aktive Surface-Flächen
+            all_spl_values = []
+            
+            # 1. Hole globale Schallfeld-Daten
             sound_field_p = calc_spl.get('sound_field_p')
-            if sound_field_p is None:
+            if sound_field_p is not None:
+                pressure_array = np.array(sound_field_p, dtype=complex)
+                if pressure_array.size > 0:
+                    # Berechne SPL in dB
+                    pressure_abs = np.abs(pressure_array)
+                    pressure_abs = np.clip(pressure_abs, 1e-12, None)
+                    spl_db = self.functions.mag2db(pressure_abs)
+                    # Entferne NaN und Inf Werte
+                    finite_mask = np.isfinite(spl_db)
+                    if np.any(finite_mask):
+                        all_spl_values.append(spl_db[finite_mask])
+            
+            # 2. Hole SPL-Werte von aktiven Surface-Flächen
+            surface_results_data = calc_spl.get('surface_results', {})
+            surface_grids_data = calc_spl.get('surface_grids', {})
+            surface_definitions = getattr(self.settings, 'surface_definitions', {}) or {}
+            
+            if isinstance(surface_results_data, dict) and isinstance(surface_definitions, dict):
+                # Prüfe welche Surfaces als "empty" markiert sind
+                empty_surface_ids = set()
+                if isinstance(surface_grids_data, dict):
+                    for sid, grid_data in surface_grids_data.items():
+                        if isinstance(grid_data, dict) and grid_data.get('is_empty', False):
+                            empty_surface_ids.add(sid)
+                
+                # Prüfe Gruppen-Status
+                surface_groups = getattr(self.settings, 'surface_groups', {})
+                group_status: dict[str, dict[str, bool]] = {}
+                if isinstance(surface_groups, dict):
+                    for group_id, group in surface_groups.items():
+                        if isinstance(group, dict):
+                            group_status[group_id] = {
+                                'enabled': group.get('enabled', True),
+                                'hidden': group.get('hidden', False),
+                            }
+                
+                # Iteriere über alle Surfaces
+                for surface_id, surface_def in surface_definitions.items():
+                    # Prüfe ob Surface aktiv ist
+                    if isinstance(surface_def, SurfaceDefinition):
+                        enabled = bool(getattr(surface_def, "enabled", False))
+                        hidden = bool(getattr(surface_def, "hidden", False))
+                        group_id = getattr(surface_def, 'group_id', None)
+                    else:
+                        enabled = bool(surface_def.get("enabled", False))
+                        hidden = bool(surface_def.get("hidden", False))
+                        group_id = surface_def.get('group_id') or surface_def.get('group_name')
+                    
+                    # Berücksichtige Gruppen-Status
+                    if group_id and group_id in group_status:
+                        group_enabled = group_status[group_id]['enabled']
+                        group_hidden = group_status[group_id]['hidden']
+                        if group_hidden:
+                            hidden = True
+                        elif not group_enabled:
+                            enabled = False
+                    
+                    # Überspringe inaktive oder leere Surfaces
+                    if not enabled or hidden or str(surface_id) in empty_surface_ids:
+                        continue
+                    
+                    # Hole Surface-Daten
+                    if surface_id not in surface_results_data:
+                        continue
+                    
+                    result_data = surface_results_data[surface_id]
+                    if not isinstance(result_data, dict):
+                        continue
+                    
+                    # Hole sound_field_p für dieses Surface
+                    surface_sound_field_p = result_data.get('sound_field_p')
+                    if surface_sound_field_p is not None:
+                        try:
+                            surface_pressure = np.array(surface_sound_field_p, dtype=complex)
+                            if surface_pressure.size > 0:
+                                # Berechne SPL in dB
+                                surface_pressure_abs = np.abs(surface_pressure)
+                                surface_pressure_abs = np.clip(surface_pressure_abs, 1e-12, None)
+                                surface_spl_db = self.functions.mag2db(surface_pressure_abs)
+                                # Entferne NaN und Inf Werte
+                                surface_finite_mask = np.isfinite(surface_spl_db)
+                                if np.any(surface_finite_mask):
+                                    all_spl_values.append(surface_spl_db[surface_finite_mask])
+                        except Exception:
+                            # Fehler bei Surface-Daten ignorieren
+                            pass
+            
+            # Prüfe ob überhaupt Daten vorhanden sind
+            if not all_spl_values:
                 return
             
-            # Konvertiere zu numpy array
-            pressure_array = np.array(sound_field_p, dtype=float)
+            # Kombiniere alle SPL-Werte
+            combined_spl = np.concatenate(all_spl_values)
             
-            # Prüfe ob Daten vorhanden sind
-            if pressure_array.size == 0:
-                return
-            
-            # Entferne NaN und Inf Werte
-            finite_mask = np.isfinite(pressure_array)
-            if not np.any(finite_mask):
-                return
-            
-            # Berechne SPL in dB
-            pressure_abs = np.abs(pressure_array)
-            pressure_abs = np.clip(pressure_abs, 1e-12, None)
-            spl_db = self.functions.mag2db(pressure_abs)
-            
-            # Finde minimalen und maximalen SPL (nur finite Werte)
-            spl_min = float(np.nanmin(spl_db[finite_mask]))
-            spl_max = float(np.nanmax(spl_db[finite_mask]))
+            # Finde minimalen und maximalen SPL
+            spl_min = float(np.nanmin(combined_spl))
+            spl_max = float(np.nanmax(combined_spl))
             
             # Runde auf nächste ganze Zahl (für bessere Lesbarkeit)
             spl_max_rounded = np.ceil(spl_max)
