@@ -52,23 +52,24 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
             self._last_impulse_state = current_state
             return
 
-        for x_val, y_val in current_state:
+        for x_val, y_val, z_val in current_state:
             try:
-                # Erstelle einen kleinen Kegel (zeigt nach oben)
-                cone = pv.Cone(
-                    center=(x_val, y_val, 0.0),
-                    direction=(0.0, 0.0, 1.0),
-                    height=0.3,
-                    radius=0.1,
-                    resolution=20,
+                # 🚀 Kugel als Messpunkt-Marker (von allen Seiten gleich gut sichtbar)
+                # Radius etwas größer als Kegel-Radius für bessere Sichtbarkeit
+                sphere_radius = 0.15
+                sphere = pv.Sphere(
+                    radius=sphere_radius,
+                    center=(x_val, y_val, z_val),
+                    theta_resolution=16,  # Horizontale Auflösung
+                    phi_resolution=16,    # Vertikale Auflösung
                 )
                 self._add_overlay_mesh(
-                    cone,
+                    sphere,
                     color="red",
                     opacity=1.0,
                     line_width=self._get_scaled_line_width(1.0),
                     category="impulse",
-                    render_lines_as_tubes=True,
+                    render_lines_as_tubes=False,  # Kugel braucht keine Tubes
                 )
             except Exception:
                 continue
@@ -78,7 +79,14 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
     def _compute_impulse_state(self, settings) -> tuple:
         """Erzeugt eine robuste Signatur der Impulse Points."""
         impulse_points = getattr(settings, "impulse_points", []) or []
-        impulse_signature: List[Tuple[float, float]] = []
+        # #region agent log
+        import json
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:81","message":"_compute_impulse_state start","data":{"impulse_points_count":len(impulse_points),"settings_id":id(settings),"has_attr":hasattr(settings,"impulse_points"),"raw_points":str(impulse_points[:2]) if impulse_points else "empty"},"timestamp":__import__('time').time()*1000}) + '\n')
+        except: pass
+        # #endregion
+        impulse_signature: List[Tuple[float, float, float]] = []
         for point in impulse_points:
             try:
                 # 🚀 FIX: Robustere Extraktion der Koordinaten
@@ -88,12 +96,14 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 # Unterstütze sowohl Liste als auch Dict-Format
                 if isinstance(data, (list, tuple)) and len(data) >= 2:
                     x_val, y_val = data[0], data[1]
+                    z_val = data[2] if len(data) > 2 else 0.0
                 elif isinstance(data, dict):
                     x_val = data.get("x", data.get(0, 0.0))
                     y_val = data.get("y", data.get(1, 0.0))
+                    z_val = data.get("z", data.get(2, 0.0))
                 else:
                     continue
-                impulse_signature.append((float(x_val), float(y_val)))
+                impulse_signature.append((float(x_val), float(y_val), float(z_val)))
             except (ValueError, TypeError, KeyError, IndexError) as e:
                 # Debug-Output für Fehlerfälle
                 print(f"[SPL3DOverlayImpulse] Fehler beim Verarbeiten eines Impulse Points: {e}, point={point}")

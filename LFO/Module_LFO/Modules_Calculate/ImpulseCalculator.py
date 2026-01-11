@@ -270,7 +270,11 @@ class ImpulseCalculator(ModuleBase):
             fft_size = 2048
     
         for point_key in self.settings.impulse_points:
-            point_x, point_y = point_key['data']
+            point_data = point_key['data']
+            # Stelle sicher, dass point_data mindestens 3 Elemente hat (für Rückwärtskompatibilität)
+            if len(point_data) < 3:
+                point_data = list(point_data) + [0.0] * (3 - len(point_data))
+            point_x, point_y, point_z = point_data[0], point_data[1], point_data[2]
             speaker_responses = {}
             max_amplitude = 0  # Für gemeinsame Normalisierung
                 
@@ -302,7 +306,8 @@ class ImpulseCalculator(ModuleBase):
                     
                     x_distance = point_x - source_position_x[i]
                     y_distance = point_y - source_position_y[i]
-                    z_distance = source_position_z[i] if source_position_z is not None else 0
+                    source_z = source_position_z[i] if source_position_z is not None else 0
+                    z_distance = point_z - source_z
                         
                     # Horizontale und 3D-Distanz berechnen
                     horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
@@ -402,7 +407,7 @@ class ImpulseCalculator(ModuleBase):
                     
                 impulse_responses[point_key['key']] = {
                     'speaker_responses': speaker_responses,
-                    'position': (point_x, point_y)
+                    'position': (point_x, point_y, point_z)
                 }
             
         return impulse_responses if impulse_responses else None
@@ -792,7 +797,11 @@ class ImpulseCalculator(ModuleBase):
                 continue
 
             entries = []
-            point_x, point_y = point_key['data']
+            point_data = point_key['data']
+            # Stelle sicher, dass point_data mindestens 3 Elemente hat (für Rückwärtskompatibilität)
+            if len(point_data) < 3:
+                point_data = list(point_data) + [0.0] * (3 - len(point_data))
+            point_x, point_y, point_z = point_data[0], point_data[1], point_data[2]
             time_offset = point_key.get('time_offset', 0.0)
 
             for speaker_name, response in responses.items():
@@ -836,6 +845,12 @@ class ImpulseCalculator(ModuleBase):
                     'source_position_calc_y',
                     speaker_array.source_position_y,
                 )[speaker_number]
+                source_position_z = getattr(
+                    speaker_array,
+                    'source_position_calc_z',
+                    None
+                )
+                source_z = source_position_z[speaker_number] if source_position_z is not None else 0.0
 
                 array_gain = getattr(speaker_array, 'gain', 0.0)
                 speaker_gain = speaker_array.source_level[speaker_number]
@@ -853,6 +868,7 @@ class ImpulseCalculator(ModuleBase):
                     'freq_data': freq_data,
                     'source_x': float(source_position_x),
                     'source_y': float(source_position_y),
+                    'source_z': float(source_z),
                     'total_gain': float(total_gain),
                     'total_delay': float(total_delay),
                     'color': color
@@ -863,12 +879,17 @@ class ImpulseCalculator(ModuleBase):
 
             source_x = np.array([entry['source_x'] for entry in entries], dtype=float)
             source_y = np.array([entry['source_y'] for entry in entries], dtype=float)
+            source_z = np.array([entry['source_z'] for entry in entries], dtype=float)
             total_gain = np.array([entry['total_gain'] for entry in entries], dtype=float)
             total_delay = np.array([entry['total_delay'] for entry in entries], dtype=float)
 
             x_distance = point_x - source_x
             y_distance = point_y - source_y
-            distances = np.sqrt(x_distance ** 2 + y_distance ** 2)
+            z_distance = point_z - source_z
+            
+            # 3D-Distanz berechnen
+            horizontal_dist = np.sqrt(x_distance ** 2 + y_distance ** 2)
+            distances = np.sqrt(horizontal_dist ** 2 + z_distance ** 2)
 
             arrival_time = (distances / speed_of_sound) * 1000.0 - time_offset + total_delay
 

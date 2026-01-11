@@ -343,7 +343,13 @@ class UiFile:
             
             # Lade Messpunkte
             if 'impulse_points' in loaded_data:
-                self.settings.impulse_points = loaded_data['impulse_points']
+                impulse_points = loaded_data['impulse_points']
+                # Migration: Stelle sicher, dass alle impulse_points mindestens 3 Koordinaten haben (X, Y, Z)
+                for point in impulse_points:
+                    if 'data' in point and isinstance(point['data'], (list, tuple)):
+                        if len(point['data']) < 3:
+                            point['data'] = list(point['data']) + [0.0] * (3 - len(point['data']))
+                self.settings.impulse_points = impulse_points
             
             # Lade Snapshots
             if 'snapshots' in loaded_data:

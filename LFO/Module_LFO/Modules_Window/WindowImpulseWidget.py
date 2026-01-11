@@ -109,7 +109,7 @@ class ImpulseInputDockWidget(QDockWidget):
         
         # TreeWidget für Messpunkte
         self.impulse_tree_widget = QTreeWidget()
-        self.impulse_tree_widget.setHeaderLabels(["Measurement Point", "Position X (m)", "Position Y (m)", "Time offset (ms)", ""])
+        self.impulse_tree_widget.setHeaderLabels(["Measurement Point", "Position X (m)", "Position Y (m)", "Position Z (m)", "Time offset (ms)", ""])
         self.impulse_tree_widget.setFixedHeight(120)
         
         # Breitere Spalten
@@ -117,7 +117,8 @@ class ImpulseInputDockWidget(QDockWidget):
         self.impulse_tree_widget.setColumnWidth(1, 100)
         self.impulse_tree_widget.setColumnWidth(2, 100)
         self.impulse_tree_widget.setColumnWidth(3, 100)
-        self.impulse_tree_widget.setColumnWidth(4, 50)
+        self.impulse_tree_widget.setColumnWidth(4, 100)
+        self.impulse_tree_widget.setColumnWidth(5, 50)
         
         input_layout.addWidget(self.impulse_tree_widget)
         
@@ -200,7 +201,11 @@ class ImpulseInputDockWidget(QDockWidget):
         for point in sorted_points:
             # Füge Messpunkt hinzu mit gespeichertem Namen
             saved_name = point.get('name', point.get('text', point['key']))
-            self.add_measurement_point(initial=True, point=point['data'], key=point['key'], name=saved_name)
+            point_data = point['data']
+            # Stelle sicher, dass point_data mindestens 3 Elemente hat (für Rückwärtskompatibilität)
+            if len(point_data) < 3:
+                point_data = list(point_data) + [0.0] * (3 - len(point_data))
+            self.add_measurement_point(initial=True, point=point_data, key=point['key'], name=saved_name)
         
         # Wähle den ersten Messpunkt aus, falls vorhanden
         if self.settings.impulse_points:
@@ -210,7 +215,10 @@ class ImpulseInputDockWidget(QDockWidget):
 
     def add_measurement_point(self, initial=True, point=None, key=None, name=None):
         if point is None:
-            point = [0, 30]  # Standardwerte für neuen Messpunkt
+            point = [0, 30, 0]  # Standardwerte für neuen Messpunkt (X, Y, Z)
+        # Stelle sicher, dass point mindestens 3 Elemente hat (für Rückwärtskompatibilität)
+        if len(point) < 3:
+            point = list(point) + [0.0] * (3 - len(point))
     
         # Generiere einen eindeutigen Schlüssel (technisch, nicht sichtbar)
         if key is None:
@@ -261,6 +269,16 @@ class ImpulseInputDockWidget(QDockWidget):
             lambda y_edit=y_edit, key=key: self.update_impulse_point_y(y_edit, key))
         self.impulse_tree_widget.setItemWidget(item, 2, y_edit)
 
+        # Z-Koordinate LineEdit
+        z_edit = QLineEdit()
+        z_edit.setValidator(QDoubleValidator(-100, 100, 2))
+        z_edit.setFixedWidth(98)
+        z_edit.setFixedHeight(25)
+        z_edit.setText(f"{point[2]:.2f}")
+        z_edit.editingFinished.connect(
+            lambda z_edit=z_edit, key=key: self.update_impulse_point_z(z_edit, key))
+        self.impulse_tree_widget.setItemWidget(item, 3, z_edit)
+
         # Time Offset LineEdit
         time_offset_edit = QLineEdit()
         time_offset_edit.setValidator(QDoubleValidator(-1000, 1000, 2))
@@ -279,7 +297,7 @@ class ImpulseInputDockWidget(QDockWidget):
         
         time_offset_edit.editingFinished.connect(
             lambda edit=time_offset_edit, key=key: self.update_time_offset(edit, key))
-        self.impulse_tree_widget.setItemWidget(item, 3, time_offset_edit)
+        self.impulse_tree_widget.setItemWidget(item, 4, time_offset_edit)
 
         # Find Button
         find_button = QPushButton("Find")
@@ -287,11 +305,12 @@ class ImpulseInputDockWidget(QDockWidget):
         find_button.setFixedHeight(25)
         find_button.clicked.connect(
             lambda checked, key=key: self.find_nearest_source_delay(key))
-        self.impulse_tree_widget.setItemWidget(item, 4, find_button)
+        self.impulse_tree_widget.setItemWidget(item, 5, find_button)
 
         if not initial:
             # Neuen Messpunkt zu den Einstellungen hinzufügen
             import time
+            import json
             self.settings.impulse_points.append({
                 'key': key, 
                 'data': point, 
@@ -300,6 +319,12 @@ class ImpulseInputDockWidget(QDockWidget):
                 'time_offset': 0.0,
                 'created_at': time.time()  # Zeitstempel für Sortierung
             })
+            # #region agent log
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"WindowImpulseWidget.py:277","message":"impulse point added","data":{"key":key,"point":point,"total_count":len(self.settings.impulse_points)},"timestamp":time.time()*1000}) + '\n')
+            except: pass
+            # #endregion
             self.container.set_measurement_point(key, point)
             
             # 🚀 FIX: Sofortige Berechnung und Plot-Update nach Hinzufügen eines Points
@@ -362,6 +387,9 @@ class ImpulseInputDockWidget(QDockWidget):
             index = next((i for i, point in enumerate(self.settings.impulse_points) 
                          if point['key'] == key), None)
             if index is not None:
+                # Stelle sicher, dass data mindestens 3 Elemente hat
+                if len(self.settings.impulse_points[index]['data']) < 3:
+                    self.settings.impulse_points[index]['data'] = list(self.settings.impulse_points[index]['data']) + [0.0] * (3 - len(self.settings.impulse_points[index]['data']))
                 self.settings.impulse_points[index]['data'][1] = value
                 self.container.set_measurement_point(key, self.settings.impulse_points[index]['data'])
                 self.schedule_calculation()
@@ -370,6 +398,27 @@ class ImpulseInputDockWidget(QDockWidget):
         except ValueError:
             if index is not None:
                 edit.setText(f"{self.settings.impulse_points[index]['data'][1]:.2f}")
+
+    def update_impulse_point_z(self, edit, key):
+        try:
+            value = round(float(edit.text()) if edit.text() else 0, 2)
+            index = next((i for i, point in enumerate(self.settings.impulse_points) 
+                         if point['key'] == key), None)
+            if index is not None:
+                # Stelle sicher, dass data mindestens 3 Elemente hat
+                if len(self.settings.impulse_points[index]['data']) < 3:
+                    self.settings.impulse_points[index]['data'] = list(self.settings.impulse_points[index]['data']) + [0.0] * (3 - len(self.settings.impulse_points[index]['data']))
+                self.settings.impulse_points[index]['data'][2] = value
+                self.container.set_measurement_point(key, self.settings.impulse_points[index]['data'])
+                self.schedule_calculation()
+                self._refresh_measurement_overlays()
+            edit.setText(f"{value:.2f}")
+        except ValueError:
+            if index is not None:
+                # Stelle sicher, dass data mindestens 3 Elemente hat
+                if len(self.settings.impulse_points[index]['data']) < 3:
+                    self.settings.impulse_points[index]['data'] = list(self.settings.impulse_points[index]['data']) + [0.0] * (3 - len(self.settings.impulse_points[index]['data']))
+                edit.setText(f"{self.settings.impulse_points[index]['data'][2]:.2f}")
 
     def delete_measurement_point(self, item=None):
         """
@@ -469,8 +518,10 @@ class ImpulseInputDockWidget(QDockWidget):
             return
         
         # Hole die Koordinaten des Messpunkts
-        point_x = point['data'][0]
-        point_y = point['data'][1]
+        point_data = point['data']
+        point_x = point_data[0]
+        point_y = point_data[1]
+        point_z = point_data[2] if len(point_data) > 2 else 0.0
         
         # Finde die kürzeste Distanz zu einer aktiven Quelle
         min_distance = float('inf')
@@ -481,7 +532,13 @@ class ImpulseInputDockWidget(QDockWidget):
             for i in range(len(speaker_array.source_position_x)):
                 x_distance = point_x - speaker_array.source_position_x[i]
                 y_distance = point_y - speaker_array.source_position_y[i]
-                distance = np.sqrt(x_distance**2 + y_distance**2)
+                source_position_z = getattr(speaker_array, 'source_position_calc_z', None)
+                source_z = source_position_z[i] if source_position_z is not None else 0.0
+                z_distance = point_z - source_z
+                
+                # 3D-Distanz berechnen
+                horizontal_dist = np.sqrt(x_distance**2 + y_distance**2)
+                distance = np.sqrt(horizontal_dist**2 + z_distance**2)
                 
                 if distance < min_distance:
                     min_distance = distance
@@ -502,7 +559,7 @@ class ImpulseInputDockWidget(QDockWidget):
             for i in range(root.childCount()):
                 item = root.child(i)
                 if item.data(0, Qt.UserRole) == key:
-                    time_offset_edit = self.impulse_tree_widget.itemWidget(item, 3)
+                    time_offset_edit = self.impulse_tree_widget.itemWidget(item, 4)
                     if time_offset_edit:
                         time_offset_edit.setText(f"{delay:.2f}")
                     break

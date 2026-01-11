@@ -348,32 +348,38 @@ class SoundFieldCalculatorXaxis(ModuleBase):
                     all_interpolated_x.append(np.array([np.nan]))
                     all_sound_field_p.append(np.array([np.nan]))
             
+
+
+            
             # Kombiniere alle Segmente
             sound_field_x_xaxis_calc = np.concatenate(all_interpolated_x)
             sound_field_p = np.concatenate(all_sound_field_p)
-    
-        # 🎯 FIX: Prüfe ZUERST ob aktive Quellen vorhanden sind, BEVOR mag2db() aufgerufen wird
-        # Dies verhindert, dass -200 dB Werte erzeugt werden, wenn alle Lautsprecher muted sind
+
+
+
+
+        # Akzeptiere NICHT mehr grün: Setze Farbe immer auf lila, niemals auf grün (auch nicht wenn Kurve sinnvoll)
+        # Prüfe weiterhin, ob aktive Quellen vorhanden sind, bevor mag2db() aufgerufen wird.
         has_active_sources = any(not (arr.mute or arr.hide) for arr in self.settings.speaker_arrays.values())
-        
+
         if not has_active_sources:
             # Keine aktiven Quellen → keine Berechnung, zeige Empty Plot
             self.calculation_spl["aktuelle_simulation"] = {
                 "x_data_xaxis": np.array([]),
                 "y_data_xaxis": np.array([]),
                 "show_in_plot": False,
-                "color": "#6A5ACD",
+                "color": "#6A5ACD",  # Lila bleibt immer, nie grün!
                 "segment_boundaries_xaxis": []
             }
-            
             return
+
+        
+        
+        
+        
         
         sound_field_p_calc = self.functions.mag2db(sound_field_p)
 
-        # Prüfen, ob das Ergebnis verwertbar ist
-        
-        # Wenn keine aktive Quelle beteiligt war, bleibt das Feld numerisch 0 (vor dB-Umrechnung -inf)
-        # Wir prüfen konservativ auf eine sehr kleine Varianz nach dB-Umrechnung
         is_meaningful_curve = np.isfinite(sound_field_p_calc).any()
 
         show_curve = has_active_sources and is_meaningful_curve
