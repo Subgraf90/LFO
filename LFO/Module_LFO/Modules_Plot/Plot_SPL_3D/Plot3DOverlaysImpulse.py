@@ -106,12 +106,15 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:56","message":"creating marker for point","data":{"x":x_val,"y":y_val,"z":z_val},"timestamp":time.time()*1000}) + '\n')
                 except: pass
                 # #endregion
-                # 🚀 Kugel + vertikale Kreisfläche auf Y-Minusseite (selber Z-Nullpunkt)
-                sphere_radius = 0.15
-                disk_radius = sphere_radius  # Durchmesser Kreis = Kugel-Durchmesser
+                # 🚀 Kugel + vertikale Kreisfläche am Scheitelpunkt (selber Z-Nullpunkt)
+                # Kugelradius aus Settings lesen
+                sphere_radius = getattr(settings, "measurement_size", 4.0) / 2.0  # measurement_size ist Durchmesser, Radius = Durchmesser / 2
+                # Scheibe: Durchmesser und Dicke proportional zur Kugel
+                disk_radius = sphere_radius  # Durchmesser Kreis = Kugel-Durchmesser (proportional)
                 
                 # Kugel am Messpunkt - Unterseite bei z_val (nicht zentriert)
                 sphere_center_z = z_val + sphere_radius  # Kugel-Mitte so, dass Unterseite bei z_val ist
+                sphere_top_z = z_val + 2 * sphere_radius  # Oberseite der Kugel
                 sphere = pv.Sphere(
                     radius=sphere_radius,
                     center=(x_val, y_val, sphere_center_z),
@@ -119,39 +122,116 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                     phi_resolution=16,
                 )
                 
-                # Vertikale Kreisfläche auf Y-Minusseite zur Kugel
+                # Vertikale Kreisfläche am Scheitelpunkt der Kugel (Y-Minusseite)
                 meshes_to_combine = [sphere]
                 
-                # Kreisfläche positionieren (auf Y-Minusseite)
-                # Y-Position: Punktposition - Radius Kugel / 2
-                disk_center_y = y_val - sphere_radius / 2.0
+                # Kreisfläche positionieren (am Scheitelpunkt der Kugel auf Y-Minusseite)
+                # Y-Position: Punktposition - Radius Kugel (tangential am Scheitelpunkt)
+                disk_center_y = y_val - sphere_radius
                 disk_center_x = x_val  # X-Position gleich wie Kugel
-                disk_center_z = z_val  # Z-Position: z=0 ist unten wie bei Kugel
-                disk_thickness = 0.01  # Dicke für bessere Sichtbarkeit
+                # Dicke der Scheibe proportional zur Kugelgröße (10% des Radius = 5% des Durchmessers)
+                disk_thickness = sphere_radius * 0.1  # Proportional zum Radius der Kugel
+                
+                # Vertikale Scheibe: von z=0 bis zur Oberseite der Kugel
+                disk_height = sphere_top_z - z_val  # Höhe von z_val bis Oberseite der Kugel
+                # Scheibe am Scheitelpunkt (Oberseite) der Kugel positionieren
+                # Die Scheibe soll am Scheitelpunkt tangential zur Kugel sein
+                # Die Scheibe reicht vertikal von z=0 bis zur Oberseite
+                # Am Scheitelpunkt bedeutet: Die Scheibe soll am höchsten Punkt der Kugel tangential sein
+                # Die Oberseite der Scheibe soll am Scheitelpunkt sein, also:
+                # disk_center_z + disk_height/2 = sphere_top_z
+                # disk_center_z = sphere_top_z - disk_height/2
+                disk_center_z = sphere_top_z - disk_height / 2.0  # Mitte so, dass Oberseite am Scheitelpunkt ist
+                
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"Plot3DOverlaysImpulse.py:140","message":"disk center z calculation","data":{"sphere_top_z":sphere_top_z,"disk_height":disk_height,"disk_center_z":disk_center_z,"calculation":"sphere_top_z - disk_height/2"},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
+                
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:135","message":"disk position calculation","data":{"x_val":x_val,"y_val":y_val,"z_val":z_val,"sphere_radius":sphere_radius,"sphere_center_z":sphere_center_z,"sphere_top_z":sphere_top_z,"disk_center_x":disk_center_x,"disk_center_y":disk_center_y,"disk_center_z":disk_center_z,"disk_height":disk_height,"disk_radius":disk_radius,"calculation_z":"sphere_top_z - disk_height/2","expected_scheitel_z":sphere_top_z,"expected_disk_top_z":disk_center_z + disk_height/2,"expected_disk_bottom_z":disk_center_z - disk_height/2},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
+                
+                # #region agent log
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"Plot3DOverlaysImpulse.py:130","message":"sphere and disk params","data":{"measurement_size":getattr(settings,"measurement_size",4.0),"sphere_radius":sphere_radius,"z_val":z_val,"sphere_center_z":sphere_center_z,"sphere_top_z":sphere_top_z,"disk_height":disk_height,"disk_center_z":disk_center_z,"disk_center_y":disk_center_y},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
                 
                 # Erstelle vertikale Kreisfläche als sehr dünnen Zylinder
                 # Die Kreisfläche soll in der XZ-Ebene liegen (vertikal, senkrecht zur Y-Achse)
-                # Ein Zylinder mit direction=(0,1,0) hat seine Achse in Y-Richtung
-                # und die Kreisfläche liegt bereits in der XZ-Ebene - keine Rotation nötig!
+                # Ein Zylinder mit direction=(0,0,1) hat seine Achse in Z-Richtung (vertikal)
+                # Die Kreisfläche liegt in der XY-Ebene - wir rotieren um 90° um die X-Achse
+                # damit die Kreisfläche in der XZ-Ebene liegt
                 disk = pv.Cylinder(
                     center=(disk_center_x, disk_center_y, disk_center_z),
-                    direction=(0, 1, 0),  # Achse in Y-Richtung = Kreisfläche in XZ-Ebene
+                    direction=(0, 0, 1),  # Achse in Z-Richtung (vertikal)
                     radius=disk_radius,
-                    height=disk_thickness,  # Dicke für Sichtbarkeit
+                    height=disk_height,  # Vertikale Höhe von z_val bis Oberseite der Kugel
                     resolution=16,
                 )
-                # Keine Rotation nötig - der Zylinder ist bereits richtig orientiert
+                # Rotiere um 90° um die X-Achse, damit die Kreisfläche in der XZ-Ebene liegt
+                disk.rotate_x(90, inplace=True)
+                # #region agent log
+                try:
+                    # Prüfe Position nach Rotation
+                    bounds = disk.bounds
+                    center_after_rotation = disk.center
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"Plot3DOverlaysImpulse.py:178","message":"disk after rotation","data":{"center_before_rotation":(disk_center_x,disk_center_y,disk_center_z),"center_after_rotation":center_after_rotation,"bounds":bounds},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
+                # Nach Rotation um X-Achse: Y und Z werden vertauscht
+                # Die Scheibe sollte bei Y=disk_center_y (tangential am Scheitelpunkt) und Z=disk_center_z sein
+                # Korrigiere die Position nach Rotation
+                disk.translate([
+                    disk_center_x - center_after_rotation[0],
+                    disk_center_y - center_after_rotation[1],
+                    disk_center_z - center_after_rotation[2]
+                ], inplace=True)
+                # #region agent log
+                try:
+                    center_after_translate = disk.center
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"Plot3DOverlaysImpulse.py:192","message":"disk after translate correction","data":{"center_after_translate":center_after_translate,"expected_center":(disk_center_x,disk_center_y,disk_center_z)},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
+                # Skaliere die Y-Dimension auf disk_thickness für die dünne Scheibe
+                disk.scale([1.0, disk_thickness / disk_height, 1.0], inplace=True)
+                # #region agent log
+                try:
+                    # Prüfe Position nach Skalierung
+                    bounds_after_scale = disk.bounds
+                    center_after_scale = disk.center
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"Plot3DOverlaysImpulse.py:202","message":"disk after scale","data":{"center_after_scale":center_after_scale,"bounds_after_scale":bounds_after_scale,"scale_factor_y":disk_thickness / disk_height},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
+                # Korrigiere Position nach Skalierung - die Skalierung verschiebt die Position
+                # Die Scheibe soll am Scheitelpunkt tangential sein: Y-Position = disk_center_y
+                disk.translate([
+                    disk_center_x - center_after_scale[0],
+                    disk_center_y - center_after_scale[1],
+                    disk_center_z - center_after_scale[2]
+                ], inplace=True)
+                # #region agent log
+                try:
+                    center_after_scale_correction = disk.center
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H","location":"Plot3DOverlaysImpulse.py:211","message":"disk after scale correction","data":{"center_after_scale_correction":center_after_scale_correction,"expected_center":(disk_center_x,disk_center_y,disk_center_z),"sphere_scheitel_y":y_val},"timestamp":time.time()*1000}) + '\n')
+                except: pass
+                # #endregion
                 meshes_to_combine.append(disk)
                 # #region agent log
                 try:
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:142","message":"disk rotated and added","data":{"disk_thickness":disk_thickness,"disk_radius":disk_radius},"timestamp":time.time()*1000}) + '\n')
-                except: pass
-                # #endregion
-                # #region agent log
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:73","message":"disk created","data":{"z_val":z_val,"sphere_center_z":sphere_center_z,"disk_radius":disk_radius,"disk_center_x":disk_center_x,"disk_center_y":disk_center_y,"disk_center_z":disk_center_z},"timestamp":time.time()*1000}) + '\n')
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"Plot3DOverlaysImpulse.py:195","message":"disk created","data":{"disk_radius":disk_radius,"disk_height":disk_height,"disk_thickness":disk_thickness,"disk_center_z":disk_center_z,"disk_center_y":disk_center_y},"timestamp":time.time()*1000}) + '\n')
                 except: pass
                 # #endregion
                 

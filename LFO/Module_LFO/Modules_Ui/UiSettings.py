@@ -739,7 +739,21 @@ class UiSettings(QtWidgets.QWidget):
             value = round(float(self.size_of_measurement_point.text()), 2)
             if self.settings.measurement_size != value:
                 self.settings.measurement_size = value
-                self.main_window.update_speaker_array_calculations()
+                # 🚀 OPTIMIERUNG: Nur Plot-Overlays aktualisieren, keine Neuberechnung
+                # Die Größe des Messpunktes beeinflusst nur die visuelle Darstellung im 3D-Plot
+                if hasattr(self.main_window, 'draw_plots') and hasattr(self.main_window.draw_plots, 'draw_spl_plotter'):
+                    plotter = self.main_window.draw_plots.draw_spl_plotter
+                    if plotter is not None and hasattr(plotter, 'update_overlays'):
+                        # Setze Signatur zurück, damit Impulse-Overlays neu gezeichnet werden
+                        if hasattr(plotter, 'overlay_impulse') and hasattr(plotter.overlay_impulse, '_last_impulse_state'):
+                            plotter.overlay_impulse._last_impulse_state = None
+                        if hasattr(plotter, '_last_overlay_signatures'):
+                            if isinstance(plotter._last_overlay_signatures, dict):
+                                plotter._last_overlay_signatures.pop('impulse', None)
+                        plotter.update_overlays(self.settings, self.container)
+                        # Render explizit aufrufen, damit Änderungen sofort sichtbar sind
+                        if hasattr(plotter, 'render'):
+                            plotter.render()
             self.size_of_measurement_point.setText(f"{value:.2f}")
         except ValueError:
             self.size_of_measurement_point.setText(f"{self.settings.measurement_size:.2f}")
