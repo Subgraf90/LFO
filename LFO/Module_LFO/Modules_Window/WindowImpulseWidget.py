@@ -109,16 +109,17 @@ class ImpulseInputDockWidget(QDockWidget):
         
         # TreeWidget für Messpunkte
         self.impulse_tree_widget = QTreeWidget()
-        self.impulse_tree_widget.setHeaderLabels(["Measurement Point", "Position X (m)", "Position Y (m)", "Position Z (m)", "Offset (ms)", ""])
+        self.impulse_tree_widget.setHeaderLabels(["#", "Measurement Point", "Position X (m)", "Position Y (m)", "Position Z (m)", "Offset (ms)", ""])
         self.impulse_tree_widget.setFixedHeight(120)
         
         # Breitere Spalten
-        self.impulse_tree_widget.setColumnWidth(0, 160)
-        self.impulse_tree_widget.setColumnWidth(1, 85)
-        self.impulse_tree_widget.setColumnWidth(2, 85)
-        self.impulse_tree_widget.setColumnWidth(3, 85)
-        self.impulse_tree_widget.setColumnWidth(4, 85)
-        self.impulse_tree_widget.setColumnWidth(5, 50)
+        self.impulse_tree_widget.setColumnWidth(0, 45)   # Nummer-Spalte
+        self.impulse_tree_widget.setColumnWidth(1, 130)  # Measurement Point
+        self.impulse_tree_widget.setColumnWidth(2, 85)   # Position X
+        self.impulse_tree_widget.setColumnWidth(3, 85)   # Position Y
+        self.impulse_tree_widget.setColumnWidth(4, 85)   # Position Z
+        self.impulse_tree_widget.setColumnWidth(5, 85)   # Offset
+        self.impulse_tree_widget.setColumnWidth(6, 50)   # Button
         
         input_layout.addWidget(self.impulse_tree_widget)
         
@@ -157,7 +158,7 @@ class ImpulseInputDockWidget(QDockWidget):
 
         # Setze das Widget und konfiguriere die Fensterattribute
         self.setWidget(dock_widget_content)
-        self.resize(680, total_height)  # Erhöhte Breite und Höhe
+        self.resize(800, total_height)  # Erhöhte Breite und Höhe
         self.setFloating(True)
         
         # Aktiviere Kontextmenü
@@ -198,14 +199,17 @@ class ImpulseInputDockWidget(QDockWidget):
         )
         
         # Füge die Messpunkte in sortierter Reihenfolge hinzu
-        for point in sorted_points:
+        for idx, point in enumerate(sorted_points, start=1):
+            # Setze oder aktualisiere die Nummer
+            point['number'] = idx
+            
             # Füge Messpunkt hinzu mit gespeichertem Namen
             saved_name = point.get('name', point.get('text', point['key']))
             point_data = point['data']
             # Stelle sicher, dass point_data mindestens 3 Elemente hat (für Rückwärtskompatibilität)
             if len(point_data) < 3:
                 point_data = list(point_data) + [0.0] * (3 - len(point_data))
-            self.add_measurement_point(initial=True, point=point_data, key=point['key'], name=saved_name)
+            self.add_measurement_point(initial=True, point=point_data, key=point['key'], name=saved_name, number=idx)
         
         # Wähle den ersten Messpunkt aus, falls vorhanden
         if self.settings.impulse_points:
@@ -213,7 +217,7 @@ class ImpulseInputDockWidget(QDockWidget):
             if first_item:
                 self.impulse_tree_widget.setCurrentItem(first_item)
 
-    def add_measurement_point(self, initial=True, point=None, key=None, name=None):
+    def add_measurement_point(self, initial=True, point=None, key=None, name=None, number=None):
         if point is None:
             point = [0, 30, 0]  # Standardwerte für neuen Messpunkt (X, Y, Z)
         # Stelle sicher, dass point mindestens 3 Elemente hat (für Rückwärtskompatibilität)
@@ -229,6 +233,11 @@ class ImpulseInputDockWidget(QDockWidget):
                 key = f"measurement_{len(self.settings.impulse_points) + counter}"
                 counter += 1
         
+        # Bestimme die Nummer für den neuen Messpunkt
+        if number is None:
+            # Beim neuen Erstellen: Nächste freie Nummer
+            number = len(self.settings.impulse_points) + 1
+        
         # Beim Laden (initial=True): Verwende übergebenen Namen
         # Beim Erstellen (initial=False): Generiere neuen Namen wenn nicht vorhanden
         if name is None:
@@ -236,18 +245,17 @@ class ImpulseInputDockWidget(QDockWidget):
                 # Beim Laden ohne Namen: Fallback auf key
                 name = key
             else:
-                # Beim neuen Erstellen: Finde nächste freie Point-Nummer
-                index = 1
-                existing_names = {p.get('name', p.get('text', '')) for p in self.settings.impulse_points}
-                while f"Point {index}" in existing_names:
-                    index += 1
-                name = f"Point {index}"
+                # Beim neuen Erstellen: Verwende fortlaufende Nummer
+                name = f"Point {number}"
     
         # Erstelle neues TreeWidget Item
         item = QTreeWidgetItem(self.impulse_tree_widget)
-        item.setFlags(item.flags() | Qt.ItemIsEditable)  # Macht Item editierbar
-        item.setText(0, name)  # Zeige den Namen an
-        item.setData(0, Qt.UserRole, key)  # Speichere den technischen Key
+        item.setText(0, str(number))  # Zeige die Nummer an
+        item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)  # Linksbündig ausrichten
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)  # Spalte 0 nicht editierbar
+        item.setText(1, name)  # Zeige den Namen an
+        item.setFlags(item.flags() | Qt.ItemIsEditable)  # Spalte 1 editierbar
+        item.setData(1, Qt.UserRole, key)  # Speichere den technischen Key
 
         # X-Koordinate LineEdit
         x_edit = QLineEdit()
@@ -257,7 +265,7 @@ class ImpulseInputDockWidget(QDockWidget):
         x_edit.setText(f"{point[0]:.2f}")
         x_edit.editingFinished.connect(
             lambda x_edit=x_edit, key=key: self.update_impulse_point_x(x_edit, key))
-        self.impulse_tree_widget.setItemWidget(item, 1, x_edit)
+        self.impulse_tree_widget.setItemWidget(item, 2, x_edit)
 
         # Y-Koordinate LineEdit
         y_edit = QLineEdit()
@@ -267,7 +275,7 @@ class ImpulseInputDockWidget(QDockWidget):
         y_edit.setText(f"{point[1]:.2f}")
         y_edit.editingFinished.connect(
             lambda y_edit=y_edit, key=key: self.update_impulse_point_y(y_edit, key))
-        self.impulse_tree_widget.setItemWidget(item, 2, y_edit)
+        self.impulse_tree_widget.setItemWidget(item, 3, y_edit)
 
         # Z-Koordinate LineEdit
         z_edit = QLineEdit()
@@ -277,7 +285,7 @@ class ImpulseInputDockWidget(QDockWidget):
         z_edit.setText(f"{point[2]:.2f}")
         z_edit.editingFinished.connect(
             lambda z_edit=z_edit, key=key: self.update_impulse_point_z(z_edit, key))
-        self.impulse_tree_widget.setItemWidget(item, 3, z_edit)
+        self.impulse_tree_widget.setItemWidget(item, 4, z_edit)
 
         # Time Offset LineEdit
         time_offset_edit = QLineEdit()
@@ -297,7 +305,7 @@ class ImpulseInputDockWidget(QDockWidget):
         
         time_offset_edit.editingFinished.connect(
             lambda edit=time_offset_edit, key=key: self.update_time_offset(edit, key))
-        self.impulse_tree_widget.setItemWidget(item, 4, time_offset_edit)
+        self.impulse_tree_widget.setItemWidget(item, 5, time_offset_edit)
 
         # Find Button
         find_button = QPushButton("Find")
@@ -305,7 +313,7 @@ class ImpulseInputDockWidget(QDockWidget):
         find_button.setFixedHeight(25)
         find_button.clicked.connect(
             lambda checked, key=key: self.find_nearest_source_delay(key))
-        self.impulse_tree_widget.setItemWidget(item, 5, find_button)
+        self.impulse_tree_widget.setItemWidget(item, 6, find_button)
 
         if not initial:
             # Neuen Messpunkt zu den Einstellungen hinzufügen
@@ -317,6 +325,7 @@ class ImpulseInputDockWidget(QDockWidget):
                 'name': name,  # Benutzerfreundlicher Name
                 'text': key,   # Behalte text für Kompatibilität
                 'time_offset': 0.0,
+                'number': number,  # Nummer des Messpunkts
                 'created_at': time.time()  # Zeitstempel für Sortierung
             })
             # #region agent log
@@ -342,18 +351,18 @@ class ImpulseInputDockWidget(QDockWidget):
         """
         Wird aufgerufen wenn ein Impulse Point umbenannt wird.
         """
-        if column != 0:  # Nur bei Spalte 0 (Name)
+        if column != 1:  # Nur bei Spalte 1 (Name)
             return
         
-        key = item.data(0, Qt.UserRole)
-        new_name = item.text(0).strip()  # Entferne Leerzeichen
+        key = item.data(1, Qt.UserRole)
+        new_name = item.text(1).strip()  # Entferne Leerzeichen
         
         if not new_name:
             # Leerer Name nicht erlaubt
             for p in self.settings.impulse_points:
                 if p['key'] == key:
                     old_name = p.get('name', p.get('text', key))
-                    item.setText(0, old_name)
+                    item.setText(1, old_name)
                     break
             return
         
@@ -433,7 +442,7 @@ class ImpulseInputDockWidget(QDockWidget):
             if not item:
                 return  # Wenn kein Item ausgewählt ist, beende die Funktion
         
-        key = item.data(0, Qt.UserRole)  # Hole den gespeicherten key
+        key = item.data(1, Qt.UserRole)  # Hole den gespeicherten key (jetzt in Spalte 1)
         
         # Lösche aus den Einstellungen
         index = next((i for i, point in enumerate(self.settings.impulse_points) 
@@ -451,6 +460,9 @@ class ImpulseInputDockWidget(QDockWidget):
         # Lösche aus dem TreeWidget
         root = self.impulse_tree_widget.invisibleRootItem()
         root.removeChild(item)
+        
+        # Aktualisiere die Nummern nach dem Löschen
+        self._renumber_measurement_points()
         
         # Aktualisiere die Berechnung
         self.schedule_calculation()
@@ -475,6 +487,18 @@ class ImpulseInputDockWidget(QDockWidget):
                 traceback.print_exc()
 
 
+    def _renumber_measurement_points(self):
+        """Aktualisiert die Nummern aller Messpunkte nach dem Löschen"""
+        # Aktualisiere die Nummern in den Settings
+        for idx, point in enumerate(self.settings.impulse_points, start=1):
+            point['number'] = idx
+        
+        # Aktualisiere die Nummern im TreeWidget
+        root = self.impulse_tree_widget.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            item.setText(0, str(i + 1))
+
     def show_context_menu(self, position):
         """Zeigt das Kontextmenü an der Mausposition"""
         item = self.impulse_tree_widget.itemAt(position)
@@ -487,7 +511,7 @@ class ImpulseInputDockWidget(QDockWidget):
             delete_action = context_menu.addAction("Delete")
             
             # Verbinde Aktionen mit Funktionen
-            rename_action.triggered.connect(lambda: self.impulse_tree_widget.editItem(item))
+            rename_action.triggered.connect(lambda: self.impulse_tree_widget.editItem(item, 1))  # Bearbeite Spalte 1 (Name)
             delete_action.triggered.connect(lambda: self.delete_measurement_point(item))
             
             # Zeige Menü an Mausposition
@@ -558,8 +582,8 @@ class ImpulseInputDockWidget(QDockWidget):
             root = self.impulse_tree_widget.invisibleRootItem()
             for i in range(root.childCount()):
                 item = root.child(i)
-                if item.data(0, Qt.UserRole) == key:
-                    time_offset_edit = self.impulse_tree_widget.itemWidget(item, 4)
+                if item.data(1, Qt.UserRole) == key:
+                    time_offset_edit = self.impulse_tree_widget.itemWidget(item, 5)
                     if time_offset_edit:
                         time_offset_edit.setText(f"{delay:.2f}")
                     break

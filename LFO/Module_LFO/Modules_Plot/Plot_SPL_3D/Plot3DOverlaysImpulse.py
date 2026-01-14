@@ -20,12 +20,14 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
         super().__init__(plotter, pv_module)
         self._overlay_prefix = "imp_"
         self._last_impulse_state: Optional[tuple] = None
+        self._last_measurement_size: Optional[float] = None
 
     def clear_category(self, category: str) -> None:
         """Überschreibt clear_category, um State zurückzusetzen."""
         super().clear_category(category)
         if category == "impulse":
             self._last_impulse_state = None
+            self._last_measurement_size = None
 
     def draw_impulse_points(self, settings) -> None:
         """Zeichnet Impulse Points als rote Kegel."""
@@ -38,6 +40,7 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
         except: pass
         # #endregion
         current_state = self._compute_impulse_state(settings)
+        current_measurement_size = getattr(settings, "measurement_size", 4.0)
         existing_names = self._category_actors.get("impulse", [])
 
         # Skip, wenn sich nichts geändert hat und bereits Actors existieren
@@ -49,7 +52,10 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:33","message":"current_state computed","data":{"current_state_len":len(current_state) if current_state else 0,"current_state":str(current_state[:1]) if current_state else None,"last_state":str(self._last_impulse_state[:1]) if self._last_impulse_state else None},"timestamp":time.time()*1000}) + '\n')
         except: pass
         # #endregion
-        if self._last_impulse_state == current_state and existing_names:
+        # Prüfe ob sich Position ODER measurement_size geändert hat
+        if (self._last_impulse_state == current_state and 
+            self._last_measurement_size == current_measurement_size and 
+            existing_names):
             # #region agent log
             try:
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
@@ -98,17 +104,30 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:55","message":"starting mesh creation loop","data":{"points_count":len(current_state),"pv_available":pv is not None},"timestamp":time.time()*1000}) + '\n')
         except: pass
         # #endregion
-        for x_val, y_val, z_val in current_state:
+        
+        # Sammle Text-Label-Positionen und -Texte
+        label_positions = []
+        label_texts = []
+        
+        for x_val, y_val, z_val, number in current_state:
             try:
                 # #region agent log
                 try:
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:56","message":"creating marker for point","data":{"x":x_val,"y":y_val,"z":z_val},"timestamp":time.time()*1000}) + '\n')
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:56","message":"creating marker for point","data":{"x":x_val,"y":y_val,"z":z_val,"number":number},"timestamp":time.time()*1000}) + '\n')
                 except: pass
                 # #endregion
                 # 🚀 Kugel + vertikale Kreisfläche am Scheitelpunkt (selber Z-Nullpunkt)
                 # Kugelradius aus Settings lesen
                 sphere_radius = getattr(settings, "measurement_size", 4.0) / 2.0  # measurement_size ist Durchmesser, Radius = Durchmesser / 2
+                
+                # Sammle Label-Position und -Text (Text rechts neben der Kugel)
+                label_offset = sphere_radius * 1.5  # Abstand vom Mittelpunkt der Kugel
+                label_x = x_val + label_offset
+                label_y = y_val
+                label_z = z_val + sphere_radius  # Höhe der Kugelmitte
+                label_positions.append([label_x, label_y, label_z])
+                label_texts.append(str(number))
                 # Scheibe: Durchmesser und Dicke proportional zur Kugel
                 disk_radius = sphere_radius  # Durchmesser Kreis = Kugel-Durchmesser (proportional)
                 
@@ -258,7 +277,7 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 self._add_overlay_mesh(
                     combined_mesh,
                     color="black",
-                    opacity=1.0,
+                    opacity=0.5,
                     line_width=self._get_scaled_line_width(1.0),
                     category="impulse",
                     render_lines_as_tubes=False,
@@ -277,11 +296,55 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 except: pass
                 # #endregion
                 continue
+        
+        # Füge Text-Labels für alle Messpunkte hinzu
+        if label_positions and label_texts:
+            try:
+                import numpy as np
+                # Schriftgröße dynamisch basierend auf measurement_size berechnen
+                # measurement_size ist der Durchmesser der Kugel
+                measurement_size = getattr(settings, "measurement_size", 4.0)
+                # Skaliere Schriftgröße proportional: Basis 12 bei measurement_size=4.0
+                font_size = int(12 * (measurement_size / 4.0))
+                
+                # Erstelle eindeutigen Namen für die Labels
+                label_actor_name = f"{self._overlay_prefix}labels"
+                
+                # Entferne alte Labels falls vorhanden
+                try:
+                    if hasattr(self.plotter, 'renderer') and hasattr(self.plotter.renderer, 'actors'):
+                        if label_actor_name in self.plotter.renderer.actors:
+                            self.plotter.remove_actor(label_actor_name)
+                            print(f"[SPL3DOverlayImpulse] Removed old label actor '{label_actor_name}'")
+                except Exception:
+                    pass
+                
+                label_actor = self.plotter.add_point_labels(
+                    np.array(label_positions),
+                    label_texts,
+                    name=label_actor_name,  # Gib dem Actor einen Namen
+                    font_size=font_size,
+                    text_color='black',
+                    point_size=0,  # Keine Punkte anzeigen, nur Text
+                    render_points_as_spheres=False,
+                    always_visible=True,
+                    shape_opacity=0.0  # Transparenter Hintergrund
+                )
+                # Speichere den Label-Actor in der Kategorie "impulse"
+                if label_actor is not None:
+                    self.overlay_actor_names.append(label_actor_name)
+                    self._category_actors.setdefault("impulse", []).append(label_actor_name)
+                    print(f"[SPL3DOverlayImpulse] Added label actor '{label_actor_name}' with {len(label_texts)} labels")
+            except Exception as e:
+                print(f"[SPL3DOverlayImpulse] Fehler beim Hinzufügen der Text-Labels: {e}")
+                import traceback
+                traceback.print_exc()
 
         self._last_impulse_state = current_state
+        self._last_measurement_size = current_measurement_size
 
     def _compute_impulse_state(self, settings) -> tuple:
-        """Erzeugt eine robuste Signatur der Impulse Points."""
+        """Erzeugt eine robuste Signatur der Impulse Points (inkl. Nummer)."""
         impulse_points = getattr(settings, "impulse_points", []) or []
         # #region agent log
         import json
@@ -290,7 +353,7 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                 f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3DOverlaysImpulse.py:81","message":"_compute_impulse_state start","data":{"impulse_points_count":len(impulse_points),"settings_id":id(settings),"has_attr":hasattr(settings,"impulse_points"),"raw_points":str(impulse_points[:2]) if impulse_points else "empty"},"timestamp":__import__('time').time()*1000}) + '\n')
         except: pass
         # #endregion
-        impulse_signature: List[Tuple[float, float, float]] = []
+        impulse_signature: List[Tuple[float, float, float, int]] = []
         for point in impulse_points:
             try:
                 # 🚀 FIX: Robustere Extraktion der Koordinaten
@@ -307,7 +370,9 @@ class SPL3DOverlayImpulse(SPL3DOverlayBase):
                     z_val = data.get("z", data.get(2, 0.0))
                 else:
                     continue
-                impulse_signature.append((float(x_val), float(y_val), float(z_val)))
+                # Hole die Nummer des Messpunkts
+                number = point.get("number", 0)
+                impulse_signature.append((float(x_val), float(y_val), float(z_val), int(number)))
             except (ValueError, TypeError, KeyError, IndexError) as e:
                 # Debug-Output für Fehlerfälle
                 print(f"[SPL3DOverlayImpulse] Fehler beim Verarbeiten eines Impulse Points: {e}, point={point}")

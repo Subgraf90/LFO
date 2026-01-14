@@ -750,7 +750,7 @@ class UiSettings(QtWidgets.QWidget):
                         if hasattr(plotter, '_last_overlay_signatures'):
                             if isinstance(plotter._last_overlay_signatures, dict):
                                 plotter._last_overlay_signatures.pop('impulse', None)
-                        plotter.update_overlays(self.settings, self.container)
+                        plotter.update_overlays(self.settings, self.main_window.container)
                         # Render explizit aufrufen, damit Änderungen sofort sichtbar sind
                         if hasattr(plotter, 'render'):
                             plotter.render()
