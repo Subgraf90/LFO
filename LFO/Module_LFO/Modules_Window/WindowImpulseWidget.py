@@ -112,6 +112,9 @@ class ImpulseInputDockWidget(QDockWidget):
         self.impulse_tree_widget.setHeaderLabels(["#", "Measurement Point", "Position X (m)", "Position Y (m)", "Position Z (m)", "Offset (ms)", ""])
         self.impulse_tree_widget.setFixedHeight(120)
         
+        # Aktiviere Mehrfachauswahl (wie im Snapshot Widget)
+        self.impulse_tree_widget.setSelectionMode(QTreeWidget.ExtendedSelection)
+        
         # Breitere Spalten
         self.impulse_tree_widget.setColumnWidth(0, 45)   # Nummer-Spalte
         self.impulse_tree_widget.setColumnWidth(1, 130)  # Measurement Point
@@ -178,11 +181,12 @@ class ImpulseInputDockWidget(QDockWidget):
         self.initialize_measurement_points()
 
     def on_selection_changed(self):
-        """Wird aufgerufen, wenn sich die Auswahl im TreeWidget ändert"""
+        """
+        Wird aufgerufen, wenn sich die Auswahl im TreeWidget ändert.
+        Bei Auswahländerung werden nur die bereits berechneten Daten geladen und geplottet,
+        KEINE Neuberechnung! (calculate_impulse() berechnet alle Punkte auf einmal)
+        """
         self.plot_widget.update_plot_impulse()
-        
-        # Berechne und plotte die Daten für alle existierenden Messpunkte
-        self.schedule_calculation()
         
         # Zeige das Widget
         self.show()
@@ -328,12 +332,6 @@ class ImpulseInputDockWidget(QDockWidget):
                 'number': number,  # Nummer des Messpunkts
                 'created_at': time.time()  # Zeitstempel für Sortierung
             })
-            # #region agent log
-            try:
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"WindowImpulseWidget.py:277","message":"impulse point added","data":{"key":key,"point":point,"total_count":len(self.settings.impulse_points)},"timestamp":time.time()*1000}) + '\n')
-            except: pass
-            # #endregion
             self.container.set_measurement_point(key, point)
             
             # 🚀 FIX: Sofortige Berechnung und Plot-Update nach Hinzufügen eines Points
@@ -486,6 +484,65 @@ class ImpulseInputDockWidget(QDockWidget):
                 import traceback
                 traceback.print_exc()
 
+    def delete_selected_measurement_points(self):
+        """
+        Löscht alle ausgewählten Messpunkte aus dem TreeWidget und den Einstellungen.
+        Wird aufgerufen, wenn im Kontextmenü mehrere Punkte zum Löschen ausgewählt wurden.
+        """
+        selected_items = self.impulse_tree_widget.selectedItems()
+        if not selected_items:
+            return
+        
+        # Sammle alle Keys der zu löschenden Items
+        keys_to_delete = []
+        for item in selected_items:
+            key = item.data(1, Qt.UserRole)
+            if key:
+                keys_to_delete.append((key, item))
+        
+        # Lösche alle ausgewählten Punkte
+        for key, item in keys_to_delete:
+            # Lösche aus den Einstellungen
+            index = next((i for i, point in enumerate(self.settings.impulse_points) 
+                          if point['key'] == key), None)
+            if index is not None:
+                del self.settings.impulse_points[index]
+            
+            # Lösche aus dem Container
+            if hasattr(self.container, 'impulse_points'):
+                self.container.impulse_points.pop(key, None)
+            if key in getattr(self.container, 'calculation_impulse', {}):
+                self.container.delete_calculation_impulse(key)
+            
+            # Lösche aus dem TreeWidget
+            root = self.impulse_tree_widget.invisibleRootItem()
+            root.removeChild(item)
+        
+        # Aktualisiere die Nummern nach dem Löschen
+        self._renumber_measurement_points()
+        
+        # Aktualisiere die Berechnung
+        self.schedule_calculation()
+
+        # 🚀 FIX: Aktualisiere 3D-Overlays, damit die Messpunkte sofort verschwinden
+        draw_plots = getattr(self.main_window, 'draw_plots', None)
+        if draw_plots is not None and hasattr(draw_plots, 'draw_spl_plotter'):
+            try:
+                plotter = draw_plots.draw_spl_plotter
+                if plotter is not None and hasattr(plotter, 'update_overlays'):
+                    # 🚀 FIX: Setze Signatur zurück, damit 'impulse' Kategorie erkannt wird
+                    if hasattr(plotter, '_last_overlay_signatures'):
+                        # Entferne 'impulse' aus der letzten Signatur, damit Änderung erkannt wird
+                        if plotter._last_overlay_signatures and 'impulse' in plotter._last_overlay_signatures:
+                            # Setze auf None, damit die Signatur als geändert erkannt wird
+                            plotter._last_overlay_signatures['impulse'] = None
+                    # Aktualisiere Overlays - die Signatur-Erkennung wird die Änderung erkennen
+                    plotter.update_overlays(self.settings, self.container)
+            except Exception as exc:
+                print(f"[ImpulseInputDockWidget] Fehler beim Aktualisieren der SPL-Overlays nach Löschen mehrerer Messpunkte: {exc}")
+                import traceback
+                traceback.print_exc()
+
 
     def _renumber_measurement_points(self):
         """Aktualisiert die Nummern aller Messpunkte nach dem Löschen"""
@@ -505,14 +562,22 @@ class ImpulseInputDockWidget(QDockWidget):
         if item:
             context_menu = QMenu()
             
-            # Menüeinträge erstellen
-            rename_action = context_menu.addAction("Rename")
-            context_menu.addSeparator()
-            delete_action = context_menu.addAction("Delete")
+            # Prüfe, ob mehrere Items ausgewählt sind
+            selected_items = self.impulse_tree_widget.selectedItems()
             
-            # Verbinde Aktionen mit Funktionen
-            rename_action.triggered.connect(lambda: self.impulse_tree_widget.editItem(item, 1))  # Bearbeite Spalte 1 (Name)
-            delete_action.triggered.connect(lambda: self.delete_measurement_point(item))
+            # Menüeinträge erstellen
+            if len(selected_items) == 1:
+                rename_action = context_menu.addAction("Rename")
+                rename_action.triggered.connect(lambda: self.impulse_tree_widget.editItem(item, 1))  # Bearbeite Spalte 1 (Name)
+                context_menu.addSeparator()
+            
+            # Delete-Option für einzelne oder mehrere Punkte
+            if len(selected_items) > 1:
+                delete_action = context_menu.addAction(f"Delete {len(selected_items)} Points")
+                delete_action.triggered.connect(self.delete_selected_measurement_points)
+            else:
+                delete_action = context_menu.addAction("Delete")
+                delete_action.triggered.connect(lambda: self.delete_measurement_point(item))
             
             # Zeige Menü an Mausposition
             context_menu.exec_(self.impulse_tree_widget.viewport().mapToGlobal(position))

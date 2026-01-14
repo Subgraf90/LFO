@@ -15,7 +15,6 @@ from Module_LFO.Modules_Calculate.SurfaceGeometryCalculator import SurfaceDefini
 from Module_LFO.Modules_Data.SurfaceValidator import (
     validate_surface_geometry,
     triangulate_points,
-    _remove_redundant_points,
 )
 
 
@@ -577,30 +576,19 @@ class SurfaceDataImporter:
             # Triangulation pro Surface (nicht pro Gruppe) - wie beim TXT-Import
             # Surfaces mit >3 Punkten werden trianguliert, damit nur noch Surfaces mit 3 Punkten resultieren
             target_surfaces: List[Tuple[str, SurfaceDefinition]] = []
-            
-            # WICHTIG: Entferne redundante/doppelte Punkte VOR der Triangulation
-            # Dies verhindert fehlerhafte Triangulation durch degenerierte Punkte
-            points_for_triangulation = list(surface.points)
-            points_for_triangulation, removed_count = _remove_redundant_points(points_for_triangulation)
-            if removed_count > 0:
-                logger.debug(
-                    "[Import] Surface '%s' (%s): %d redundante Punkt(e) entfernt vor Triangulation (%d → %d)",
-                    surface.name, surface_id, removed_count, len(surface.points), len(points_for_triangulation)
-                )
-            
-            triangulate_needed = len(points_for_triangulation) > 3  # Triangulation für Surfaces mit >3 Punkten
+            triangulate_needed = len(surface.points) > 3  # Triangulation für Surfaces mit >3 Punkten
             
             # #region agent log - TRIANGULATION: Original-Punkte vor Triangulation
             import json, time
             try:
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"TRI","location":"SurfaceDataImporter.py:_store_surfaces:before_triangulation","message":"BEFORE triangulation","data":{"surface_id":surface_id,"surface_name":surface.name,"points_count":len(surface.points),"points_after_redundant_removal":len(points_for_triangulation),"removed_redundant_count":removed_count,"triangulate_needed":triangulate_needed,"original_points":surface.points,"cleaned_points":points_for_triangulation},"timestamp":int(time.time()*1000)})+"\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"TRI","location":"SurfaceDataImporter.py:_store_surfaces:before_triangulation","message":"BEFORE triangulation","data":{"surface_id":surface_id,"surface_name":surface.name,"points_count":len(surface.points),"triangulate_needed":triangulate_needed,"original_points":surface.points},"timestamp":int(time.time()*1000)})+"\n")
             except Exception:
                 pass
             # #endregion
             
             if triangulate_needed:
-                tris = triangulate_points(points_for_triangulation)
+                tris = triangulate_points(surface.points)
                 logger = logging.getLogger(__name__)
                 logger.info(
                     "[Import Triangulation] Surface '%s' (%s): Punkte=%d, needed=%s, tris=%d",
@@ -651,20 +639,7 @@ class SurfaceDataImporter:
                     target_surfaces.append((surface_id, surface))
             else:
                 # Surface hat bereits ≤3 Punkte -> direkt übernehmen
-                # Verwende bereinigte Punkte (falls redundante entfernt wurden)
-                if removed_count > 0:
-                    surface_cleaned = SurfaceDefinition(
-                        surface_id=surface_id,
-                        name=surface.name,
-                        points=points_for_triangulation,
-                        color=surface.color,
-                        enabled=surface.enabled,
-                        locked=surface.locked,
-                        group_id=surface.group_id,
-                    )
-                    target_surfaces.append((surface_id, surface_cleaned))
-                else:
-                    target_surfaces.append((surface_id, surface))
+                target_surfaces.append((surface_id, surface))
 
             if not hasattr(self.settings, "surface_definitions") or not isinstance(
                 self.settings.surface_definitions, dict
@@ -687,27 +662,13 @@ class SurfaceDataImporter:
                 else:
                     self.settings.surface_definitions[sid_unique] = sdef
                 imported += 1
-                # #region agent log - HYPOTHESIS A: Surface wurde gespeichert - FINALE DATEN
+                # #region agent log - HYPOTHESIS A: Surface wurde gespeichert
                 try:
                     stored_check = sid_unique in getattr(self.settings, 'surface_definitions', {})
-                    stored_surface = getattr(self.settings, 'surface_definitions', {}).get(sid_unique)
-                    stored_dict = None
-                    stored_points = None
-                    if stored_surface:
-                        if hasattr(stored_surface, "to_dict"):
-                            stored_dict = stored_surface.to_dict()
-                        elif isinstance(stored_surface, dict):
-                            stored_dict = stored_surface
-                        if stored_dict:
-                            stored_points = stored_dict.get("points", [])
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"STORED_DATA","location":"SurfaceDataImporter.py:_store_surfaces:after_store","message":"AFTER storing surface - FINAL DATA","data":{"surface_id":sid_unique,"stored_in_settings":stored_check,"total_surfaces":len(getattr(self.settings, 'surface_definitions', {})),"stored_dict_keys":list(stored_dict.keys()) if stored_dict else None,"stored_points_count":len(stored_points) if stored_points else 0,"stored_points":stored_points,"stored_dict":stored_dict},"timestamp":int(time.time()*1000)})+"\n")
-                except Exception as e:
-                    try:
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"STORED_DATA","location":"SurfaceDataImporter.py:_store_surfaces:after_store","message":"AFTER storing surface - ERROR","data":{"surface_id":sid_unique,"error":str(e)},"timestamp":int(time.time()*1000)})+"\n")
-                    except:
-                        pass
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"SurfaceDataImporter.py:_store_surfaces:after_store","message":"AFTER storing surface","data":{"surface_id":sid_unique,"stored_in_settings":stored_check,"total_surfaces":len(getattr(self.settings, 'surface_definitions', {}))},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
                 # #endregion
 
                 # Weise Surface direkt einer Gruppe zu (inkl. Erstellung)
@@ -830,121 +791,14 @@ class SurfaceDataImporter:
             raise ImportError("Das Paket 'ezdxf' ist nicht installiert.") from exc
 
         # Verbesserte Fehlerbehandlung beim Laden
-        # #region agent log - HYPOTHESIS E: DXF-Datei laden
-        import json, time
-        try:
-            log_data = {
-                "sessionId": "debug-session",
-                "runId": "run3",
-                "hypothesisId": "E",
-                "location": "SurfaceDataImporter.py:_load_dxf_surfaces:readfile",
-                "message": "VERSUCHE ezdxf.readfile()",
-                "data": {
-                    "file_path": str(file_path),
-                    "file_exists": file_path.exists(),
-                    "file_size": file_path.stat().st_size if file_path.exists() else 0,
-                    "file_suffix": file_path.suffix
-                },
-                "timestamp": int(time.time()*1000)
-            }
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps(log_data) + "\n")
-        except Exception:
-            pass
-        # #endregion
-
         try:
             doc = ezdxf.readfile(str(file_path))
         except IOError as e:
-            # #region agent log - HYPOTHESIS E: IOError beim Laden
-            import json, time
-            try:
-                log_data = {
-                    "sessionId": "debug-session",
-                    "runId": "run3",
-                    "hypothesisId": "E",
-                    "location": "SurfaceDataImporter.py:_load_dxf_surfaces:ioerror",
-                    "message": "IOError beim Laden der DXF-Datei",
-                    "data": {
-                        "file_path": str(file_path),
-                        "error": str(e),
-                        "error_type": type(e).__name__
-                    },
-                    "timestamp": int(time.time()*1000)
-                }
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps(log_data) + "\n")
-            except Exception:
-                pass
-            # #endregion
             raise ValueError(f"DXF-Datei konnte nicht geöffnet werden: {file_path}") from e
         except ezdxf.DXFStructureError as e:
-            # #region agent log - HYPOTHESIS E: DXFStructureError
-            import json, time
-            try:
-                log_data = {
-                    "sessionId": "debug-session",
-                    "runId": "run3",
-                    "hypothesisId": "E",
-                    "location": "SurfaceDataImporter.py:_load_dxf_surfaces:structure_error",
-                    "message": "DXFStructureError - Datei beschädigt",
-                    "data": {
-                        "file_path": str(file_path),
-                        "error": str(e)
-                    },
-                    "timestamp": int(time.time()*1000)
-                }
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps(log_data) + "\n")
-            except Exception:
-                pass
-            # #endregion
             raise ValueError(f"Ungültige oder beschädigte DXF-Datei: {e}") from e
         except ezdxf.DXFVersionError as e:
-            # #region agent log - HYPOTHESIS E: DXFVersionError
-            import json, time
-            try:
-                log_data = {
-                    "sessionId": "debug-session",
-                    "runId": "run3",
-                    "hypothesisId": "E",
-                    "location": "SurfaceDataImporter.py:_load_dxf_surfaces:version_error",
-                    "message": "DXFVersionError - Version nicht unterstützt",
-                    "data": {
-                        "file_path": str(file_path),
-                        "error": str(e)
-                    },
-                    "timestamp": int(time.time()*1000)
-                }
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps(log_data) + "\n")
-            except Exception:
-                pass
-            # #endregion
             raise ValueError(f"DXF-Version wird nicht unterstützt: {e}") from e
-        except Exception as e:
-            # #region agent log - HYPOTHESIS E: Unerwarteter Fehler
-            import json, time
-            try:
-                log_data = {
-                    "sessionId": "debug-session",
-                    "runId": "run3",
-                    "hypothesisId": "E",
-                    "location": "SurfaceDataImporter.py:_load_dxf_surfaces:unexpected_error",
-                    "message": "Unerwarteter Fehler beim Laden der DXF-Datei",
-                    "data": {
-                        "file_path": str(file_path),
-                        "error": str(e),
-                        "error_type": type(e).__name__
-                    },
-                    "timestamp": int(time.time()*1000)
-                }
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps(log_data) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            raise
         
         # Lese Header-Informationen
         self._read_dxf_header(doc, file_path)
@@ -971,58 +825,65 @@ class SurfaceDataImporter:
             dxftype = entity.dxftype()
             layer = getattr(entity.dxf, "layer", "unbekannt")
             
-            # #region agent log - HYPOTHESIS B: transform Parameter VOR _extract_points_from_entity
+            # #region agent log - HYPOTHESIS F/H: Punkte VOR Extraktion
             import json, time
             try:
-                log_data = {
-                    "sessionId": "debug-session",
-                    "runId": "run2",
-                    "hypothesisId": "B",
-                    "location": "SurfaceDataImporter.py:_load_dxf_surfaces:before_extract",
-                    "message": "BEFORE _extract_points_from_entity",
-                    "data": {
-                        "entity_count": entity_count,
-                        "dxftype": dxftype,
-                        "layer": layer,
-                        "transform_is_none": transform is None,
-                        "has_block_stack": len(block_stack) > 0 if block_stack else False
-                    },
-                    "timestamp": int(time.time()*1000)
-                }
+                entity_handle = getattr(entity.dxf, "handle", "unknown")
                 with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps(log_data) + "\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"F_H","location":"SurfaceDataImporter.py:828","message":"BEFORE point extraction","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"entity_handle":entity_handle,"has_transform":transform is not None},"timestamp":int(time.time()*1000)})+"\n")
             except Exception:
                 pass
             # #endregion
             
             points = self._extract_points_from_entity(entity, transform)
-
-            # #region agent log - HYPOTHESIS C: points NACH _extract_points_from_entity
-            import json, time
+            
+            # #region agent log - HYPOTHESIS F/H: Punkte NACH Extraktion (check for duplicates)
             try:
-                if points and len(points) >= 3:
-                    x_vals = [p.get("x", 0) for p in points]
-                    log_data = {
-                        "sessionId": "debug-session",
-                        "runId": "run2",
-                        "hypothesisId": "C",
-                        "location": "SurfaceDataImporter.py:_load_dxf_surfaces:after_extract",
-                        "message": "AFTER _extract_points_from_entity",
-                        "data": {
-                            "entity_count": entity_count,
-                            "dxftype": dxftype,
-                            "layer": layer,
-                            "points_count": len(points),
-                            "first_point": points[0],
-                            "x_range": [min(x_vals), max(x_vals)]
-                        },
-                        "timestamp": int(time.time()*1000)
-                    }
+                if points and len(points) > 0:
+                    # Prüfe auf Duplikate
+                    unique_points = []
+                    duplicates = []
+                    for i, p in enumerate(points):
+                        is_duplicate = False
+                        for j, existing in enumerate(unique_points):
+                            if abs(p.get("x",0) - existing.get("x",0)) < 1e-6 and abs(p.get("y",0) - existing.get("y",0)) < 1e-6 and abs(p.get("z",0) - existing.get("z",0)) < 1e-6:
+                                is_duplicate = True
+                                duplicates.append({"index":i,"point":p,"matches_index":j})
+                                break
+                        if not is_duplicate:
+                            unique_points.append(p)
                     with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps(log_data) + "\n")
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"F_H","location":"SurfaceDataImporter.py:828","message":"AFTER point extraction - duplicate check","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"total_points":len(points),"unique_points":len(unique_points),"duplicates_found":len(duplicates),"duplicates":duplicates,"all_points":points},"timestamp":int(time.time()*1000)})+"\n")
             except Exception:
                 pass
             # #endregion
+            
+            # FIX: Entferne duplizierte Punkte (DXF-Dateien können fehlerhafte Vertices enthalten)
+            if points and len(points) > 0:
+                deduplicated_points = []
+                tolerance = 1e-6
+                for p in points:
+                    is_duplicate = False
+                    for existing in deduplicated_points:
+                        dx = abs(p.get("x", 0) - existing.get("x", 0))
+                        dy = abs(p.get("y", 0) - existing.get("y", 0))
+                        dz = abs(p.get("z", 0) - existing.get("z", 0))
+                        if dx < tolerance and dy < tolerance and dz < tolerance:
+                            is_duplicate = True
+                            break
+                    if not is_duplicate:
+                        deduplicated_points.append(p)
+                
+                # #region agent log - FIX: Deduplizierung durchgeführt
+                if len(points) != len(deduplicated_points):
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"post-fix","hypothesisId":"FIX","location":"SurfaceDataImporter.py:deduplicate","message":"Duplicate points removed","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"points_before":len(points),"points_after":len(deduplicated_points),"removed_count":len(points)-len(deduplicated_points)},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                # #endregion
+                
+                points = deduplicated_points
             
             # #region agent log - HYPOTHESIS D: Punkt-Reihenfolge
             import json, time
@@ -1041,32 +902,7 @@ class SurfaceDataImporter:
                 pass
             # #endregion
 
-            # #region agent log - DXF ENTITY: Original-Entity-Daten
-            import json, time
-            try:
-                entity_handle = getattr(entity.dxf, "handle", "unknown")
-                entity_data = {
-                    "entity_count": entity_count,
-                    "dxftype": dxftype,
-                    "layer": layer,
-                    "handle": entity_handle,
-                    "points_extracted": len(points) if points else 0,
-                    "has_transform": transform is not None,
-                }
-                if transform:
-                    entity_data["transform"] = {
-                        "translation": transform.get("translation", (0,0,0)),
-                        "scale": transform.get("scale", (1,1,1)),
-                        "rotation_deg": transform.get("rotation", 0) * 180 / 3.14159 if transform.get("rotation") else 0
-                    }
-                if points:
-                    entity_data["points"] = [{"x": p.get("x"), "y": p.get("y"), "z": p.get("z")} for p in points[:10]]  # Erste 10 Punkte
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"DXF_ENTITY","location":"SurfaceDataImporter.py:_load_dxf_surfaces:entity_extracted","message":"DXF Entity extracted","data":entity_data,"timestamp":int(time.time()*1000)})+"\n")
-            except Exception:
-                pass
-            # #endregion
-
+            
             if not points:
                 logger.debug(
                     "Entity %d: %s auf Layer '%s' übersprungen (keine Punkte extrahiert)",
@@ -1075,13 +911,6 @@ class SurfaceDataImporter:
                 entity_type_stats[f"{dxftype}_keine_punkte"] += 1
                 skipped_count += 1
                 self._log_skipped_entity(entity)
-                # #region agent log - DXF ENTITY: Übersprungen (keine Punkte)
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"DXF_SKIP","location":"SurfaceDataImporter.py:_load_dxf_surfaces:skipped_no_points","message":"Entity skipped - no points","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer},"timestamp":int(time.time()*1000)})+"\n")
-                except Exception:
-                    pass
-                # #endregion
                 continue
             
             # LINE-Entities haben nur 2 Punkte - keine Fläche, überspringen
@@ -1099,13 +928,6 @@ class SurfaceDataImporter:
                 )
                 entity_type_stats["LINE_übersprungen"] += 1
                 skipped_count += 1
-                # #region agent log - DXF ENTITY: Übersprungen (LINE)
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"DXF_SKIP","location":"SurfaceDataImporter.py:_load_dxf_surfaces:skipped_line","message":"Entity skipped - LINE with 2 points","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"start":start,"end":end},"timestamp":int(time.time()*1000)})+"\n")
-                except Exception:
-                    pass
-                # #endregion
                 continue
             
             # Mindestens 3 Punkte für eine Fläche erforderlich
@@ -1117,13 +939,6 @@ class SurfaceDataImporter:
                 )
                 entity_type_stats[f"{dxftype}_zu_wenig_punkte"] += 1
                 skipped_count += 1
-                # #region agent log - DXF ENTITY: Übersprungen (zu wenig Punkte)
-                try:
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"DXF_SKIP","location":"SurfaceDataImporter.py:_load_dxf_surfaces:skipped_too_few_points","message":"Entity skipped - too few points","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"points_count":len(points),"points":points},"timestamp":int(time.time()*1000)})+"\n")
-                except Exception:
-                    pass
-                # #endregion
                 continue
             
             # Prüfe ob geschlossen (für Polylines)
@@ -1154,8 +969,23 @@ class SurfaceDataImporter:
                 dy = abs(first.get("y", 0) - last.get("y", 0))
                 dz = abs(first.get("z", 0) - last.get("z", 0))
                 if dx >= tolerance or dy >= tolerance or dz >= tolerance:
+                    # #region agent log - HYPOTHESIS G: Punkt beim Schließen hinzugefügt
+                    try:
+                        points_before = len(points)
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"G","location":"SurfaceDataImporter.py:915","message":"CLOSING polyline - adding first point at end","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"points_before":points_before,"first_point":first,"last_point":last,"distance":{"dx":dx,"dy":dy,"dz":dz}},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     # Füge ersten Punkt am Ende hinzu, um zu schließen
                     points.append(first.copy())
+                    # #region agent log - HYPOTHESIS G: Nach dem Hinzufügen
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"G","location":"SurfaceDataImporter.py:915","message":"AFTER closing polyline","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"points_after":len(points),"all_points":points},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
             
             processed_count += 1
             entity_type_stats[f"{dxftype}_verarbeitet"] += 1
@@ -1215,6 +1045,16 @@ class SurfaceDataImporter:
             dxftype = entity.dxftype()
             base_name = getattr(entity.dxf, "layer", None) or dxftype or "DXF_Surface"
             
+            # #region agent log - HYPOTHESIS A & D: base_name nach Layer/dxftype-Extraktion
+            import json, time
+            try:
+                layer_value = getattr(entity.dxf, "layer", None)
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A_D","location":"SurfaceDataImporter.py:973","message":"base_name determined from layer/dxftype","data":{"entity_count":entity_count,"dxftype":dxftype,"layer_value":layer_value,"base_name":base_name,"block_stack_length":len(block_stack) if block_stack else 0},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
+            
             # Extrahiere Tag/Attribut aus Entity (z.B. "WOOD", "BETON")
             tag = self._extract_tag_from_entity(entity, doc)
             if not tag:
@@ -1227,8 +1067,16 @@ class SurfaceDataImporter:
                     entity_count, tag, dxftype, layer
                 )
                 # Verwende Tag als Basis-Name, falls Layer nicht aussagekräftig
+                old_base_name = base_name
                 if not base_name or base_name == dxftype:
                     base_name = tag
+                # #region agent log - HYPOTHESIS C: base_name nach Tag-Anwendung
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"SurfaceDataImporter.py:988","message":"base_name after tag override","data":{"entity_count":entity_count,"tag":tag,"old_base_name":old_base_name,"new_base_name":base_name,"tag_overrode":old_base_name!=base_name},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
+                # #endregion
                 # Verwende Tag für Gruppierung (analog zu TXT-Import)
                 group_label = self._derive_group_label(tag)
                 target_group_id = self._ensure_group_for_label(group_label)
@@ -1236,10 +1084,10 @@ class SurfaceDataImporter:
                 # Fallback: Gruppierung über Block-Hierarchie (wenn kein Tag gefunden)
                 group_label = self._build_group_label(block_stack)
                 target_group_id = self._ensure_group_for_label(group_label)
-            if not target_group_id:
-                # Fallback auf ursprüngliche Gruppen-Logik
-                group_name = group_lookup.get(entity.dxf.handle)
-                target_group_id = self._ensure_group_for_label(group_name)
+                if not target_group_id:
+                    # Fallback auf ursprüngliche Gruppen-Logik
+                    group_name = group_lookup.get(entity.dxf.handle)
+                    target_group_id = self._ensure_group_for_label(group_name)
 
             # Nummeriere Surfaces innerhalb derselben Gruppe (analog zu TXT-Import)
             safe_label = self._make_safe_identifier(base_name) or "surface"
@@ -1251,6 +1099,18 @@ class SurfaceDataImporter:
             
             # Surface-Name: mit Nummer (für Anzeige, analog zu TXT-Import)
             surface_name = f"{base_name} {surface_number}" if surface_number > 1 else base_name
+            
+            # #region agent log - ALL HYPOTHESES: Finale Surface-Namensgebung
+            try:
+                block_context = []
+                if block_stack:
+                    for ctx in block_stack:
+                        block_context.append({"name":ctx.name,"instance_index":ctx.instance_index,"tag":ctx.tag})
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"FINAL","location":"SurfaceDataImporter.py:1010","message":"SURFACE NAME CREATED","data":{"entity_count":entity_count,"dxftype":dxftype,"layer":layer,"base_name":base_name,"safe_label":safe_label,"surface_number":surface_number,"surface_id":surface_id,"surface_name":surface_name,"id_counters":dict(id_counters),"block_context":block_context},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
 
             color = self._resolve_entity_color(entity, layer_colors, ezdxf)
 
@@ -1753,6 +1613,13 @@ class SurfaceDataImporter:
     def _extract_polyline_points(self, entity) -> List[Dict[str, float]]:
         points: List[Dict[str, float]] = []
         logger = logging.getLogger(__name__)
+        
+        # #region agent log - HYPOTHESIS F: POLYLINE Extraktion START
+        import json, time
+        entity_handle = getattr(entity.dxf, "handle", "unknown")
+        entity_layer = getattr(entity.dxf, "layer", "unknown")
+        # #endregion
+        
         try:
             # Debug: Prüfe Entity-Attribute
             logger.info("POLYLINE-Extraktion: Prüfe Entity-Attribute")
@@ -1782,6 +1649,13 @@ class SurfaceDataImporter:
                         x, y, z = point
                         points.append(self._make_point(float(x), float(y), float(z)))
                     logger.info("  Methode 1 erfolgreich: %d Punkte extrahiert", len(points))
+                    # #region agent log - HYPOTHESIS F: Methode 1 erfolgreich
+                    try:
+                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"F","location":"SurfaceDataImporter.py:_extract_polyline_points:method1","message":"POLYLINE extraction method 1 (vertices_with_points)","data":{"entity_handle":entity_handle,"entity_layer":entity_layer,"points_extracted":len(points),"points":points},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
                 except Exception as e1:
                     logger.info("  Methode 1 fehlgeschlagen: %s", e1)
             
@@ -1826,6 +1700,14 @@ class SurfaceDataImporter:
                             z = float(getattr(vertex.dxf, 'z', elevation))
                             points.append(self._make_point(x, y, z))
                     logger.info("  Methode 2: %d Vertices verarbeitet, %d Punkte extrahiert", vertex_count, len(points))
+                    # #region agent log - HYPOTHESIS F: Methode 2 erfolgreich
+                    try:
+                        if len(points) > 0:
+                            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"F","location":"SurfaceDataImporter.py:_extract_polyline_points:method2","message":"POLYLINE extraction method 2 (vertices with location)","data":{"entity_handle":entity_handle,"entity_layer":entity_layer,"vertex_count":vertex_count,"points_extracted":len(points),"points":points},"timestamp":int(time.time()*1000)})+"\n")
+                    except Exception:
+                        pass
+                    # #endregion
                 except Exception as e2:
                     logger.info("  Methode 2 fehlgeschlagen: %s", e2)
             
@@ -2160,12 +2042,24 @@ class SurfaceDataImporter:
         """Extrahiert Tag/Attribut aus einer DXF-Entity"""
         logger = logging.getLogger(__name__)
         
-        # Methode 1: Prüfe Layer-Name (wenn Layer "WOOD" oder "BETON" heißt)
+        # #region agent log - HYPOTHESIS C: Tag-Extraktion gestartet
+        import json, time
+        entity_type = entity.dxftype() if hasattr(entity, 'dxftype') else 'unknown'
         layer_name = getattr(entity.dxf, "layer", None)
+        # #endregion
+        
+        # Methode 1: Prüfe Layer-Name (wenn Layer "WOOD" oder "BETON" heißt)
         if layer_name:
             layer_name_upper = layer_name.upper()
             # Prüfe ob Layer-Name einem bekannten Tag entspricht
             if layer_name_upper in ("WOOD", "BETON", "CONCRETE", "STEEL", "GLASS"):
+                # #region agent log - HYPOTHESIS C: Tag aus Layer-Name gefunden
+                try:
+                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"SurfaceDataImporter.py:_extract_tag_from_entity:layer","message":"Tag from layer name","data":{"entity_type":entity_type,"layer_name":layer_name,"tag":layer_name_upper},"timestamp":int(time.time()*1000)})+"\n")
+                except Exception:
+                    pass
+                # #endregion
                 return layer_name_upper
         
         # Methode 1b: Prüfe Block-Name (wenn Entity Teil eines Blocks ist)
@@ -2196,7 +2090,22 @@ class SurfaceDataImporter:
         # Methode 5: Prüfe Objektdaten
         tag = self._extract_tag_from_object_data(entity, doc)
         if tag:
+            # #region agent log - HYPOTHESIS C: Tag aus Objektdaten gefunden
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"SurfaceDataImporter.py:_extract_tag_from_entity:object_data","message":"Tag from object data","data":{"entity_type":entity_type,"layer_name":layer_name,"tag":tag},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
             return tag
+        
+        # #region agent log - HYPOTHESIS C: Kein Tag gefunden
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"SurfaceDataImporter.py:_extract_tag_from_entity:no_tag","message":"No tag found","data":{"entity_type":entity_type,"layer_name":layer_name},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         
         return None
 
@@ -2431,34 +2340,10 @@ class SurfaceDataImporter:
         if not points:
             return None
         
-        # #region agent log - HYPOTHESIS A: Koordinaten vor Transformation
-        import json, time
-        try:
-            if points and transform:
-                first_point = points[0] if points else None
-                transform_info = {
-                    "translation": transform.get("translation", (0,0,0)),
-                    "scale": transform.get("scale", (1,1,1)),
-                    "rotation_deg": transform.get("rotation", 0) * 180 / 3.14159 if transform.get("rotation") else 0
-                }
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"SurfaceDataImporter.py:_extract_points_from_entity:before_transform","message":"BEFORE transform","data":{"entity_type":dxftype,"points_count":len(points),"first_point":first_point,"transform":transform_info},"timestamp":int(time.time()*1000)})+"\n")
-        except Exception:
-            pass
-        # #endregion
         
         # Wende Transformation an
         if transform:
             transformed_points = [self._apply_transform_to_point(p, transform) for p in points]
-            # #region agent log - HYPOTHESIS A: Koordinaten nach Transformation
-            try:
-                if transformed_points:
-                    first_transformed = transformed_points[0]
-                    with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"SurfaceDataImporter.py:_extract_points_from_entity:after_transform","message":"AFTER transform","data":{"entity_type":dxftype,"points_count":len(transformed_points),"first_point":first_transformed,"all_points":transformed_points[:5]},"timestamp":int(time.time()*1000)})+"\n")
-            except Exception:
-                pass
-            # #endregion
             return transformed_points
         
         return points
@@ -2545,19 +2430,25 @@ class SurfaceDataImporter:
             combined_transform = insert_transform
         
         try:
-            # WICHTIG: Verwende explode() statt virtual_entities()!
-            # explode() gibt Entities in Welt-Koordinaten (WCS) zurück,
-            # virtual_entities() gibt Block-lokale Koordinaten zurück.
-            virtual_entities = list(insert_entity.explode())
+            virtual_entities = list(insert_entity.virtual_entities())
             entity_count = len(virtual_entities)
             entity_types = {}
             for ve in virtual_entities:
                 ve_type = ve.dxftype()
                 entity_types[ve_type] = entity_types.get(ve_type, 0) + 1
             
+            # #region agent log - HYPOTHESIS I: virtual_entities() Ergebnis
+            import json, time
+            try:
+                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"I","location":"SurfaceDataImporter.py:_expand_insert","message":"INSERT virtual_entities extracted","data":{"block_name":block_name,"depth":depth,"entity_count":entity_count,"entity_types":entity_types},"timestamp":int(time.time()*1000)})+"\n")
+            except Exception:
+                pass
+            # #endregion
+            
             type_summary = ", ".join(f"{k}:{v}" for k, v in entity_types.items())
             logger.info(
-                "INSERT '%s' (Tiefe %d) aufgelöst (explode): %d Entities extrahiert [%s]",
+                "INSERT '%s' (Tiefe %d) aufgelöst: %d Entities extrahiert [%s]",
                 block_name,
                 depth,
                 entity_count,
@@ -2587,6 +2478,15 @@ class SurfaceDataImporter:
             layer=getattr(insert_entity.dxf, "layer", None),
         )
         new_stack = block_stack + (context,)
+        
+        # #region agent log - HYPOTHESIS B: INSERT Block Instance erstellt
+        import json, time
+        try:
+            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"SurfaceDataImporter.py:2380","message":"INSERT block instance created","data":{"block_name":block_name,"instance_index":context.instance_index,"tag":block_tag,"layer":context.layer,"total_instances":self._block_instance_counters[block_name],"entity_count":entity_count},"timestamp":int(time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
 
         try:
             logger = logging.getLogger(__name__)
@@ -2597,61 +2497,13 @@ class SurfaceDataImporter:
                     "  Block '%s' Entity %d/%d: %s auf Layer '%s'",
                     block_name, idx+1, len(virtual_entities), vtype, vlayer
                 )
-                
-                # #region agent log - HYPOTHESIS A: explode() Koordinaten VOR _resolve_entity
-                import json, time
-                try:
-                    exploded_points = []
-                    if vtype in ("POLYLINE", "LWPOLYLINE"):
-                        try:
-                            for vertex in virtual.vertices:
-                                loc = vertex.dxf.location
-                                exploded_points.append({"x": float(loc.x), "y": float(loc.y), "z": float(loc.z)})
-                        except:
-                            pass
-                    elif vtype == "LINE":
-                        try:
-                            start = virtual.dxf.start
-                            end = virtual.dxf.end
-                            exploded_points = [
-                                {"x": float(start.x), "y": float(start.y), "z": float(start.z)},
-                                {"x": float(end.x), "y": float(end.y), "z": float(end.z)}
-                            ]
-                        except:
-                            pass
-
-                    if exploded_points:
-                        x_vals = [p["x"] for p in exploded_points]
-                        log_data = {
-                            "sessionId": "debug-session",
-                            "runId": "run2",
-                            "hypothesisId": "A",
-                            "location": "SurfaceDataImporter.py:_expand_insert:explode",
-                            "message": "explode() Koordinaten DIREKT nach explode()",
-                            "data": {
-                                "block_name": block_name,
-                                "entity_idx": idx,
-                                "dxftype": vtype,
-                                "layer": vlayer,
-                                "points_count": len(exploded_points),
-                                "first_point": exploded_points[0] if exploded_points else None,
-                                "x_range": [min(x_vals), max(x_vals)] if x_vals else None
-                            },
-                            "timestamp": int(time.time()*1000)
-                        }
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps(log_data) + "\n")
-                except Exception:
-                    pass
-                # #endregion
-                
-                # KORREKTUR: Verwende explode() statt virtual_entities()
-                # explode() gibt bereits Welt-Koordinaten (WCS) zurück!
-                # Daher KEINE Transformation mehr anwenden.
+                # WICHTIG: virtual_entities() gibt bereits transformierte Koordinaten zurück!
+                # Daher sollten wir keine Transformation mehr anwenden (transform=None)
+                # Die INSERT-Transformation wurde bereits von ezdxf angewendet
                 yield from self._resolve_entity(
                     virtual,
                     depth + 1,
-                    None,  # Keine Transformation - explode() gibt bereits WCS-Koordinaten
+                    None,  # Keine Transformation, da bereits von virtual_entities() angewendet
                     new_stack,
                 )
         finally:
@@ -2683,15 +2535,6 @@ class SurfaceDataImporter:
         rotation = float(getattr(insert_entity.dxf, "rotation", 0.0))
         rotation_rad = math.radians(rotation)
         
-        # #region agent log - HYPOTHESIS B: INSERT-Transformation extrahiert
-        import json, time
-        try:
-            block_name = getattr(insert_entity.dxf, "name", "unknown")
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"SurfaceDataImporter.py:_extract_insert_transform","message":"INSERT transform extracted","data":{"block_name":block_name,"translation":(tx,ty,tz),"scale":(xscale,yscale,zscale),"rotation_deg":rotation,"has_negative_scale":xscale<0 or yscale<0 or zscale<0},"timestamp":int(time.time()*1000)})+"\n")
-        except Exception:
-            pass
-        # #endregion
         
         return {
             "translation": (tx, ty, tz),

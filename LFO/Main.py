@@ -507,66 +507,8 @@ class MainWindow(QtWidgets.QMainWindow):
         
         Optimiert: Berechnung erfolgt nur, wenn sich physische Parameter geändert haben.
         """
-        # #region agent log
-        import json
-        import time as time_module
-        array_id = getattr(speaker_array, 'id', None)
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "H6",
-                "location": "Main.py:speaker_position_calculator:402",
-                "message": "speaker_position_calculator called",
-                "data": {
-                    "array_id": array_id,
-                    "array_pos_x": float(getattr(speaker_array, 'array_position_x', 0.0)),
-                    "array_pos_y": float(getattr(speaker_array, 'array_position_y', 0.0)),
-                    "array_pos_z": float(getattr(speaker_array, 'array_position_z', 0.0))
-                },
-                "timestamp": int(time_module.time() * 1000)
-            }) + "\n")
-        # #endregion
-        
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "POS_CALC_LOGIC",
-                "location": "Main.py:speaker_position_calculator:before_calc",
-                "message": "About to calculate speaker positions - geometry changed",
-                "data": {
-                    "array_id": array_id,
-                    "source_site_first": float(speaker_array.source_site[0]) if hasattr(speaker_array, 'source_site') and len(speaker_array.source_site) > 0 else None,
-                    "source_azimuth_first": float(speaker_array.source_azimuth[0]) if hasattr(speaker_array, 'source_azimuth') and len(speaker_array.source_azimuth) > 0 else None
-                },
-                "timestamp": int(time_module.time() * 1000)
-            }) + "\n")
-        # #endregion
-        
         speaker_position_calculator = SpeakerPositionCalculator(self.container)
         speaker_position_calculator.calculate_stack_center(speaker_array)
-        # #region agent log
-        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "POS_CALC_LOGIC",
-                "location": "Main.py:speaker_position_calculator:after_calc",
-                "message": "calculate_stack_center completed - positions saved",
-                "data": {
-                    "array_id": array_id,
-                    "source_position_calc_x_first": float(speaker_array.source_position_calc_x[0]) if hasattr(speaker_array, 'source_position_calc_x') and len(speaker_array.source_position_calc_x) > 0 else None,
-                    "source_position_calc_y_first": float(speaker_array.source_position_calc_y[0]) if hasattr(speaker_array, 'source_position_calc_y') and len(speaker_array.source_position_calc_y) > 0 else None,
-                    "source_position_calc_z_first": float(speaker_array.source_position_calc_z[0]) if hasattr(speaker_array, 'source_position_calc_z') and len(speaker_array.source_position_calc_z) > 0 else None,
-                    "calc_x_length": len(speaker_array.source_position_calc_x) if hasattr(speaker_array, 'source_position_calc_x') else 0,
-                    "calc_y_length": len(speaker_array.source_position_calc_y) if hasattr(speaker_array, 'source_position_calc_y') else 0,
-                    "calc_z_length": len(speaker_array.source_position_calc_z) if hasattr(speaker_array, 'source_position_calc_z') else 0
-                },
-                "timestamp": int(time_module.time() * 1000)
-            }) + "\n")
-        # #endregion
 
     def beamsteering_calculator(self, speaker_array, speaker_array_id, update_plot: bool = False):
         """
@@ -615,27 +557,6 @@ class MainWindow(QtWidgets.QMainWindow):
             speaker_array_id = self.get_selected_speaker_array_id()
             context_info["speaker_array_id"] = speaker_array_id
             
-            # #region agent log
-            try:
-                import json
-                import time as time_module
-                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "D",
-                        "location": "Main.py:456",
-                        "message": "update_speaker_array_calculations called - source parameters changed",
-                        "data": {
-                            "speaker_array_id": speaker_array_id,
-                            "skip_fem_recalc": skip_fem_recalc,
-                            "geometry_version": getattr(self.settings, "geometry_version", 0) if hasattr(self, "settings") else 0
-                        },
-                        "timestamp": int(time_module.time() * 1000)
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
             speakerspecs_instance = self.sources_instance.get_speakerspecs_instance(speaker_array_id)
 
             if speakerspecs_instance:
@@ -691,48 +612,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     update_polarplot = getattr(self.settings, "update_pressure_polarplot", True)
                     update_impulse = getattr(self.settings, "update_pressure_impulse", True)
 
-                    # Leichtgewichtige Aktualisierung der Lautsprecher-Overlays
-                    # immer hier zentral ausführen, wenn ein Sources-Widget existiert.
-                    sources_instance = getattr(self, "sources_instance", None)
-                    if sources_instance and hasattr(sources_instance, "update_speaker_overlays"):
-                        try:
-                            # #region agent log
-                            try:
-                                import json
-                                import time as time_module
-                                # Sammle alle Array-IDs und Konfigurationen für Debugging
-                                all_array_ids = []
-                                all_array_configs = []
-                                if hasattr(self.settings, 'speaker_arrays'):
-                                    for arr_name, arr in self.settings.speaker_arrays.items():
-                                        arr_id = getattr(arr, 'id', arr_name)
-                                        config = getattr(arr, 'configuration', 'unknown')
-                                        all_array_ids.append(str(arr_id))
-                                        all_array_configs.append(f"{arr_id}:{config}")
-                                with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "run1",
-                                        "hypothesisId": "H4",
-                                        "location": "Main.py:update_speaker_array_calculations:before_update_overlays",
-                                        "message": "About to call update_speaker_overlays - will affect all arrays",
-                                        "data": {
-                                            "speaker_array_id": speaker_array_id,
-                                            "has_draw_plots": hasattr(self, "draw_plots"),
-                                            "all_array_ids": all_array_ids,
-                                            "all_array_configs": all_array_configs
-                                        },
-                                        "timestamp": int(time_module.time() * 1000),
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion
-                            # 🎯 FIX: update_speaker_overlays() wurde entfernt, da es jetzt in den Handlern aufgerufen wird
-                            # Dies verhindert doppelte Aufrufe von update_overlays()
-                            # sources_instance.update_speaker_overlays()
-                        except Exception:
-                            # Overlay-Update darf die Hauptberechnungen nicht blockieren
-                            pass
+                    # 🎯 FIX: Leichtgewichtige Aktualisierung der Lautsprecher-Overlays wurde entfernt,
+                    # da update_speaker_overlays() jetzt direkt in den UI-Handlern aufgerufen wird.
+                    # Dies verhindert doppelte Aufrufe von update_overlays()
 
                     is_fem_mode = bool(getattr(self.settings, "spl_plot_fem", False))
                     skipped_fem_run = False
@@ -758,32 +640,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
                     # Plots werden aktualisiert, wenn SPL, Polar oder Impulse berechnet werden
                     should_update_plots = update_soundfield or update_polarplot or update_impulse
-
-                    # #region agent log
-                    try:
-                        import json
-                        import time as time_module
-                        with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "run1",
-                                "hypothesisId": "POS_CALC_LOGIC",
-                                "location": "Main.py:update_speaker_array_calculations:before_tasks",
-                                "message": "About to execute tasks including speaker_position_calculator",
-                                "data": {
-                                    "speaker_array_id": speaker_array_id,
-                                    "has_speaker_array": speaker_array is not None,
-                                    "will_call_speaker_position_calculator": not skip_speaker_pos_calc,
-                                    "skip_speaker_pos_calc": skip_speaker_pos_calc,
-                                    "update_soundfield": bool(update_soundfield),
-                                    "update_polarplot": bool(update_polarplot),
-                                    "update_impulse": bool(update_impulse)
-                                },
-                                "timestamp": int(time_module.time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     
                     tasks = []
                     # speaker_position_calculator wird NICHT hier aufgerufen, da er bereits direkt nach Eingabeänderungen
@@ -880,6 +736,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             except Exception:
                 # Logging darf niemals die Hauptlogik stören
+                pass
+            
+            # Update Source Parameter Widget falls geöffnet
+            try:
+                if hasattr(self, 'draw_widgets') and self.draw_widgets:
+                    self.draw_widgets.update_source_layout_widget()
+            except Exception:
+                # Widget-Update darf Hauptlogik nicht stören
                 pass
 
     @measure_time("Main.calculate_spl")

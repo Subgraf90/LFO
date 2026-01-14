@@ -674,15 +674,6 @@ class DrawSPLPlot3D(SPL3DPlotRenderer, SPL3DCameraController, SPL3DInteractionHa
         """Aktualisiert Zusatzobjekte (Achsen, Lautsprecher, Messpunkte)."""
         t_start = time.perf_counter()
         
-        # #region agent log
-        import json
-        try:
-            with open('/Users/MGraf/Python/LFO_Umgebung/.cursor/debug.log', 'a') as f:
-                impulse_points = getattr(settings, "impulse_points", []) or []
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"Plot3D.py:596","message":"update_overlays called","data":{"impulse_points_count":len(impulse_points),"settings_id":id(settings)},"timestamp":__import__('time').time()*1000}) + '\n')
-        except: pass
-        # #endregion
-        
         # Speichere Container-Referenz für Z-Koordinaten-Zugriff
         with perf_section("PlotSPL3D.update_overlays.setup"):
             self.container = container

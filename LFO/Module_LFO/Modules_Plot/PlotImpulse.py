@@ -307,14 +307,29 @@ class DrawImpulsePlots(QWidget):
         self._schedule_scroll_update()
 
     def get_selected_measurement_point(self):
-        """Ermittelt den ausgewählten Messpunkt aus dem TreeWidget"""
+        """
+        Ermittelt den ausgewählten Messpunkt aus dem TreeWidget.
+        Bei Mehrfachauswahl wird immer das oberste Item verwendet (wie im Snapshot Widget).
+        """
         if not self.tree_widget:
             return None
         
-        current_item = self.tree_widget.currentItem()
-        if current_item:
-            key = current_item.data(0, Qt.UserRole)
-            return key
+        selected_items = self.tree_widget.selectedItems()
+        if selected_items:
+            # Finde das oberste ausgewählte Item
+            topmost_item = None
+            topmost_index = float('inf')
+            
+            for sel_item in selected_items:
+                index = self.tree_widget.indexOfTopLevelItem(sel_item)
+                if index != -1 and index < topmost_index:
+                    topmost_index = index
+                    topmost_item = sel_item
+            
+            # Verwende das oberste Item für den Plot
+            if topmost_item:
+                key = topmost_item.data(1, Qt.UserRole)  # Key ist in Spalte 1 gespeichert
+                return key
         
         return None
 

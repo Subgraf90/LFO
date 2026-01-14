@@ -2922,7 +2922,11 @@ class Sources(ModuleBase, QObject):
             # 2. Aktualisiere Beamsteering/Windowing Plots (wird nicht in show_sources_tab() aufgerufen)
             self.update_beamsteering_windowing_plots()
             
-            # 3. Aktualisiere Highlight-IDs für 3D-Plot (rote Umrandung)
+            # 3. Aktualisiere Source Layout Widget (Plot + Tabelle)
+            if hasattr(self.main_window, 'draw_widgets'):
+                self.main_window.draw_widgets.update_source_layout_widget()
+            
+            # 4. Aktualisiere Highlight-IDs für 3D-Plot (rote Umrandung)
             self._handle_sources_tree_selection_changed()
         finally:
             self.sources_tree_widget.blockSignals(False)
@@ -5441,6 +5445,10 @@ class Sources(ModuleBase, QObject):
             # (inkl. Overlays) immer über Main.update_speaker_array_calculations
             self.main_window.update_speaker_array_calculations()
             
+            # Update Source Parameter Widget falls geöffnet
+            if hasattr(self.main_window, 'draw_widgets'):
+                self.main_window.draw_widgets.update_source_layout_widget()
+            
             # Setze den formatierten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.2f}")
             
@@ -5490,6 +5498,10 @@ class Sources(ModuleBase, QObject):
             # Zentrale Aktualisierung aller Berechnungen und Plots
             # (inkl. Overlays) immer über Main.update_speaker_array_calculations
             self.main_window.update_speaker_array_calculations()
+            
+            # Update Source Parameter Widget falls geöffnet
+            if hasattr(self.main_window, 'draw_widgets'):
+                self.main_window.draw_widgets.update_source_layout_widget()
             
             # Setze den formatierten Wert zurück in das Eingabefeld
             edit.setText(f"{value:.2f}")

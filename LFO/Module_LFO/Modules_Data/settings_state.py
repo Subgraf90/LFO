@@ -187,7 +187,7 @@ class Settings:
         
         defaults = {            
             'impulse_min_spl': -20,
-            'measurement_size': 4,
+            'measurement_size': 1,
             'impulse_plot_height': 180,
             'resolution': 1,
             # Beobachtungshöhen / Auswerte-Ebene (z): 0.0 = Surface-Ebene

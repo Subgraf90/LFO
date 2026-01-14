@@ -349,6 +349,14 @@ class UiFile:
                     if 'data' in point and isinstance(point['data'], (list, tuple)):
                         if len(point['data']) < 3:
                             point['data'] = list(point['data']) + [0.0] * (3 - len(point['data']))
+                
+                # Automatische Nummerierung für Messpunkte ohne 'number'
+                # Sortiere nach Erstellungszeit (falls vorhanden) für konsistente Nummerierung
+                sorted_points = sorted(impulse_points, key=lambda p: p.get('created_at', 0))
+                for idx, point in enumerate(sorted_points, start=1):
+                    if 'number' not in point or point.get('number') is None:
+                        point['number'] = idx
+                
                 self.settings.impulse_points = impulse_points
             
             # Lade Snapshots
